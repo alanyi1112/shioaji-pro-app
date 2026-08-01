@@ -519,6 +519,9 @@ export default function App() {
         items,
         loading,
         initialLoading,
+        serviceIssue,
+        serviceRetrying,
+        retryService,
         addSymbol,
         removeSymbol,
         reorderSymbol,
@@ -918,7 +921,24 @@ export default function App() {
                 flashCodes={items
                     .filter((i) => i.contract.security_type !== 'IND')
                     .map((i) => i.contract.code)}
+                serviceUnavailable={Boolean(serviceIssue)}
             />
+            {serviceIssue && (
+                <div className={styles.serviceNotice} role='status'>
+                    <div className={styles.serviceNoticeText}>
+                        <strong>{serviceIssue.title}</strong>
+                        <span>{serviceIssue.detail}</span>
+                    </div>
+                    <button
+                        className={styles.serviceRetryButton}
+                        type='button'
+                        onClick={() => void retryService()}
+                        disabled={serviceRetrying}
+                    >
+                        {serviceRetrying ? '檢查中…' : '重新檢查'}
+                    </button>
+                </div>
+            )}
             <EventToasts onEvent={refreshTrading} />
             <CommandPalette
                 open={paletteOpen}

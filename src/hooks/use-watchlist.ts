@@ -31,6 +31,12 @@ export interface WatchItem {
     snapshot?: Snapshot;
 }
 
+export interface WatchlistServiceIssue {
+    kind: 'session-unavailable' | 'unavailable';
+    title: string;
+    detail: string;
+}
+
 const DEFAULT_LIST_NAME = '我的自選';
 const DEFAULT_SYMBOLS: { code: string; type: SecurityType }[] = [
     { code: '2330', type: 'STK' },
@@ -44,6 +50,36 @@ const DEFAULT_SYMBOLS: { code: string; type: SecurityType }[] = [
 const LEGACY_KEY = 'sj-pro-watchlist';
 const ACTIVE_KEY = 'sj-pro-active-watchlist';
 
+function isSessionUnavailable(error: unknown): boolean {
+    return (
+        error instanceof Error &&
+        error.message.includes('SessionNotEstablished')
+    );
+}
+
+function isSimulationSessionUnavailable(error: unknown): boolean {
+    return (
+        isSessionUnavailable(error) &&
+        error instanceof Error &&
+        error.message.includes('/paper/')
+    );
+}
+
+function serviceIssueFor(error: unknown): WatchlistServiceIssue {
+    if (isSimulationSessionUnavailable(error)) {
+        return {
+            kind: 'session-unavailable',
+            title: '模擬服務離線／非服務時間',
+            detail: '目前無法建立 Shioaji 模擬 session；行情、自選與交易功能暫不可用。模擬服務時間為週一至週五 08:00–20:00。',
+        };
+    }
+    return {
+        kind: 'unavailable',
+        title: '交易服務暫時無法使用',
+        detail: '已進入離線工作區；行情、自選與交易功能暫不可用，請稍後重新檢查。',
+    };
+}
+
 async function resolveContract(
     code: string,
     type?: SecurityType | null,
@@ -56,6 +92,9 @@ export function useWatchlist() {
     const [items, setItems] = useState<WatchItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [initialLoading, setInitialLoading] = useState(true);
+    const [serviceIssue, setServiceIssue] =
+        useState<WatchlistServiceIssue | null>(null);
+    const [serviceRetrying, setServiceRetrying] = useState(false);
     const [serverLists, setServerLists] = useState<ServerWatchlist[]>([]);
     const [activeListId, setActiveListId] = useState<string>('');
     const subscribed = useRef(new Set<string>());
@@ -317,88 +356,119 @@ export function useWatchlist() {
         }
     }, [serverLists, refreshLists, setActiveList]);
 
+    const initialize = useCallback(
+        async (retryWarmup: boolean) => {
+            let lists: ServerWatchlist[] = [];
+            let lastErr: unknown = null;
+            const attempts = retryWarmup ? 10 : 1;
+            for (let attempt = 0; attempt < attempts; attempt++) {
+                try {
+                    lists = await refreshLists();
+                    lastErr = null;
+                    break;
+                } catch (error) {
+                    lastErr = error;
+                    // A paper session outside service hours will not recover
+                    // during boot. Enter the workspace immediately instead of
+                    // making the user wait through the warm-up backoff.
+                    if (
+                        isSessionUnavailable(error) ||
+                        attempt === attempts - 1
+                    ) {
+                        break;
+                    }
+                    await new Promise((resolve) =>
+                        setTimeout(resolve, 1500 + attempt * 1000),
+                    );
+                }
+            }
+            if (lastErr) throw lastErr;
+            if (lists.length === 0) {
+                // first run — migrate the old local list or use defaults
+                let seed = DEFAULT_SYMBOLS as {
+                    code: string;
+                    type: SecurityType | null;
+                }[];
+                try {
+                    const raw = localStorage.getItem(LEGACY_KEY);
+                    if (raw) {
+                        const parsed = JSON.parse(raw);
+                        if (Array.isArray(parsed) && parsed.length > 0) {
+                            seed = parsed;
+                        }
+                    }
+                } catch {
+                    // defaults
+                }
+                const resolved = await Promise.allSettled(
+                    seed.map((symbol) =>
+                        resolveContract(
+                            symbol.code,
+                            symbol.type ?? undefined,
+                        ),
+                    ),
+                );
+                const contracts = resolved
+                    .filter(
+                        (
+                            result,
+                        ): result is PromiseFulfilledResult<ContractInfo> =>
+                            result.status === 'fulfilled',
+                    )
+                    .map((result) => result.value);
+                await createWatchlist(DEFAULT_LIST_NAME, contracts);
+                lists = await refreshLists();
+            }
+            const saved = localStorage.getItem(ACTIVE_KEY);
+            const target =
+                lists.find((list) => list.id === saved) ??
+                lists.find((list) => list.name === DEFAULT_LIST_NAME) ??
+                lists[0];
+            if (target) {
+                setActiveListId(target.id);
+                localStorage.setItem(ACTIVE_KEY, target.id);
+                await loadList(target);
+            } else {
+                setLoading(false);
+            }
+        },
+        [loadList, refreshLists],
+    );
+
+    const retryService = useCallback(async () => {
+        if (serviceRetrying) return;
+        setServiceRetrying(true);
+        try {
+            await initialize(false);
+            setServiceIssue(null);
+            notify({
+                kind: 'ok',
+                title: '模擬服務已恢復',
+                body: '自選清單與即時服務已重新連線',
+            });
+        } catch (error) {
+            setLoading(false);
+            setServiceIssue(serviceIssueFor(error));
+        } finally {
+            setServiceRetrying(false);
+        }
+    }, [initialize, serviceRetrying]);
+
     // boot: load lists; migrate legacy local list / create default if empty.
     // The first fetch can race a server that is still warming up after an
-    // app update/restart — retry with backoff instead of giving up (the
-    // poll-based panels recover on their own; this one must too).
+    // app update/restart. SessionNotEstablished is different: it indicates
+    // the simulation session is unavailable, so the workspace degrades fast.
     useEffect(() => {
         if (initStarted.current) return;
         initStarted.current = true;
-        (async () => {
-            try {
-                let lists: ServerWatchlist[] = [];
-                let lastErr: unknown = null;
-                for (let attempt = 0; attempt < 10; attempt++) {
-                    try {
-                        lists = await refreshLists();
-                        lastErr = null;
-                        break;
-                    } catch (e) {
-                        lastErr = e;
-                        // A healthy HTTP server can still be waiting for its
-                        // Shioaji session. Keep retrying in the background,
-                        // but do not hold the entire terminal behind the boot
-                        // screen for the full backoff window.
-                        if (attempt === 0) setInitialLoading(false);
-                        await new Promise((r) =>
-                            setTimeout(r, 1500 + attempt * 1000),
-                        );
-                    }
-                }
-                if (lastErr) throw lastErr;
-                if (lists.length === 0) {
-                    // first run — migrate the old local list or use defaults
-                    let seed = DEFAULT_SYMBOLS as {
-                        code: string;
-                        type: SecurityType | null;
-                    }[];
-                    try {
-                        const raw = localStorage.getItem(LEGACY_KEY);
-                        if (raw) {
-                            const parsed = JSON.parse(raw);
-                            if (Array.isArray(parsed) && parsed.length > 0) {
-                                seed = parsed;
-                            }
-                        }
-                    } catch {
-                        // defaults
-                    }
-                    const resolved = await Promise.allSettled(
-                        seed.map((s) =>
-                            resolveContract(s.code, s.type ?? undefined),
-                        ),
-                    );
-                    const contracts = resolved
-                        .filter(
-                            (
-                                r,
-                            ): r is PromiseFulfilledResult<ContractInfo> =>
-                                r.status === 'fulfilled',
-                        )
-                        .map((r) => r.value);
-                    await createWatchlist(DEFAULT_LIST_NAME, contracts);
-                    lists = await refreshLists();
-                }
-                const saved = localStorage.getItem(ACTIVE_KEY);
-                const target =
-                    lists.find((l) => l.id === saved) ??
-                    lists.find((l) => l.name === DEFAULT_LIST_NAME) ??
-                    lists[0];
-                if (target) {
-                    setActiveListId(target.id);
-                    localStorage.setItem(ACTIVE_KEY, target.id);
-                    await loadList(target);
-                } else {
-                    setLoading(false);
-                }
-            } catch {
+        void initialize(true)
+            .then(() => setServiceIssue(null))
+            .catch((error) => {
                 setLoading(false);
-            } finally {
-                setInitialLoading(false);
-            }
-        })();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+                setServiceIssue(serviceIssueFor(error));
+            })
+            .finally(() => setInitialLoading(false));
+    }, [initialize]);
 
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -432,6 +502,9 @@ export function useWatchlist() {
         items,
         loading,
         initialLoading,
+        serviceIssue,
+        serviceRetrying,
+        retryService,
         addSymbol,
         removeSymbol,
         reorderSymbol,

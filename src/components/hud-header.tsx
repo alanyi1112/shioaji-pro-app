@@ -677,6 +677,7 @@ export function HudHeader({
     onResetWorkspace,
     onLoadPreset,
     flashCodes = [],
+    serviceUnavailable = false,
 }: {
     accBalance?: number;
     addableTypes: { type: BlockType; label: string; disabled: boolean }[];
@@ -688,6 +689,7 @@ export function HudHeader({
     onDeleteProfile: (name: string) => void;
     onResetWorkspace: () => void;
     onLoadPreset: (name: string) => void;
+    serviceUnavailable?: boolean;
 }) {
     const streamStatus = useStreamStatus();
     const privMoney = usePrivacyMoney();
@@ -695,6 +697,7 @@ export function HudHeader({
     const [appVer, setAppVer] = useState('');
     const [now, setNow] = useState(() => new Date());
     const [serverMgrOpen, setServerMgrOpen] = useState(false);
+    const displayedStreamStatus = serviceUnavailable ? 'down' : streamStatus;
 
     useEffect(() => {
         let cleanup: (() => void) | undefined;
@@ -764,9 +767,20 @@ export function HudHeader({
                 </div>
             )}
 
-            <div className={styles.chip}>
-                <span className={styles.led[streamStatus]} />
-                <span>{STATUS_LABEL[streamStatus]}</span>
+            <div
+                className={styles.chip}
+                title={
+                    serviceUnavailable
+                        ? 'Shioaji session 尚未建立，行情與交易服務暫不可用'
+                        : undefined
+                }
+            >
+                <span className={styles.led[displayedStreamStatus]} />
+                <span>
+                    {serviceUnavailable
+                        ? 'OFFLINE'
+                        : STATUS_LABEL[displayedStreamStatus]}
+                </span>
             </div>
 
             <ServerManager
