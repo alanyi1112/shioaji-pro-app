@@ -1,0 +1,70 @@
+name: Cloudflare PE river continuous backfill
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"
+    - cron: "30 15 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-pe-river-continuous-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: cloudflare-production
+    env:
+      CLOUDFLARE_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
+      CLOUDFLARE_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
+      PE_RIVER_BACKFILL_SECRET: ${{ secrets.CLOUDFLARE_PE_RIVER_BACKFILL_SECRET }}
+      PE_RIVER_INGEST_SECRET: ${{ secrets.CLOUDFLARE_PE_RIVER_INGEST_SECRET }}
+      PE_RIVER_TRIGGER: ${{ github.event_name == 'schedule' && 'schedule' || 'workflow_dispatch' }}
+      SITE_URL: ${{ vars.CLOUDFLARE_SITE_URL }}
+      NODE_OPTIONS: --dns-result-order=ipv4first
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify protected configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_ID"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_SECRET"
+          test -n "$PE_RIVER_BACKFILL_SECRET"
+          test -n "$PE_RIVER_INGEST_SECRET"
+          test -n "$SITE_URL"
+      - run: npm ci
+      - name: Refresh Cloudflare official and provisional data
+        run: npm run pe-river:continuous -- --site-url="$SITE_URL" --trigger="$PE_RIVER_TRIGGER" --run-id=cloudflare-pe-river-gha-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Verify protected health
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error --max-time 60 \
+            -H "CF-Access-Client-Id: $CLOUDFLARE_ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $CLOUDFLARE_ACCESS_CLIENT_SECRET" \
+            "$SITE_URL/api/health")"
+          if ! jq -e --arg sha "$GITHUB_SHA" '
+            .ok == true
+            and .deploymentTarget == "cloudflare"
+            and .commitSha == $sha
+            and .persistence.d1 == true
+            and ((.taiwanStockPeRiver.continuous.scheduler.heartbeatAt | type) == "string")
+            and ((.taiwanStockPeRiver.continuous.history.target | type) == "number")
+            and ((.taiwanStockPeRiver.continuous.history.ready | type) == "number")
+            and (.taiwanStockPeRiver.continuous.latest.sourceDate == null or (.taiwanStockPeRiver.continuous.latest.sourceDate | type) == "string")
+          ' <<<"$response" >/dev/null; then
+            echo "cloudflare-pe-health status=contract_failed"
+            exit 1
+          fi
+          jq -r '
+            "cloudflare-pe-health status=healthy target=cloudflare d1=true heartbeat=\(.taiwanStockPeRiver.continuous.scheduler.heartbeatAt) sourceDate=\(.taiwanStockPeRiver.continuous.latest.sourceDate // "none") officialSourceDate=\(.taiwanStockPeRiver.continuous.latest.officialSourceDate // "none") historyReady=\(.taiwanStockPeRiver.continuous.history.ready) historyTarget=\(.taiwanStockPeRiver.continuous.history.target) pending=\(.taiwanStockPeRiver.continuous.latest.pending) retry=\(.taiwanStockPeRiver.continuous.latest.retry)"
+          ' <<<"$response"

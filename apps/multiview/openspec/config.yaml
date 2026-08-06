@@ -1,0 +1,8 @@
+schema: spec-driven
+context: |
+  語言：繁體中文（台灣）
+  所有 OpenSpec 相關專案內容、proposal、design、spec、tasks、說明文件，必須使用繁體中文撰寫，並採用台灣常用語氣與用詞。
+
+  技術名詞、程式碼、API 名稱、檔案路徑、套件名稱、指令、錯誤訊息可保留英文。
+  本專案要將 alanyi1112/quote-chart-multiview 完整改寫為 Codex Sites 相容網站；變更必須涵蓋來源功能 parity、Workers runtime 相容性、資料來源、持久化、安全性與實際驗證方式。
+  禁止將帳號、密碼、API key、token、金鑰等機密資料寫入規格、任務或交給外部 AI Agent；必要時以 [REDACTED_SECRET] 表示。

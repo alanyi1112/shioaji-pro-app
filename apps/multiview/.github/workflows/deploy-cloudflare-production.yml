@@ -1,0 +1,107 @@
+name: Deploy Cloudflare production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: cloudflare-production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_D1_DATABASE_ID: ${{ secrets.CLOUDFLARE_D1_DATABASE_ID }}
+      CLOUDFLARE_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
+      CLOUDFLARE_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
+      CLOUDFLARE_WORKER_NAME: multichart-production
+      CLOUDFLARE_SITE_URL: ${{ vars.CLOUDFLARE_SITE_URL }}
+      CLOUDFLARE_ACCESS_TEAM_DOMAIN: ${{ vars.CLOUDFLARE_ACCESS_TEAM_DOMAIN }}
+      CLOUDFLARE_ACCESS_AUD: ${{ vars.CLOUDFLARE_ACCESS_AUD }}
+      TDCC_HISTORY_AUTOMATION_ENABLED: ${{ vars.TDCC_HISTORY_AUTOMATION_ENABLED }}
+      APP_COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify protected configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_D1_DATABASE_ID"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_ID"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_SECRET"
+          test -n "$CLOUDFLARE_SITE_URL"
+          test -n "$CLOUDFLARE_ACCESS_TEAM_DOMAIN"
+          test -n "$CLOUDFLARE_ACCESS_AUD"
+          case "$TDCC_HISTORY_AUTOMATION_ENABLED" in true|false) ;; *) exit 1 ;; esac
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npx openspec validate --all --strict
+      - run: git diff --check
+      - name: Generate target config and enforce Free-tier budget
+        run: |
+          npm run cloudflare:config
+          npm run cloudflare:budget
+          npx wrangler deploy --dry-run --config .wrangler.cloudflare.generated.jsonc
+      - name: Capture previous deployment
+        id: previous
+        shell: bash
+        run: |
+          previous_id="$(npx wrangler deployments list --name "$CLOUDFLARE_WORKER_NAME" --json | jq -r '.[-1].versions[0].version_id // empty')"
+          echo "version_id=$previous_id" >> "$GITHUB_OUTPUT"
+      - name: Apply additive D1 migrations
+        run: npx wrangler d1 migrations apply DB --remote --config .wrangler.cloudflare.generated.jsonc
+      - name: Deploy exact commit
+        run: npx wrangler deploy --config .wrangler.cloudflare.generated.jsonc
+      - name: Anonymous Access boundary smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 30 "$CLOUDFLARE_SITE_URL/")"
+          case "$status" in
+            302|401|403) echo "cloudflare-access-boundary status=$status" ;;
+            *) echo "cloudflare-access-boundary status=unexpected"; exit 1 ;;
+          esac
+      - name: Protected smoke
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=""
+          smoke_ok="false"
+          for attempt in $(seq 1 12); do
+            response="$(curl --fail --silent --show-error --max-time 60 \
+              -H "CF-Access-Client-Id: $CLOUDFLARE_ACCESS_CLIENT_ID" \
+              -H "CF-Access-Client-Secret: $CLOUDFLARE_ACCESS_CLIENT_SECRET" \
+              "$CLOUDFLARE_SITE_URL/api/health" || true)"
+            if jq -e --arg sha "$GITHUB_SHA" '.ok == true and .deploymentTarget == "cloudflare" and .commitSha == $sha and .persistence.d1 == true' <<<"$response" >/dev/null 2>&1; then
+              smoke_ok="true"
+              echo "cloudflare-smoke status=healthy attempt=$attempt deploymentTarget=cloudflare commitSha=$GITHUB_SHA"
+              break
+            fi
+            sleep 5
+          done
+          if [ "$smoke_ok" != "true" ]; then
+            safe_reason="$(jq -r --arg sha "$GITHUB_SHA" 'if type == "object" then "contract_failed reason=" + (.reasonCode // "none") + " target=" + (.deploymentTarget // "none") + " d1=" + ((.persistence.d1 // false)|tostring) + " commitMatches=" + ((.commitSha == $sha)|tostring) else "invalid_response" end' <<<"$response" 2>/dev/null || echo invalid_response)"
+            echo "cloudflare-smoke status=failed $safe_reason"
+            exit 1
+          fi
+      - name: Roll back Worker code when smoke fails
+        if: failure() && steps.smoke.outcome == 'failure' && steps.previous.outputs.version_id != ''
+        shell: bash
+        run: npx wrangler rollback "${{ steps.previous.outputs.version_id }}" --name "$CLOUDFLARE_WORKER_NAME" --message "Automated rollback after protected smoke failure" --yes

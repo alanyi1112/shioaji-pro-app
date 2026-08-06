@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>報價線圖 multiview</title>
+    <meta name="description" content="一次比較 1、2、3、4、6 或 8 張即時市場 K 線、技術指標與台股個股籌碼。" />
+    <meta property="og:title" content="報價線圖 multiview" />
+    <meta property="og:description" content="1・2・3・4・6・8 圖即時市場與台股籌碼分析" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="__SITE_ORIGIN__/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="__SITE_ORIGIN__/og.png" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/styles.css?v=20260805-chip-readout-heights-v2" />
+    <script src="/vendor/lightweight-charts.standalone.production.js?v=5.0.9"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <h1>報價線圖 multiview</h1>
+        <span id="connection-status">本地模式</span>
+        <a class="license-attribution" href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">Charts by TradingView Lightweight Charts</a>
+      </div>
+      <nav id="market-tabs" class="market-tabs" aria-label="市場商品頁籤">
+        <button type="button" class="market-tab is-active" data-market-tab="台股">台股</button>
+        <button type="button" class="market-tab" data-market-tab="美股">美股</button>
+        <button type="button" class="market-tab" data-market-tab="匯率債券">匯率債券</button>
+        <button type="button" class="market-tab" data-market-tab="期貨期指">期貨期指</button>
+      </nav>
+      <div id="category-pagination" class="category-pagination" aria-label="分類分頁" hidden>
+        <button id="category-page-prev" type="button" aria-label="上一頁">‹</button>
+        <span id="category-page-status">第 1 / 1 頁</span>
+        <button id="category-page-next" type="button" aria-label="下一頁">›</button>
+      </div>
+      <div class="auth-controls" aria-label="個人清單登入">
+        <span id="auth-status">個人清單未登入</span>
+        <button id="watchlist-manage" type="button">我的清單</button>
+        <button id="access-manage" type="button" hidden>登入名單</button>
+        <button id="auth-login" type="button" hidden>Sites 帳戶</button>
+        <button id="auth-logout" type="button" hidden>登出</button>
+      </div>
+      <label class="source-mode-control">
+        <span>台股行情</span>
+        <select id="source-mode" aria-label="台股行情來源模式">
+          <option value="auto" selected>自動</option>
+          <option value="shioaji">Shioaji 即時</option>
+          <option value="yahoo">Yahoo 延遲</option>
+        </select>
+      </label>
+      <label class="chart-count-control">
+        <span>圖表數量</span>
+        <select id="chart-count">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+        </select>
+      </label>
+      <label class="chip-mode-control">
+        <span>主副圖</span>
+        <select id="compact-subchart-mode" aria-disabled="false">
+          <option value="main">主圖</option>
+          <option value="single" selected>單一副圖</option>
+          <option value="multi">多層副圖</option>
+        </select>
+      </label>
+    </header>
+    <p id="panel-reorder-status" class="panel-reorder-status" role="status" aria-live="polite"></p>
+    <main id="chart-grid" class="chart-grid grid-4" aria-label="即時交易圖表"></main>
+    <dialog id="watchlist-dialog" class="watchlist-dialog" aria-labelledby="watchlist-title">
+      <form method="dialog" class="watchlist-shell">
+        <header class="watchlist-header">
+          <h2 id="watchlist-title">我的清單</h2>
+          <button id="watchlist-close" type="submit" aria-label="關閉">關閉</button>
+        </header>
+        <div id="watchlist-message" class="watchlist-message" role="status"></div>
+        <div class="watchlist-layout">
+          <aside class="watchlist-tab-manager" aria-label="頁籤管理">
+            <section class="watchlist-tab-section" aria-labelledby="watchlist-visible-tabs-title">
+              <h3 id="watchlist-visible-tabs-title">顯示中的頁籤</h3>
+              <div id="watchlist-tab-list" class="watchlist-tab-list" role="list" aria-label="顯示中的頁籤"></div>
+            </section>
+            <details id="watchlist-hidden-tabs" class="watchlist-hidden-tabs">
+              <summary><span id="watchlist-hidden-tabs-title">已隱藏頁籤（0）</span></summary>
+              <div id="watchlist-hidden-tab-list" class="watchlist-hidden-tab-list" role="list" aria-label="已隱藏頁籤"></div>
+            </details>
+          </aside>
+          <section class="watchlist-editor" aria-label="頁籤設定">
+            <label>
+              <span>頁籤名稱</span>
+              <input id="watchlist-tab-label" type="text" autocomplete="off" />
+            </label>
+            <label class="watchlist-check">
+              <input id="watchlist-tab-default" type="checkbox" />
+              <span>設為預設</span>
+            </label>
+            <div id="watchlist-tab-source-note" class="watchlist-source-note"></div>
+            <div class="watchlist-actions">
+              <button id="watchlist-tab-new" type="button">新增頁籤</button>
+              <button id="watchlist-tab-save" type="button">儲存頁籤</button>
+              <button id="watchlist-tab-hide" type="button">隱藏頁籤</button>
+              <button id="watchlist-tab-reset" type="button" hidden>恢復系統預設</button>
+              <button id="watchlist-tab-delete" type="button">刪除頁籤</button>
+            </div>
+            <div id="watchlist-instrument-list" class="watchlist-instrument-list" aria-label="目前頁籤商品"></div>
+            <fieldset class="watchlist-instrument-editor">
+              <legend>商品設定</legend>
+              <label>
+                <span>搜尋商品</span>
+                <input id="watchlist-symbol-search" type="search" autocomplete="off" placeholder="輸入中文股名、商品別名或代號" />
+              </label>
+              <div id="watchlist-search-status" class="watchlist-search-status" role="status" aria-live="polite"></div>
+              <div id="watchlist-search-results" class="watchlist-search-results" aria-label="商品搜尋建議"></div>
+              <label>
+                <span>代號</span>
+                <input id="watchlist-symbol" type="text" inputmode="latin" autocomplete="off" />
+              </label>
+              <label>
+                <span>名稱</span>
+                <input id="watchlist-symbol-name" type="text" autocomplete="off" />
+              </label>
+              <label>
+                <span>分類</span>
+                <input id="watchlist-symbol-group" type="text" autocomplete="off" />
+              </label>
+              <label>
+                <span>資料源</span>
+                <select id="watchlist-symbol-provider">
+                  <option value="yfinance">yfinance</option>
+                  <option value="hyperliquid">Hyperliquid</option>
+                  <option value="sample">本機範例</option>
+                </select>
+              </label>
+              <label>
+                <span>推薦人（選填）</span>
+                <input id="watchlist-symbol-recommender" type="text" maxlength="80" autocomplete="off" />
+              </label>
+              <label class="watchlist-check">
+                <input id="watchlist-symbol-enabled" type="checkbox" checked />
+                <span>啟用</span>
+              </label>
+              <div class="watchlist-actions">
+                <button id="watchlist-symbol-save" type="button">儲存商品</button>
+                <button id="watchlist-symbol-delete" type="button">刪除商品</button>
+              </div>
+            </fieldset>
+          </section>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="access-dialog" class="access-dialog" aria-labelledby="access-title">
+      <form method="dialog" class="access-shell">
+        <header class="access-header">
+          <div>
+            <h2 id="access-title">登入名單管理</h2>
+            <p>只有名單中啟用的 Google 帳號可以進入 Cloudflare 正式站。</p>
+          </div>
+          <button id="access-close" type="button" aria-label="關閉登入名單管理">關閉</button>
+        </header>
+        <div id="access-message" class="access-message" role="status" aria-live="polite" hidden></div>
+        <fieldset class="access-create">
+          <legend>新增登入帳號</legend>
+          <label><span>Google email</span><input id="access-create-email" type="email" autocomplete="off" required /></label>
+          <label><span>權限</span><select id="access-create-role"><option value="member" selected>一般成員</option><option value="owner">擁有者</option></select></label>
+          <button id="access-create-submit" type="button">新增</button>
+        </fieldset>
+        <p class="access-warning">修改 email 只會改變日後登入權限，不會自動移轉舊 email 的個人頁籤或商品清單。</p>
+        <div class="access-table-wrap">
+          <table class="access-table">
+            <thead><tr><th>Email</th><th>權限</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody id="access-user-list"></tbody>
+          </table>
+        </div>
+        <details class="access-audit">
+          <summary>最近管理紀錄</summary>
+          <div id="access-audit-list"></div>
+        </details>
+      </form>
+    </dialog>
+    <dialog id="indicator-settings-dialog" class="indicator-settings-dialog" aria-labelledby="indicator-settings-title">
+      <form id="indicator-settings-form" class="indicator-settings-shell" novalidate>
+        <header class="indicator-settings-header">
+          <div>
+            <h2 id="indicator-settings-title">技術指標參數</h2>
+            <p>設定會套用到目前頁面的所有圖表。</p>
+          </div>
+          <button id="indicator-settings-close" type="button" aria-label="關閉技術指標參數設定">關閉</button>
+        </header>
+        <div class="indicator-settings-groups">
+          <fieldset>
+            <legend>RSI（Wilder）</legend>
+            <label><span>短週期</span><input name="rsiShortPeriod" type="number" min="2" max="100" step="1" inputmode="numeric" required /></label>
+            <label><span>長週期</span><input name="rsiLongPeriod" type="number" min="2" max="100" step="1" inputmode="numeric" required /></label>
+          </fieldset>
+          <fieldset>
+            <legend>KD</legend>
+            <label><span>期間</span><input name="kdPeriod" type="number" min="2" max="100" step="1" inputmode="numeric" required /></label>
+            <label><span>RSV 權值</span><input name="kdRsvWeight" type="number" min="1" max="20" step="1" inputmode="numeric" required /></label>
+            <label><span>K 權值</span><input name="kdKWeight" type="number" min="1" max="20" step="1" inputmode="numeric" required /></label>
+            <p class="indicator-settings-note">K、D 初始值固定為 50。</p>
+          </fieldset>
+          <fieldset>
+            <legend>MACD</legend>
+            <label><span>快線 EMA</span><input name="macdFastPeriod" type="number" min="2" max="200" step="1" inputmode="numeric" required /></label>
+            <label><span>慢線 EMA</span><input name="macdSlowPeriod" type="number" min="3" max="200" step="1" inputmode="numeric" required /></label>
+            <label><span>訊號線</span><input name="macdSignalPeriod" type="number" min="2" max="100" step="1" inputmode="numeric" required /></label>
+          </fieldset>
+          <fieldset>
+            <legend>ATR（Wilder）</legend>
+            <label><span>期間</span><input name="atrPeriod" type="number" min="2" max="100" step="1" inputmode="numeric" required /></label>
+          </fieldset>
+        </div>
+        <p id="indicator-settings-error" class="indicator-settings-error" role="alert" hidden></p>
+        <footer class="indicator-settings-actions">
+          <button id="indicator-settings-reset" type="button">還原參考預設</button>
+          <span></span>
+          <button id="indicator-settings-cancel" type="button">取消</button>
+          <button id="indicator-settings-apply" type="submit">套用至所有圖表</button>
+        </footer>
+      </form>
+    </dialog>
+    <template id="chart-panel-template">
+      <section class="chart-panel">
+        <div class="panel-toolbar">
+          <label>
+            <span>交易品種</span>
+            <select class="symbol-select"></select>
+          </label>
+          <label>
+            <span>時間週期</span>
+            <select class="interval-select"></select>
+          </label>
+          <details class="indicator-menu main-indicator-menu">
+            <summary>主圖</summary>
+            <div class="indicator-options main-indicator-options">
+              <div class="main-indicator-toggle-grid" role="group" aria-label="主圖指標">
+                <label><input class="main-indicator" type="checkbox" value="ma" checked /> 均線</label>
+                <label><input class="main-indicator" type="checkbox" value="bollinger" checked /> 布林</label>
+                <label><input class="main-indicator" type="checkbox" value="volume" checked /> 成交量</label>
+                <label><input class="main-indicator" type="checkbox" value="fvg" /> Fair Value Gaps</label>
+                <label class="main-indicator-option-wide"><input class="main-indicator" type="checkbox" value="volumeProfile" /> Volume Profile</label>
+                <label><input class="main-indicator pe-river-toggle" type="checkbox" value="peRiver" /> 本益比河流圖</label>
+                <label><input class="main-indicator estimated-margin-cost-toggle" type="checkbox" value="estimatedMarginCost" /> 估算融資成本</label>
+                <label class="main-indicator-option-wide"><input class="main-indicator pivot-point-toggle" type="checkbox" value="pivotPoint" /> Pivot Point</label>
+              </div>
+              <label class="main-readout-mode-control">
+                <span>數值顯示</span>
+                <select class="main-readout-mode-select" aria-label="K 線數值顯示方式">
+                  <option value="fixed" selected>圖區左上角</option>
+                  <option value="floating">浮動視窗</option>
+                </select>
+              </label>
+              <div class="chart-drawing-tools" role="group" aria-label="繪圖工具">
+                <span>繪圖工具</span>
+                <button type="button" class="chart-tool-button" data-chart-tool="retracement">費波那契回撤</button>
+                <button type="button" class="chart-tool-button" data-chart-tool="extension">費波那契拓展</button>
+                <button type="button" class="chart-tool-button" data-chart-tool="price-range">價格範圍</button>
+                <button type="button" class="chart-tool-clear" title="清除主圖費波那契與價格範圍">清除繪圖</button>
+              </div>
+            </div>
+          </details>
+          <details class="indicator-menu sub-indicator-menu">
+            <summary>副圖</summary>
+            <div class="indicator-options subchart-indicator-options">
+              <fieldset class="subchart-option-group technical-indicator-options">
+                <legend><span>技術指標</span><button class="indicator-settings-trigger" type="button" aria-label="技術指標參數設定" title="技術指標參數設定">⚙</button></legend>
+                <label><input class="sub-indicator" type="checkbox" value="rsi" /> RSI</label>
+                <label><input class="sub-indicator" type="checkbox" value="kd" checked /> KD</label>
+                <label><input class="sub-indicator" type="checkbox" value="macd" /> MACD</label>
+                <label><input class="sub-indicator" type="checkbox" value="atr" checked /> ATR</label>
+              </fieldset>
+              <fieldset class="subchart-option-group chip-indicator-options">
+                <legend>籌碼資料</legend>
+                <div class="chip-data-group" data-chip-group="institutional">
+                  <label class="chip-data-group-parent"><input class="chip-group-indicator" type="checkbox" value="institutional" /> <strong>法人買賣超</strong></label>
+                  <div class="chip-data-group-children">
+                    <label><input class="chip-indicator" type="checkbox" value="foreign-flow-holding" /> 外資</label>
+                    <label><input class="chip-indicator" type="checkbox" value="investment-trust-flow" /> 投信</label>
+                    <label><input class="chip-indicator" type="checkbox" value="dealer-flow" /> 自營商</label>
+                    <label><input class="chip-indicator" type="checkbox" value="institutional-total-flow" /> 合計</label>
+                  </div>
+                </div>
+                <div class="chip-data-group" data-chip-group="margin-financing">
+                  <label class="chip-data-group-parent"><input class="chip-group-indicator" type="checkbox" value="margin-financing" /> <strong>融資券</strong></label>
+                  <div class="chip-data-group-children">
+                    <label><input class="chip-indicator" type="checkbox" value="margin" /> 融資</label>
+                    <label><input class="chip-indicator" type="checkbox" value="short" /> 融券</label>
+                    <label><input class="chip-indicator" type="checkbox" value="securities-lending" /> 借券</label>
+                    <label><input class="chip-indicator" type="checkbox" value="short-margin-ratio" /> 券資比</label>
+                    <label><input class="chip-indicator" type="checkbox" value="estimated-margin-maintenance" /> 估算融資維持率</label>
+                  </div>
+                </div>
+                <div class="chip-data-group" data-chip-group="holder">
+                  <label class="chip-data-group-parent"><input class="chip-group-indicator" type="checkbox" value="holder" /> <strong>持股比</strong></label>
+                  <div class="chip-data-group-children">
+                    <label><input class="chip-indicator" type="checkbox" value="big-holder" /> 大戶</label>
+                    <label><input class="chip-indicator" type="checkbox" value="retail-holder" /> 散戶</label>
+                    <label><input class="chip-indicator" type="checkbox" value="tdcc-holder-count" /> 集保戶數</label>
+                  </div>
+                </div>
+              </fieldset>
+            </div>
+          </details>
+          <div class="fixed-profile-controls">
+            <button class="fixed-profile-tool" type="button" aria-pressed="false" title="固定範圍成交量分佈圖">固定範圍 VP</button>
+            <button class="fixed-profile-settings-toggle" type="button" aria-expanded="false" title="管理固定範圍 VP" disabled>設定</button>
+            <button class="fixed-profile-delete-selected" type="button" title="刪除目前選取的固定範圍 VP" disabled>刪除選取</button>
+            <button class="fixed-profile-clear" type="button" title="清除固定範圍成交量分佈圖" disabled>清除 VP</button>
+          </div>
+          <section class="fixed-profile-settings" hidden aria-label="固定範圍 VP 設定">
+            <div class="fixed-profile-settings-grid">
+              <label>
+                <span>Rows</span>
+                <input class="fixed-profile-row-count" type="number" min="8" max="80" step="1" inputmode="numeric" />
+              </label>
+              <label>
+                <span>VA%</span>
+                <input class="fixed-profile-value-area" type="number" min="50" max="95" step="1" inputmode="numeric" />
+              </label>
+            </div>
+            <div class="fixed-profile-range-list" aria-label="固定範圍列表"></div>
+          </section>
+          <div class="price-strip">
+            <div class="price-heading">
+              <button class="panel-reorder-handle" type="button" title="拖曳調整商品順序" aria-label="拖曳調整商品順序" data-export-exclude="true" hidden>⠿</button>
+              <span class="price-label">--</span>
+            </div>
+            <div class="price-value-row">
+              <span class="quote-time-strip" aria-label="最新資料時間">--</span>
+              <strong class="price-value">--</strong>
+            </div>
+            <div class="price-change-row" aria-label="漲跌與漲跌幅">
+              <span class="price-direction" aria-hidden="true"></span>
+              <span class="price-change">--</span>
+              <span class="price-change-percent">--</span>
+            </div>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-surface"></div>
+          <div class="volume-availability-note" role="note" hidden></div>
+          <div class="panel-crosshair-date" hidden aria-hidden="true"></div>
+          <div class="fvg-layer" aria-label="公平價值缺口"></div>
+          <div class="pe-river-layer" aria-label="本益比河流圖"></div>
+          <p class="pe-river-status" role="status" aria-live="polite" hidden></p>
+          <div class="profile-overlay" aria-label="成交量分佈圖"></div>
+          <div class="fixed-profile-overlay" aria-label="固定範圍成交量分佈圖"></div>
+          <div class="pivot-point-layer" aria-label="所選 K 棒下一期 Pivot Point 投影"></div>
+          <div class="chart-annotation-layer" aria-label="主圖繪圖與價格範圍"></div>
+          <div class="price-extrema-layer" aria-label="可視範圍最高價與最低價"></div>
+          <div class="profile-summary hidden" aria-label="Volume Profile POC VA"></div>
+          <div class="main-readout indicator-readout main-readout--fixed hidden" role="status" aria-live="polite">
+            <div class="readout-row readout-row-ohlc" data-readout-row="ohlc">
+              <span class="readout-date" data-main-readout="date"><b data-main-date>--</b></span>
+              <span data-main-readout="open">開 <b data-ohlc="open">--</b></span>
+              <span data-main-readout="high">高 <b data-ohlc="high">--</b></span>
+              <span data-main-readout="low">低 <b data-ohlc="low">--</b></span>
+              <span data-main-readout="close">收 <b data-ohlc="close">--</b></span>
+              <span data-main-readout="change">漲跌 <b data-ohlc="change">--</b></span>
+              <span data-main-readout="changePercent">漲跌幅 <b data-ohlc="changePercent">--</b></span>
+            </div>
+            <div class="readout-row readout-row-ma" data-readout-row="ma">
+              <span data-main-readout="ma5">5MA <b data-main-indicator="ma5">--</b></span>
+              <span data-main-readout="ma10">10MA <b data-main-indicator="ma10">--</b></span>
+              <span data-main-readout="ma20">20MA <b data-main-indicator="ma20">--</b></span>
+              <span data-main-readout="ma60">60MA <b data-main-indicator="ma60">--</b></span>
+              <span data-main-readout="ma120">120MA <b data-main-indicator="ma120">--</b></span>
+            </div>
+            <div class="readout-row readout-row-volume" data-readout-row="volume">
+              <span data-main-readout="volume">成交量 <b data-main-indicator="volume">--</b></span>
+              <span data-main-readout="volumeMa5">量 MA5 <b data-main-indicator="volumeMa5">--</b></span>
+              <span data-main-readout="volumeMa10">量 MA10 <b data-main-indicator="volumeMa10">--</b></span>
+              <span data-main-readout="volumeMa20">量 MA20 <b data-main-indicator="volumeMa20">--</b></span>
+            </div>
+            <div class="readout-row readout-row-bollinger" data-readout-row="bollinger">
+              <span data-main-readout="bollU">BOLL-U <b data-main-indicator="bollU">--</b></span>
+              <span data-main-readout="bollM">BOLL-M <b data-main-indicator="bollM">--</b></span>
+              <span data-main-readout="bollL">BOLL-L <b data-main-indicator="bollL">--</b></span>
+            </div>
+            <div class="readout-row readout-row-pivot-point" data-readout-row="pivotPoint">
+              <span class="pivot-point-reference" data-main-readout="pivotReference">參考 <b data-pivot-reference>--</b></span>
+              <span class="pivot-point-applies" data-main-readout="pivotApplies">適用 <b data-pivot-applies>--</b></span>
+              <span class="pivot-point-status" data-main-readout="pivotStatus"><b data-pivot-status>--</b></span>
+              <span data-main-readout="pivotP">P <b data-main-indicator="pivotP">--</b></span>
+              <span data-main-readout="pivotR1">R1 <b data-main-indicator="pivotR1">--</b></span>
+              <span data-main-readout="pivotR2">R2 <b data-main-indicator="pivotR2">--</b></span>
+              <span data-main-readout="pivotR3">R3 <b data-main-indicator="pivotR3">--</b></span>
+              <span data-main-readout="pivotS1">S1 <b data-main-indicator="pivotS1">--</b></span>
+              <span data-main-readout="pivotS2">S2 <b data-main-indicator="pivotS2">--</b></span>
+              <span data-main-readout="pivotS3">S3 <b data-main-indicator="pivotS3">--</b></span>
+              <button type="button" class="pivot-point-reset" data-export-exclude="true">回到最新</button>
+            </div>
+            <div class="readout-row readout-row-fvg" data-readout-row="fvg">
+              <span data-main-readout="fvg">FVG <b data-main-indicator="fvg">--</b></span>
+            </div>
+            <div class="readout-row readout-row-volume-profile" data-readout-row="volumeProfile">
+              <span data-main-readout="volumeProfile">VP <b data-main-indicator="volumeProfile">--</b></span>
+              <span data-main-readout="poc">POC <b data-main-indicator="poc">--</b></span>
+              <span data-main-readout="vah">VAH <b data-main-indicator="vah">--</b></span>
+              <span data-main-readout="val">VAL <b data-main-indicator="val">--</b></span>
+            </div>
+            <div class="readout-row readout-row-estimated-margin-cost" data-readout-row="estimatedMarginCost">
+              <span data-main-readout="estimatedMarginCost">估算融資成本 <b data-main-indicator="estimatedMarginCost">--</b></span>
+            </div>
+          </div>
+        </div>
+        <div class="subchart-slot is-mode-a-technical" data-subchart-mode="A" data-mode-a-slot-kind="technical">
+          <div class="indicator-wrap">
+            <header class="technical-pane-header">
+              <strong>技術指標</strong>
+              <div class="sub-readout indicator-readout technical-pane-inline-readout hidden" role="status" aria-live="polite">
+                <span class="technical-readout-date" data-sub-readout="date"><b data-sub-date>--</b></span>
+                <span data-sub-readout="rsiShort"><span data-sub-label="rsiShort">RSI5</span> <b data-sub-indicator="rsiShort">--</b></span>
+                <span data-sub-readout="rsiLong"><span data-sub-label="rsiLong">RSI10</span> <b data-sub-indicator="rsiLong">--</b></span>
+                <span data-sub-readout="kdK">KD-K <b data-sub-indicator="kdK">--</b></span>
+                <span data-sub-readout="kdD">KD-D <b data-sub-indicator="kdD">--</b></span>
+                <span data-sub-readout="macd">MACD <b data-sub-indicator="macd">--</b></span>
+                <span data-sub-readout="atr">ATR <b data-sub-indicator="atr">--</b></span>
+              </div>
+            </header>
+            <div class="indicator-chart" aria-label="KD RSI MACD ATR 指標圖"></div>
+          </div>
+          <div class="chip-pane-region">
+            <div class="chip-pane-stack" aria-label="台股個股籌碼副圖" hidden></div>
+            <aside class="chip-pane-notice" role="status" aria-live="polite" hidden>
+              <p class="chip-pane-empty"></p>
+              <button type="button" class="chip-pane-notice-close" aria-label="關閉籌碼資料提示" title="關閉籌碼資料提示" data-export-exclude="true" hidden>關閉</button>
+            </aside>
+          </div>
+        </div>
+        <div class="panel-crosshair-line" hidden aria-hidden="true"></div>
+        <p class="panel-status">等待資料</p>
+      </section>
+    </template>
+    <script src="/static/fixedRangeVolumeProfile.js?v=20260612-frvp"></script>
+    <script src="/static/price-formatting.js?v=20260711-taiwan-tick-size-v2"></script>
+    <script src="/static/chart-interactions.js?v=20260729-main-subchart-modes-v1"></script>
+    <script src="/static/html2canvas.min.js?v=1.4.1"></script>
+    <script src="/static/panel-image-export.js?v=20260721-panel-frame-v4"></script>
+    <script src="/static/chart-annotations.js?v=20260727-fibonacci-snap-coexist-v1"></script>
+    <script src="/static/pe-river-overlay.js?v=20260727-pe-river-context-v1"></script>
+    <script src="/static/chart-axis-formatting.js?v=20260805-compact-subchart-axis-v1"></script>
+    <script src="/static/chip-panes.js?v=20260805-compact-subchart-axis-v1"></script>
+    <script src="/static/quote-display-state.js?v=20260718-market-closed-v1"></script>
+    <script src="/static/live-batch-coordinator.js?v=20260804-chart-lifecycle-v2"></script>
+    <script src="/static/realtime-coordinator.js?v=20260731-shioaji-realtime-v1"></script>
+    <script src="/static/realtime-charts.js?v=20260731-shioaji-realtime-v1"></script>
+    <script src="/static/realtime-indicators.js?v=20260806-local-shioaji-v1"></script>
+    <script src="/static/chart-payload.js?v=20260805-crosshair-alignment-v1"></script>
+    <script src="/static/panel-reordering.js?v=20260804-panel-reorder-v1"></script>
+    <script src="/static/app.js?v=20260805-compact-subchart-axis-v1"></script>
+  </body>
+</html>

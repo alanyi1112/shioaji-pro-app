@@ -16,7 +16,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -28,6 +28,12 @@ jobs:
 
       - name: Run unit tests
         run: pnpm test
+
+      - name: Verify MultiView source governance
+        run: pnpm verify:multiview-governance
+
+      - name: Test imported MultiView
+        run: pnpm test:multiview
 
       # no private modules checkout on purpose — this is the OSS path
       - name: Build web app (stub modules)

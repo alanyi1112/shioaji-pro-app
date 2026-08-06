@@ -6,9 +6,16 @@
     "type": "module",
     "scripts": {
         "dev": "vite",
+        "dev:multiview": "npm --prefix apps/multiview run dev:local",
         "build": "tsc -b && vite build",
-        "test": "vitest run --exclude '**/*.browser.test.ts'",
+        "build:multiview": "npm --prefix apps/multiview run build",
+        "test": "vitest run --exclude '**/*.browser.test.ts' --exclude 'apps/multiview/tests/**'",
+        "test:multiview": "npm --prefix apps/multiview run test",
         "test:browser": "vitest run --config vitest.browser.config.ts",
+        "lint:multiview": "npm --prefix apps/multiview run lint",
+        "typecheck:multiview": "npm --prefix apps/multiview exec tsc -- --noEmit",
+        "verify:multiview-governance": "node scripts/verify-multiview-governance.mjs",
+        "multiview:state": "scripts/multiview-state",
         "local-runtime": "./scripts/realtimestock-runtime",
         "preview": "vite preview"
     },

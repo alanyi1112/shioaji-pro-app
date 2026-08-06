@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "multichart-shioaji-gateway"
+version = "0.1.0"
+description = "MultiChart data-only Shioaji market gateway"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "shioaji==1.7.1",
+  "websockets==15.0.1",
+]
+
+[project.scripts]
+multichart-gateway = "multichart_gateway.service:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/multichart_gateway"]

@@ -1,0 +1,62 @@
+# macOS / editor
+.DS_Store
+._*
+.idea/
+.vscode/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*secret*
+*token*
+*credential*
+
+# Local AI agent state
+.codex/
+.claude/
+.gemini/
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/*
+!build/sites-vite-plugin.ts
+coverage/
+.next/
+.nuxt/
+.vite/
+.vinext/
+*.tsbuildinfo
+public/vendor/lightweight-charts.standalone.production.js
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Sites / local development
+.wrangler/
+.wrangler.cloudflare.generated.jsonc
+.dev.vars
+.tdcc-backfill/
+
+# Logs and temporary output
+*.log
+tmp/
+temp/
+*.tmp

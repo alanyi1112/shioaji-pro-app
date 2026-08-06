@@ -1,0 +1,14 @@
+{
+  "symbol": "2330.TW",
+  "officialSourceDate": "2026-07-21",
+  "finmindRows": [
+    { "sessionDate": "2026-07-21", "officialClose": 2410, "officialPeRatio": 32.4 },
+    { "sessionDate": "2026-07-22", "officialClose": 2400, "officialPeRatio": 32.27 },
+    { "sessionDate": "2026-07-23", "officialClose": 2425, "officialPeRatio": 32.6 },
+    { "sessionDate": "2026-07-24", "officialClose": 2430, "officialPeRatio": 32.65 },
+    { "sessionDate": "2026-07-27", "officialClose": 2440, "officialPeRatio": 32.8 }
+  ],
+  "officialMatch": { "sessionDate": "2026-07-22", "officialClose": 2400.01, "officialPeRatio": 32.28 },
+  "officialMismatch": { "sessionDate": "2026-07-22", "officialClose": 2400.011, "officialPeRatio": 32.27 },
+  "officialGap": { "sessionDate": "2026-07-22", "officialClose": 2400, "officialPeRatio": null }
+}

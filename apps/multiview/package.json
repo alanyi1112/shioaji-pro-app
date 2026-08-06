@@ -1,0 +1,81 @@
+{
+  "name": "site-creator-vinext-starter",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "prepare:charts": "node scripts/prepare-lightweight-charts.mjs",
+    "predev": "npm run prepare:charts",
+    "dev": "vinext dev",
+    "dev:local": "vinext dev --hostname 127.0.0.1 --port 5174",
+    "prebuild": "npm run prepare:charts",
+    "build": "vinext build",
+    "prestart": "npm run prepare:charts",
+    "start": "vinext start",
+    "start:local": "vinext start --hostname 127.0.0.1 --port 5174",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern public/vendor --max-warnings=0",
+    "db:generate": "drizzle-kit generate",
+    "cloudflare:config": "node scripts/cloudflare-config.mjs",
+    "cloudflare:budget": "node scripts/cloudflare-budget-check.mjs",
+    "cloudflare:dry-run": "npm run build && npm run cloudflare:config && npm run cloudflare:budget && wrangler deploy --dry-run --config .wrangler.cloudflare.generated.jsonc",
+    "cloudflare:migrate": "npm run cloudflare:config && wrangler d1 migrations apply DB --remote --config .wrangler.cloudflare.generated.jsonc",
+    "cloudflare:deploy": "npm run cloudflare:dry-run && npm run cloudflare:migrate && wrangler deploy --config .wrangler.cloudflare.generated.jsonc",
+    "sites:prepare-archive": "node scripts/prepare-sites-archive.mjs",
+    "tdcc:backfill": "node scripts/tdcc-history-backfill.mjs",
+    "tdcc:continuous": "node scripts/tdcc-history-backfill.mjs --continuous",
+    "pe-river:continuous": "node scripts/pe-river-continuous-backfill.mjs",
+    "personal-data:migrate": "node scripts/migrate-personal-data.mjs",
+    "gateway:test": "cd gateway && PYTHONPATH=src uv run --frozen python -m unittest discover -s tests -v",
+    "gateway:scan": "python3 gateway/tools/scan_safe_artifacts.py gateway openspec/changes/add-shioaji-realtime-taiwan-charts",
+    "gateway:verify": "npm run gateway:test && npm run gateway:scan",
+    "realtime:preview-verify": "node scripts/verify-realtime-preview.mjs",
+    "realtime:ui-preview-verify": "node scripts/verify-realtime-ui-preview.mjs"
+  },
+  "dependencies": {
+    "drizzle-orm": "0.45.2",
+    "html2canvas": "1.4.1",
+    "jose": "6.2.4",
+    "lightweight-charts": "5.0.9",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.51.0",
+    "@fission-ai/openspec": "1.7.0",
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "@vitejs/plugin-rsc": "0.5.26",
+    "drizzle-kit": "0.31.10",
+    "eslint": "9.39.4",
+    "eslint-config-next": "16.2.6",
+    "playwright-core": "^1.61.1",
+    "react-server-dom-webpack": "19.2.8",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "vinext": "0.0.50",
+    "vite": "8.2.0",
+    "wrangler": "4.119.0"
+  },
+  "overrides": {
+    "@babel/core": "7.29.7",
+    "esbuild": "0.28.1",
+    "fast-uri": "3.1.5",
+    "js-yaml": "4.3.1",
+    "minimatch@3.1.5": {
+      "brace-expansion": "1.1.18"
+    },
+    "minimatch@10.2.5": {
+      "brace-expansion": "5.0.9"
+    },
+    "undici": "7.29.0"
+  },
+  "type": "module"
+}

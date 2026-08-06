@@ -1,0 +1,2 @@
+ALTER TABLE `tdcc_shareholder_backfill_job` ADD `target_symbols_json` text DEFAULT '[]' NOT NULL;--> statement-breakpoint
+ALTER TABLE `tdcc_shareholder_backfill_job` ADD `expected_symbols` integer DEFAULT 0 NOT NULL;

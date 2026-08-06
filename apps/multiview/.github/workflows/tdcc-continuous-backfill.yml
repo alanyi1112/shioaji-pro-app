@@ -1,0 +1,145 @@
+name: TDCC continuous backfill
+
+on:
+  schedule:
+    - cron: "30 14 * * 6,0"
+  workflow_dispatch:
+
+concurrency:
+  group: tdcc-continuous-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SITES_BYPASS_TOKEN: ${{ secrets.SITES_BYPASS_TOKEN }}
+      TDCC_CONTINUOUS_BACKFILL_SECRET: ${{ secrets.TDCC_CONTINUOUS_BACKFILL_SECRET }}
+      TDCC_TRIGGER: ${{ github.event_name == 'schedule' && 'schedule' || 'workflow_dispatch' }}
+      CHIP_BACKFILL_SCOPE: tdcc-weekly
+    steps:
+      - name: Verify protected configuration
+        shell: bash
+        run: |
+          test -n "$SITES_BYPASS_TOKEN"
+          test -n "$TDCC_CONTINUOUS_BACKFILL_SECRET"
+      - name: Wake Sites chip backfill orchestrator
+        id: orchestrator
+        shell: bash
+        env:
+          SITE_URL: https://quote-chart-multiview.alanyi1112.chatgpt.site
+          RUN_ID: gha-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          failure_reason="invalid_response"
+          needs_cleanup="true"
+          response=""
+
+          request() {
+            local action="$1"
+            local reason="${2:-}"
+            local payload
+            payload="$(jq -cn \
+              --arg action "$action" \
+              --arg runId "$RUN_ID" \
+              --arg trigger "$TDCC_TRIGGER" \
+              --arg scope "$CHIP_BACKFILL_SCOPE" \
+              --arg reason "$reason" \
+              '{action:$action,runId:$runId,trigger:$trigger,scope:$scope} + if $reason == "" then {} else {reason:$reason} end')"
+            curl --fail --silent --show-error --max-time 90 \
+              -H "OAI-Sites-Authorization: Bearer $SITES_BYPASS_TOKEN" \
+              -H "Authorization: Bearer $TDCC_CONTINUOUS_BACKFILL_SECRET" \
+              -H "Content-Type: application/json" \
+              --data "$payload" \
+              "$SITE_URL/api/internal/tdcc-continuous-backfill"
+          }
+
+          validate_response() {
+            jq -e '
+              .ok == true
+              and ((.done | type) == "boolean")
+              and ((.summary | type) == "object")
+              and (.summary.scope == "tdcc-weekly")
+              and (.summary.status | IN("running", "completed", "failed"))
+              and (.summary.phase | IN("latest", "completed", "failed"))
+              and (.summary.processedSymbols | type == "number" and . >= 0 and floor == .)
+              and (.summary.remainingSymbols | type == "number" and . >= 0 and floor == .)
+              and (.summary.pendingSymbols | type == "number" and . >= 0 and floor == .)
+              and (.summary.reason == null or (.summary.reason | IN("source_not_published", "rate_limited", "provider_unavailable", "timeout", "invalid_response", "tick_limit_exceeded")))
+              and (.recovery == null or (.recovery.status | IN("not_needed", "retry_waiting", "failed")))
+            ' >/dev/null <<<"$1"
+          }
+
+          print_summary() {
+            jq -r --arg tick "$2" '
+              "chip-orchestrator tick=\($tick) scope=\(.summary.scope) status=\(.summary.status) phase=\(.summary.phase) processed=\(.summary.processedSymbols) remaining=\(.summary.remainingSymbols) pending=\(.summary.pendingSymbols) reason=\(.summary.reason // "none") recovery=\(.recovery.status // "none")"
+            ' <<<"$1"
+          }
+
+          call_orchestrator() {
+            local action="$1"
+            local tick="$2"
+            local curl_status
+            if response="$(request "$action")"; then
+              if ! validate_response "$response"; then
+                failure_reason="invalid_response"
+                return 1
+              fi
+              print_summary "$response" "$tick"
+              return 0
+            else
+              curl_status=$?
+              if [ "$curl_status" -eq 28 ]; then
+                failure_reason="timeout"
+              else
+                failure_reason="provider_unavailable"
+              fi
+              return 1
+            fi
+          }
+
+          finalize_failure() {
+            local exit_status=$?
+            local cleanup_response
+            trap - EXIT
+            if [ "$needs_cleanup" = "true" ]; then
+              if cleanup_response="$(request orchestrator-fail "$failure_reason")" && validate_response "$cleanup_response"; then
+                print_summary "$cleanup_response" "finalize"
+              else
+                echo "chip-orchestrator tick=finalize status=cleanup_failed reason=$failure_reason"
+              fi
+            fi
+            exit "$exit_status"
+          }
+          trap finalize_failure EXIT
+
+          if ! call_orchestrator orchestrator-start start; then
+            exit 1
+          fi
+          done_state="$(jq -r '.done' <<<"$response")"
+          tick=0
+          while [ "$done_state" != "true" ] && [ "$tick" -lt 60 ]; do
+            tick=$((tick + 1))
+            if ! call_orchestrator orchestrator-tick "$tick"; then
+              exit 1
+            fi
+            done_state="$(jq -r '.done' <<<"$response")"
+          done
+          if [ "$done_state" != "true" ]; then
+            failure_reason="tick_limit_exceeded"
+            exit 1
+          fi
+          needs_cleanup="false"
+          trap - EXIT
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run TDCC historical source adapter
+        run: npm run tdcc:continuous -- --history-only --trigger=$TDCC_TRIGGER --run-id=gha-${{ github.run_id }}-${{ github.run_attempt }} --max-run-ms=1200000

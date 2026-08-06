@@ -41,6 +41,7 @@ import { ScannerPanel } from './components/scanner-panel';
 import { TickTape } from './components/tick-tape';
 import { TrayPanel } from './components/tray-panel';
 import { Watchlist } from './components/watchlist';
+import { parseOrderTicketBridge } from './lib/order-ticket-bridge';
 import { StockFuturesPanel } from './components/stock-futures-panel';
 import { WarrantPanel } from './components/warrant-panel';
 import {
@@ -102,7 +103,13 @@ const POPOUT_TYPES: ReadonlySet<string> = new Set([
 
 const popoutQuery = new URLSearchParams(window.location.search);
 const POPOUT_TYPE = popoutQuery.get('popout');
-const POPOUT_CODE = popoutQuery.get('code') || null;
+const IS_MULTIVIEW_TICKET_BRIDGE =
+    POPOUT_TYPE === 'ticket' && popoutQuery.get('bridge') === 'multiview';
+const ORDER_TICKET_BRIDGE = parseOrderTicketBridge(popoutQuery);
+const POPOUT_CODE =
+    IS_MULTIVIEW_TICKET_BRIDGE
+        ? (ORDER_TICKET_BRIDGE?.code ?? null)
+        : popoutQuery.get('code') || null;
 
 // resolves a block's contract: pinned code (contract cache) or global selection
 function useBlockContract(
@@ -875,6 +882,14 @@ export default function App() {
 
     if (POPOUT_TYPE === 'traypanel') {
         return <TrayPanel />;
+    }
+    if (IS_MULTIVIEW_TICKET_BRIDGE && !ORDER_TICKET_BRIDGE) {
+        return (
+            <main style={{ padding: 24 }}>
+                <h1>無法開啟下單面板</h1>
+                <p>商品契約參數無效或包含不允許的交易欄位。</p>
+            </main>
+        );
     }
     if (POPOUT_TYPE && POPOUT_TYPES.has(POPOUT_TYPE)) {
         return (

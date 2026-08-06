@@ -1,0 +1,12 @@
+{
+  "twse": [
+    {"Date": "20260721", "Code": "2330", "Name": "台積電", "ClosePrice": "2410.00", "PEratio": "32.40", "FiscalYearQuarter": "2026Q1"},
+    {"Date": "20260721", "Code": "1101", "Name": "台泥", "ClosePrice": "24.05", "PEratio": "", "FiscalYearQuarter": "2026Q1"}
+  ],
+  "tpexPe": [
+    {"Date": "1150722", "SecuritiesCompanyCode": "8069", "CompanyName": "元太", "PriceEarningRatio": "20.20"}
+  ],
+  "tpexClose": [
+    {"Date": "1150722", "SecuritiesCompanyCode": "8069", "CompanyName": "元太", "Close": "194.50"}
+  ]
+}

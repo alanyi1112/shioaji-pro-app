@@ -1,0 +1,33 @@
+{
+  "twse": {
+    "symbol": "2330.TW",
+    "per": {"status": 200, "msg": "success", "data": [
+      {"date": "2026-07-21", "stock_id": "2330", "PER": 32.4},
+      {"date": "2026-07-22", "stock_id": "2330", "PER": 32.27}
+    ]},
+    "price": {"status": 200, "msg": "success", "data": [
+      {"date": "2026-07-22", "stock_id": "2330", "close": 2400},
+      {"date": "2026-07-21", "stock_id": "2330", "close": 2410}
+    ]}
+  },
+  "tpex": {
+    "symbol": "8069.TWO",
+    "per": {"status": 200, "msg": "success", "data": [
+      {"date": "2026-07-21", "stock_id": "8069", "PER": 20.17},
+      {"date": "2026-07-22", "stock_id": "8069", "PER": 20.2}
+    ]},
+    "price": {"status": 200, "msg": "success", "data": [
+      {"date": "2026-07-21", "stock_id": "8069", "close": 193},
+      {"date": "2026-07-22", "stock_id": "8069", "close": 194.5}
+    ]}
+  },
+  "invalid": {
+    "per": {"status": 200, "msg": "success", "data": [
+      {"date": "2026-07-21", "stock_id": "2330", "PER": -1},
+      {"date": "2026-07-22", "stock_id": "2330", "PER": null}
+    ]},
+    "price": {"status": 200, "msg": "success", "data": [
+      {"date": "2026-07-21", "stock_id": "2330", "close": 2410}
+    ]}
+  }
+}

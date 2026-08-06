@@ -176,6 +176,31 @@ pnpm local-runtime simulation
 完整的安裝、回復與安全邊界請見
 [macOS 本機常駐與安全模式切換](docs/local-runtime-macos.md)。
 
+### 6. MultiView 多圖看盤（本機）
+
+「版面」選單的 `MultiView（開新分頁）` 會開啟
+[http://localhost:5174](http://localhost:5174)。MultiView 支援 1／2／3／4／6／8
+圖，只提供日、週、月 K；台股預設優先使用本機 Shioaji 即時行情，無可用
+business session 時會在畫面標示並切換 Yahoo 延遲備援。國外商品與 MultiView
+自己的「我的清單」仍沿用原有資料來源與獨立設定，不會與交易終端自選清單同步。
+
+第一次使用前先建立 repo 外的本機 D1，再啟動兩個前端：
+
+```sh
+pnpm multiview:state migrate
+pnpm dev
+pnpm dev:multiview
+```
+
+若使用 macOS 常駐模式，`pnpm local-runtime install` 會一併管理 8080、5173、
+5174 與有界盤後資料排程，且登入後仍預設 simulation。MultiView 右鍵「下單」
+只會把已解析的 STK／WRT 商品帶回 5173 下單面板，不傳送買賣別、價格、數量、
+帳號或憑證，也不會直接呼叫下單 API。MultiView 本階段僅支援 simulation；
+RealTimeStock 切至其他模式時會停止 5174，手動啟動也不會讀取該模式行情。
+
+完整資料位置、備份／回復、排程、來源狀態、授權與安全限制請見
+[MultiView 本機操作與安全邊界](apps/multiview/docs/local-runtime.md)。
+
 ## Deploy as a Shioaji custom app 部署為內建 App
 
 Shioaji server 可直接代管前端，build 完上傳即可：

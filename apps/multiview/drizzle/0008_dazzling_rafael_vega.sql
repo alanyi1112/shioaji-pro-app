@@ -1,0 +1,1 @@
+ALTER TABLE `tdcc_continuous_runs` ADD `next_retry_at` text;

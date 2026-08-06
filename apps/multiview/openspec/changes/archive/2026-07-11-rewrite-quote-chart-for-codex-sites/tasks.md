@@ -1,0 +1,25 @@
+# 任務
+
+- [x] 建立 Codex Sites vinext starter 與本機預覽。
+- [x] 修正專案用途與 Obsidian 駕駛艙。
+- [x] 匯入來源前端 UI／互動資產作為 parity 基線。
+- [x] 將 Flask API 改寫為 TypeScript Sites Worker。
+- [x] 改寫 Yahoo Chart、Hyperliquid 與 sample 行情資料源。
+- [x] 將 Python 技術指標改寫為 TypeScript。
+- [x] 將個人頁籤與商品清單改寫為 D1。
+- [x] 將即時更新改寫為 Workers SSE。
+- [x] 補齊自動化測試並完成 API smoke。
+- [x] 完成實際頁面與核心互動驗證。
+- [x] 建立 Sites 版本並部署。
+- [x] 確認 Sites deployment 成功並更新文件與駕駛艙。
+- [x] 安全設定 Massive runtime secret 並驗證第二來源與方案 entitlement 狀態。
+- [x] 確認 Massive 維持免費方案；未涵蓋的指數、外匯與期貨保持可診斷的 `unverified`，不升級付費方案。
+- [x] 補齊台股官方交易日解析、同交易日價格比較與安全原因碼。
+- [x] 讓 candles／stream 共用台股正規化與第二來源驗證流程。
+- [x] 加入 TWSE／TPEx 全市場短期快取與 single-flight。
+- [x] 回傳台股占位資料 `dataQuality` 並統一可見驗證狀態標示。
+- [x] 補齊台股 `.TW`／`.TWO`、日期未發布、占位正規化、快取與 stream parity 自動化測試。
+- [x] 完成台股代表商品本機 API 與畫面驗收。
+- [x] 建立 TPEx 官方資料 GitHub Actions 排程與雙重秘密寫入流程。
+- [x] 在 Sites D1 建立鏡像資料表、受保護 ingest API 與 `tpex-mirror` verifier。
+- [x] 完成 workflow 手動同步、正式站 `.TWO` verified 與可見狀態驗收。

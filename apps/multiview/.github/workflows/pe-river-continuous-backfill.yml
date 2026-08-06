@@ -1,0 +1,40 @@
+name: PE river continuous backfill
+
+on:
+  schedule:
+    - cron: "30 11 * * 1-5"
+    - cron: "30 15 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: pe-river-continuous-backfill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      SITES_BYPASS_TOKEN: ${{ secrets.SITES_BYPASS_TOKEN }}
+      PE_RIVER_BACKFILL_SECRET: ${{ secrets.PE_RIVER_BACKFILL_SECRET }}
+      PE_RIVER_INGEST_SECRET: ${{ secrets.PE_RIVER_INGEST_SECRET }}
+      PE_RIVER_TRIGGER: ${{ github.event_name == 'schedule' && 'schedule' || 'workflow_dispatch' }}
+      NODE_OPTIONS: --dns-result-order=ipv4first
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify protected configuration
+        shell: bash
+        run: |
+          test -n "$SITES_BYPASS_TOKEN"
+          test -n "$PE_RIVER_BACKFILL_SECRET"
+          test -n "$PE_RIVER_INGEST_SECRET"
+      - run: npm ci
+      - name: Refresh official and provisional latest data before historical gaps
+        run: npm run pe-river:continuous -- --trigger=$PE_RIVER_TRIGGER --run-id=pe-river-gha-${{ github.run_id }}-${{ github.run_attempt }}

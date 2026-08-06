@@ -15,6 +15,7 @@ import {
 } from '../lib/risk';
 import { fetchInfo } from '../lib/shioaji';
 import { useRuntimeMode } from '../lib/runtime-mode';
+import { openMultiViewWindow } from '../lib/multiview-window';
 import {
     maskAccountId,
     maskMoney,
@@ -493,6 +494,25 @@ function ProfilesMenu({
         <Menu label='版面'>
             {(close) => (
                 <>
+                    <span className={styles.settingLabel}>多圖看盤</span>
+                    <button
+                        className={styles.menuItem}
+                        title='在新分頁開啟本機 MultiView，不變更目前版面'
+                        onClick={() => {
+                            const opened = openMultiViewWindow();
+                            close();
+                            if (!opened) {
+                                window.alert(
+                                    '瀏覽器已阻擋 MultiView 新分頁，請允許彈出視窗後重試。',
+                                );
+                            }
+                        }}
+                    >
+                        MultiView（開新分頁）
+                        <span className={styles.presetDesc}>
+                            1／2／3／4／6／8 圖看盤
+                        </span>
+                    </button>
                     <span className={styles.settingLabel}>
                         預設版面 Presets
                     </span>

@@ -1,0 +1,123 @@
+#!/bin/zsh
+
+set -eu
+
+SCRIPT_PATH="${0:A}"
+REPO_DIR="${REALTIME_STOCK_REPO_DIR:-${SCRIPT_PATH:h:h}}"
+APP_SUPPORT_BASE="${HOME}/Library/Application Support/RealTimeStock/MultiView"
+STATE_DIR="${MULTIVIEW_STATE_DIR:-${APP_SUPPORT_BASE}}"
+PERSIST_DIR="${STATE_DIR}/state"
+BACKUP_DIR="${STATE_DIR}/backups"
+METADATA_DIR="${STATE_DIR}/metadata"
+SCHEMA_REVISION="0021"
+WRANGLER_BIN="${REPO_DIR}/apps/multiview/node_modules/.bin/wrangler"
+WRANGLER_CONFIG="${REPO_DIR}/apps/multiview/wrangler.local.jsonc"
+
+usage() {
+    print '使用方式：scripts/multiview-state <init|migrate|status|backup|restore> [backup.sqlite]'
+}
+
+ensure_directories() {
+    umask 077
+    mkdir -p "${PERSIST_DIR}" "${BACKUP_DIR}" "${METADATA_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/registry"
+    chmod 700 "${STATE_DIR}" "${PERSIST_DIR}" "${BACKUP_DIR}" "${METADATA_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/registry"
+}
+
+database_file() {
+    find "${PERSIST_DIR}/v3/d1" -type f -name '*.sqlite' ! -name 'metadata.sqlite' -print 2>/dev/null | sort | head -n 1
+}
+
+integrity() {
+    local db_file="$1"
+    [[ -n "${db_file}" && -f "${db_file}" ]] || { print 'not-initialized'; return 0; }
+    sqlite3 "${db_file}" 'PRAGMA integrity_check;' 2>/dev/null || print 'unavailable'
+}
+
+coverage_gate() {
+    local db_file="$1" table_count migration_count
+    [[ -n "${db_file}" && -f "${db_file}" ]] || { print 'not-initialized'; return 0; }
+    table_count="$(sqlite3 "${db_file}" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('user_tabs','user_instruments','candle_history','taiwan_stock_chip_daily','taiwan_stock_pe_valuation_daily','runtime_metadata');" 2>/dev/null || print 0)"
+    migration_count="$(sqlite3 "${db_file}" 'SELECT count(*) FROM d1_migrations;' 2>/dev/null || print 0)"
+    [[ "${table_count}" == '6' && "${migration_count}" -ge 22 ]] && print 'ok' || print "incomplete:${table_count}:6:${migration_count}:22"
+}
+
+backup_database() {
+    ensure_directories
+    local db_file backup_file stamp result
+    db_file="$(database_file)"
+    [[ -n "${db_file}" && -f "${db_file}" ]] || { print -u2 'MultiView D1 尚未初始化'; return 1; }
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    backup_file="${BACKUP_DIR}/multiview-${stamp}.sqlite"
+    sqlite3 "${db_file}" ".backup '${backup_file}'"
+    chmod 600 "${backup_file}"
+    result="$(integrity "${backup_file}")"
+    [[ "${result}" == 'ok' ]] || { command rm -f "${backup_file}"; print -u2 "備份完整性檢查失敗：${result}"; return 1; }
+    print -r -- "${backup_file}"
+}
+
+migrate_database() {
+    ensure_directories
+    [[ -x "${WRANGLER_BIN}" ]] || { print -u2 '找不到 MultiView Wrangler，請先安裝 workspace dependency'; return 1; }
+    local existing backup_file db_file result
+    existing="$(database_file)"
+    if [[ -n "${existing}" ]]; then
+        backup_file="$(backup_database)"
+        print "migration_backup=${backup_file}"
+    fi
+    (cd "${REPO_DIR}/apps/multiview" && env \
+        WRANGLER_WRITE_LOGS=false \
+        WRANGLER_LOG_PATH="${STATE_DIR}/logs/wrangler.log" \
+        WRANGLER_SEND_METRICS=false \
+        "${WRANGLER_BIN}" d1 migrations apply DB --local --persist-to "${PERSIST_DIR}" --config "${WRANGLER_CONFIG}")
+    db_file="$(database_file)"
+    result="$(integrity "${db_file}")"
+    [[ "${result}" == 'ok' ]] || { print -u2 "migration 後完整性檢查失敗：${result}"; return 1; }
+    result="$(coverage_gate "${db_file}")"
+    [[ "${result}" == 'ok' ]] || { print -u2 "migration 後 schema coverage 不完整：${result}"; return 1; }
+    umask 077
+    print -r -- "${SCHEMA_REVISION}" > "${METADATA_DIR}/schema-revision"
+    print 'migration_status=ok'
+}
+
+restore_database() {
+    local source_file="$1" db_file rollback_file result
+    [[ -f "${source_file}" ]] || { print -u2 "找不到備份：${source_file}"; return 1; }
+    [[ "$(integrity "${source_file}")" == 'ok' ]] || { print -u2 '拒絕復原：備份 integrity_check 未通過'; return 1; }
+    [[ "$(coverage_gate "${source_file}")" == 'ok' ]] || { print -u2 '拒絕復原：備份 schema coverage 不完整'; return 1; }
+    db_file="$(database_file)"
+    [[ -n "${db_file}" && -f "${db_file}" ]] || { print -u2 '找不到目前 D1；請先執行 migrate'; return 1; }
+    if lsof -nP -iTCP:5174 -sTCP:LISTEN >/dev/null 2>&1; then
+        print -u2 '拒絕復原：請先停止 5174 MultiView runtime'
+        return 1
+    fi
+    rollback_file="$(backup_database)"
+    sqlite3 "${source_file}" ".backup '${db_file}.restore'"
+    [[ "$(integrity "${db_file}.restore")" == 'ok' ]] || { command rm -f "${db_file}.restore"; print -u2 '復原暫存檔 integrity_check 未通過'; return 1; }
+    mv "${db_file}.restore" "${db_file}"
+    result="$(integrity "${db_file}")"
+    [[ "${result}" == 'ok' ]] || { cp "${rollback_file}" "${db_file}"; print -u2 '復原失敗，已回復操作前備份'; return 1; }
+    print "restore_status=ok"
+    print "rollback_backup=${rollback_file}"
+}
+
+status() {
+    ensure_directories
+    local db_file revision
+    db_file="$(database_file)"
+    revision="$(head -n 1 "${METADATA_DIR}/schema-revision" 2>/dev/null || print 'unknown')"
+    print "state_directory=${STATE_DIR}"
+    print "database_file=${db_file:-not-initialized}"
+    print "schema_revision=${revision}"
+    print "integrity=$(integrity "${db_file}")"
+    print "schema_coverage=$(coverage_gate "${db_file}")"
+    print "backup_count=$(find "${BACKUP_DIR}" -type f -name '*.sqlite' 2>/dev/null | wc -l | tr -d ' ')"
+}
+
+case "${1:-}" in
+    init) ensure_directories; status ;;
+    migrate) migrate_database ;;
+    status) status ;;
+    backup) backup_database ;;
+    restore) [[ -n "${2:-}" ]] || { usage; exit 2; }; restore_database "${2:A}" ;;
+    *) usage; exit 2 ;;
+esac

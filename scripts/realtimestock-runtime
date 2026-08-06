@@ -10,6 +10,9 @@ LAUNCH_DOMAIN="gui/${USER_ID}"
 
 SIM_LABEL="com.alanyi.realtimestock.simulation-api"
 WEB_LABEL="com.alanyi.realtimestock.web"
+MULTIVIEW_LABEL="com.alanyi.realtimestock.multiview"
+MULTIVIEW_DAILY_LABEL="com.alanyi.realtimestock.multiview-daily-pipeline"
+MULTIVIEW_TDCC_LABEL="com.alanyi.realtimestock.multiview-tdcc-pipeline"
 PROD_LABEL="com.alanyi.realtimestock.production-readonly-api"
 
 APP_SUPPORT="${HOME}/Library/Application Support/RealTimeStock"
@@ -20,11 +23,18 @@ USER_LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 MODE_FILE="${APP_SUPPORT}/runtime-mode"
 SIM_PLIST="${USER_LAUNCH_AGENTS}/${SIM_LABEL}.plist"
 WEB_PLIST="${USER_LAUNCH_AGENTS}/${WEB_LABEL}.plist"
+MULTIVIEW_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_LABEL}.plist"
+MULTIVIEW_DAILY_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_DAILY_LABEL}.plist"
+MULTIVIEW_TDCC_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_TDCC_LABEL}.plist"
 PROD_PLIST="${GENERATED_DIR}/${PROD_LABEL}.plist"
 
 SHIOAJI_BIN="${HOME}/.local/bin/shioaji"
 NODE_BIN="/opt/homebrew/bin/node"
 VITE_BIN="${REPO_DIR}/node_modules/vite/bin/vite.js"
+MULTIVIEW_CLI="${REPO_DIR}/apps/multiview/node_modules/vinext/dist/cli.js"
+MULTIVIEW_STATE_SCRIPT="${REPO_DIR}/scripts/multiview-state"
+MULTIVIEW_STATE_DIR="${APP_SUPPORT}/MultiView"
+MULTIVIEW_PIPELINE_SECRET_FILE="${MULTIVIEW_STATE_DIR}/pipeline-secret"
 
 usage() {
     print '使用方式：scripts/realtimestock-runtime <command>'
@@ -32,7 +42,25 @@ usage() {
     print '  uninstall             移除本工具建立的 LaunchAgent'
     print '  simulation            切回 simulation'
     print '  production-readonly   暫時切至正式行情唯讀；失敗會回復 simulation'
+    print '  restart               只重啟 MultiView；不重設 5173 或 8080'
+    print '  multiview-daily       手動執行本機日資料與 PE bounded pipeline'
+    print '  multiview-tdcc        手動執行本機 TDCC latest／continuous bounded pipeline'
     print '  status                顯示不含秘密值的服務與行情狀態'
+}
+
+ensure_multiview_pipeline_secret() {
+    mkdir -p "${MULTIVIEW_STATE_DIR}"
+    chmod 700 "${MULTIVIEW_STATE_DIR}"
+    if [[ ! -s "${MULTIVIEW_PIPELINE_SECRET_FILE}" ]]; then
+        umask 077
+        openssl rand -hex 32 > "${MULTIVIEW_PIPELINE_SECRET_FILE}"
+    fi
+    chmod 600 "${MULTIVIEW_PIPELINE_SECRET_FILE}"
+}
+
+read_multiview_pipeline_secret() {
+    ensure_multiview_pipeline_secret
+    head -n 1 "${MULTIVIEW_PIPELINE_SECRET_FILE}"
 }
 
 ensure_runtime_dependencies() {
@@ -46,6 +74,10 @@ ensure_runtime_dependencies() {
     fi
     if [[ ! -f "${VITE_BIN}" ]]; then
         print -u2 "找不到 Vite：${VITE_BIN}，請先在專案安裝依賴"
+        return 1
+    fi
+    if [[ ! -f "${MULTIVIEW_CLI}" || ! -x "${MULTIVIEW_STATE_SCRIPT}" ]]; then
+        print -u2 '找不到 MultiView runtime，請先安裝 workspace dependency'
         return 1
     fi
     if [[ ! -f "${REPO_DIR}/.env" ]]; then
@@ -138,6 +170,63 @@ EOF
 </dict></plist>
 EOF
 
+    cat > "${MULTIVIEW_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${MULTIVIEW_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-multiview</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}/apps/multiview</string>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>${HOME}</string>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+<key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+<key>MULTIVIEW_STATE_DIR</key><string>${MULTIVIEW_STATE_DIR}</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>/dev/null</string>
+<key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>
+EOF
+
+    cat > "${MULTIVIEW_DAILY_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${MULTIVIEW_DAILY_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-multiview-daily-pipeline</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}/apps/multiview</string>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>${HOME}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StartCalendarInterval</key><array>
+<dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+<dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+<dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+<dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+<dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
+</array>
+<key>StandardOutPath</key><string>${MULTIVIEW_STATE_DIR}/logs/daily-pipeline.log</string>
+<key>StandardErrorPath</key><string>${MULTIVIEW_STATE_DIR}/logs/daily-pipeline.log</string>
+</dict></plist>
+EOF
+
+    cat > "${MULTIVIEW_TDCC_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${MULTIVIEW_TDCC_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-multiview-tdcc-pipeline</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}/apps/multiview</string>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>${HOME}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>7</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+<key>StandardOutPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-pipeline.log</string>
+<key>StandardErrorPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-pipeline.log</string>
+</dict></plist>
+EOF
+
     cat > "${PROD_PLIST}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -158,7 +247,9 @@ EOF
 </dict></plist>
 EOF
 
-    chmod 600 "${SIM_PLIST}" "${WEB_PLIST}" "${PROD_PLIST}"
+    mkdir -p "${MULTIVIEW_STATE_DIR}/logs"
+    chmod 700 "${MULTIVIEW_STATE_DIR}/logs"
+    chmod 600 "${SIM_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
 }
 
 job_loaded() {
@@ -218,6 +309,38 @@ wait_web() {
     return 1
 }
 
+wait_multiview() {
+    local attempt
+    for attempt in {1..30}; do
+        if curl -fsS --max-time 2 http://127.0.0.1:5174/api/health 2>/dev/null | jq -e '.ok == true and .runtime == "local-worker" and .persistence.d1 == true' >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+ensure_multiview_job() {
+    bootstrap_job "${MULTIVIEW_LABEL}" "${MULTIVIEW_PLIST}"
+}
+
+restart_multiview() {
+    ensure_runtime_dependencies
+    if [[ "$(read_mode)" != 'simulation' ]]; then
+        print -u2 'MultiView 本階段只支援 simulation；請先執行 pnpm local-runtime simulation'
+        return 1
+    fi
+    [[ -f "${MULTIVIEW_PLIST}" ]] || write_plists
+    bootout_job "${MULTIVIEW_LABEL}"
+    wait_port_free 5174
+    ensure_multiview_job
+    if ! wait_multiview; then
+        print -u2 'MultiView 未能在 30 秒內通過獨立健康檢查；5173 與 8080 未受影響'
+        return 1
+    fi
+    print 'MultiView 已重新啟動'
+}
+
 snapshot_status() {
     local response http_status body
     response="$(curl -sS --max-time 15 -w $'\n%{http_code}' \
@@ -242,7 +365,7 @@ ensure_web_job() {
 
 switch_simulation() {
     ensure_runtime_dependencies
-    [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
+    [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${MULTIVIEW_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
 
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
@@ -250,6 +373,9 @@ switch_simulation() {
     write_mode simulation
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
     ensure_web_job
+    restart_multiview || true
+    bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
+    bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
 
     if ! wait_api_mode true; then
         print -u2 'simulation API 未能在 30 秒內通過模式與健康檢查'
@@ -270,6 +396,9 @@ switch_production_readonly() {
 
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
+    bootout_job "${MULTIVIEW_LABEL}"
+    bootout_job "${MULTIVIEW_DAILY_LABEL}"
+    bootout_job "${MULTIVIEW_TDCC_LABEL}"
     wait_port_free 8080
     write_mode production-readonly
     ensure_web_job
@@ -299,11 +428,14 @@ switch_production_readonly() {
 }
 
 runtime_status() {
-    local info simulation health market web_http
+    local info simulation health market web_http multiview_http multiview_health state_status
     print "runtime_mode=$(read_mode)"
     print "simulation_job=$(job_loaded "${SIM_LABEL}" && print loaded || print stopped)"
     print "production_readonly_job=$(job_loaded "${PROD_LABEL}" && print loaded || print stopped)"
     print "web_job=$(job_loaded "${WEB_LABEL}" && print loaded || print stopped)"
+    print "multiview_job=$(job_loaded "${MULTIVIEW_LABEL}" && print loaded || print stopped)"
+    print "multiview_daily_pipeline_job=$(job_loaded "${MULTIVIEW_DAILY_LABEL}" && print loaded || print stopped)"
+    print "multiview_tdcc_pipeline_job=$(job_loaded "${MULTIVIEW_TDCC_LABEL}" && print loaded || print stopped)"
 
     info="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/info 2>/dev/null || true)"
     if [[ -n "${info}" ]]; then
@@ -324,6 +456,21 @@ runtime_status() {
     else
         print 'web_listener=down'
     fi
+
+    multiview_http="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:5174/api/health 2>/dev/null || true)"
+    if [[ "${multiview_http}" == '200' ]]; then
+        multiview_health="$(curl -fsS --max-time 3 http://127.0.0.1:5174/api/health 2>/dev/null || true)"
+        print 'multiview_listener=up'
+        print "multiview_d1=$(print -r -- "${multiview_health}" | jq -r '.persistence.d1 // false')"
+        print "multiview_schema_revision=$(print -r -- "${multiview_health}" | jq -r '.persistence.schemaRevision // "unknown"')"
+        print "multiview_realtime_source=$(print -r -- "${multiview_health}" | jq -r '.shioajiAdapter.configured // false')"
+        print "multiview_after_hours=$(print -r -- "${multiview_health}" | jq -r '.taiwanStockChip.status // .taiwanStockPeRiver.status // "unknown"')"
+    else
+        print 'multiview_listener=down'
+    fi
+    state_status="$(MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" status 2>/dev/null || true)"
+    print "multiview_d1_integrity=$(print -r -- "${state_status}" | awk -F= '$1 == "integrity" {print $2}')"
+    print "multiview_d1_coverage=$(print -r -- "${state_status}" | awk -F= '$1 == "schema_coverage" {print $2}')"
 }
 
 install_runtime() {
@@ -334,11 +481,20 @@ install_runtime() {
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
     bootout_job "${WEB_LABEL}"
+    bootout_job "${MULTIVIEW_LABEL}"
+    bootout_job "${MULTIVIEW_DAILY_LABEL}"
+    bootout_job "${MULTIVIEW_TDCC_LABEL}"
     wait_port_free 8080
     wait_port_free 5173
+    wait_port_free 5174
+    MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" migrate
+    ensure_multiview_pipeline_secret
     write_mode simulation
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
     bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
+    bootstrap_job "${MULTIVIEW_LABEL}" "${MULTIVIEW_PLIST}"
+    bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
+    bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
 
     if ! wait_api_mode true; then
         print -u2 '安裝完成，但 simulation API 尚未通過健康檢查'
@@ -346,6 +502,10 @@ install_runtime() {
     fi
     if ! wait_web; then
         print -u2 '安裝完成，但本機 Web 尚未通過健康檢查'
+        return 1
+    fi
+    if ! wait_multiview; then
+        print -u2 '安裝完成，但 MultiView 尚未通過健康檢查；simulation API 與本機 Web 維持執行'
         return 1
     fi
     print 'LaunchAgent 已安裝；登入後預設只會自動啟動 simulation'
@@ -356,10 +516,13 @@ uninstall_runtime() {
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
     bootout_job "${WEB_LABEL}"
-    command rm -f "${SIM_PLIST}" "${WEB_PLIST}" "${PROD_PLIST}"
+    bootout_job "${MULTIVIEW_LABEL}"
+    bootout_job "${MULTIVIEW_DAILY_LABEL}"
+    bootout_job "${MULTIVIEW_TDCC_LABEL}"
+    command rm -f "${SIM_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
     command rm -f "${INSTALLED_SCRIPT}"
     write_mode simulation
-    print '已移除 RealTimeStock LaunchAgent；.env 與專案檔案未刪除'
+    print "已移除 RealTimeStock LaunchAgent；.env、MultiView D1、備份、清單與設定仍保留在 ${MULTIVIEW_STATE_DIR}"
 }
 
 service_api_simulation() {
@@ -394,15 +557,68 @@ service_web() {
         "${NODE_BIN}" "${VITE_BIN}" --host 127.0.0.1 --strictPort
 }
 
+service_multiview() {
+    ensure_runtime_dependencies
+    if [[ "$(read_mode)" != 'simulation' ]]; then
+        print -u2 'MultiView 本階段只支援 simulation，非 simulation 模式不啟動 5174'
+        return 1
+    fi
+    local pipeline_secret
+    pipeline_secret="$(read_multiview_pipeline_secret)"
+    cd "${REPO_DIR}/apps/multiview"
+    exec env \
+        MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" \
+        WRANGLER_WRITE_LOGS=false \
+        WRANGLER_LOG_PATH="${MULTIVIEW_STATE_DIR}/logs/wrangler.log" \
+        MINIFLARE_REGISTRY_PATH="${MULTIVIEW_STATE_DIR}/registry" \
+        MULTIVIEW_LOCAL_PIPELINE_SECRET="${pipeline_secret}" \
+        "${NODE_BIN}" "${MULTIVIEW_CLI}" dev --hostname 127.0.0.1 --port 5174
+}
+
+service_multiview_daily_pipeline() {
+    local pipeline_secret scheduled_time
+    pipeline_secret="$(read_multiview_pipeline_secret)"
+    wait_multiview
+    scheduled_time="$(($(date +%s) * 1000))"
+    curl -fsS --max-time 180 -X POST http://127.0.0.1:5174/api/internal/local-maintenance \
+        -H 'Content-Type: application/json' \
+        -H "X-MultiView-Local-Authorization: Bearer ${pipeline_secret}" \
+        --data "{\"action\":\"daily\",\"scheduledTime\":${scheduled_time}}" | jq -e '.ok == true' >/dev/null
+    cd "${REPO_DIR}/apps/multiview"
+    env PE_RIVER_BACKFILL_SECRET="${pipeline_secret}" PE_RIVER_INGEST_SECRET="${pipeline_secret}" \
+        "${NODE_BIN}" scripts/pe-river-continuous-backfill.mjs \
+        --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-pe-$(date +%Y%m%d-%H)"
+}
+
+service_multiview_tdcc_pipeline() {
+    local pipeline_secret checkpoint_dir
+    pipeline_secret="$(read_multiview_pipeline_secret)"
+    checkpoint_dir="${MULTIVIEW_STATE_DIR}/checkpoints/tdcc"
+    mkdir -p "${checkpoint_dir}"
+    chmod 700 "${checkpoint_dir}"
+    wait_multiview
+    cd "${REPO_DIR}/apps/multiview"
+    env TDCC_CONTINUOUS_BACKFILL_SECRET="${pipeline_secret}" TDCC_HISTORY_INGEST_SECRET="${pipeline_secret}" \
+        "${NODE_BIN}" scripts/tdcc-history-backfill.mjs --continuous \
+        --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-tdcc-$(date +%Y%m%d)" \
+        --checkpoint="${checkpoint_dir}/continuous.json" --claim-limit=2 --max-run-ms=1200000
+}
+
 command_name="${1:-}"
 case "${command_name}" in
     install) install_runtime ;;
     uninstall) uninstall_runtime ;;
     simulation) switch_simulation ;;
     production-readonly) switch_production_readonly ;;
+    restart) restart_multiview ;;
+    multiview-daily) service_multiview_daily_pipeline ;;
+    multiview-tdcc) service_multiview_tdcc_pipeline ;;
     status) runtime_status ;;
     service-api-simulation) service_api_simulation ;;
     service-api-production-readonly) service_api_production_readonly ;;
     service-web) service_web ;;
+    service-multiview) service_multiview ;;
+    service-multiview-daily-pipeline) service_multiview_daily_pipeline ;;
+    service-multiview-tdcc-pipeline) service_multiview_tdcc_pipeline ;;
     *) usage; exit 2 ;;
 esac

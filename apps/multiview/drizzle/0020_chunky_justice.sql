@@ -1,0 +1,1 @@
+ALTER TABLE `chip_backfill_orchestrator_runs` ADD `scope` text DEFAULT 'combined' NOT NULL;

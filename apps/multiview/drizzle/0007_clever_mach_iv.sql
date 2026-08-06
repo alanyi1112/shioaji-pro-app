@@ -1,0 +1,1 @@
+ALTER TABLE `tdcc_continuous_symbols` ADD `official_baseline` integer DEFAULT 0 NOT NULL;

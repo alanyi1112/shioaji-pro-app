@@ -1,0 +1,11 @@
+packages:
+  - .
+  - apps/multiview
+overrides:
+  esbuild: 0.28.1
+  postcss: 8.5.25
+  undici: 7.29.0
+minimumReleaseAgeExclude:
+  - '@cloudflare/vite-plugin@1.51.0'
+  - miniflare@5.20260801.0-alpha
+  - wrangler@4.119.0
