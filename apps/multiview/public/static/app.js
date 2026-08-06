@@ -2212,6 +2212,7 @@ function validMarketTab(tabId) {
 }
 
 function renderPanels(count) {
+  globalThis.QuoteChartAcceptance?.increment("renderCount");
   cancelPanelDrag("context-change");
   const grid = document.getElementById("chart-grid");
   const renderGeneration = state.panelRenderGeneration + 1;
@@ -2219,6 +2220,7 @@ function renderPanels(count) {
   grid.className = `chart-grid ${GRID_CLASSES[count] || "grid-4"}`;
   updateChipModeControl();
   const panelCount = panelCountForActiveCategory(count);
+  globalThis.QuoteChartAcceptance?.setGauge("panelCount", panelCount);
   cancelPanelPayloadPrefetch();
   const previousPanels = state.panels;
   state.panels = [];

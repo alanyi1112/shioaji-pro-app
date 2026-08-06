@@ -15,7 +15,7 @@ MULTIVIEW_DAILY_LABEL="com.alanyi.realtimestock.multiview-daily-pipeline"
 MULTIVIEW_TDCC_LABEL="com.alanyi.realtimestock.multiview-tdcc-pipeline"
 PROD_LABEL="com.alanyi.realtimestock.production-readonly-api"
 
-APP_SUPPORT="${HOME}/Library/Application Support/RealTimeStock"
+APP_SUPPORT="${REALTIME_STOCK_APP_SUPPORT:-${HOME}/Library/Application Support/RealTimeStock}"
 INSTALLED_BIN_DIR="${APP_SUPPORT}/bin"
 INSTALLED_SCRIPT="${INSTALLED_BIN_DIR}/realtimestock-runtime"
 GENERATED_DIR="${APP_SUPPORT}/LaunchAgents"
@@ -28,12 +28,12 @@ MULTIVIEW_DAILY_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_DAILY_LABEL}.plist"
 MULTIVIEW_TDCC_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_TDCC_LABEL}.plist"
 PROD_PLIST="${GENERATED_DIR}/${PROD_LABEL}.plist"
 
-SHIOAJI_BIN="${HOME}/.local/bin/shioaji"
+SHIOAJI_BIN="${REALTIME_STOCK_SHIOAJI_BIN:-${HOME}/.local/bin/shioaji}"
 NODE_BIN="/opt/homebrew/bin/node"
 VITE_BIN="${REPO_DIR}/node_modules/vite/bin/vite.js"
 MULTIVIEW_CLI="${REPO_DIR}/apps/multiview/node_modules/vinext/dist/cli.js"
 MULTIVIEW_STATE_SCRIPT="${REPO_DIR}/scripts/multiview-state"
-MULTIVIEW_STATE_DIR="${APP_SUPPORT}/MultiView"
+MULTIVIEW_STATE_DIR="${REALTIME_STOCK_MULTIVIEW_STATE_DIR:-${APP_SUPPORT}/MultiView}"
 MULTIVIEW_PIPELINE_SECRET_FILE="${MULTIVIEW_STATE_DIR}/pipeline-secret"
 
 usage() {
@@ -464,13 +464,21 @@ runtime_status() {
         print "multiview_d1=$(print -r -- "${multiview_health}" | jq -r '.persistence.d1 // false')"
         print "multiview_schema_revision=$(print -r -- "${multiview_health}" | jq -r '.persistence.schemaRevision // "unknown"')"
         print "multiview_realtime_source=$(print -r -- "${multiview_health}" | jq -r '.shioajiAdapter.configured // false')"
-        print "multiview_after_hours=$(print -r -- "${multiview_health}" | jq -r '.taiwanStockChip.status // .taiwanStockPeRiver.status // "unknown"')"
     else
         print 'multiview_listener=down'
     fi
     state_status="$(MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" status 2>/dev/null || true)"
     print "multiview_d1_integrity=$(print -r -- "${state_status}" | awk -F= '$1 == "integrity" {print $2}')"
     print "multiview_d1_coverage=$(print -r -- "${state_status}" | awk -F= '$1 == "schema_coverage" {print $2}')"
+    local after_hours_all='completed'
+    local after_hours_group after_hours_value
+    for after_hours_group in market chip tdcc pe; do
+        after_hours_value="$(print -r -- "${state_status}" | awk -F= -v key="after_hours_${after_hours_group}" '$1 == key {print $2}')"
+        [[ -n "${after_hours_value}" ]] || after_hours_value='unknown'
+        print "multiview_after_hours_${after_hours_group}=${after_hours_value}"
+        [[ "${after_hours_value}" == 'completed' ]] || after_hours_all='incomplete'
+    done
+    print "multiview_after_hours=${after_hours_all}"
 }
 
 install_runtime() {

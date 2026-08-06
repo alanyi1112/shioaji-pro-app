@@ -9,6 +9,7 @@ STATE_DIR="${MULTIVIEW_STATE_DIR:-${APP_SUPPORT_BASE}}"
 PERSIST_DIR="${STATE_DIR}/state"
 BACKUP_DIR="${STATE_DIR}/backups"
 METADATA_DIR="${STATE_DIR}/metadata"
+REPORT_DIR="${STATE_DIR}/reports"
 SCHEMA_REVISION="0021"
 WRANGLER_BIN="${REPO_DIR}/apps/multiview/node_modules/.bin/wrangler"
 WRANGLER_CONFIG="${REPO_DIR}/apps/multiview/wrangler.local.jsonc"
@@ -19,8 +20,8 @@ usage() {
 
 ensure_directories() {
     umask 077
-    mkdir -p "${PERSIST_DIR}" "${BACKUP_DIR}" "${METADATA_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/registry"
-    chmod 700 "${STATE_DIR}" "${PERSIST_DIR}" "${BACKUP_DIR}" "${METADATA_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/registry"
+    mkdir -p "${PERSIST_DIR}" "${BACKUP_DIR}" "${METADATA_DIR}" "${REPORT_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/registry"
+    chmod 700 "${STATE_DIR}" "${PERSIST_DIR}" "${BACKUP_DIR}" "${METADATA_DIR}" "${REPORT_DIR}" "${STATE_DIR}/logs" "${STATE_DIR}/registry"
 }
 
 database_file() {
@@ -43,11 +44,16 @@ coverage_gate() {
 
 backup_database() {
     ensure_directories
-    local db_file backup_file stamp result
+    local db_file backup_file stamp result suffix
     db_file="$(database_file)"
     [[ -n "${db_file}" && -f "${db_file}" ]] || { print -u2 'MultiView D1 尚未初始化'; return 1; }
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     backup_file="${BACKUP_DIR}/multiview-${stamp}.sqlite"
+    suffix=1
+    while [[ -e "${backup_file}" ]]; do
+        backup_file="${BACKUP_DIR}/multiview-${stamp}-${suffix}.sqlite"
+        suffix=$((suffix + 1))
+    done
     sqlite3 "${db_file}" ".backup '${backup_file}'"
     chmod 600 "${backup_file}"
     result="$(integrity "${backup_file}")"
@@ -102,7 +108,7 @@ restore_database() {
 
 status() {
     ensure_directories
-    local db_file revision
+    local db_file revision seed_report group
     db_file="$(database_file)"
     revision="$(head -n 1 "${METADATA_DIR}/schema-revision" 2>/dev/null || print 'unknown')"
     print "state_directory=${STATE_DIR}"
@@ -111,6 +117,16 @@ status() {
     print "integrity=$(integrity "${db_file}")"
     print "schema_coverage=$(coverage_gate "${db_file}")"
     print "backup_count=$(find "${BACKUP_DIR}" -type f -name '*.sqlite' 2>/dev/null | wc -l | tr -d ' ')"
+    seed_report="${REPORT_DIR}/after-hours-seed-latest.json"
+    if [[ -f "${seed_report}" ]] && jq -e '.version == 1 and .result == "completed" and (.after.groups | type == "object")' "${seed_report}" >/dev/null 2>&1; then
+        for group in market chip tdcc pe; do
+            print "after_hours_${group}=$(jq -r --arg group "${group}" '.after.groups[$group].status // "unknown"' "${seed_report}")"
+        done
+        print "after_hours_report=available"
+    else
+        for group in market chip tdcc pe; do print "after_hours_${group}=unknown"; done
+        print "after_hours_report=unavailable"
+    fi
 }
 
 case "${1:-}" in

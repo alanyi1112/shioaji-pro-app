@@ -70,3 +70,38 @@ MultiView process、LaunchAgent、D1 path、health、diagnostic、test artifact 
 - **WHEN** 使用者查詢本機 runtime 狀態
 - **THEN** 輸出只包含模式、job、port、HTTP health、business availability、source mode、D1 integrity 摘要與安全計數
 - **AND** 輸出 MUST NOT 包含秘密值、帳戶或個人清單內容
+
+### Requirement: 本機 D1 seed 報告必須去識別化且可重現
+系統 MUST 在 Application Support 保存不含資料內容的 seed report，記錄 schema revision、allowlist table、remote／staging／local row count、date coverage、material hash、備份識別、結果與 allowlist reason code。報告 MUST NOT 包含 SQL values、完整 symbol 清單、email、user ID、Access／audit、secret、credential、帳戶或交易資料。
+
+#### Scenario: 查看 seed 結果
+- **WHEN** 使用者或 runtime status 讀取最近一次 seed report
+- **THEN** 系統 MUST 分資料族群顯示 completed／partial／pending／blocked、source date、processed 與 remaining 安全摘要
+- **AND** 不得只因 D1 可開啟或 integrity 為 ok 就顯示盤後資料完整
+
+### Requirement: 市場資料匯入不得破壞本機個人狀態
+市場資料 seed、restore 與 bounded backfill MUST 與 `user_tabs`、`user_instruments` 及 RealTimeStock watchlist 隔離。任何市場資料 transaction 前後 MUST 比對本機個人清單 row count 與 material hash，差異時 MUST rollback 或停止啟用。
+
+#### Scenario: 匯入市場資料
+- **WHEN** allowlist staging DB 合併至 live DB
+- **THEN** 個人清單 row count、tab／instrument 排序與 material hash MUST 保持不變
+- **AND** 不得建立或修改 Access、audit 或交易資料
+
+### Requirement: MultiView 必須提供去識別化的 document-local 驗收計數
+MultiView MUST 在目前 browser document 維護固定版本的安全驗收快照，內容只得包含 panel、SSE、canonical demand、subscribe、unsubscribe、行情 request、indicator full-recompute、render churn、long task、bounded duration、JS heap 可用性／總量與 allowlist reason code。快照 MUST NOT 包含商品代號清單、行情內容、個人清單、帳戶、CA、token、secret 或可回推出個人的時間序列。
+
+#### Scenario: 八圖含重複商品
+- **WHEN** 同一 document 顯示八圖且至少兩圖為相同 canonical 商品
+- **THEN** 驗收快照 MUST 顯示一條 document SSE，且 active canonical demand 不得因重複 panel 增加
+
+#### Scenario: 讀取驗收快照
+- **WHEN** 本機 browser 驗收工具讀取快照
+- **THEN** 系統 MUST 回傳固定安全 schema 與 bounded 計數
+- **AND** schema 測試 MUST 拒絕 symbol、quote、account、credential 或任意未列名欄位
+
+### Requirement: 多圖效能驗收必須保存可重現證據
+系統 MUST 對 1／2／3／4／6／8 圖、重複商品、快速切換與背景／前景循環保存 panel、SSE、subscription、request、render、long task、JS heap 可用性與畫面錯誤摘要。平台不支援的數值 MUST 標示 `unsupported`，不得補造數值。
+
+#### Scenario: 完成多圖矩陣
+- **WHEN** 驗收工具依序完成所有圖數與 lifecycle 情境
+- **THEN** 證據 MUST 證明 SSE 不超過一條、重複商品訂閱去重、舊 demand 可釋放、無未處理錯誤且指標結果保持一致

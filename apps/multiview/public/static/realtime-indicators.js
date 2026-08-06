@@ -1,4 +1,5 @@
 (function initRealtimeIndicators(globalScope) {
+  const acceptance = globalScope.QuoteChartAcceptance;
   const rounded = (value) => value == null ? null : Number(value.toFixed(6));
   const point = (time, value) => ({ time, value: rounded(value) });
   const sma = (values, period) => values.map((_, index) => index + 1 < period ? null : values.slice(index + 1 - period, index + 1).reduce((sum, value) => sum + value, 0) / period);
@@ -35,6 +36,7 @@
   };
 
   function compute(rows, input = {}, { volumeAvailable = true } = {}) {
+    acceptance?.increment("indicatorFullRecomputeCount");
     const parameters = {
       rsi: { shortPeriod: Number(input.rsi?.shortPeriod || 5), longPeriod: Number(input.rsi?.longPeriod || 10) },
       kd: { period: Number(input.kd?.period || 9), rsvWeight: Number(input.kd?.rsvWeight || 3), kWeight: Number(input.kd?.kWeight || 3) },

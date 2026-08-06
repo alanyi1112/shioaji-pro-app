@@ -4,6 +4,7 @@
 
 - Web：`http://127.0.0.1:5173`
 - Shioaji HTTP API：`http://127.0.0.1:8080`
+- MultiView：`http://127.0.0.1:5174`
 - 登入／重開機預設：simulation
 
 ## 安裝常駐服務
@@ -15,7 +16,9 @@ pnpm local-runtime install
 pnpm local-runtime status
 ```
 
-安裝會建立兩個使用者層級 LaunchAgent：simulation API 與 Vite Web。兩者都只監聽 loopback，異常退出時由 `launchd` 重啟。
+安裝會建立 simulation API、Vite Web、MultiView 與 bounded 盤後資料 pipeline 的使用者層級 LaunchAgent。服務都只監聽 loopback；MultiView 只會在 simulation 模式啟動。
+
+交易終端「版面 → MultiView」會先開啟 5173 的輕量 launcher。launcher 只讀取 5174 的固定 health endpoint 與 Shioaji mode；確認 simulation 後才導向 MultiView。若 5174 未啟動，畫面會保留可操作的重試與重啟指引。
 
 ## 切換模式
 
@@ -66,8 +69,35 @@ pnpm local-runtime status
 - `api_simulation`：實際登入模式。
 - `api_health`：本機 server health。
 - `market_snapshot_2330`：行情業務 session 是否可回應。
+- `multiview_listener`：5174 是否存在。
+- `multiview_after_hours_market／chip／tdcc／pe`：最近一次安全 seed report 的資料族群結果。
 
 市場收盤只代表即時 SSE 不再出現新的成交，不應讓 5173 或 8080 listener 消失。`SessionNotEstablished` 則代表行情業務 session 未建立，不能只用 health 取代判斷。
+
+## MultiView 盤後資料 seed
+
+盤後資料只可從既有合法 Cloudflare OAuth session 唯讀匯入。工具從來源端限制為 12 個市場資料 table；不得先匯出整個 D1，也不得讀 browser cookie 或建立授權 bypass。
+
+```sh
+cd apps/multiview
+work_dir="$(mktemp -d)"
+chmod 700 "$work_dir"
+node scripts/after-hours-d1-migration.mjs export --output="$work_dir/allowlist.sql"
+node scripts/after-hours-d1-migration.mjs stage \
+  --export="$work_dir/allowlist.sql" \
+  --staging="$work_dir/staging.sqlite" \
+  --live="<scripts/multiview-state status 顯示的 database_file>"
+```
+
+seed 前必須停止 5174。`seed` 會先建立 integrity 通過的 live DB 備份，再以單一 transaction 合併白名單資料；個人清單 row count 或 hash 變動時會自動回復備份。
+
+```sh
+node scripts/after-hours-d1-migration.mjs seed \
+  --staging="$work_dir/staging.sqlite" \
+  --live="<database_file>"
+```
+
+去識別化結果保存在 `~/Library/Application Support/RealTimeStock/MultiView/reports/`；只包含 table count、日期 coverage、material hash、備份識別與安全 reason code，不保存 SQL values、完整商品清單或個資。完成後刪除臨時 SQL 與 staging DB。
 
 ## 移除
 

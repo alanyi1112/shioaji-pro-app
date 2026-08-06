@@ -5,49 +5,78 @@
 import './lib/polyfills';
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App';
-import { OnboardingSetup } from './components/onboarding-setup';
 import './index.css';
-import { startAnalytics } from './lib/analytics';
-import { bootstrap } from './lib/boot';
-import { isTauri, loadDesktopSettings } from './lib/tauri';
-import { initTheme } from './lib/theme-store';
-import { startTriggerEngine } from './lib/trigger-engine';
-import { startRuntimeModeSync } from './lib/runtime-mode';
-
-initTheme();
-startAnalytics();
-startTriggerEngine();
-startRuntimeModeSync();
-bootstrap();
-
-// A fresh desktop install has no API key saved yet — the dashboard would
-// otherwise render fully but every panel silently fails against a server
-// that was never even asked to start (nothing prompts the user to go find
-// the small 伺服器 button). Gate on that specific state with a full-screen
-// setup screen instead. Web builds are always backed by a running server,
-// so this never applies there.
-function AppGate() {
-    const [needsSetup, setNeedsSetup] = useState<boolean | null>(
-        isTauri ? null : false,
-    );
-    useEffect(() => {
-        if (!isTauri) return;
-        void loadDesktopSettings().then((s) =>
-            setNeedsSetup(!s.apiKey || !s.secretKey),
-        );
-    }, []);
-    if (needsSetup === null) return null; // instant local read, no flash
-    return needsSetup ? <OnboardingSetup /> : <App />;
-}
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
     throw new Error('Root element #root not found');
 }
 
-createRoot(rootElement).render(
-    <StrictMode>
-        <AppGate />
-    </StrictMode>,
-);
+const root = createRoot(rootElement);
+const isMultiViewLauncher =
+    new URLSearchParams(window.location.search).get('popout') ===
+    'multiview-launcher';
+
+async function render() {
+    if (isMultiViewLauncher) {
+        const [{ MultiViewLauncher }, { initTheme }] = await Promise.all([
+            import('./components/multiview-launcher'),
+            import('./lib/theme-store'),
+        ]);
+        initTheme();
+        root.render(
+            <StrictMode>
+                <MultiViewLauncher />
+            </StrictMode>,
+        );
+        return;
+    }
+
+    const [
+        { default: App },
+        { OnboardingSetup },
+        { startAnalytics },
+        { bootstrap },
+        { isTauri, loadDesktopSettings },
+        { initTheme },
+        { startTriggerEngine },
+        { startRuntimeModeSync },
+    ] = await Promise.all([
+        import('./App'),
+        import('./components/onboarding-setup'),
+        import('./lib/analytics'),
+        import('./lib/boot'),
+        import('./lib/tauri'),
+        import('./lib/theme-store'),
+        import('./lib/trigger-engine'),
+        import('./lib/runtime-mode'),
+    ]);
+
+    initTheme();
+    startAnalytics();
+    startTriggerEngine();
+    startRuntimeModeSync();
+    bootstrap();
+
+    function AppGate() {
+        const [needsSetup, setNeedsSetup] = useState<boolean | null>(
+            isTauri ? null : false,
+        );
+        useEffect(() => {
+            if (!isTauri) return;
+            void loadDesktopSettings().then((settings) =>
+                setNeedsSetup(!settings.apiKey || !settings.secretKey),
+            );
+        }, []);
+        if (needsSetup === null) return null;
+        return needsSetup ? <OnboardingSetup /> : <App />;
+    }
+
+    root.render(
+        <StrictMode>
+            <AppGate />
+        </StrictMode>,
+    );
+}
+
+void render();

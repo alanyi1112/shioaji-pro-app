@@ -10,6 +10,7 @@ import { handleRealtimeRoute } from "./realtime-routing";
 import { handleLocalShioajiAdapter } from "./local-shioaji-adapter";
 import { handleLocalOrderTicketBridge } from "./local-order-ticket-bridge";
 import { handleLocalMaintenance } from "./local-maintenance";
+import { withLocalLauncherCors } from "./local-launcher-cors";
 
 export { RealtimeMarketHub } from "./realtime-hub";
 
@@ -36,7 +37,7 @@ const worker = {
     if (authorizationFailure) return authorizationFailure;
 
     const localShioajiResponse = await handleLocalShioajiAdapter(request, env);
-    if (localShioajiResponse) return localShioajiResponse;
+    if (localShioajiResponse) return withLocalLauncherCors(request, localShioajiResponse);
     const localOrderTicketResponse = await handleLocalOrderTicketBridge(request, env);
     if (localOrderTicketResponse) return localOrderTicketResponse;
     const localMaintenanceResponse = await handleLocalMaintenance(request, env, ctx, {
@@ -52,7 +53,7 @@ const worker = {
     if (realtimeResponse) return realtimeResponse;
 
     const appResponse = await handleAppRequest(request, env, ctx);
-    if (appResponse) return appResponse;
+    if (appResponse) return withLocalLauncherCors(request, appResponse);
 
     if (url.pathname === "/_vinext/image") {
       if (!env.IMAGES) return new Response("Image optimization is not configured", { status: 404 });

@@ -1,4 +1,5 @@
 (function initLiveBatchCoordinator(globalScope) {
+  const acceptance = globalScope.QuoteChartAcceptance;
   const DEFAULT_OPEN_DELAY_MS = 30000;
   const DEFAULT_CLOSED_DELAY_MS = 300000;
   const BACKGROUND_RETRY_DELAY_MS = 60000;
@@ -62,6 +63,7 @@
       const snapshot = [...subscriptions.entries()];
       const snapshotById = new Map(snapshot);
       try {
+        acceptance?.increment("requestCount");
         const response = await fetchImpl("/api/candles/batch", {
           method: "POST",
           headers: { "content-type": "application/json" },

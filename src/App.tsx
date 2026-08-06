@@ -521,7 +521,7 @@ function PopoutView({
     );
 }
 
-export default function App() {
+function TradingApp() {
     const {
         items,
         loading,
@@ -1012,3 +1012,5 @@ export default function App() {
         </div>
     );
 }
+
+export default TradingApp;

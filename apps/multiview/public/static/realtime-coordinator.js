@@ -229,6 +229,7 @@
   }
 
   function createLocalShioajiCoordinator(options = {}) {
+    const acceptance = globalScope.QuoteChartAcceptance;
     const fetchImpl = options.fetchImpl || globalScope.fetch?.bind(globalScope);
     const EventSourceImpl = options.EventSourceImpl || globalScope.EventSource;
     const windowTarget = options.windowTarget || globalScope.window || globalScope;
@@ -252,6 +253,10 @@
 
     function desiredSymbols() {
       return [...new Set([...subscriptions.values()].map((item) => item.symbol))];
+    }
+
+    function updateDemandMetric() {
+      acceptance?.setGauge("activeDemandCount", desiredSymbols().length);
     }
 
     function notifyState(symbol, state, reasonCode) {
@@ -403,6 +408,7 @@
     }
 
     async function api(path, init = {}) {
+      acceptance?.increment("requestCount");
       const response = await fetchImpl(`${endpoint}${path}`, { ...init, headers: { "content-type": "application/json", ...(init.headers || {}) } });
       const payload = await response.json().catch(() => null);
       if (!response.ok) throw new Error(String(payload?.reasonCode || `http_${response.status}`));
@@ -432,6 +438,7 @@
       await api("/api/v1/stream/subscribe", { method: "POST", body: JSON.stringify({ ...contract, quote_type, intraday_odd: false }) });
       if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return;
       activeSymbols.add(symbol);
+      acceptance?.increment("subscribeCount");
       const rows = await api("/api/v1/data/snapshots", { method: "POST", body: JSON.stringify({ contracts: [contract] }) });
       const snapshot = Array.isArray(rows) ? snapshotFromRest(symbol, contract, rows[0] || {}) : null;
       if (snapshot && currentGeneration === generation) {
@@ -449,12 +456,16 @@
       activeSymbols.delete(symbol);
       if (!contract) return;
       const quote_type = contract.security_type === "IND" ? "Quote" : "Tick";
-      try { await api("/api/v1/stream/unsubscribe", { method: "POST", body: JSON.stringify({ ...contract, quote_type, intraday_odd: false }) }); } catch { /* API may already be down */ }
+      try {
+        await api("/api/v1/stream/unsubscribe", { method: "POST", body: JSON.stringify({ ...contract, quote_type, intraday_odd: false }) });
+        acceptance?.increment("unsubscribeCount");
+      } catch { /* API may already be down */ }
     }
 
     function connectSource() {
       if (!enabled || source || !desiredSymbols().length || documentTarget?.hidden || !EventSourceImpl) return;
       source = new EventSourceImpl(`${endpoint}/api/v1/stream/data`);
+      acceptance?.setGauge("sseOpenCount", 1);
       source.onopen = () => {
         const current = generation;
         activeSymbols.clear();
@@ -477,6 +488,8 @@
       generation += 1;
       const closing = source;
       source = undefined;
+      acceptance?.setGauge("sseOpenCount", 0);
+      acceptance?.setReason(reasonCode);
       try { closing?.close(); } catch { /* already closed */ }
       const active = [...activeSymbols];
       activeSymbols.clear();
@@ -530,6 +543,7 @@
         if (prospective.size > MAX_SYMBOLS) throw new Error("realtime_subscription_capacity");
         const token = Symbol(key);
         subscriptions.set(key, { symbol, onSnapshot, onState, onSession, token });
+        updateDemandMetric();
         const timer = cooldowns.get(symbol);
         if (timer) { clearTimeoutImpl(timer); cooldowns.delete(symbol); }
         const cached = latest.get(symbol);
@@ -538,6 +552,7 @@
         return () => {
           if (subscriptions.get(key)?.token !== token) return;
           subscriptions.delete(key);
+          updateDemandMetric();
           if (!subscriptions.size) {
             const timer = cooldowns.get(symbol);
             if (timer) clearTimeoutImpl(timer);
@@ -562,6 +577,7 @@
       subscriptionCount() { return activeSymbols.size; },
       destroy() {
         subscriptions.clear();
+        updateDemandMetric();
         for (const timer of cooldowns.values()) clearTimeoutImpl(timer);
         cooldowns.clear();
         if (modeTimer) clearIntervalImpl(modeTimer);
