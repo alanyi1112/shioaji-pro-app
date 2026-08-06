@@ -96,13 +96,21 @@ export function QuoteBoard({
     return (
         <div className={`${styles.board} drag-handle`}>
             <div className={styles.boardLayout}>
-                <div className={styles.hero}>
-                    <div className={styles.symbolBlock}>
-                        <span className={styles.symbolCode}>{contract.code}</span>
-                        <span className={styles.symbolName}>{contract.name}</span>
-                    </div>
+                <div
+                    className={styles.hero}
+                    data-quote-hero={isIndex ? 'index' : 'market'}
+                >
+                    <span
+                        className={styles.symbolCode}
+                        data-quote-field='symbol'
+                    >
+                        {contract.code}
+                    </span>
 
-                    <div className={styles.priceBlock}>
+                    <div
+                        className={styles.priceBlock}
+                        data-quote-field='price'
+                    >
                         <span className={styles.bigPrice[dir]}>
                             {fmtPrice(close)}
                         </span>
@@ -113,8 +121,16 @@ export function QuoteBoard({
                         )}
                     </div>
 
+                    <span
+                        className={styles.symbolName}
+                        data-quote-field='name'
+                    >
+                        {contract.name}
+                    </span>
+
                     <div
                         className={`${styles.changeBlock} ${panel.dirText[dir]}`}
+                        data-quote-field='change'
                     >
                         <span>{fmtSigned(chg)}</span>
                         <span>{fmtPct(pct)}</span>

@@ -1,22 +1,4 @@
-# responsive-quote-summary Specification
-
-## Purpose
-TBD - created by archiving change compact-kline-quote-summary-reference-colors. Update Purpose after archive.
-## Requirements
-### Requirement: 非指數行情摘要在寬版必須呈現三列
-當 K 線圖容器寬度足以完整容納內容時，系統 MUST 將非指數商品的行情摘要呈現為四欄三列，並把每個欄位標題與數值保留在同一個不可拆開的資訊單位。
-
-#### Scenario: 股票行情摘要使用三列排列
-- **WHEN** 非指數 K 線圖容器位於寬版 breakpoint，且行情資料可用
-- **THEN** 第一列 MUST 依序顯示「開、高、低、量」及各自數值
-- **AND** 第二列 MUST 依序顯示「參考、漲停、跌停、時間」及各自數值
-- **AND** 第三列 MUST 依序顯示「委買、買量、委賣、賣量」及各自數值
-- **AND** 每一個標題 MUST 與自己的數值顯示在同一列
-
-#### Scenario: 欄位資料缺少
-- **WHEN** 任一行情欄位沒有有效資料
-- **THEN** 系統 MUST 在原欄位位置顯示 `—`
-- **AND** 缺值 MUST NOT 造成其後欄位位移到錯誤標題下
+## MODIFIED Requirements
 
 ### Requirement: 商品資訊區與摘要必須依容器寬度響應排列
 系統 MUST 依個別 K 線圖容器的 inline size 調整商品資訊區與行情摘要，不得只依整個瀏覽器 viewport 判斷。寬版 MUST 回收摘要 metric 內不必要的伸展空白，並在商品資訊區與摘要第一欄之間保留可辨識的間距。寬度不足時 MUST 優先保留完整內容，可增加列數、把摘要移到商品資訊區下方，或將商品資訊區降為單欄排列。商品資訊區不得覆蓋、推出或遮蔽行情摘要。
@@ -71,13 +53,7 @@ TBD - created by archiving change compact-kline-quote-summary-reference-colors. 
 - **WHEN** 同一 K 線圖分別顯示於工作區主視窗或 popout
 - **THEN** 系統 MUST 套用相同的容器響應與完整顯示規則
 
-### Requirement: 摘要數字必須穩定對齊
-行情摘要的價格、數量與時間 MUST 使用 tabular numbers；每個 metric MUST 保持 label/value 的可辨識間距，且不同即時數值長度不應造成整個摘要明顯跳動。
-
-#### Scenario: 即時行情數字長度改變
-- **WHEN** 最新行情使價格位數、成交量或買賣量增加
-- **THEN** 對應 metric MUST 保持標題與數值關係清楚
-- **AND** 其他列 MUST NOT 因單一數值更新而重疊或被裁切
+## ADDED Requirements
 
 ### Requirement: 摘要欄位標題與數值必須分別對齊
 每個行情摘要 metric MUST 使用兩欄排列，標題固定位於該欄左側，對應數值固定位於該欄右側。同一摘要欄跨列的標題左界與數值右界 MUST 分別對齊；標題與數值 MUST 保持同一列，不得因內容長度而互相推移或拆列。
