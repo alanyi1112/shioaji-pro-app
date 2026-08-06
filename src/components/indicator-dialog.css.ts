@@ -164,6 +164,21 @@ export const rowSwatch = style({
     flexShrink: 0,
 });
 
+export const rowReadoutIcon = style({
+    width: '16px',
+    height: '16px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    border: `1px solid ${vars.color.borderBright}`,
+    borderRadius: '3px',
+    color: vars.color.accent,
+    fontFamily: vars.font.mono,
+    fontSize: '0.58rem',
+    fontWeight: 700,
+});
+
 export const rowMain = style({
     flex: 1,
     minWidth: 0,

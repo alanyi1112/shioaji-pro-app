@@ -3,6 +3,7 @@
 // flipping the manual lock blocks all order entries.
 
 import { useSyncExternalStore } from 'react';
+import { getRuntimeMode } from './runtime-mode';
 
 export interface RiskSettings {
     enabled: boolean; // master switch for the rules below
@@ -72,6 +73,9 @@ export function useRiskSettings(): RiskSettings {
 
 // returns an error message when the order must be blocked, null when OK
 export function checkOrderAllowed(quantity: number): string | null {
+    if (getRuntimeMode() === 'production-readonly') {
+        return '正式行情唯讀模式 — 所有交易寫入已封鎖';
+    }
     if (settings.locked) {
         return '風控鎖啟動中 — 所有下單已封鎖';
     }

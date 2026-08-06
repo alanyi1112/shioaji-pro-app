@@ -158,6 +158,7 @@ export const triggerList = style({
     fontFamily: vars.font.mono,
     fontSize: '0.64rem',
     fontVariantNumeric: 'tabular-nums',
+    maxWidth: 'calc(100% - 16px)',
 });
 
 export const triggerRow = style({
@@ -212,6 +213,7 @@ const legendItemBase = style({
     position: 'relative', // anchors the ⋯ context menu
     display: 'flex',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: '6px',
     padding: '1px 4px 1px 6px',
     background: 'color-mix(in srgb, ' + vars.color.panel + ' 72%, transparent)',
@@ -246,6 +248,50 @@ export const legendVals = style({
 
 export const legendVal = style({
     fontWeight: 500,
+});
+
+export const kbarReadoutTime = style({
+    fontFamily: vars.font.mono,
+    fontSize: '0.62rem',
+    fontWeight: 650,
+    fontVariantNumeric: 'tabular-nums',
+    color: vars.color.foreground,
+    cursor: 'pointer',
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    whiteSpace: 'nowrap',
+    ':hover': { textDecoration: 'underline' },
+});
+
+export const kbarReadoutFields = style({
+    display: 'inline-flex',
+    flexWrap: 'wrap',
+    gap: '3px 8px',
+    minWidth: 0,
+});
+
+export const kbarReadoutField = style({
+    fontWeight: 500,
+    whiteSpace: 'nowrap',
+});
+
+export const kbarReadoutFieldLabel = style({
+    color: vars.color.mutedForeground,
+    fontFamily: vars.font.body,
+    fontWeight: 500,
+});
+
+const kbarReadoutFieldValueBase = style({
+    fontFamily: vars.font.mono,
+    fontVariantNumeric: 'tabular-nums',
+});
+
+export const kbarReadoutFieldValue = styleVariants({
+    neutral: [kbarReadoutFieldValueBase, { color: vars.color.foreground }],
+    up: [kbarReadoutFieldValueBase, { color: vars.color.up }],
+    down: [kbarReadoutFieldValueBase, { color: vars.color.down }],
+    flat: [kbarReadoutFieldValueBase, { color: vars.color.flat }],
 });
 
 export const legendCtrls = style({

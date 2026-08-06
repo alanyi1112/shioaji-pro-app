@@ -50,7 +50,7 @@ export interface OutputDef {
     signed?: boolean;
 }
 
-export interface IndicatorDef {
+interface IndicatorDefBase {
     type: string;
     label: string; // list label, e.g. "MA 移動平均"
     short: string; // legend label, e.g. "MA"
@@ -58,6 +58,10 @@ export interface IndicatorDef {
     aliases: string[]; // extra search keywords（中英文）
     category: 'overlay' | 'pane';
     params: ParamDef[];
+}
+
+export interface SeriesIndicatorDef extends IndicatorDefBase {
+    kind: 'series';
     outputs: OutputDef[];
     // horizontal reference levels drawn in the sub-pane (e.g. RSI 30/70)
     levels?: number[];
@@ -67,7 +71,16 @@ export interface IndicatorDef {
     ) => Record<string, IndicatorPoint[]>;
 }
 
-export const INDICATOR_DEFS: IndicatorDef[] = [
+export interface ReadoutIndicatorDef extends IndicatorDefBase {
+    kind: 'readout';
+    category: 'overlay';
+    singleton: true;
+    iconText: string;
+}
+
+export type IndicatorDef = SeriesIndicatorDef | ReadoutIndicatorDef;
+
+const SERIES_INDICATOR_DEFS: Omit<SeriesIndicatorDef, 'kind'>[] = [
     // ---- 主圖疊加 ----
     {
         type: 'sma',
@@ -399,6 +412,28 @@ export const INDICATOR_DEFS: IndicatorDef[] = [
     },
 ];
 
+export const KBAR_READOUT_TYPE = 'kbar-ohlcv-readout';
+
+export const KBAR_READOUT_DEF: ReadoutIndicatorDef = {
+    kind: 'readout',
+    type: KBAR_READOUT_TYPE,
+    label: 'K 棒價量',
+    short: 'OHLCV',
+    desc: '游標所在 K 棒的時間區間、開高低收與成交量',
+    aliases: ['k棒價量', '價量', 'ohlcv', '開高低收', '時間區間'],
+    category: 'overlay',
+    params: [],
+    singleton: true,
+    iconText: 'K',
+};
+
+export const INDICATOR_DEFS: IndicatorDef[] = [
+    KBAR_READOUT_DEF,
+    ...SERIES_INDICATOR_DEFS.map(
+        (def): SeriesIndicatorDef => ({ kind: 'series', ...def }),
+    ),
+];
+
 export const DEF_BY_TYPE = new Map(INDICATOR_DEFS.map((d) => [d.type, d]));
 
 // ---- instances ----
@@ -433,7 +468,7 @@ export interface IndicatorInstance {
 // merged effective style for one output
 export function outputStyle(
     inst: IndicatorInstance,
-    def: IndicatorDef,
+    def: SeriesIndicatorDef,
     key: string,
 ): Required<Omit<OutputStyle, 'plot'>> & { plot: PlotKind } {
     const out = def.outputs.find((o) => o.key === key);
@@ -465,6 +500,7 @@ export function colorWithOpacity(hex: string, opacity: number): string {
 export function instanceLabel(inst: IndicatorInstance): string {
     const def = DEF_BY_TYPE.get(inst.type);
     if (!def) return inst.type;
+    if (def.kind === 'readout') return def.short;
     const args = def.params.map((p) => inst.params[p.key] ?? p.def);
     return args.length > 0 ? `${def.short}(${args.join(',')})` : def.short;
 }
@@ -561,6 +597,139 @@ export function factoryInstance(inst: IndicatorInstance): IndicatorInstance {
 const STORE_KEY = 'sj-pro-indicators-v2';
 const LEGACY_KEY = 'sj-pro-indicators';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function finiteNumberRecord(value: unknown): Record<string, number> {
+    if (!isRecord(value)) return {};
+    const out: Record<string, number> = {};
+    for (const [key, item] of Object.entries(value)) {
+        if (typeof item === 'number' && Number.isFinite(item)) out[key] = item;
+    }
+    return out;
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+    if (!isRecord(value)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, item] of Object.entries(value)) {
+        if (typeof item === 'string') out[key] = item;
+    }
+    return out;
+}
+
+const PLOT_KINDS = new Set<PlotKind>([
+    'line',
+    'step',
+    'area',
+    'histogram',
+    'circles',
+]);
+
+function outputStyleRecord(value: unknown): Record<string, OutputStyle> | undefined {
+    if (!isRecord(value)) return undefined;
+    const out: Record<string, OutputStyle> = {};
+    for (const [key, raw] of Object.entries(value)) {
+        if (!isRecord(raw)) continue;
+        const style: OutputStyle = {};
+        if (typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color)) {
+            style.color = raw.color;
+        }
+        if (
+            typeof raw.width === 'number' &&
+            [1, 2, 3, 4].includes(raw.width)
+        ) {
+            style.width = raw.width as 1 | 2 | 3 | 4;
+        }
+        if (typeof raw.visible === 'boolean') style.visible = raw.visible;
+        if (
+            typeof raw.opacity === 'number' &&
+            Number.isFinite(raw.opacity) &&
+            raw.opacity >= 0 &&
+            raw.opacity <= 100
+        ) {
+            style.opacity = raw.opacity;
+        }
+        if (typeof raw.plot === 'string' && PLOT_KINDS.has(raw.plot as PlotKind)) {
+            style.plot = raw.plot as PlotKind;
+        }
+        if (Object.keys(style).length > 0) out[key] = style;
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+}
+
+// Runtime-normalize localStorage before it reaches chart code.  In addition to
+// filtering unknown/corrupt definitions this enforces singleton readouts while
+// preserving the relative order and settings of every unrelated indicator.
+export function normalizeIndicatorInstances(value: unknown): IndicatorInstance[] {
+    if (!Array.isArray(value)) return [];
+    const out: IndicatorInstance[] = [];
+    const singletonTypes = new Set<string>();
+    for (const raw of value) {
+        if (!isRecord(raw)) continue;
+        const type = typeof raw.type === 'string' ? raw.type : '';
+        const id = typeof raw.id === 'string' ? raw.id : '';
+        const def = DEF_BY_TYPE.get(type);
+        if (!def || !id) continue;
+        if (def.kind === 'readout' && def.singleton) {
+            if (singletonTypes.has(type)) continue;
+            singletonTypes.add(type);
+        }
+        const params = finiteNumberRecord(raw.params);
+        for (const param of def.params) {
+            if (params[param.key] === undefined) params[param.key] = param.def;
+        }
+        const normalized: IndicatorInstance = {
+            id,
+            type,
+            params,
+            colors: stringRecord(raw.colors),
+        };
+        const styles = outputStyleRecord(raw.styles);
+        if (styles) normalized.styles = styles;
+        if (typeof raw.hidden === 'boolean') normalized.hidden = raw.hidden;
+        if (Array.isArray(raw.visibleTf)) {
+            normalized.visibleTf = raw.visibleTf.filter(
+                (item): item is number =>
+                    typeof item === 'number' && Number.isFinite(item),
+            );
+        }
+        if (
+            typeof raw.precision === 'number' &&
+            Number.isInteger(raw.precision) &&
+            raw.precision >= 0 &&
+            raw.precision <= 10
+        ) {
+            normalized.precision = raw.precision;
+        }
+        if (typeof raw.showLabels === 'boolean') {
+            normalized.showLabels = raw.showLabels;
+        }
+        if (typeof raw.showValues === 'boolean') {
+            normalized.showValues = raw.showValues;
+        }
+        out.push(normalized);
+    }
+    return out;
+}
+
+export function splitKbarReadoutInstance(instances: IndicatorInstance[]): {
+    readout: IndicatorInstance | null;
+    rest: IndicatorInstance[];
+} {
+    let readout: IndicatorInstance | null = null;
+    const rest: IndicatorInstance[] = [];
+    for (const instance of instances) {
+        if (instance.type === KBAR_READOUT_TYPE && readout === null) {
+            readout = instance;
+        } else if (instance.type !== KBAR_READOUT_TYPE) {
+            rest.push(instance);
+        }
+    }
+    return { readout, rest };
+}
+
 function migrateLegacy(): IndicatorInstance[] {
     try {
         const raw = localStorage.getItem(LEGACY_KEY);
@@ -591,8 +760,7 @@ export function loadInstances(): IndicatorInstance[] {
     try {
         const raw = localStorage.getItem(STORE_KEY);
         if (raw) {
-            const list = JSON.parse(raw) as IndicatorInstance[];
-            return list.filter((i) => DEF_BY_TYPE.has(i.type));
+            return normalizeIndicatorInstances(JSON.parse(raw));
         }
     } catch {
         // fresh start below
@@ -610,8 +778,9 @@ export function subscribeInstances(fn: () => void): () => void {
 }
 
 export function saveInstances(list: IndicatorInstance[]) {
+    const normalized = normalizeIndicatorInstances(list);
     try {
-        localStorage.setItem(STORE_KEY, JSON.stringify(list));
+        localStorage.setItem(STORE_KEY, JSON.stringify(normalized));
     } catch {
         // storage full/unavailable — keep in-memory state
     }

@@ -161,6 +161,21 @@ pnpm dev
 開啟 [http://localhost:5173](http://localhost:5173) —— dev server 會把
 `/api` 代理到 `localhost:8080`。
 
+### 5. macOS 常駐與正式行情唯讀切換
+
+本機長時間測試可使用安全 runtime 指令，讓登入後預設自動啟動 simulation，
+並以手動命令暫時切換正式行情唯讀：
+
+```sh
+pnpm local-runtime install
+pnpm local-runtime status
+pnpm local-runtime production-readonly
+pnpm local-runtime simulation
+```
+
+完整的安裝、回復與安全邊界請見
+[macOS 本機常駐與安全模式切換](docs/local-runtime-macos.md)。
+
 ## Deploy as a Shioaji custom app 部署為內建 App
 
 Shioaji server 可直接代管前端，build 完上傳即可：

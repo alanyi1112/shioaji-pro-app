@@ -50,7 +50,7 @@ export function renderIndicatorSeries(
     let paneIdx = 1;
     for (const inst of loadInstances()) {
         const def = DEF_BY_TYPE.get(inst.type);
-        if (!def) continue;
+        if (!def || def.kind !== 'series') continue;
         if (inst.hidden) continue;
         if (inst.visibleTf && !inst.visibleTf.includes(tfMinutes)) continue;
         const params: Record<string, number> = {};

@@ -114,6 +114,7 @@ function toDef(c: CustomIndicator): IndicatorDef {
             ? c.outputs
             : [{ key: 'plot', label: '輸出', kind: 'line', color: CUSTOM_PALETTE[0]! }];
     return {
+        kind: 'series',
         type: customType(c.id),
         label: c.name,
         short: c.short || c.name,

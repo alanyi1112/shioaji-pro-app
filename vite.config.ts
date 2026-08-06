@@ -1,10 +1,80 @@
 // vite.config.ts
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { vanillaExtractPlugin } from '@vanilla-extract/vite-plugin';
 import react from '@vitejs/plugin-react';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type Plugin } from 'vite';
+import {
+    RUNTIME_MODE_ENDPOINT,
+    isTradingWriteRequest,
+    normalizeRuntimeMode,
+} from './src/lib/runtime-mode-shared';
+
+function runtimeModeFile() {
+    return (
+        process.env.REALTIME_STOCK_MODE_FILE ??
+        path.join(
+            os.homedir(),
+            'Library',
+            'Application Support',
+            'RealTimeStock',
+            'runtime-mode',
+        )
+    );
+}
+
+function readRuntimeMode() {
+    try {
+        return normalizeRuntimeMode(
+            fs.readFileSync(runtimeModeFile(), 'utf8').trim(),
+        );
+    } catch {
+        return 'unknown';
+    }
+}
+
+function productionReadonlyGuard(): Plugin {
+    return {
+        name: 'realtimestock-production-readonly-guard',
+        configureServer(server) {
+            server.middlewares.use((req, res, next) => {
+                const pathname = new URL(
+                    req.url ?? '/',
+                    'http://127.0.0.1',
+                ).pathname;
+                const runtimeMode = readRuntimeMode();
+
+                if (pathname === RUNTIME_MODE_ENDPOINT) {
+                    res.statusCode = 200;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Cache-Control', 'no-store');
+                    res.end(JSON.stringify({ mode: runtimeMode }));
+                    return;
+                }
+
+                if (
+                    runtimeMode === 'production-readonly' &&
+                    isTradingWriteRequest(pathname, req.method)
+                ) {
+                    res.statusCode = 403;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.end(
+                        JSON.stringify({
+                            code: 403,
+                            message:
+                                '正式行情唯讀模式：交易寫入已由本機 Web 安全層封鎖',
+                        }),
+                    );
+                    return;
+                }
+
+                next();
+            });
+        },
+    };
+}
 
 // closed-source modules (AI Agent, future tiered features) live in the
 // private repo, checked out into ./modules on desktop builds; open-source
@@ -48,7 +118,11 @@ export default defineConfig(({ mode }) => {
                     .trim(),
             ),
         },
-        plugins: [vanillaExtractPlugin(), react()],
+        plugins: [
+            productionReadonlyGuard(),
+            vanillaExtractPlugin(),
+            react(),
+        ],
         resolve: {
             alias: {
                 '@modules': modulesTarget,

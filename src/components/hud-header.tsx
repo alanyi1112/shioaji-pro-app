@@ -14,6 +14,7 @@ import {
     useRiskSettings,
 } from '../lib/risk';
 import { fetchInfo } from '../lib/shioaji';
+import { useRuntimeMode } from '../lib/runtime-mode';
 import {
     maskAccountId,
     maskMoney,
@@ -693,6 +694,7 @@ export function HudHeader({
 }) {
     const streamStatus = useStreamStatus();
     const privMoney = usePrivacyMoney();
+    const runtimeMode = useRuntimeMode();
     const [simulation, setSimulation] = useState<boolean | null>(null);
     const [appVer, setAppVer] = useState('');
     const [now, setNow] = useState(() => new Date());
@@ -752,6 +754,8 @@ export function HudHeader({
             {simulation !== null &&
                 (simulation ? (
                     <span className={styles.simBadge}>模擬環境</span>
+                ) : runtimeMode === 'production-readonly' ? (
+                    <span className={styles.prodBadge}>正式行情唯讀</span>
                 ) : (
                     <span className={styles.prodBadge}>正式環境</span>
                 ))}

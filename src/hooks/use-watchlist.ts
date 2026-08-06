@@ -23,6 +23,7 @@ import {
 } from '../lib/shioaji';
 import { onContractEvent, registerCodeAlias } from '../lib/stream';
 import { notify } from '../lib/trade';
+import { getRuntimeMode } from '../lib/runtime-mode';
 import type { ContractInfo, SecurityType } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
 
@@ -66,11 +67,29 @@ function isSimulationSessionUnavailable(error: unknown): boolean {
 }
 
 function serviceIssueFor(error: unknown): WatchlistServiceIssue {
+    const runtimeMode = getRuntimeMode();
+    if (isSessionUnavailable(error) && runtimeMode === 'production-readonly') {
+        return {
+            kind: 'session-unavailable',
+            title: '正式行情尚未建立',
+            detail: 'production 登入已啟動，但 Shioaji 行情 session 尚未建立；行情與自選暫不可用，交易寫入仍保持封鎖。',
+        };
+    }
     if (isSimulationSessionUnavailable(error)) {
         return {
             kind: 'session-unavailable',
-            title: '模擬服務離線／非服務時間',
-            detail: '目前無法建立 Shioaji 模擬 session；行情、自選與交易功能暫不可用。模擬服務時間為週一至週五 08:00–20:00。',
+            title: '模擬行情 session 尚未建立',
+            detail: '目前無法建立 Shioaji simulation session；這不代表本機 Web 已停止，行情、自選與交易功能暫不可用。',
+        };
+    }
+    if (
+        error instanceof Error &&
+        /Failed to fetch|NetworkError|fetch failed/i.test(error.message)
+    ) {
+        return {
+            kind: 'unavailable',
+            title: '本機 Shioaji API 未啟動',
+            detail: '前端無法連線至本機 API；這不是市場收盤狀態，請檢查 127.0.0.1:8080 的常駐服務。',
         };
     }
     return {
@@ -443,7 +462,10 @@ export function useWatchlist() {
             setServiceIssue(null);
             notify({
                 kind: 'ok',
-                title: '模擬服務已恢復',
+                title:
+                    getRuntimeMode() === 'production-readonly'
+                        ? '正式行情已恢復'
+                        : '模擬服務已恢復',
                 body: '自選清單與即時服務已重新連線',
             });
         } catch (error) {

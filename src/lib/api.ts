@@ -1,6 +1,7 @@
 // src/lib/api.ts
 
 import { getApiBase, isTauri } from './runtime';
+import { assertRuntimeAllowsRequest } from './runtime-mode';
 
 // resolved per request — the server port can move at runtime (e.g. the boot
 // flow discovers the default port occupied and starts on a fallback), and a
@@ -50,6 +51,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 }
 
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+    assertRuntimeAllowsRequest(path, 'POST');
     const res = await doFetch(base() + path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,6 +62,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+    assertRuntimeAllowsRequest(path, 'PUT');
     const res = await doFetch(base() + path, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -70,6 +73,7 @@ export async function apiPut<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
+    assertRuntimeAllowsRequest(path, 'DELETE');
     const res = await doFetch(base() + path, {
         method: 'DELETE',
         headers: body ? { 'Content-Type': 'application/json' } : undefined,

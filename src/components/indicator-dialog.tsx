@@ -164,10 +164,19 @@ export function IndicatorDialog({
                 className={styles.row}
                 onClick={() => onAdd(d.type)}
             >
-                <span
-                    className={styles.rowSwatch}
-                    style={{ background: d.outputs[0]!.color }}
-                />
+                {d.kind === 'series' ? (
+                    <span
+                        className={styles.rowSwatch}
+                        style={{ background: d.outputs[0]!.color }}
+                    />
+                ) : (
+                    <span
+                        className={styles.rowReadoutIcon}
+                        aria-hidden='true'
+                    >
+                        {d.iconText}
+                    </span>
+                )}
                 <span className={styles.rowMain}>
                     <span className={styles.rowName}>
                         {d.label}
@@ -333,7 +342,7 @@ export function IndicatorDialog({
                     </div>
                 </div>
                 <div className={styles.footer}>
-                    <span>點擊指標開啟設定，確定後加入；同型可加多個（不同參數）</span>
+                    <span>一般指標同型可加多個；K 棒價量限一個</span>
                     <span>已啟用 {instances.length} 個</span>
                 </div>
             </div>
@@ -460,7 +469,11 @@ export function IndicatorSettingsModal({
 }) {
     const def = DEF_BY_TYPE.get(inst.type);
     const [tab, setTab] = useState<'inputs' | 'style' | 'visibility'>(
-        def && def.params.length > 0 ? 'inputs' : 'style',
+        def?.kind === 'readout'
+            ? 'visibility'
+            : def && def.params.length > 0
+              ? 'inputs'
+              : 'style',
     );
     // which output has its color panel / plot menu expanded
     const [colorFor, setColorFor] = useState<string | null>(null);
@@ -516,7 +529,7 @@ export function IndicatorSettingsModal({
                     </button>
                 </div>
                 <div className={styles.tabs}>
-                    {def.params.length > 0 && (
+                    {def.kind === 'series' && def.params.length > 0 && (
                         <button
                             className={
                                 styles.tab[
@@ -528,14 +541,18 @@ export function IndicatorSettingsModal({
                             輸入
                         </button>
                     )}
-                    <button
-                        className={
-                            styles.tab[tab === 'style' ? 'active' : 'normal']
-                        }
-                        onClick={() => setTab('style')}
-                    >
-                        樣式
-                    </button>
+                    {def.kind === 'series' && (
+                        <button
+                            className={
+                                styles.tab[
+                                    tab === 'style' ? 'active' : 'normal'
+                                ]
+                            }
+                            onClick={() => setTab('style')}
+                        >
+                            樣式
+                        </button>
+                    )}
                     <button
                         className={
                             styles.tab[
@@ -548,7 +565,8 @@ export function IndicatorSettingsModal({
                     </button>
                 </div>
                 <div className={styles.settingsBody}>
-                    {tab === 'inputs' &&
+                    {def.kind === 'series' &&
+                        tab === 'inputs' &&
                         def.params.map((p) => (
                             <label key={p.key} className={styles.fieldRow}>
                                 <span>{p.label}</span>
@@ -575,7 +593,7 @@ export function IndicatorSettingsModal({
                                 />
                             </label>
                         ))}
-                    {tab === 'style' && (
+                    {def.kind === 'series' && tab === 'style' && (
                         <>
                             {def.outputs.map((o) => {
                                 const s = outputStyle(inst, def, o.key);
@@ -791,51 +809,55 @@ export function IndicatorSettingsModal({
                 </div>
                 <div className={styles.settingsFooter}>
                     <div className={styles.defaultsWrap}>
-                        <button
-                            className={styles.cancelBtn}
-                            onClick={() => setDefaultsOpen((o) => !o)}
-                        >
-                            預設值 <ChevronDown size={11} />
-                        </button>
-                        {defaultsOpen && (
-                            <div className={styles.defaultsMenu}>
+                        {def.kind === 'series' && (
+                            <>
                                 <button
-                                    className={styles.defaultsItem}
-                                    onClick={() => {
-                                        const f = factoryInstance(inst);
-                                        onPatch({
-                                            params: f.params,
-                                            colors: f.colors,
-                                            styles: undefined,
-                                            precision: undefined,
-                                            showLabels: undefined,
-                                            showValues: undefined,
-                                        });
-                                        setDefaultsOpen(false);
-                                    }}
+                                    className={styles.cancelBtn}
+                                    onClick={() => setDefaultsOpen((o) => !o)}
                                 >
-                                    重設為內建預設
+                                    預設值 <ChevronDown size={11} />
                                 </button>
-                                <button
-                                    className={styles.defaultsItem}
-                                    onClick={() => {
-                                        saveTypeDefault(inst);
-                                        setDefaultsOpen(false);
-                                        setSavedTip(true);
-                                        setTimeout(
-                                            () => setSavedTip(false),
-                                            1800,
-                                        );
-                                    }}
-                                >
-                                    存為我的預設
-                                </button>
-                            </div>
-                        )}
-                        {savedTip && (
-                            <span className={styles.savedTip}>
-                                已存 — 之後新增 {def.short} 會直接套用
-                            </span>
+                                {defaultsOpen && (
+                                    <div className={styles.defaultsMenu}>
+                                        <button
+                                            className={styles.defaultsItem}
+                                            onClick={() => {
+                                                const f = factoryInstance(inst);
+                                                onPatch({
+                                                    params: f.params,
+                                                    colors: f.colors,
+                                                    styles: undefined,
+                                                    precision: undefined,
+                                                    showLabels: undefined,
+                                                    showValues: undefined,
+                                                });
+                                                setDefaultsOpen(false);
+                                            }}
+                                        >
+                                            重設為內建預設
+                                        </button>
+                                        <button
+                                            className={styles.defaultsItem}
+                                            onClick={() => {
+                                                saveTypeDefault(inst);
+                                                setDefaultsOpen(false);
+                                                setSavedTip(true);
+                                                setTimeout(
+                                                    () => setSavedTip(false),
+                                                    1800,
+                                                );
+                                            }}
+                                        >
+                                            存為我的預設
+                                        </button>
+                                    </div>
+                                )}
+                                {savedTip && (
+                                    <span className={styles.savedTip}>
+                                        已存 — 之後新增 {def.short} 會直接套用
+                                    </span>
+                                )}
+                            </>
                         )}
                         <button
                             className={styles.dangerBtn}

@@ -1,0 +1,408 @@
+#!/bin/zsh
+
+set -eu
+
+SCRIPT_PATH="${0:A}"
+SCRIPT_DIR="${SCRIPT_PATH:h}"
+REPO_DIR="${REALTIME_STOCK_REPO_DIR:-${SCRIPT_DIR:h}}"
+USER_ID="$(id -u)"
+LAUNCH_DOMAIN="gui/${USER_ID}"
+
+SIM_LABEL="com.alanyi.realtimestock.simulation-api"
+WEB_LABEL="com.alanyi.realtimestock.web"
+PROD_LABEL="com.alanyi.realtimestock.production-readonly-api"
+
+APP_SUPPORT="${HOME}/Library/Application Support/RealTimeStock"
+INSTALLED_BIN_DIR="${APP_SUPPORT}/bin"
+INSTALLED_SCRIPT="${INSTALLED_BIN_DIR}/realtimestock-runtime"
+GENERATED_DIR="${APP_SUPPORT}/LaunchAgents"
+USER_LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
+MODE_FILE="${APP_SUPPORT}/runtime-mode"
+SIM_PLIST="${USER_LAUNCH_AGENTS}/${SIM_LABEL}.plist"
+WEB_PLIST="${USER_LAUNCH_AGENTS}/${WEB_LABEL}.plist"
+PROD_PLIST="${GENERATED_DIR}/${PROD_LABEL}.plist"
+
+SHIOAJI_BIN="${HOME}/.local/bin/shioaji"
+NODE_BIN="/opt/homebrew/bin/node"
+VITE_BIN="${REPO_DIR}/node_modules/vite/bin/vite.js"
+
+usage() {
+    print '使用方式：scripts/realtimestock-runtime <command>'
+    print '  install               安裝並啟動 simulation 常駐服務'
+    print '  uninstall             移除本工具建立的 LaunchAgent'
+    print '  simulation            切回 simulation'
+    print '  production-readonly   暫時切至正式行情唯讀；失敗會回復 simulation'
+    print '  status                顯示不含秘密值的服務與行情狀態'
+}
+
+ensure_runtime_dependencies() {
+    if [[ ! -x "${SHIOAJI_BIN}" ]]; then
+        print -u2 "找不到 Shioaji CLI：${SHIOAJI_BIN}"
+        return 1
+    fi
+    if [[ ! -x "${NODE_BIN}" ]]; then
+        print -u2 "找不到 Node.js：${NODE_BIN}"
+        return 1
+    fi
+    if [[ ! -f "${VITE_BIN}" ]]; then
+        print -u2 "找不到 Vite：${VITE_BIN}，請先在專案安裝依賴"
+        return 1
+    fi
+    if [[ ! -f "${REPO_DIR}/.env" ]]; then
+        print -u2 '找不到專案 .env；請先在本機設定 Shioaji API key 與 secret'
+        return 1
+    fi
+}
+
+write_mode() {
+    mkdir -p "${APP_SUPPORT}"
+    umask 077
+    print -r -- "$1" > "${MODE_FILE}"
+}
+
+read_mode() {
+    if [[ -r "${MODE_FILE}" ]]; then
+        head -n 1 "${MODE_FILE}"
+    else
+        print 'unknown'
+    fi
+}
+
+env_file_has_value() {
+    local key="$1"
+    awk -v key="${key}" '
+        BEGIN { found = 0 }
+        /^[[:space:]]*#/ { next }
+        {
+            line = $0
+            sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+            if (line ~ ("^[[:space:]]*" key "[[:space:]]*=")) {
+                sub(("^[[:space:]]*" key "[[:space:]]*=[[:space:]]*"), "", line)
+                sub(/[[:space:]]*#.*$/, "", line)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "" && line != "\"\"" && line != "\047\047") found = 1
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' "${REPO_DIR}/.env"
+}
+
+assert_no_ca() {
+    if env_file_has_value SJ_CA_PATH || env_file_has_value SJ_CA_PASSWD; then
+        print -u2 '拒絕切換：.env 存在非空 CA 設定。正式行情唯讀不得設定 SJ_CA_PATH 或 SJ_CA_PASSWD。'
+        return 1
+    fi
+}
+
+write_plists() {
+    mkdir -p "${APP_SUPPORT}" "${GENERATED_DIR}" "${USER_LAUNCH_AGENTS}"
+    umask 077
+
+    cat > "${SIM_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${SIM_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-api-simulation</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}</string>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>${HOME}</string>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
+<key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>/dev/null</string>
+<key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>
+EOF
+
+    cat > "${WEB_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${WEB_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-web</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}</string>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>${HOME}</string>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
+<key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>/dev/null</string>
+<key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>
+EOF
+
+    cat > "${PROD_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${PROD_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-api-production-readonly</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}</string>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>${HOME}</string>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
+<key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>/dev/null</string>
+<key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>
+EOF
+
+    chmod 600 "${SIM_PLIST}" "${WEB_PLIST}" "${PROD_PLIST}"
+}
+
+job_loaded() {
+    launchctl print "${LAUNCH_DOMAIN}/$1" >/dev/null 2>&1
+}
+
+bootout_job() {
+    local label="$1"
+    if job_loaded "${label}"; then
+        launchctl bootout "${LAUNCH_DOMAIN}/${label}" >/dev/null
+    fi
+}
+
+bootstrap_job() {
+    local label="$1"
+    local plist="$2"
+    if ! job_loaded "${label}"; then
+        launchctl bootstrap "${LAUNCH_DOMAIN}" "${plist}"
+    fi
+}
+
+wait_port_free() {
+    local port="$1"
+    local attempt
+    for attempt in {1..15}; do
+        if ! lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    print -u2 "port ${port} 尚未釋放"
+    return 1
+}
+
+wait_api_mode() {
+    local expected="$1"
+    local attempt actual
+    for attempt in {1..30}; do
+        actual="$(curl -fsS --max-time 2 http://127.0.0.1:8080/api/v1/info 2>/dev/null | jq -r '.simulation // empty' 2>/dev/null || true)"
+        if [[ "${actual}" == "${expected}" ]]; then
+            curl -fsS --max-time 2 http://127.0.0.1:8080/api/v1/health >/dev/null
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+wait_web() {
+    local attempt
+    for attempt in {1..20}; do
+        if [[ "$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/ 2>/dev/null || true)" == '200' ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+snapshot_status() {
+    local response http_status body
+    response="$(curl -sS --max-time 15 -w $'\n%{http_code}' \
+        -X POST http://127.0.0.1:8080/api/v1/data/snapshots \
+        -H 'Content-Type: application/json' \
+        --data '{"contracts":[{"security_type":"STK","region":"TW","exchange":"TSE","code":"2330","target_code":null}]}' || true)"
+    http_status="${response##*$'\n'}"
+    body="${response%$'\n'*}"
+
+    if [[ "${http_status}" == '200' ]] && print -r -- "${body}" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+        print 'available'
+    elif print -r -- "${body}" | grep -q 'SessionNotEstablished'; then
+        print 'session-not-established'
+    else
+        print "unavailable-http-${http_status:-000}"
+    fi
+}
+
+ensure_web_job() {
+    bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
+}
+
+switch_simulation() {
+    ensure_runtime_dependencies
+    [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
+
+    bootout_job "${PROD_LABEL}"
+    bootout_job "${SIM_LABEL}"
+    wait_port_free 8080
+    write_mode simulation
+    bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
+    ensure_web_job
+
+    if ! wait_api_mode true; then
+        print -u2 'simulation API 未能在 30 秒內通過模式與健康檢查'
+        return 1
+    fi
+    if ! wait_web; then
+        print -u2 '本機 Web 未能在 20 秒內啟動'
+        return 1
+    fi
+    print '已切換至 simulation'
+    runtime_status
+}
+
+switch_production_readonly() {
+    ensure_runtime_dependencies
+    assert_no_ca
+    [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
+
+    bootout_job "${PROD_LABEL}"
+    bootout_job "${SIM_LABEL}"
+    wait_port_free 8080
+    write_mode production-readonly
+    ensure_web_job
+    bootstrap_job "${PROD_LABEL}" "${PROD_PLIST}"
+
+    if ! wait_api_mode false; then
+        print -u2 '正式環境 API 未能通過模式與健康檢查，正在回復 simulation'
+        switch_simulation
+        return 1
+    fi
+    if ! wait_web; then
+        print -u2 '本機 Web 未能在 20 秒內啟動，正在回復 simulation'
+        switch_simulation
+        return 1
+    fi
+
+    local market_status
+    market_status="$(snapshot_status)"
+    if [[ "${market_status}" != 'available' ]]; then
+        print -u2 "正式行情不可用（${market_status}），正在回復 simulation"
+        switch_simulation
+        return 1
+    fi
+
+    print '已切換至 production-readonly；交易寫入由本機 Web guard 封鎖，且未載入 CA'
+    runtime_status
+}
+
+runtime_status() {
+    local info simulation health market web_http
+    print "runtime_mode=$(read_mode)"
+    print "simulation_job=$(job_loaded "${SIM_LABEL}" && print loaded || print stopped)"
+    print "production_readonly_job=$(job_loaded "${PROD_LABEL}" && print loaded || print stopped)"
+    print "web_job=$(job_loaded "${WEB_LABEL}" && print loaded || print stopped)"
+
+    info="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/info 2>/dev/null || true)"
+    if [[ -n "${info}" ]]; then
+        simulation="$(print -r -- "${info}" | jq -r '.simulation // "unknown"')"
+        health="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/health 2>/dev/null | jq -r '.status // "unknown"' 2>/dev/null || print unavailable)"
+        market="$(snapshot_status)"
+        print "api_listener=up"
+        print "api_simulation=${simulation}"
+        print "api_health=${health}"
+        print "market_snapshot_2330=${market}"
+    else
+        print 'api_listener=down'
+    fi
+
+    web_http="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/ 2>/dev/null || true)"
+    if [[ "${web_http}" == '200' ]]; then
+        print 'web_listener=up'
+    else
+        print 'web_listener=down'
+    fi
+}
+
+install_runtime() {
+    ensure_runtime_dependencies
+    mkdir -p "${INSTALLED_BIN_DIR}"
+    install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"
+    write_plists
+    bootout_job "${PROD_LABEL}"
+    bootout_job "${SIM_LABEL}"
+    bootout_job "${WEB_LABEL}"
+    wait_port_free 8080
+    wait_port_free 5173
+    write_mode simulation
+    bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
+    bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
+
+    if ! wait_api_mode true; then
+        print -u2 '安裝完成，但 simulation API 尚未通過健康檢查'
+        return 1
+    fi
+    if ! wait_web; then
+        print -u2 '安裝完成，但本機 Web 尚未通過健康檢查'
+        return 1
+    fi
+    print 'LaunchAgent 已安裝；登入後預設只會自動啟動 simulation'
+    runtime_status
+}
+
+uninstall_runtime() {
+    bootout_job "${PROD_LABEL}"
+    bootout_job "${SIM_LABEL}"
+    bootout_job "${WEB_LABEL}"
+    command rm -f "${SIM_PLIST}" "${WEB_PLIST}" "${PROD_PLIST}"
+    command rm -f "${INSTALLED_SCRIPT}"
+    write_mode simulation
+    print '已移除 RealTimeStock LaunchAgent；.env 與專案檔案未刪除'
+}
+
+service_api_simulation() {
+    ensure_runtime_dependencies
+    write_mode simulation
+    cd "${REPO_DIR}"
+    unset SJ_CA_PATH SJ_CA_PASSWD
+    exec env \
+        SJ_PRODUCTION=false \
+        SJ_HTTP_ADDR=127.0.0.1:8080 \
+        "${SHIOAJI_BIN}" server start --no-open
+}
+
+service_api_production_readonly() {
+    ensure_runtime_dependencies
+    assert_no_ca
+    write_mode production-readonly
+    cd "${REPO_DIR}"
+    unset SJ_CA_PATH SJ_CA_PASSWD
+    exec env \
+        SJ_PRODUCTION=true \
+        SJ_HTTP_ADDR=127.0.0.1:8080 \
+        "${SHIOAJI_BIN}" server start --production --no-open
+}
+
+service_web() {
+    ensure_runtime_dependencies
+    cd "${REPO_DIR}"
+    exec env \
+        VITE_API_TARGET=http://127.0.0.1:8080 \
+        REALTIME_STOCK_MODE_FILE="${MODE_FILE}" \
+        "${NODE_BIN}" "${VITE_BIN}" --host 127.0.0.1 --strictPort
+}
+
+command_name="${1:-}"
+case "${command_name}" in
+    install) install_runtime ;;
+    uninstall) uninstall_runtime ;;
+    simulation) switch_simulation ;;
+    production-readonly) switch_production_readonly ;;
+    status) runtime_status ;;
+    service-api-simulation) service_api_simulation ;;
+    service-api-production-readonly) service_api_production_readonly ;;
+    service-web) service_web ;;
+    *) usage; exit 2 ;;
+esac

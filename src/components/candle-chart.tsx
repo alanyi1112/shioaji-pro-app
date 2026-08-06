@@ -49,12 +49,28 @@ import {
     outputStyle,
     saveFavorites,
     saveInstances,
+    splitKbarReadoutInstance,
+    subscribeInstances,
+    KBAR_READOUT_TYPE,
     type IndicatorInstance,
 } from '../lib/indicator-defs';
 // side-effect import順序：custom-indicators 在 module 載入時就把已存的
 // 自訂指標註冊進 DEF_BY_TYPE，loadInstances() 的型別過濾才不會把它們丟掉
 import { subscribeCustoms } from '../lib/custom-indicators';
 import type { IndicatorPoint } from '../lib/indicators';
+import { DayBoundaryPaneManager } from '../lib/day-boundary-primitive';
+import {
+    buildCandleTimeIndex,
+    buildKbarReadoutDisplay,
+    formingDeadline,
+    isReadoutBarForming,
+    resolveReadoutReference,
+    resolveReadoutCandle,
+    selectDayBoundaries,
+    taipeiWallClockNowSeconds,
+    type KbarReadoutDisplay,
+} from '../lib/kbar-readout';
+import { priceDirection } from '../lib/price-direction';
 import { cancelOrder, fetchKbars, updateOrderPrice } from '../lib/shioaji';
 import { setPickedPrice } from '../lib/price-sync';
 import { notify, placeQuickOrder } from '../lib/trade';
@@ -63,7 +79,7 @@ import {
     removeTrigger,
     useTriggers,
 } from '../lib/trigger-engine';
-import type { ContractBase } from '../lib/types/contract';
+import type { ContractInfo } from '../lib/types/contract';
 import type { Candle } from '../lib/types/market';
 import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
 import { fmtPrice } from '../lib/utils/format';
@@ -108,7 +124,7 @@ export function CandleChart({
     trades = [],
     onOrdersChanged,
 }: {
-    contract: ContractBase;
+    contract: ContractInfo;
     trades?: Trade[];
     onOrdersChanged?: () => void;
 }) {
@@ -126,6 +142,14 @@ export function CandleChart({
     // throw inside the effect, which unmounts the whole app (issue #1)
     const loadedKeyRef = useRef('');
     const quote = useQuote(contract.code);
+    const liveQuote = quote?.tick ?? quote?.index;
+    const rawReference = quote?.index
+        ? Number(quote.index.reference)
+        : contract.reference;
+    const currentReference =
+        Number.isFinite(rawReference) && rawReference > 0
+            ? rawReference
+            : undefined;
     const tf = TIMEFRAMES[tfIdx] ?? TIMEFRAMES[1];
     const themeSettings = useThemeSettings();
     const colors = getChartColors(themeSettings);
@@ -156,6 +180,19 @@ export function CandleChart({
         >(),
     );
     const legendRafRef = useRef(false);
+    const [kbarReadout, setKbarReadout] = useState<KbarReadoutDisplay>(() =>
+        buildKbarReadoutDisplay(null, 5, false, fmtPrice),
+    );
+    const selectedReadoutTimeRef = useRef<number | null>(null);
+    const formingBarTimeRef = useRef<number | null>(null);
+    const formingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const candleTimeIndexRef = useRef(new Map<number, Candle>());
+    const readoutRafRef = useRef<number | null>(null);
+    const readoutGenerationRef = useRef(0);
+    const tfMinutesRef = useRef(tf.minutes);
+    tfMinutesRef.current = tf.minutes;
+    const dayBoundariesRef = useRef<ReturnType<typeof selectDayBoundaries>>([]);
+    const dayPrimitiveManagerRef = useRef(new DayBoundaryPaneManager());
     // sub-pane layout memory: instId -> pane index（上次重建的配置）與
     // instId -> 高度 px（使用者拖出來的上下圖比例，重建時還原）
     const paneAssignRef = useRef(new Map<string, number>());
@@ -198,6 +235,8 @@ export function CandleChart({
     qtyRef.current = tradeQty;
     const contractRef = useRef(contract);
     contractRef.current = contract;
+    const referenceRef = useRef(currentReference);
+    referenceRef.current = currentReference;
     const lastPriceRef = useRef<number | null>(null);
 
     // legend readout — crosshair position when hovering, latest bar otherwise
@@ -235,6 +274,117 @@ export function CandleChart({
     };
     const updateLegendRef = useRef(updateLegend);
     updateLegendRef.current = updateLegend;
+
+    const scheduleKbarReadout = () => {
+        if (readoutRafRef.current !== null) return;
+        const generation = readoutGenerationRef.current;
+        readoutRafRef.current = requestAnimationFrame(() => {
+            readoutRafRef.current = null;
+            if (generation !== readoutGenerationRef.current) return;
+            const candle = resolveReadoutCandle(
+                barsRef.current,
+                candleTimeIndexRef.current,
+                selectedReadoutTimeRef.current,
+            );
+            const minutes = tfMinutesRef.current;
+            const forming = candle
+                ? isReadoutBarForming({
+                      barTime: candle.time,
+                      formingBarTime: formingBarTimeRef.current,
+                      minutes,
+                      securityType: contractRef.current.security_type,
+                      nowWallClockSeconds: taipeiWallClockNowSeconds(),
+                  })
+                : false;
+            const readoutReference = resolveReadoutReference({
+                candle,
+                reference: referenceRef.current,
+                securityType: contractRef.current.security_type,
+                forming,
+            });
+            setKbarReadout(
+                buildKbarReadoutDisplay(
+                    candle,
+                    minutes,
+                    forming,
+                    fmtPrice,
+                    readoutReference,
+                ),
+            );
+        });
+    };
+    const scheduleKbarReadoutRef = useRef(scheduleKbarReadout);
+    scheduleKbarReadoutRef.current = scheduleKbarReadout;
+    useEffect(() => {
+        scheduleKbarReadoutRef.current();
+    }, [currentReference]);
+
+    const updateDayPrimitives = () => {
+        dayPrimitiveManagerRef.current.update(
+            dayBoundariesRef.current,
+            colors.grid,
+        );
+    };
+    const updateDayPrimitivesRef = useRef(updateDayPrimitives);
+    updateDayPrimitivesRef.current = updateDayPrimitives;
+
+    const reconcileDayPrimitives = () => {
+        const chart = chartRef.current;
+        if (!chart) return;
+        dayPrimitiveManagerRef.current.reconcile(
+            chart.panes(),
+            dayBoundariesRef.current,
+            colors.grid,
+        );
+    };
+    const reconcileDayPrimitivesRef = useRef(reconcileDayPrimitives);
+    reconcileDayPrimitivesRef.current = reconcileDayPrimitives;
+
+    const setCanonicalReadoutBars = (bars: Candle[]) => {
+        candleTimeIndexRef.current = buildCandleTimeIndex(bars);
+        dayBoundariesRef.current = selectDayBoundaries(
+            bars,
+            tfMinutesRef.current,
+        );
+        updateDayPrimitivesRef.current();
+        scheduleKbarReadoutRef.current();
+    };
+
+    const clearFormingTimer = () => {
+        if (formingTimerRef.current !== null) {
+            clearTimeout(formingTimerRef.current);
+            formingTimerRef.current = null;
+        }
+    };
+
+    const markFormingBar = (barTime: number) => {
+        clearFormingTimer();
+        const deadline = formingDeadline(
+            barTime,
+            tfMinutesRef.current,
+            contractRef.current.security_type,
+        );
+        const now = taipeiWallClockNowSeconds();
+        if (deadline === null || deadline <= now) {
+            formingBarTimeRef.current = null;
+            scheduleKbarReadoutRef.current();
+            return;
+        }
+        formingBarTimeRef.current = barTime;
+        const generation = readoutGenerationRef.current;
+        formingTimerRef.current = setTimeout(
+            () => {
+                formingTimerRef.current = null;
+                if (generation !== readoutGenerationRef.current) return;
+                if (formingBarTimeRef.current === barTime) {
+                    formingBarTimeRef.current = null;
+                    scheduleKbarReadoutRef.current();
+                }
+            },
+            Math.max(0, (deadline - now) * 1000 + 20),
+        );
+        scheduleKbarReadoutRef.current();
+    };
 
     // chart lifecycle
     useEffect(() => {
@@ -289,6 +439,7 @@ export function CandleChart({
         chartRef.current = chart;
         candleSeriesRef.current = candles;
         volSeriesRef.current = vol;
+        reconcileDayPrimitivesRef.current();
 
         chart.subscribeClick((param) => {
             const m = modeRef.current;
@@ -366,6 +517,11 @@ export function CandleChart({
         });
 
         chart.subscribeCrosshairMove((param) => {
+            selectedReadoutTimeRef.current =
+                param.point && typeof param.time === 'number'
+                    ? Number(param.time)
+                    : null;
+            scheduleKbarReadoutRef.current();
             // legend value readout follows the crosshair（rAF-throttled）
             if (!legendRafRef.current) {
                 legendRafRef.current = true;
@@ -383,6 +539,25 @@ export function CandleChart({
             setPickedPrice(c.code, roundToTick(c, Number(raw)));
         });
 
+        const handlePointerLeave = () => {
+            selectedReadoutTimeRef.current = null;
+            scheduleKbarReadoutRef.current();
+            updateLegendRef.current(undefined);
+        };
+        host.addEventListener('pointerleave', handlePointerLeave);
+        host.addEventListener('mouseleave', handlePointerLeave);
+        const handlePointerDownOutside = (event: PointerEvent) => {
+            if (event.target instanceof Node && host.contains(event.target)) {
+                return;
+            }
+            handlePointerLeave();
+        };
+        document.addEventListener(
+            'pointerdown',
+            handlePointerDownOutside,
+            true,
+        );
+
         // TradingView-style infinite history: panning near the left edge
         // pulls an older page of kbars (handler injected by the load effect)
         chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
@@ -390,6 +565,20 @@ export function CandleChart({
         });
 
         return () => {
+            readoutGenerationRef.current += 1;
+            host.removeEventListener('pointerleave', handlePointerLeave);
+            host.removeEventListener('mouseleave', handlePointerLeave);
+            document.removeEventListener(
+                'pointerdown',
+                handlePointerDownOutside,
+                true,
+            );
+            clearFormingTimer();
+            if (readoutRafRef.current !== null) {
+                cancelAnimationFrame(readoutRafRef.current);
+                readoutRafRef.current = null;
+            }
+            dayPrimitiveManagerRef.current.destroy();
             chart.remove();
             chartRef.current = null;
             candleSeriesRef.current = null;
@@ -432,8 +621,48 @@ export function CandleChart({
             wickUpColor: colors.up,
             wickDownColor: colors.down,
         });
+        updateDayPrimitivesRef.current();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [themeKey]);
+
+    // The candlestick body still describes open/close direction. Only the
+    // latest price line and its right-scale label follow the reference price.
+    useEffect(() => {
+        const candle = barsRef.current[barsRef.current.length - 1] ?? null;
+        const forming = candle
+            ? isReadoutBarForming({
+                  barTime: candle.time,
+                  formingBarTime: formingBarTimeRef.current,
+                  minutes: tfMinutesRef.current,
+                  securityType: contract.security_type,
+                  nowWallClockSeconds: taipeiWallClockNowSeconds(),
+              })
+            : false;
+        const reference = resolveReadoutReference({
+            candle,
+            reference: currentReference,
+            securityType: contract.security_type,
+            forming,
+        });
+        const direction = priceDirection(candle?.close, reference);
+        candleSeriesRef.current?.applyOptions({
+            priceLineColor:
+                direction === 'up'
+                    ? colors.up
+                    : direction === 'down'
+                      ? colors.down
+                      : colors.text,
+        });
+    }, [
+        colors.down,
+        colors.text,
+        colors.up,
+        contract.security_type,
+        currentReference,
+        dataVersion,
+        liveQuote?.close,
+        themeKey,
+    ]);
 
     // recolor volume bars from cached data on theme change — never refetch
     useEffect(() => {
@@ -454,6 +683,14 @@ export function CandleChart({
     useEffect(() => {
         let cancelled = false;
         const loadKey = `${contract.code}|${tf.minutes}`;
+        readoutGenerationRef.current += 1;
+        selectedReadoutTimeRef.current = null;
+        formingBarTimeRef.current = null;
+        clearFormingTimer();
+        if (readoutRafRef.current !== null) {
+            cancelAnimationFrame(readoutRafRef.current);
+            readoutRafRef.current = null;
+        }
         loadedKeyRef.current = ''; // freeze tick updates while loading
         lastBarRef.current = null;
         loadMoreRef.current = null;
@@ -467,6 +704,7 @@ export function CandleChart({
             volSeriesRef.current?.setData([]);
             barsRef.current = [];
             rawRef.current = [];
+            setCanonicalReadoutBars([]);
             setDataVersion((v) => v + 1);
             loadedKeyRef.current = loadKey; // live bars may build from here
         };
@@ -488,6 +726,7 @@ export function CandleChart({
                 })),
             );
             barsRef.current = bars;
+            setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
         };
 
@@ -555,6 +794,9 @@ export function CandleChart({
                 rawRef.current = raw;
                 applyBars(bars);
                 lastBarRef.current = bars[bars.length - 1] ?? null;
+                if (lastBarRef.current) {
+                    markFormingBar(lastBarRef.current.time);
+                }
                 loadedKeyRef.current = loadKey;
                 loadMoreRef.current = loadMore;
                 chartRef.current?.timeScale().scrollToRealTime();
@@ -582,7 +824,6 @@ export function CandleChart({
 
     // Live trade/index quote -> update the current bar. Index products use
     // quote_idx rather than the regular tick stream in Shioaji 1.7.
-    const liveQuote = quote?.tick ?? quote?.index;
     if (liveQuote && liveQuote.code === contract.code) {
         const p = Number(liveQuote.close);
         if (Number.isFinite(p)) lastPriceRef.current = p;
@@ -607,6 +848,8 @@ export function CandleChart({
                 ? Math.floor(tickTime / 86400) * 86400
                 : Math.floor(tickTime / bucketSec) * bucketSec;
         let bar = lastBarRef.current;
+        if (bar && bucket < bar.time) return; // stale/out-of-order quote
+        let addedBar = false;
         if (!bar || bucket > bar.time) {
             bar = {
                 time: bucket,
@@ -620,6 +863,7 @@ export function CandleChart({
             // sync (history paging re-attaches this tail) and recompute
             // indicators once per bar close
             barsRef.current.push(bar);
+            addedBar = true;
             setDataVersion((v) => v + 1);
         } else {
             bar.high = Math.max(bar.high, price);
@@ -628,6 +872,9 @@ export function CandleChart({
             bar.volume += quote?.tick?.volume ?? 0;
         }
         lastBarRef.current = bar;
+        markFormingBar(bar.time);
+        if (addedBar) setCanonicalReadoutBars(barsRef.current);
+        else scheduleKbarReadoutRef.current();
         try {
             series.update({
                 time: bar.time as UTCTimestamp,
@@ -649,6 +896,10 @@ export function CandleChart({
 
     // 自訂指標增刪改 → 重算指標 effect；被刪掉的型別把殘留實例一併清掉
     const [customVer, setCustomVer] = useState(0);
+    useEffect(
+        () => subscribeInstances(() => setInstances(loadInstances())),
+        [],
+    );
     useEffect(
         () =>
             subscribeCustoms(() => {
@@ -705,6 +956,7 @@ export function CandleChart({
         if (bars.length === 0) {
             paneAssignRef.current = paneAssign; // no panes exist right now
             setPaneTops({});
+            reconcileDayPrimitivesRef.current();
             return;
         }
 
@@ -719,7 +971,7 @@ export function CandleChart({
         legendMetaRef.current = new Map();
         for (const inst of instances) {
             const def = DEF_BY_TYPE.get(inst.type);
-            if (!def) continue;
+            if (!def || def.kind !== 'series') continue;
             if (inst.hidden) continue; // 眼睛關閉 — 保留設定不畫線
             // 時框顯示設定（TradingView Visibility on intervals）
             if (inst.visibleTf && !inst.visibleTf.includes(tf.minutes)) {
@@ -890,6 +1142,7 @@ export function CandleChart({
             // pane API differences must never take the chart down
         }
         paneAssignRef.current = paneAssign;
+        reconcileDayPrimitivesRef.current();
         // 副圖 legend 跟著自己的 pane 走 — 量出每個 pane 在 host 內的
         // top offset，pane 被拖動改高度時 ResizeObserver 會重新量
         try {
@@ -931,6 +1184,16 @@ export function CandleChart({
     };
     // 點選指標 → 先開設定（圖上即時預覽），確定才算加入、取消整個撤掉
     const addIndicator = (type: string) => {
+        const def = DEF_BY_TYPE.get(type);
+        if (!def) return;
+        if (def.kind === 'readout' && def.singleton) {
+            const existing = instances.find((item) => item.type === type);
+            if (existing) {
+                setPickerOpen(false);
+                openSettings(existing.id);
+                return;
+            }
+        }
         settingsSnapshotRef.current = JSON.stringify(instances); // 不含新實例
         const inst = newInstance(type);
         commitInstances([...instances, inst]);
@@ -954,6 +1217,8 @@ export function CandleChart({
     const duplicateIndicator = (id: string) => {
         const idx = instances.findIndex((i) => i.id === id);
         if (idx < 0) return;
+        const def = DEF_BY_TYPE.get(instances[idx]!.type);
+        if (def?.kind === 'readout') return;
         const dup = duplicateInstance(instances[idx]!);
         const next = [...instances];
         next.splice(idx + 1, 0, dup);
@@ -962,6 +1227,8 @@ export function CandleChart({
     // 視覺順序：陣列順序 = 疊圖 z-order 與副圖 pane 排序
     const moveIndicator = (id: string, dir: -1 | 1) => {
         const idx = instances.findIndex((i) => i.id === id);
+        if (idx < 0) return;
+        if (DEF_BY_TYPE.get(instances[idx]!.type)?.kind === 'readout') return;
         const to = idx + dir;
         if (idx < 0 || to < 0 || to >= instances.length) return;
         const next = [...instances];
@@ -1175,7 +1442,7 @@ export function CandleChart({
     // 單列 legend（主圖堆疊與各副圖 pane 共用同一套列與控制）
     const renderLegendRow = (inst: IndicatorInstance) => {
         const def = DEF_BY_TYPE.get(inst.type);
-        if (!def) return null;
+        if (!def || def.kind !== 'series') return null;
         const idx = instances.findIndex((i) => i.id === inst.id);
         const vals = legendValues[inst.id] ?? [];
         const offTf =
@@ -1381,10 +1648,83 @@ export function CandleChart({
                                 </div>
         );
     };
+    const { readout: kbarReadoutInst, rest: nonReadoutInstances } =
+        splitKbarReadoutInstance(instances);
+    const renderKbarReadoutRow = (inst: IndicatorInstance) => {
+        const offTf =
+            !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
+        const dimmed = !!inst.hidden || offTf;
+        return (
+            <div
+                key={inst.id}
+                className={styles.legendItem[dimmed ? 'hidden' : 'normal']}
+                data-kbar-readout='true'
+            >
+                <button
+                    className={styles.kbarReadoutTime}
+                    title={kbarReadout.fullInterval}
+                    aria-label={`${kbarReadout.fullInterval}；開啟 K 棒價量設定`}
+                    onClick={() => openSettings(inst.id)}
+                >
+                    {kbarReadout.interval}
+                </button>
+                {offTf && (
+                    <span className={styles.legendNote}>此時框停用</span>
+                )}
+                {!dimmed && (
+                    <span className={styles.kbarReadoutFields}>
+                        {kbarReadout.fields.map((field) => (
+                            <span
+                                key={field.key}
+                                className={styles.kbarReadoutField}
+                                title={`${field.label} ${field.value}`}
+                            >
+                                <span className={styles.kbarReadoutFieldLabel}>
+                                    {field.label}
+                                </span>{' '}
+                                <span
+                                    className={
+                                        styles.kbarReadoutFieldValue[field.tone]
+                                    }
+                                >
+                                    {field.value}
+                                </span>
+                            </span>
+                        ))}
+                    </span>
+                )}
+                <span className={styles.legendCtrls}>
+                    <button
+                        className={styles.legendCtrlBtn}
+                        title={inst.hidden ? '顯示' : '隱藏'}
+                        onClick={() =>
+                            patchInstance(inst.id, { hidden: !inst.hidden })
+                        }
+                    >
+                        {inst.hidden ? <EyeOff size={11} /> : <Eye size={11} />}
+                    </button>
+                    <button
+                        className={styles.legendCtrlBtn}
+                        title='設定'
+                        onClick={() => openSettings(inst.id)}
+                    >
+                        <Settings2 size={11} />
+                    </button>
+                    <button
+                        className={styles.legendCtrlBtn}
+                        title='移除'
+                        onClick={() => removeIndicator(inst.id)}
+                    >
+                        <X size={11} />
+                    </button>
+                </span>
+            </div>
+        );
+    };
     // 主圖堆疊只放：主圖疊加類、被隱藏/此時框停用、或 pane 尚未量到位置的
-    const mainLegendInsts = instances.filter((inst) => {
+    const mainLegendInsts = nonReadoutInstances.filter((inst) => {
         const def = DEF_BY_TYPE.get(inst.type);
-        if (!def) return false;
+        if (!def || def.kind !== 'series') return false;
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
         return (
@@ -1506,6 +1846,8 @@ export function CandleChart({
                     triggers.length > 0 ||
                     instances.length > 0) && (
                     <div className={styles.triggerList}>
+                        {kbarReadoutInst &&
+                            renderKbarReadoutRow(kbarReadoutInst)}
                         {mainLegendInsts.map((inst) =>
                             renderLegendRow(inst),
                         )}
@@ -1589,7 +1931,12 @@ export function CandleChart({
                 {/* 副圖指標的 legend 疊在自己的 pane 左上角，不混進主圖 */}
                 {instances.map((inst) => {
                     const def = DEF_BY_TYPE.get(inst.type);
-                    if (!def || def.category !== 'pane' || inst.hidden) {
+                    if (
+                        !def ||
+                        def.kind !== 'series' ||
+                        def.category !== 'pane' ||
+                        inst.hidden
+                    ) {
                         return null;
                     }
                     if (

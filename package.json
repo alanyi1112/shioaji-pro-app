@@ -8,6 +8,7 @@
         "dev": "vite",
         "build": "tsc -b && vite build",
         "test": "vitest run",
+        "local-runtime": "./scripts/realtimestock-runtime",
         "preview": "vite preview"
     },
     "dependencies": {

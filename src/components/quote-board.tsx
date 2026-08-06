@@ -3,7 +3,9 @@
 import { useQuote } from '../hooks/use-stream';
 import type { ContractInfo } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
-import { fmtInt, fmtPct, fmtPrice, fmtSigned } from '../lib/utils/format';
+import { priceDirection } from '../lib/price-direction';
+import { buildQuoteSummaryMetrics } from '../lib/quote-summary';
+import { fmtPct, fmtPrice, fmtSigned } from '../lib/utils/format';
 import * as panel from './panel.css';
 import * as styles from './quote-board.css';
 
@@ -60,8 +62,7 @@ export function QuoteBoard({
     const bid1 = bidask ? Number(bidask.bid_price[0]) : undefined;
     const ask1 = bidask ? Number(bidask.ask_price[0]) : undefined;
 
-    const dir =
-        chg === undefined || chg === 0 ? 'flat' : chg > 0 ? 'up' : 'down';
+    const dir = priceDirection(close, ref);
     const atLimit =
         !isIndex && close !== undefined && contract.limit_up > 0
             ? close >= contract.limit_up
@@ -70,119 +71,91 @@ export function QuoteBoard({
                   ? 'down'
                   : null
             : null;
+    const metrics = buildQuoteSummaryMetrics({
+        isIndex,
+        reference: validPrice(ref),
+        open: validPrice(open),
+        high: validPrice(high),
+        low: validPrice(low),
+        volume: validNumber(vol),
+        limitUp: validPrice(contract.limit_up),
+        limitDown: validPrice(contract.limit_down),
+        time: (isIndex ? index?.time : tick?.time)?.slice(0, 8),
+        bid: validPrice(bid1),
+        bidVolume: bidask ? validNumber(bidask.bid_volume[0]) : undefined,
+        ask: validPrice(ask1),
+        askVolume: bidask ? validNumber(bidask.ask_volume[0]) : undefined,
+        raiseCount: validNumber(index?.raise_count),
+        flatCount: validNumber(index?.flat_count),
+        fallCount: validNumber(index?.fall_count),
+        limitUpCount: validNumber(index?.limit_up_count),
+        noTradeCount: validNumber(index?.no_trade),
+        limitDownCount: validNumber(index?.limit_down_count),
+    });
 
     return (
         <div className={`${styles.board} drag-handle`}>
-            <div className={styles.symbolBlock}>
-                <span className={styles.symbolCode}>{contract.code}</span>
-                <span className={styles.symbolName}>{contract.name}</span>
-            </div>
+            <div className={styles.boardLayout}>
+                <div className={styles.hero}>
+                    <div className={styles.symbolBlock}>
+                        <span className={styles.symbolCode}>{contract.code}</span>
+                        <span className={styles.symbolName}>{contract.name}</span>
+                    </div>
 
-            <span className={styles.bigPrice[dir]}>{fmtPrice(close)}</span>
-            {atLimit && (
-                <span className={styles.limitBadge[atLimit]}>
-                    {atLimit === 'up' ? '漲停' : '跌停'}
-                </span>
-            )}
+                    <div className={styles.priceBlock}>
+                        <span className={styles.bigPrice[dir]}>
+                            {fmtPrice(close)}
+                        </span>
+                        {atLimit && (
+                            <span className={styles.limitBadge[atLimit]}>
+                                {atLimit === 'up' ? '漲停' : '跌停'}
+                            </span>
+                        )}
+                    </div>
 
-            <div className={`${styles.changeBlock} ${panel.dirText[dir]}`}>
-                <span>{fmtSigned(chg)}</span>
-                <span>{fmtPct(pct)}</span>
-            </div>
+                    <div
+                        className={`${styles.changeBlock} ${panel.dirText[dir]}`}
+                    >
+                        <span>{fmtSigned(chg)}</span>
+                        <span>{fmtPct(pct)}</span>
+                    </div>
+                </div>
 
-            <div className={styles.statGrid}>
-                {isIndex ? (
-                    <>
-                        <span className={styles.statLabel}>開</span>
-                        <span className={styles.statLabel}>高</span>
-                        <span className={styles.statLabel}>低</span>
-                        <span className={styles.statLabel}>量</span>
-                        <span className={styles.statValue}>{fmtPrice(open)}</span>
-                        <span className={`${styles.statValue} ${panel.dirText.up}`}>
-                            {fmtPrice(high)}
+                <div
+                    className={styles.statGrid}
+                    aria-label='行情摘要'
+                    data-quote-summary={isIndex ? 'index' : 'market'}
+                >
+                    {metrics.map((metric) => (
+                        <span
+                            key={metric.key}
+                            className={styles.statMetric}
+                            data-metric={metric.key}
+                            data-tone={metric.tone}
+                        >
+                            <span className={styles.statLabel}>
+                                {metric.label}
+                            </span>
+                            <span
+                                className={styles.statValue[metric.tone]}
+                            >
+                                {metric.value}
+                            </span>
                         </span>
-                        <span className={`${styles.statValue} ${panel.dirText.down}`}>
-                            {fmtPrice(low)}
-                        </span>
-                        <span className={styles.statValue}>{fmtInt(vol)}</span>
-                        <span className={styles.statLabel}>參考</span>
-                        <span className={styles.statLabel}>上漲</span>
-                        <span className={styles.statLabel}>平盤</span>
-                        <span className={styles.statLabel}>下跌</span>
-                        <span className={styles.statValue}>{fmtPrice(ref)}</span>
-                        <span className={`${styles.statValue} ${panel.dirText.up}`}>
-                            {fmtInt(index?.raise_count)}
-                        </span>
-                        <span className={styles.statValue}>
-                            {fmtInt(index?.flat_count)}
-                        </span>
-                        <span className={`${styles.statValue} ${panel.dirText.down}`}>
-                            {fmtInt(index?.fall_count)}
-                        </span>
-                        <span className={styles.statLabel}>漲停</span>
-                        <span className={styles.statLabel}>未成交</span>
-                        <span className={styles.statLabel}>跌停</span>
-                        <span className={styles.statLabel}>時間</span>
-                        <span className={`${styles.statValue} ${panel.dirText.up}`}>
-                            {fmtInt(index?.limit_up_count)}
-                        </span>
-                        <span className={styles.statValue}>
-                            {fmtInt(index?.no_trade)}
-                        </span>
-                        <span className={`${styles.statValue} ${panel.dirText.down}`}>
-                            {fmtInt(index?.limit_down_count)}
-                        </span>
-                        <span className={styles.statValue}>
-                            {index?.time?.slice(0, 8) ?? '—'}
-                        </span>
-                    </>
-                ) : (
-                    <>
-                        <span className={styles.statLabel}>開</span>
-                        <span className={styles.statLabel}>高</span>
-                        <span className={styles.statLabel}>低</span>
-                        <span className={styles.statLabel}>量</span>
-                        <span className={styles.statValue}>{fmtPrice(open)}</span>
-                        <span className={`${styles.statValue} ${panel.dirText.up}`}>
-                            {fmtPrice(high)}
-                        </span>
-                        <span className={`${styles.statValue} ${panel.dirText.down}`}>
-                            {fmtPrice(low)}
-                        </span>
-                        <span className={styles.statValue}>{fmtInt(vol)}</span>
-                        <span className={styles.statLabel}>參考</span>
-                        <span className={styles.statLabel}>漲停</span>
-                        <span className={styles.statLabel}>跌停</span>
-                        <span className={styles.statLabel}>時間</span>
-                        <span className={styles.statValue}>{fmtPrice(ref)}</span>
-                        <span className={`${styles.statValue} ${panel.dirText.up}`}>
-                            {fmtPrice(contract.limit_up)}
-                        </span>
-                        <span className={`${styles.statValue} ${panel.dirText.down}`}>
-                            {fmtPrice(contract.limit_down)}
-                        </span>
-                        <span className={styles.statValue}>
-                            {tick?.time?.slice(0, 8) ?? '—'}
-                        </span>
-                        <span className={styles.statLabel}>委買</span>
-                        <span className={styles.statLabel}>買量</span>
-                        <span className={styles.statLabel}>委賣</span>
-                        <span className={styles.statLabel}>賣量</span>
-                        <span className={`${styles.statValue} ${panel.dirText.up}`}>
-                            {fmtPrice(bid1)}
-                        </span>
-                        <span className={styles.statValue}>
-                            {bidask ? fmtInt(bidask.bid_volume[0] ?? 0) : '—'}
-                        </span>
-                        <span className={`${styles.statValue} ${panel.dirText.down}`}>
-                            {fmtPrice(ask1)}
-                        </span>
-                        <span className={styles.statValue}>
-                            {bidask ? fmtInt(bidask.ask_volume[0] ?? 0) : '—'}
-                        </span>
-                    </>
-                )}
+                    ))}
+                </div>
             </div>
         </div>
     );
+}
+
+function validNumber(value: number | undefined): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value)
+        ? value
+        : undefined;
+}
+
+function validPrice(value: number | undefined): number | undefined {
+    const valid = validNumber(value);
+    return valid !== undefined && valid > 0 ? valid : undefined;
 }

@@ -1,0 +1,157 @@
+## ADDED Requirements
+
+### Requirement: 技術指標選擇器必須提供單一 K 棒價量 readout
+系統 MUST 在技術指標選擇器的「主圖疊加」提供「K 棒價量」，並允許以名稱、價量、OHLCV、開高低收及時間區間搜尋。此項目 MUST 是不建立圖線、價格軸標籤或副圖的受控 readout，且同一份 canonical indicator instances 中最多只能存在一個。
+
+#### Scenario: 第一次加入 K 棒價量
+- **WHEN** 使用者在「主圖疊加」點選尚未加入的「K 棒價量」
+- **THEN** 系統 MUST 建立一個 readout instance 並顯示於適用的 K 線圖
+- **AND** 系統 MUST NOT 建立 lightweight-charts series、改變 autoscale 或新增 API 請求
+
+#### Scenario: 重複點選已加入項目
+- **WHEN** canonical instances 已有 K 棒價量，使用者再次點選該項目
+- **THEN** 系統 MUST NOT 建立第二個 instance
+- **AND** 系統 MUST 聚焦既有設定或顯示可理解的「已加入」狀態
+
+#### Scenario: 控制 K 棒價量
+- **WHEN** 使用者操作 K 棒價量的 legend 控制
+- **THEN** 系統 MUST 允許隱藏、顯示、移除及設定適用時框
+- **AND** 系統 MUST NOT 提供複製、上移或下移操作
+
+### Requirement: readout 第一欄必須顯示 K 棒時間區間
+啟用 K 棒價量後，主圖 readout 的第一欄 MUST 顯示目前選取 K 棒的時間區間，且 MUST NOT 在時間區間前顯示「回報價量」或「K 棒價量」。其後 MUST 依序顯示「開、 高、低、收／最新、量」及對應數值。
+
+#### Scenario: 顯示 5 分 K 的區間與價量
+- **WHEN** 游標所在 K 棒代表台灣時間 09:45:00 至 09:49:59 且已收線
+- **THEN** readout MUST 以 `09:45–09:49` 作為第一欄
+- **AND** 後續 MUST 依序顯示該 candle 的開、高、低、收及量
+- **AND** 可見文字 MUST NOT 包含「回報價量」或「K 棒價量」前綴
+
+#### Scenario: 顯示 1 分 K 與 60 分 K
+- **WHEN** 使用者分別查看 1m 或 60m candle
+- **THEN** 1m MUST 顯示包含秒的完整一分鐘區間，例如 `09:48:00–09:48:59`
+- **AND** 60m MUST 顯示起訖分鐘，例如 `09:00–09:59`
+
+#### Scenario: 顯示跨日期或 1D K
+- **WHEN** 區間起訖跨越日期或目前時框為 1D
+- **THEN** 跨日期的日內區間 MUST 在起訖兩端顯示 `MM/DD`
+- **AND** 1D MUST 顯示該 K 棒代表的台灣交易日期，例如 `2026/08/06`
+- **AND** 系統 MUST NOT 以瀏覽器所在時區改寫圖表既有的台灣市場 wall-clock 時間
+
+### Requirement: readout 必須回報游標所在 canonical candle
+系統 MUST 以 crosshair time 查找目前圖表已載入並按目前時框聚合的 canonical candle，並從同一 candle 取得 open、high、low、close 與 volume。系統 MUST NOT 使用右上角最新行情 snapshot、滑鼠 Y 座標或其他時框 candle 代替。
+
+#### Scenario: 游標查看歷史 K 棒
+- **WHEN** crosshair time 對應一根歷史 canonical candle
+- **THEN** readout MUST 顯示該 candle 的時間區間、開、高、低、收與量
+- **AND** 最新行情或其他 candle 更新 MUST NOT 改寫目前歷史讀值
+
+#### Scenario: 游標跨越副圖 pane
+- **WHEN** 使用者在與主圖共用時間軸的副圖 pane 移動 crosshair
+- **THEN** readout MUST 依相同 crosshair time 顯示對應主圖 candle
+- **AND** 系統 MUST NOT 以副圖數值代替 OHLCV
+
+#### Scenario: 游標離開或位於空白區
+- **WHEN** crosshair 沒有 time、離開圖表或位於沒有 candle 的未來空白區
+- **THEN** readout MUST 回到最新一根可用 canonical candle
+- **AND** 若目前沒有 candle，時間、開、高、低、收／最新及量 MUST 顯示 `—`
+
+### Requirement: 日內跨日邊界必須使用較粗垂直分隔線
+在 1m、5m、15m 或 60m 圖中，當依時間遞增的相鄰 canonical candles 之台灣顯示日期不同時，系統 MUST 在前一日最後一根與新日期第一根 candle 之間繪製 2 CSS px 的垂直跨日分隔線。分隔線 MUST 使用目前 theme 的 grid color、對齊所有現存主副圖 pane，且 MUST NOT 改變資料、autoscale、crosshair 或圖表點擊行為。
+
+#### Scenario: 股票日內資料跨至下一交易日
+- **WHEN** 可見資料由某日最後一根日內 candle 接續至下一日期第一根 candle
+- **THEN** 系統 MUST 在兩根 candle 的 X 座標中點繪製 2 CSS px 分隔線
+- **AND** 分隔線 MUST 位於 pane background，不得穿過任一根 candle 的中心或遮住其 OHLCV
+
+#### Scenario: 期貨夜盤跨越午夜
+- **WHEN** FUT／OPT 日內 candles 的台灣顯示日期在連續夜盤資料中改變
+- **THEN** 系統 MUST 在日期改變處顯示相同的 2 CSS px 垂直分隔線
+- **AND** 系統 MUST NOT 因畫線而改寫 candle 的交易日歸屬、timestamp 或價量
+
+#### Scenario: 同日內有資料缺口
+- **WHEN** 相鄰 candles 雖有時間缺口但台灣顯示日期相同
+- **THEN** 系統 MUST NOT 將該缺口誤畫為跨日粗分隔線
+
+#### Scenario: 主圖與副圖對齊
+- **WHEN** 圖表具有一個以上技術副圖 pane
+- **THEN** 每條可見跨日分隔線 MUST 在主圖與所有副圖使用相同 X 座標及 2 CSS px 視覺線寬
+- **AND** 新增、移除或重排副圖後 MUST 重新對齊，不得留下重複或殘留線條
+
+#### Scenario: 平移縮放、歷史補載與主題切換
+- **WHEN** 使用者平移、縮放或 resize，系統 prepend 歷史 candles，或 theme 改變
+- **THEN** 系統 MUST 依目前 canonical candles 與 viewport 重新定位可見分隔線並套用目前 grid color
+- **AND** 舊 generation 的座標或 primitive MUST NOT 寫回新商品、新時框或已銷毀 chart
+
+#### Scenario: 1D 圖不將每個間隔加粗
+- **WHEN** 目前時框為 1D
+- **THEN** 系統 MUST NOT 因每根 candle 的日期不同而在每兩根日 K 之間增加本 capability 的粗分隔線
+- **AND** 既有 1D 格線與時間軸行為 MUST 維持不變
+
+### Requirement: 形成中 K 棒必須顯示最新價語意
+系統 MUST 區分 completed 與可證明仍 forming 的最新 candle。選取 forming candle 時第四個價格欄位 MUST 標示「最新」並顯示該 candle 的 current close；選取 completed candle 時 MUST 標示「收」。系統 MUST NOT 只因 candle 位於陣列尾端就判定 forming。
+
+#### Scenario: live quote 更新目前 K 棒
+- **WHEN** 合法 live quote 在目前商品與時框 bucket 內更新最新 candle
+- **THEN** 該 candle MUST 標示 forming，readout MUST 顯示「最新」及更新後的 close
+- **AND** open、high、low 與 volume MUST 同步反映該 canonical candle 的目前值
+
+#### Scenario: 新 K 棒使前一根收線
+- **WHEN** 新 bucket 的合法 live quote 建立下一根 candle
+- **THEN** 前一根 candle MUST 轉為 completed
+- **AND** 游標回到前一根時第四個價格欄位 MUST 顯示「收」
+
+#### Scenario: 區間結束但沒有下一筆 tick
+- **WHEN** 目前日內 K 棒已到達時框區間終點且沒有新 bucket tick
+- **THEN** bounded boundary timer MUST 將該 candle 轉為 completed
+- **AND** readout MUST NOT 在已結束區間持續冒充「最新」
+
+#### Scenario: 無法可靠判定 1D session 狀態
+- **WHEN** 現有 contract metadata 無法可靠判定某 FUT／OPT 1D candle 的 session 是否仍在形成
+- **THEN** 系統 MUST 保守顯示「收」
+- **AND** 系統 MUST NOT 只因其為最新資料列就標示「最新」
+
+### Requirement: K 棒價量必須固定在顯示數值區最上方
+可見的 K 棒價量 readout MUST 固定排在主圖左上角顯示數值區第一列，所有 MA、BOLL、Pivot 與其他主圖 indicator legend MUST 位於其下方。固定置頂 MUST 是 render 規則，不得改寫其他 indicator instances 的持久化順序。
+
+#### Scenario: 已有多個主圖指標後加入 readout
+- **WHEN** 主圖已有任意順序的 MA、BOLL 或其他指標，使用者加入 K 棒價量
+- **THEN** K 棒價量 MUST 立即顯示於第一列
+- **AND** 其他指標 MUST 保持既有相對順序
+
+#### Scenario: 修改一般指標排序
+- **WHEN** 使用者上移、下移、複製或移除一般技術指標
+- **THEN** 可見 K 棒價量 MUST 仍位於第一列
+- **AND** readout MUST NOT 成為一般排序陣列中的可移動項目
+
+### Requirement: 多圖讀值與高頻更新必須隔離
+K 棒價量的啟用、隱藏、移除及時框設定 MUST 依 canonical instance store 同步，但 crosshair time、fallback candle、forming 狀態及可見讀值 MUST 保持在各自 `CandleChart`。crosshair、live quote、資料載入或商品／時框切換造成的更新 MUST 使用有界 latest-wins 排程及 generation guard，且不得重建主圖 series 或副圖 pane。
+
+#### Scenario: 多張圖使用不同游標位置
+- **WHEN** 同一畫面有兩張以上不同商品或時框的圖，且使用者在其中一張移動 crosshair
+- **THEN** 只有該圖的 K 棒價量 MUST 改為對應 candle
+- **AND** 其他圖 MUST 維持各自的讀值或最新 candle fallback
+
+#### Scenario: 游標停在 forming candle 接收 live update
+- **WHEN** crosshair 停在 forming candle 且新 live quote 更新該 candle
+- **THEN** readout MUST 在一個有界節流週期內顯示新的 high、low、最新價及量
+- **AND** 使用者 MUST NOT 需要再次移動滑鼠才看到更新
+
+#### Scenario: 快速切換商品或時框
+- **WHEN** 舊商品或時框仍有已排程 readout callback，使用者切換至新 generation
+- **THEN** 舊 callback MUST 被取消或丟棄
+- **AND** 新圖 MUST NOT 短暫顯示前一商品、時框或 candle 的時間與 OHLCV
+
+### Requirement: 價格與成交量格式必須符合資料語意
+readout 的價格 MUST 使用目前商品／K 線既有價格精度；volume MUST 使用非負整數與千分位，不得套用價格小數精度。欄位標籤及數值 MUST 使用 tabular numbers 並保持可辨識，完整時間區間 MUST 同時提供可存取名稱或 tooltip。
+
+#### Scenario: 顯示價格與大量成交量
+- **WHEN** candle 的 open=193.5、high=199、low=189.5、close=191、volume=39053，且價格精度為二位
+- **THEN** readout MUST 顯示 `開 193.50`、`高 199.00`、`低 189.50`、`收 191.00` 與 `量 39,053`
+- **AND** volume MUST NOT 顯示為 `39053.00`
+
+#### Scenario: 無障礙與狹窄版面
+- **WHEN** 圖表寬度不足以在單行容納完整時間區間與 OHLCV
+- **THEN** UI MUST 保留全部欄位並採可測試的換行或溢位呈現
+- **AND** 完整時間區間與欄位語意 MUST 可由鍵盤焦點、accessible name 或 tooltip 取得
+- **AND** crosshair 高頻更新 MUST NOT 使用會逐筆打擾使用者的 assertive live region
