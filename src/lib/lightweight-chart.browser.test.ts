@@ -14,6 +14,11 @@ import { createIndicatorSeriesRenderer } from './chart-indicators';
 import type { Candle } from './types/market';
 import { MarketOverlayPrimitive } from './market-overlay-primitive';
 import { PivotPrimitive } from './pivot-primitive';
+import {
+    createFibonacciController,
+    fibonacciIdentity,
+} from './fibonacci-annotations';
+import { buildFibonacciOverlayModel } from './fibonacci-overlay';
 
 describe('lightweight-charts browser harness', () => {
     afterEach(() => {
@@ -50,6 +55,93 @@ describe('lightweight-charts browser harness', () => {
         chart.remove();
         expect(host.querySelectorAll('canvas')).toHaveLength(0);
     });
+
+    for (const chartCount of [1, 2, 4, 8]) {
+        it(`${chartCount} 圖 Fibonacci controller／storage／overlay 維持隔離`, async () => {
+            const consoleError = vi
+                .spyOn(console, 'error')
+                .mockImplementation(() => {});
+            const runtimes = Array.from({ length: chartCount }, (_, index) => {
+                const host = document.createElement('div');
+                host.style.width = '320px';
+                host.style.height = '180px';
+                document.body.append(host);
+                const chart = createChart(host, { width: 320, height: 180 });
+                const series = chart.addSeries(CandlestickSeries);
+                series.setData([
+                    { time: 1 as UTCTimestamp, open: 90, high: 110, low: 85, close: 100 },
+                    { time: 2 as UTCTimestamp, open: 100, high: 130, low: 98, close: 125 },
+                    { time: 3 as UTCTimestamp, open: 125, high: 128, low: 105, close: 110 },
+                ]);
+                chart.timeScale().fitContent();
+                const identity = fibonacciIdentity({
+                    securityType: index % 2 === 0 ? 'STK' : 'IND',
+                    exchange: index % 2 === 0 ? 'TSE' : 'TAIFEX',
+                    canonicalCode: `FIB${index}`,
+                    timeframeMinutes: index % 2 === 0 ? 5 : 60,
+                });
+                const controller = createFibonacciController({
+                    getIdentity: () => identity,
+                    storage: localStorage,
+                });
+                controller.restore();
+                controller.arm(index % 2 === 0 ? 'retracement' : 'extension');
+                controller.addPoint({ time: 1, price: 100 + index / 10 });
+                controller.addPoint({ time: 2, price: 110 + index / 10 });
+                if (index % 2 === 1) {
+                    controller.addPoint({ time: 3, price: 100 + index / 10 });
+                }
+                return { host, chart, series, identity, controller };
+            });
+
+            await new Promise<void>((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+            );
+            const models = runtimes.map((runtime) =>
+                buildFibonacciOverlayModel(runtime.controller.getSnapshot(), {
+                    width: 320,
+                    height: 180,
+                    rightEdge: 270,
+                    coordinates: {
+                        timeToCoordinate: (time) =>
+                            runtime.chart
+                                .timeScale()
+                                .timeToCoordinate(time as UTCTimestamp),
+                        priceToCoordinate: (price) =>
+                            runtime.series.priceToCoordinate(price),
+                    },
+                    formatPrice: (price) => price.toFixed(2),
+                }),
+            );
+            expect(new Set(runtimes.map(({ identity }) => identity)).size).toBe(
+                chartCount,
+            );
+            expect(localStorage.length).toBe(chartCount);
+            expect(models.every((model) => model.lines.length >= 7)).toBe(true);
+
+            for (let tick = 0; tick < 20; tick += 1) {
+                runtimes.forEach((runtime) => {
+                    runtime.series.update({
+                        time: 3 as UTCTimestamp,
+                        open: 125,
+                        high: 128 + tick / 10,
+                        low: 105,
+                        close: 110 + tick / 10,
+                    });
+                    expect(runtime.chart.panes()).toHaveLength(1);
+                });
+            }
+            runtimes.forEach((runtime) => {
+                runtime.chart.resize(360, 200);
+                runtime.chart.timeScale().scrollToPosition(1, false);
+                runtime.controller.clear('all');
+                runtime.chart.remove();
+                expect(runtime.host.querySelectorAll('canvas')).toHaveLength(0);
+            });
+            expect(consoleError).not.toHaveBeenCalled();
+            consoleError.mockRestore();
+        });
+    }
 
     for (const chartCount of [1, 2, 4, 8]) {
         it(`${chartCount} 圖資料 refresh 維持 series／pane identity 且可清理`, async () => {

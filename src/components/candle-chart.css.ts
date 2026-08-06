@@ -91,6 +91,49 @@ export const modeBtn = styleVariants({
     ],
 });
 
+const fibonacciBase = style({
+    fontFamily: vars.font.body,
+    fontSize: '0.66rem',
+    fontWeight: 600,
+    padding: '2px 7px',
+    cursor: 'pointer',
+    background: 'transparent',
+    border: '1px solid transparent',
+    borderRadius: vars.radius.sm,
+    color: vars.color.mutedForeground,
+    transition: 'all 0.12s',
+    ':hover': {
+        color: vars.color.foreground,
+        borderColor: vars.color.border,
+    },
+});
+
+export const fibonacciBtn = styleVariants({
+    normal: [fibonacciBase],
+    active: [
+        fibonacciBase,
+        {
+            color: '#e0f2fe',
+            background: 'rgba(14, 116, 144, 0.4)',
+            borderColor: '#38bdf8',
+        },
+    ],
+});
+
+export const fibonacciClear = style({
+    maxWidth: '4.5rem',
+    fontFamily: vars.font.body,
+    fontSize: '0.64rem',
+    color: vars.color.mutedForeground,
+    background: vars.color.inset,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    padding: '1px 4px',
+    cursor: 'pointer',
+    outline: 'none',
+    ':focus': { borderColor: '#38bdf8' },
+});
+
 // 圖表下單數量 — 緊貼交易模式按鈕群，帶「量」標籤（不再孤懸右側）
 export const qtyWrap = style({
     display: 'inline-flex',
@@ -144,6 +187,43 @@ export const modeHint = style({
     background: vars.color.amber,
     borderRadius: vars.radius.sm,
     padding: '2px 10px',
+    pointerEvents: 'none',
+});
+
+export const fibonacciHint = style({
+    position: 'absolute',
+    top: '8px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    zIndex: 6,
+    maxWidth: 'calc(100% - 24px)',
+    overflow: 'hidden',
+    whiteSpace: 'nowrap',
+    textOverflow: 'ellipsis',
+    fontFamily: vars.font.mono,
+    fontSize: '0.64rem',
+    fontWeight: 700,
+    color: '#e0f2fe',
+    background: 'rgba(15, 23, 42, 0.94)',
+    border: '1px solid #38bdf8',
+    borderRadius: vars.radius.sm,
+    padding: '2px 8px',
+    pointerEvents: 'none',
+});
+
+export const fibonacciNotice = style({
+    position: 'absolute',
+    right: '64px',
+    bottom: '26px',
+    zIndex: 6,
+    maxWidth: 'min(28rem, calc(100% - 24px))',
+    fontFamily: vars.font.body,
+    fontSize: '0.62rem',
+    color: vars.color.mutedForeground,
+    background: 'color-mix(in srgb, ' + vars.color.panel + ' 90%, transparent)',
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    padding: '2px 7px',
     pointerEvents: 'none',
 });
 
@@ -205,6 +285,15 @@ export const chartHost = style({
     flex: 1,
     minHeight: 0,
     position: 'relative',
+});
+
+export const fibonacciOverlay = style({
+    position: 'absolute',
+    inset: 0,
+    zIndex: 4,
+    display: 'block',
+    overflow: 'visible',
+    pointerEvents: 'none',
 });
 
 // ---- indicator legend（TradingView 式，圖上左上角，一列一個實例）----

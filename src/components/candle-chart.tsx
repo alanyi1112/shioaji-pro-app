@@ -45,6 +45,7 @@ import {
     IndicatorDialog,
     IndicatorSettingsModal,
 } from './indicator-dialog';
+import { FibonacciOverlay } from './fibonacci-overlay';
 import {
     colorWithOpacity,
     commitIndicatorDraft,
@@ -83,6 +84,20 @@ import {
 import { priceDirection } from '../lib/price-direction';
 import { LatestWinsScheduler } from '../lib/latest-wins-scheduler';
 import { IndicatorCheckpointCache } from '../lib/indicator-checkpoints';
+import {
+    createFibonacciController,
+    dispatchFibonacciPointer,
+    fibonacciIdentity,
+    futureTimeForLogicalPosition,
+    resolveFibonacciAnchorPoint,
+    type FibonacciController,
+    type FibonacciKind,
+    type FibonacciSnapshot,
+} from '../lib/fibonacci-annotations';
+import {
+    completedExtensionAutoscaleBounds,
+    LatestAnimationFrameScheduler,
+} from '../lib/fibonacci-overlay';
 import {
     detectFairValueGaps,
     fixedRangeVolumeProfile,
@@ -143,6 +158,24 @@ const TRADE_MODES: { key: TradeMode; label: string }[] = [
     { key: 'alert', label: '警示' },
 ];
 
+let fibonacciPanelSerial = 0;
+
+function nextFibonacciPanelInstanceId() {
+    fibonacciPanelSerial += 1;
+    const uuid = globalThis.crypto?.randomUUID?.();
+    return uuid
+        ? `fibonacci-panel-${uuid}`
+        : `fibonacci-panel-${Date.now()}-${fibonacciPanelSerial}`;
+}
+
+const EMPTY_FIBONACCI_SNAPSHOT: FibonacciSnapshot = {
+    identity: '',
+    status: 'idle',
+    completed: [],
+    pending: null,
+    persistence: { state: 'ready' },
+};
+
 // keep paging until this floor — one page per fetch, spans widen with tf
 const MAX_HISTORY_DAYS = 1095; // ~3 years
 
@@ -178,11 +211,91 @@ export function CandleChart({
             ? rawReference
             : undefined;
     const tf = TIMEFRAMES[tfIdx] ?? TIMEFRAMES[1];
+    const fibonacciIdentityValue = fibonacciIdentity({
+        securityType: contract.security_type,
+        exchange: contract.exchange,
+        canonicalCode: contract.code,
+        timeframeMinutes: tf.minutes,
+    });
     const themeSettings = useThemeSettings();
     const colors = getChartColors(themeSettings);
     const themeKey = `${themeSettings.mode}-${themeSettings.convention}`;
     const [mode, setMode] = useState<TradeMode>('observe');
     const [tradeQty, setTradeQty] = useState(1);
+    const [fibonacciSnapshot, setFibonacciSnapshot] =
+        useState<FibonacciSnapshot>(EMPTY_FIBONACCI_SNAPSHOT);
+    const [, setFibonacciRenderVersion] = useState(0);
+    const [fibonacciLayout, setFibonacciLayout] = useState({
+        width: 0,
+        height: 0,
+        rightEdge: 0,
+    });
+    const [fibonacciNotice, setFibonacciNotice] = useState('');
+    const fibonacciIdentityRef = useRef(fibonacciIdentityValue);
+    fibonacciIdentityRef.current = fibonacciIdentityValue;
+    const fibonacciPanelInstanceIdRef = useRef('');
+    if (!fibonacciPanelInstanceIdRef.current) {
+        fibonacciPanelInstanceIdRef.current = nextFibonacciPanelInstanceId();
+    }
+    const fibonacciGenerationRef = useRef(0);
+    const fibonacciFrameSchedulerRef = useRef<LatestAnimationFrameScheduler | null>(
+        null,
+    );
+    if (fibonacciFrameSchedulerRef.current === null) {
+        fibonacciFrameSchedulerRef.current = new LatestAnimationFrameScheduler();
+    }
+    const scheduleFibonacciRender = () => {
+        const identity = fibonacciIdentityRef.current;
+        const panelInstanceId = fibonacciPanelInstanceIdRef.current;
+        const generation = fibonacciGenerationRef.current;
+        fibonacciFrameSchedulerRef.current?.schedule(() => {
+            if (
+                identity !== fibonacciIdentityRef.current ||
+                panelInstanceId !== fibonacciPanelInstanceIdRef.current ||
+                generation !== fibonacciGenerationRef.current
+            ) {
+                return;
+            }
+            const host = hostRef.current;
+            const chart = chartRef.current;
+            if (!host?.isConnected || !chart) return;
+            const width = Math.max(0, host.clientWidth);
+            const height = Math.max(
+                0,
+                chart.panes()[0]?.getHeight() ?? host.clientHeight,
+            );
+            const rightEdge = Math.max(
+                0,
+                width - chart.priceScale('right').width() - 4,
+            );
+            setFibonacciLayout((current) =>
+                current.width === width &&
+                current.height === height &&
+                current.rightEdge === rightEdge
+                    ? current
+                    : { width, height, rightEdge },
+            );
+            setFibonacciRenderVersion((version) => version + 1);
+        });
+    };
+    const scheduleFibonacciRenderRef = useRef(scheduleFibonacciRender);
+    scheduleFibonacciRenderRef.current = scheduleFibonacciRender;
+    const fibonacciControllerRef = useRef<FibonacciController | null>(null);
+    if (fibonacciControllerRef.current === null) {
+        fibonacciControllerRef.current = createFibonacciController({
+            getIdentity: () => fibonacciIdentityRef.current,
+            onChange: (snapshot) => {
+                setFibonacciSnapshot(snapshot);
+                scheduleFibonacciRenderRef.current();
+            },
+        });
+    }
+    const fibonacciAutoScaleLowerRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const fibonacciAutoScaleUpperRef = useRef<ISeriesApi<'Line'> | null>(null);
+    const fibonacciAutoScaleSignatureRef = useRef('');
+    const mainPriceLineDefaultsRef = useRef(
+        new Map<ISeriesApi<'Line' | 'Area'>, boolean>(),
+    );
     const instances = useSyncExternalStore(
         subscribeInstances,
         getInstancesSnapshot,
@@ -280,6 +393,39 @@ export function CandleChart({
     const rawRef = useRef<Candle[]>([]);
     const rawIdentityRef = useRef('');
     const loadMoreRef = useRef<(() => void) | null>(null);
+    const resolveFibonacciPoint = (
+        param: MouseEventParams,
+    ): ReturnType<typeof resolveFibonacciAnchorPoint> => {
+        const pending = fibonacciControllerRef.current?.getSnapshot().pending;
+        if (!pending || !param.point) return null;
+        const rawPrice = candleSeriesRef.current?.coordinateToPrice(
+            param.point.y,
+        );
+        if (rawPrice === null || rawPrice === undefined) return null;
+        const time =
+            typeof param.time === 'number'
+                ? Number(param.time)
+                : typeof param.logical === 'number'
+                  ? futureTimeForLogicalPosition(
+                        Number(param.logical),
+                        barsRef.current,
+                        tfMinutesRef.current,
+                    )
+                  : undefined;
+        if (time === undefined) return null;
+        return resolveFibonacciAnchorPoint(
+            pending,
+            { time, price: Number(rawPrice) },
+            candleTimeIndexRef.current.get(time),
+            {
+                freePrice: param.sourceEvent?.altKey === true,
+                normalizePrice: (price) =>
+                    roundToTick(contractRef.current, price),
+            },
+        );
+    };
+    const resolveFibonacciPointRef = useRef(resolveFibonacciPoint);
+    resolveFibonacciPointRef.current = resolveFibonacciPoint;
     const indSeriesRef = useRef<ISeriesApi<'Line' | 'Histogram'>[]>([]);
     const indSeriesByKeyRef = useRef(
         new Map<
@@ -317,6 +463,38 @@ export function CandleChart({
     };
     const invalidateIndicatorRefreshRef = useRef(invalidateIndicatorRefresh);
     invalidateIndicatorRefreshRef.current = invalidateIndicatorRefresh;
+
+    useEffect(() => {
+        fibonacciGenerationRef.current += 1;
+        fibonacciFrameSchedulerRef.current?.invalidate();
+        const restored = fibonacciControllerRef.current?.restore();
+        setFibonacciNotice(
+            restored?.persistence.state === 'error'
+                ? '費波那契圖形目前只保留在記憶體，尚未寫入瀏覽器儲存空間'
+                : '',
+        );
+        scheduleFibonacciRenderRef.current();
+    }, [fibonacciIdentityValue]);
+
+    useEffect(() => {
+        const cancelPending = (message: string) => {
+            if (!fibonacciControllerRef.current?.cancel()) return;
+            setFibonacciNotice(message);
+        };
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') cancelPending('已取消費波那契選點');
+        };
+        const handleBlur = () => cancelPending('視窗失焦，已取消費波那契選點');
+        document.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('blur', handleBlur);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('blur', handleBlur);
+            fibonacciGenerationRef.current += 1;
+            fibonacciFrameSchedulerRef.current?.invalidate();
+            fibonacciControllerRef.current?.cancel();
+        };
+    }, []);
     const triggers = useTriggers().filter((t) => t.code === contract.code);
     const workingOrders = useMemo(
         () =>
@@ -540,12 +718,28 @@ export function CandleChart({
             priceFormat: { type: 'volume' },
             priceScaleId: 'vol',
         });
+        const fibonacciAutoScaleLower = chart.addSeries(LineSeries, {
+            color: 'rgba(0, 0, 0, 0)',
+            lineVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: false,
+        });
+        const fibonacciAutoScaleUpper = chart.addSeries(LineSeries, {
+            color: 'rgba(0, 0, 0, 0)',
+            lineVisible: false,
+            lastValueVisible: false,
+            priceLineVisible: false,
+            crosshairMarkerVisible: false,
+        });
         chart.priceScale('vol').applyOptions({
             scaleMargins: { top: 0.82, bottom: 0 },
         });
         chartRef.current = chart;
         candleSeriesRef.current = candles;
         volSeriesRef.current = vol;
+        fibonacciAutoScaleLowerRef.current = fibonacciAutoScaleLower;
+        fibonacciAutoScaleUpperRef.current = fibonacciAutoScaleUpper;
         const marketOverlay = new MarketOverlayPrimitive(candles);
         chart.panes()[0]?.attachPrimitive(marketOverlay);
         marketOverlayPrimitiveRef.current = marketOverlay;
@@ -554,7 +748,27 @@ export function CandleChart({
         pivotPrimitiveRef.current = pivotPrimitive;
         reconcileDayPrimitivesRef.current();
 
-        chart.subscribeClick((param) => {
+        const handleChartClick = (param: MouseEventParams) => {
+            const fibonacciResult = dispatchFibonacciPointer(
+                fibonacciControllerRef.current!,
+                'click',
+                resolveFibonacciPointRef.current(param),
+                () => {},
+            );
+            if (fibonacciResult.consumed) {
+                if (fibonacciResult.reason === 'invalid-point') {
+                    setFibonacciNotice(
+                        '目前位置無法建立錨點；A／B 請選 K 棒，C 可選右側空白區',
+                    );
+                } else if (fibonacciResult.completed) {
+                    setFibonacciNotice('費波那契圖形已完成並保存');
+                } else if (fibonacciResult.remaining !== undefined) {
+                    setFibonacciNotice(
+                        `錨點已固定，尚需 ${fibonacciResult.remaining} 點`,
+                    );
+                }
+                return;
+            }
             const m = modeRef.current;
             if (!param.point) return;
             const raw = candles.coordinateToPrice(param.point.y);
@@ -660,9 +874,10 @@ export function CandleChart({
                     kind: 'take',
                 });
             }
-        });
+        };
+        chart.subscribeClick(handleChartClick);
 
-        chart.subscribeCrosshairMove((param) => {
+        const handleCrosshairMove = (param: MouseEventParams) => {
             selectedReadoutTimeRef.current =
                 param.point && typeof param.time === 'number'
                     ? Number(param.time)
@@ -678,17 +893,30 @@ export function CandleChart({
                     );
                 });
             }
-            if (!param.point) return;
-            const raw = candles.coordinateToPrice(param.point.y);
-            if (raw === null) return;
-            const c = contractRef.current;
-            setPickedPrice(c.code, roundToTick(c, Number(raw)));
-        });
+            dispatchFibonacciPointer(
+                fibonacciControllerRef.current!,
+                'move',
+                resolveFibonacciPointRef.current(param),
+                () => {
+                    if (!param.point) return;
+                    const raw = candles.coordinateToPrice(param.point.y);
+                    if (raw === null) return;
+                    const c = contractRef.current;
+                    setPickedPrice(c.code, roundToTick(c, Number(raw)));
+                },
+            );
+            scheduleFibonacciRenderRef.current();
+        };
+        chart.subscribeCrosshairMove(handleCrosshairMove);
 
         const handlePointerLeave = () => {
             selectedReadoutTimeRef.current = null;
             scheduleKbarReadoutRef.current();
             updateLegendRef.current(undefined);
+            if (fibonacciControllerRef.current?.hasPending()) {
+                fibonacciControllerRef.current.previewPoint();
+                scheduleFibonacciRenderRef.current();
+            }
         };
         host.addEventListener('pointerleave', handlePointerLeave);
         host.addEventListener('mouseleave', handlePointerLeave);
@@ -706,15 +934,44 @@ export function CandleChart({
 
         // TradingView-style infinite history: panning near the left edge
         // pulls an older page of kbars (handler injected by the load effect)
-        chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        const handleVisibleRangeChange = (range: { from: number } | null) => {
+            scheduleFibonacciRenderRef.current();
             if (range && range.from < 30) loadMoreRef.current?.();
-        });
+        };
+        const handleTimeScaleSizeChange = () =>
+            scheduleFibonacciRenderRef.current();
+        const handleHostGeometryChange = () =>
+            scheduleFibonacciRenderRef.current();
+        chart.timeScale().subscribeVisibleLogicalRangeChange(
+            handleVisibleRangeChange,
+        );
+        chart.timeScale().subscribeSizeChange(handleTimeScaleSizeChange);
+        const fibonacciResizeObserver = new ResizeObserver(
+            handleHostGeometryChange,
+        );
+        fibonacciResizeObserver.observe(host);
+        host.addEventListener('pointermove', handleHostGeometryChange, true);
+        host.addEventListener('wheel', handleHostGeometryChange, true);
+        scheduleFibonacciRenderRef.current();
 
         return () => {
             readoutGenerationRef.current += 1;
             invalidateIndicatorRefreshRef.current();
             host.removeEventListener('pointerleave', handlePointerLeave);
             host.removeEventListener('mouseleave', handlePointerLeave);
+            host.removeEventListener(
+                'pointermove',
+                handleHostGeometryChange,
+                true,
+            );
+            host.removeEventListener('wheel', handleHostGeometryChange, true);
+            fibonacciResizeObserver.disconnect();
+            chart.unsubscribeClick(handleChartClick);
+            chart.unsubscribeCrosshairMove(handleCrosshairMove);
+            chart.timeScale().unsubscribeVisibleLogicalRangeChange(
+                handleVisibleRangeChange,
+            );
+            chart.timeScale().unsubscribeSizeChange(handleTimeScaleSizeChange);
             document.removeEventListener(
                 'pointerdown',
                 handlePointerDownOutside,
@@ -739,12 +996,74 @@ export function CandleChart({
             }
             pivotPrimitiveRef.current = null;
             indSeriesByKeyRef.current.clear();
+            fibonacciFrameSchedulerRef.current?.invalidate();
+            fibonacciAutoScaleSignatureRef.current = '';
             chart.remove();
             chartRef.current = null;
             candleSeriesRef.current = null;
             volSeriesRef.current = null;
+            fibonacciAutoScaleLowerRef.current = null;
+            fibonacciAutoScaleUpperRef.current = null;
         };
     }, []);
+
+    useEffect(() => {
+        const lowerSeries = fibonacciAutoScaleLowerRef.current;
+        const upperSeries = fibonacciAutoScaleUpperRef.current;
+        if (!lowerSeries || !upperSeries) return;
+        const bounds = completedExtensionAutoscaleBounds(fibonacciSnapshot);
+        if (bounds.signature === fibonacciAutoScaleSignatureRef.current) return;
+        fibonacciAutoScaleSignatureRef.current = bounds.signature;
+        lowerSeries.setData(
+            bounds.lower.map(({ time, value }) => ({
+                time: time as UTCTimestamp,
+                value,
+            })),
+        );
+        upperSeries.setData(
+            bounds.upper.map(({ time, value }) => ({
+                time: time as UTCTimestamp,
+                value,
+            })),
+        );
+        if (bounds.lower.length > 0 || bounds.upper.length > 0) {
+            candleSeriesRef.current?.priceScale().applyOptions({
+                autoScale: true,
+            });
+        }
+        scheduleFibonacciRenderRef.current();
+    }, [fibonacciSnapshot]);
+
+    useEffect(() => {
+        const pending = fibonacciSnapshot.pending !== null;
+        mainPriceLineDefaultsRef.current.forEach((defaultVisible, series) => {
+            try {
+                series.applyOptions({
+                    crosshairMarkerVisible: pending ? false : defaultVisible,
+                });
+            } catch {
+                // A concurrent indicator rebuild may already have removed it.
+            }
+        });
+        return () => {
+            if (!pending) return;
+            mainPriceLineDefaultsRef.current.forEach(
+                (defaultVisible, series) => {
+                    try {
+                        series.applyOptions({
+                            crosshairMarkerVisible: defaultVisible,
+                        });
+                    } catch {
+                        // Chart teardown owns final disposal.
+                    }
+                },
+            );
+        };
+    }, [fibonacciSnapshot.pending !== null]);
+
+    useEffect(() => {
+        scheduleFibonacciRenderRef.current();
+    }, [dataVersion, overlayRuntimeVersion, themeKey, fibonacciSnapshot]);
 
     // keep latest theme readable inside the chart-creation effect
     const themeSettingsRef = useRef(themeSettings);
@@ -1305,6 +1624,9 @@ export function CandleChart({
             // pane API differences must never take the chart down
         }
         for (const series of indSeriesRef.current) {
+            mainPriceLineDefaultsRef.current.delete(
+                series as ISeriesApi<'Line' | 'Area'>,
+            );
             try {
                 chart.removeSeries(series);
             } catch {
@@ -1482,6 +1804,20 @@ export function CandleChart({
                     signed: o.signed,
                     color,
                 });
+                if (pane === 0 && st.plot !== 'histogram') {
+                    const mainPriceSeries = s as ISeriesApi<'Line' | 'Area'>;
+                    const defaultVisible =
+                        mainPriceSeries.options().crosshairMarkerVisible ?? true;
+                    mainPriceLineDefaultsRef.current.set(
+                        mainPriceSeries,
+                        defaultVisible,
+                    );
+                    if (fibonacciControllerRef.current?.hasPending()) {
+                        mainPriceSeries.applyOptions({
+                            crosshairMarkerVisible: false,
+                        });
+                    }
+                }
                 firstSeries ??= s as ISeriesApi<'Line' | 'Histogram'>;
                 metas.push({
                     label: o.label,
@@ -1733,6 +2069,47 @@ export function CandleChart({
         indicatorDataRefreshRef.current();
     };
 
+    const cancelFibonacciPending = () => {
+        const cancelled = fibonacciControllerRef.current?.cancel() ?? false;
+        if (cancelled) setFibonacciNotice('已取消費波那契選點');
+        return cancelled;
+    };
+    const armFibonacci = (kind: FibonacciKind) => {
+        setMode('observe');
+        rangeSelectionRef.current = null;
+        pivotSelectionRef.current = null;
+        if (!fibonacciControllerRef.current?.arm(kind)) {
+            setFibonacciNotice('目前商品或時框無法建立費波那契圖形');
+            return;
+        }
+        setOverlayRuntimeVersion((version) => version + 1);
+        setFibonacciNotice(
+            kind === 'retracement'
+                ? '回撤：請依序選取 A（低點）、B（高點）'
+                : '拓展：請依序選取 A（低點）、B（高點）、C（低點）',
+        );
+    };
+    const changeTradeMode = (nextMode: TradeMode) => {
+        cancelFibonacciPending();
+        rangeSelectionRef.current = null;
+        pivotSelectionRef.current = null;
+        setMode(nextMode);
+    };
+    const changeTimeframe = (index: number) => {
+        cancelFibonacciPending();
+        setTfIdx(index);
+    };
+    const clearFibonacci = (target: FibonacciKind | 'all') => {
+        fibonacciControllerRef.current?.clear(target);
+        const label =
+            target === 'retracement'
+                ? '回撤'
+                : target === 'extension'
+                  ? '拓展'
+                  : '全部費波那契圖形';
+        setFibonacciNotice(`已清除${label}`);
+    };
+
     // recalibrate the view — re-fit both axes after the user has panned or
     // dragged the price scale into a corner (issue #6: no reset control)
     const resetView = () => {
@@ -1953,6 +2330,7 @@ export function CandleChart({
                             title='依序選取兩根 K 棒；交易模式優先'
                             disabled={mode !== 'observe'}
                             onClick={() => {
+                                cancelFibonacciPending();
                                 rangeSelectionRef.current = {
                                     instanceId: inst.id,
                                     firstTime: null,
@@ -2011,6 +2389,7 @@ export function CandleChart({
                                 }
                                 title='游標觀察模式下點選歷史 K 棒固定 reference'
                                 onClick={() => {
+                                    cancelFibonacciPending();
                                     rangeSelectionRef.current = null;
                                     pivotSelectionRef.current = inst.id;
                                     setOverlayRuntimeVersion(
@@ -2398,7 +2777,7 @@ export function CandleChart({
                     <button
                         key={t.label}
                         className={styles.tfBtn[i === tfIdx ? 'active' : 'normal']}
-                        onClick={() => setTfIdx(i)}
+                        onClick={() => changeTimeframe(i)}
                     >
                         {t.label}
                     </button>
@@ -2424,7 +2803,7 @@ export function CandleChart({
                                     : 'normal'
                             ]
                         }
-                        onClick={() => setMode(m.key)}
+                        onClick={() => changeTradeMode(m.key)}
                     >
                         {m.label}
                     </button>
@@ -2444,6 +2823,50 @@ export function CandleChart({
                         }}
                     />
                 </label>
+                <span className={styles.toolbarDivider} />
+                <button
+                    className={
+                        styles.fibonacciBtn[
+                            fibonacciSnapshot.status === 'pending-retracement'
+                                ? 'active'
+                                : 'normal'
+                        ]
+                    }
+                    onClick={() => armFibonacci('retracement')}
+                    title='費波那契回撤：A/B 預設吸附 K 棒低點/高點；按住 Option 可自由選價'
+                >
+                    回撤
+                </button>
+                <button
+                    className={
+                        styles.fibonacciBtn[
+                            fibonacciSnapshot.status === 'pending-extension'
+                                ? 'active'
+                                : 'normal'
+                        ]
+                    }
+                    onClick={() => armFibonacci('extension')}
+                    title='費波那契拓展：A/B/C 預設吸附低點/高點/低點；按住 Option 可自由選價'
+                >
+                    拓展
+                </button>
+                <select
+                    className={styles.fibonacciClear}
+                    aria-label='清除費波那契圖形'
+                    value=''
+                    onChange={(event) => {
+                        const target = event.target.value as
+                            | FibonacciKind
+                            | 'all'
+                            | '';
+                        if (target) clearFibonacci(target);
+                    }}
+                >
+                    <option value=''>清除…</option>
+                    <option value='retracement'>清除回撤</option>
+                    <option value='extension'>清除拓展</option>
+                    <option value='all'>全部清除</option>
+                </select>
                 <button
                     className={
                         styles.indicatorBtn[
@@ -2500,7 +2923,38 @@ export function CandleChart({
                     />
                 )}
             </div>
-            <div ref={hostRef} className={styles.chartHost}>
+            <div
+                ref={hostRef}
+                className={styles.chartHost}
+                data-fibonacci-panel-instance={
+                    fibonacciPanelInstanceIdRef.current
+                }
+                data-fibonacci-identity={fibonacciIdentityValue}
+            >
+                {fibonacciLayout.width > 0 &&
+                    fibonacciLayout.height > 0 &&
+                    chartRef.current &&
+                    candleSeriesRef.current && (
+                        <FibonacciOverlay
+                            snapshot={fibonacciSnapshot}
+                            width={fibonacciLayout.width}
+                            height={fibonacciLayout.height}
+                            rightEdge={fibonacciLayout.rightEdge}
+                            coordinates={{
+                                timeToCoordinate: (time) =>
+                                    chartRef.current
+                                        ?.timeScale()
+                                        .timeToCoordinate(
+                                            time as UTCTimestamp,
+                                        ) ?? null,
+                                priceToCoordinate: (price) =>
+                                    candleSeriesRef.current?.priceToCoordinate(
+                                        price,
+                                    ) ?? null,
+                            }}
+                            formatPrice={fmtPrice}
+                        />
+                    )}
                 {loading && (
                     <div className={styles.emptyMsg}>
                         <span className={panel.mono}>
@@ -2520,6 +2974,25 @@ export function CandleChart({
                         {mode === 'stop' && '點擊價位掛停損（觸價市價單）'}
                         {mode === 'take' && '點擊價位掛停利（觸價市價單）'}
                         {mode === 'alert' && '點擊價位設定到價警示（只通知不下單）'}
+                    </div>
+                )}
+                {fibonacciSnapshot.pending && (
+                    <div className={styles.fibonacciHint}>
+                        {fibonacciSnapshot.pending.kind === 'retracement'
+                            ? '費波回撤'
+                            : '費波拓展'}
+                        {' · 待選 '}
+                        {
+                            (['A', 'B', 'C'] as const)[
+                                fibonacciSnapshot.pending.anchors.length
+                            ]
+                        }
+                        {` · 尚需 ${fibonacciSnapshot.pending.remaining} 點 · Option 自由價位 · Esc 取消`}
+                    </div>
+                )}
+                {fibonacciNotice && !fibonacciSnapshot.pending && (
+                    <div className={styles.fibonacciNotice}>
+                        {fibonacciNotice}
                     </div>
                 )}
                 {(workingOrders.length > 0 ||
