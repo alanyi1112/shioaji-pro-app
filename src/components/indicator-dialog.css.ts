@@ -362,6 +362,19 @@ export const fieldRow = style({
     color: vars.color.foreground,
 });
 
+export const fieldGroup = style({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '4px',
+});
+
+export const fieldError = style({
+    alignSelf: 'flex-end',
+    fontFamily: vars.font.body,
+    fontSize: '0.66rem',
+    color: vars.color.danger,
+});
+
 export const fieldInput = style({
     width: '5rem',
     fontFamily: vars.font.mono,
@@ -374,6 +387,10 @@ export const fieldInput = style({
     padding: '4px 8px',
     outline: 'none',
     ':focus': { borderColor: vars.color.accent },
+});
+
+export const fieldInputError = style({
+    borderColor: vars.color.danger,
 });
 
 export const styleSection = style({
@@ -668,6 +685,15 @@ export const settingsFooter = style({
     gap: '8px',
     padding: `${vars.space.md} ${vars.space.lg}`,
     borderTop: `1px solid ${vars.color.border}`,
+});
+
+export const modalConflict = style({
+    padding: `${vars.space.sm} ${vars.space.lg}`,
+    borderTop: `1px solid ${vars.color.danger}`,
+    color: vars.color.danger,
+    background: 'rgba(239, 68, 68, 0.08)',
+    fontSize: '0.72rem',
+    lineHeight: 1.45,
 });
 
 export const dangerBtn = style({

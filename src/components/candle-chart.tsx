@@ -28,11 +28,18 @@ import {
     Maximize2,
     MoreHorizontal,
     OctagonX,
+    RotateCw,
     Settings2,
     Star,
     X,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    useSyncExternalStore,
+} from 'react';
 import { useQuote } from '../hooks/use-stream';
 import {
     IndicatorDialog,
@@ -40,22 +47,25 @@ import {
 } from './indicator-dialog';
 import {
     colorWithOpacity,
+    commitIndicatorDraft,
     DEF_BY_TYPE,
     duplicateInstance,
     instanceLabel,
     loadFavorites,
-    loadInstances,
+    getInstancesSnapshot,
+    getIndicatorPersistenceStatus,
     newInstance,
     outputStyle,
     saveFavorites,
-    saveInstances,
     splitKbarReadoutInstance,
     subscribeInstances,
+    subscribeIndicatorPersistence,
+    updateInstances,
     KBAR_READOUT_TYPE,
     type IndicatorInstance,
 } from '../lib/indicator-defs';
 // side-effect import順序：custom-indicators 在 module 載入時就把已存的
-// 自訂指標註冊進 DEF_BY_TYPE，loadInstances() 的型別過濾才不會把它們丟掉
+// 自訂指標註冊進 DEF_BY_TYPE，canonical store 正規化時才不會把它們丟掉
 import { subscribeCustoms } from '../lib/custom-indicators';
 import type { IndicatorPoint } from '../lib/indicators';
 import { DayBoundaryPaneManager } from '../lib/day-boundary-primitive';
@@ -71,6 +81,23 @@ import {
     type KbarReadoutDisplay,
 } from '../lib/kbar-readout';
 import { priceDirection } from '../lib/price-direction';
+import { LatestWinsScheduler } from '../lib/latest-wins-scheduler';
+import { IndicatorCheckpointCache } from '../lib/indicator-checkpoints';
+import {
+    detectFairValueGaps,
+    fixedRangeVolumeProfile,
+    normalizeFixedRange,
+    type FixedRangeAnchors,
+} from '../lib/market-overlays';
+import { MarketOverlayPrimitive } from '../lib/market-overlay-primitive';
+import {
+    buildPivotReferenceDays,
+    completedPivotForTime,
+    latestCompletedPivot,
+    pivotSupportReason,
+    type PivotReferenceDay,
+} from '../lib/traditional-pivot';
+import { PivotPrimitive } from '../lib/pivot-primitive';
 import { cancelOrder, fetchKbars, updateOrderPrice } from '../lib/shioaji';
 import { setPickedPrice } from '../lib/price-sync';
 import { notify, placeQuickOrder } from '../lib/trade';
@@ -156,17 +183,41 @@ export function CandleChart({
     const themeKey = `${themeSettings.mode}-${themeSettings.convention}`;
     const [mode, setMode] = useState<TradeMode>('observe');
     const [tradeQty, setTradeQty] = useState(1);
-    const [instances, setInstances] =
-        useState<IndicatorInstance[]>(loadInstances);
+    const instances = useSyncExternalStore(
+        subscribeInstances,
+        getInstancesSnapshot,
+        getInstancesSnapshot,
+    );
+    const indicatorPersistence = useSyncExternalStore(
+        subscribeIndicatorPersistence,
+        getIndicatorPersistenceStatus,
+        getIndicatorPersistenceStatus,
+    );
     const [pickerOpen, setPickerOpen] = useState(false);
     const [settingsFor, setSettingsFor] = useState<string | null>(null);
+    const [settingsDraft, setSettingsDraft] =
+        useState<IndicatorInstance | null>(null);
+    const [settingsIsNew, setSettingsIsNew] = useState(false);
+    const [settingsConflict, setSettingsConflict] = useState<string | null>(
+        null,
+    );
     const [legendMenuFor, setLegendMenuFor] = useState<string | null>(null);
-    // instances snapshot taken when settings opens — 取消 restores it
-    const settingsSnapshotRef = useRef<string>('');
     // legend live values: instId -> per-output {label,text,color}
     const [legendValues, setLegendValues] = useState<
         Record<string, { label: string; text: string; color: string }[]>
     >({});
+    const [, setIndicatorRuntimeVersion] = useState(0);
+    const indicatorRuntimeRef = useRef(
+        new Map<
+            string,
+            {
+                chartIdentity: string;
+                generation: number;
+                state: 'idle' | 'computing' | 'ready' | 'error';
+                reasonCode?: 'compute-failed';
+            }
+        >(),
+    );
     const legendMetaRef = useRef(
         new Map<
             string,
@@ -193,6 +244,25 @@ export function CandleChart({
     tfMinutesRef.current = tf.minutes;
     const dayBoundariesRef = useRef<ReturnType<typeof selectDayBoundaries>>([]);
     const dayPrimitiveManagerRef = useRef(new DayBoundaryPaneManager());
+    const marketOverlayPrimitiveRef = useRef<MarketOverlayPrimitive | null>(
+        null,
+    );
+    const pivotPrimitiveRef = useRef<PivotPrimitive | null>(null);
+    const pivotPinnedDateRef = useRef(new Map<string, string>());
+    const pivotReferenceRef = useRef(
+        new Map<string, PivotReferenceDay | null>(),
+    );
+    const pivotSelectionRef = useRef<string | null>(null);
+    const fixedRangeAnchorsRef = useRef(
+        new Map<string, FixedRangeAnchors>(),
+    );
+    const rangeSelectionRef = useRef<{
+        instanceId: string;
+        firstTime: number | null;
+    } | null>(null);
+    const [overlayRuntimeVersion, setOverlayRuntimeVersion] = useState(0);
+    const marketOverlayRefreshRef = useRef<() => void>(() => {});
+    const pivotRefreshRef = useRef<() => void>(() => {});
     // sub-pane layout memory: instId -> pane index（上次重建的配置）與
     // instId -> 高度 px（使用者拖出來的上下圖比例，重建時還原）
     const paneAssignRef = useRef(new Map<string, number>());
@@ -208,8 +278,45 @@ export function CandleChart({
     // raw 1-min candles backing the current view — history pages merge here
     // and re-aggregate so buckets spanning a page seam stay correct
     const rawRef = useRef<Candle[]>([]);
+    const rawIdentityRef = useRef('');
     const loadMoreRef = useRef<(() => void) | null>(null);
     const indSeriesRef = useRef<ISeriesApi<'Line' | 'Histogram'>[]>([]);
+    const indSeriesByKeyRef = useRef(
+        new Map<
+            string,
+            {
+                series: ISeriesApi<'Line' | 'Histogram' | 'Area'>;
+                plot: string;
+                signed?: boolean;
+                color: string;
+            }
+        >(),
+    );
+    const indicatorDataRefreshRef = useRef<() => void>(() => {});
+    const indicatorCheckpointRef = useRef(new IndicatorCheckpointCache());
+    const indicatorSchedulerRef = useRef<LatestWinsScheduler | null>(null);
+    if (indicatorSchedulerRef.current === null) {
+        indicatorSchedulerRef.current = new LatestWinsScheduler(120);
+    }
+    const indicatorGenerationRef = useRef(0);
+    const scheduleIndicatorRefresh = () => {
+        const generation = indicatorGenerationRef.current;
+        indicatorSchedulerRef.current?.schedule(() => {
+            if (generation !== indicatorGenerationRef.current) return;
+            indicatorDataRefreshRef.current();
+            marketOverlayRefreshRef.current();
+            pivotRefreshRef.current();
+        });
+    };
+    const scheduleIndicatorRefreshRef = useRef(scheduleIndicatorRefresh);
+    scheduleIndicatorRefreshRef.current = scheduleIndicatorRefresh;
+    const invalidateIndicatorRefresh = () => {
+        indicatorGenerationRef.current += 1;
+        indicatorSchedulerRef.current?.invalidate();
+        indicatorCheckpointRef.current.clear();
+    };
+    const invalidateIndicatorRefreshRef = useRef(invalidateIndicatorRefresh);
+    invalidateIndicatorRefreshRef.current = invalidateIndicatorRefresh;
     const triggers = useTriggers().filter((t) => t.code === contract.code);
     const workingOrders = useMemo(
         () =>
@@ -439,6 +546,12 @@ export function CandleChart({
         chartRef.current = chart;
         candleSeriesRef.current = candles;
         volSeriesRef.current = vol;
+        const marketOverlay = new MarketOverlayPrimitive(candles);
+        chart.panes()[0]?.attachPrimitive(marketOverlay);
+        marketOverlayPrimitiveRef.current = marketOverlay;
+        const pivotPrimitive = new PivotPrimitive(candles);
+        chart.panes()[0]?.attachPrimitive(pivotPrimitive);
+        pivotPrimitiveRef.current = pivotPrimitive;
         reconcileDayPrimitivesRef.current();
 
         chart.subscribeClick((param) => {
@@ -449,6 +562,39 @@ export function CandleChart({
             const c = contractRef.current;
             const price = roundToTick(c, Number(raw));
             if (m === 'observe') {
+                const selection = rangeSelectionRef.current;
+                if (selection && typeof param.time === 'number') {
+                    const selectedTime = Number(param.time);
+                    if (selection.firstTime === null) {
+                        selection.firstTime = selectedTime;
+                    } else {
+                        const key = `${selection.instanceId}|${c.code}|${tfMinutesRef.current}`;
+                        fixedRangeAnchorsRef.current.set(
+                            key,
+                            normalizeFixedRange(
+                                selection.firstTime,
+                                selectedTime,
+                            ),
+                        );
+                        rangeSelectionRef.current = null;
+                    }
+                    setOverlayRuntimeVersion((version) => version + 1);
+                    return;
+                }
+                const pivotInstanceId = pivotSelectionRef.current;
+                if (pivotInstanceId && typeof param.time === 'number') {
+                    const selected = completedPivotForTime(
+                        buildPivotReferenceDays(rawRef.current),
+                        Number(param.time),
+                    );
+                    if (selected) {
+                        const key = `${pivotInstanceId}|${c.code}|${tfMinutesRef.current}`;
+                        pivotPinnedDateRef.current.set(key, selected.date);
+                        pivotSelectionRef.current = null;
+                        setOverlayRuntimeVersion((version) => version + 1);
+                    }
+                    return;
+                }
                 setPickedPrice(c.code, price); // sync to order tickets
                 return;
             }
@@ -566,6 +712,7 @@ export function CandleChart({
 
         return () => {
             readoutGenerationRef.current += 1;
+            invalidateIndicatorRefreshRef.current();
             host.removeEventListener('pointerleave', handlePointerLeave);
             host.removeEventListener('mouseleave', handlePointerLeave);
             document.removeEventListener(
@@ -579,6 +726,19 @@ export function CandleChart({
                 readoutRafRef.current = null;
             }
             dayPrimitiveManagerRef.current.destroy();
+            try {
+                chart.panes()[0]?.detachPrimitive(marketOverlay);
+            } catch {
+                // chart teardown may already have detached it
+            }
+            marketOverlayPrimitiveRef.current = null;
+            try {
+                chart.panes()[0]?.detachPrimitive(pivotPrimitive);
+            } catch {
+                // chart teardown may already have detached it
+            }
+            pivotPrimitiveRef.current = null;
+            indSeriesByKeyRef.current.clear();
             chart.remove();
             chartRef.current = null;
             candleSeriesRef.current = null;
@@ -683,6 +843,7 @@ export function CandleChart({
     useEffect(() => {
         let cancelled = false;
         const loadKey = `${contract.code}|${tf.minutes}`;
+        invalidateIndicatorRefreshRef.current();
         readoutGenerationRef.current += 1;
         selectedReadoutTimeRef.current = null;
         formingBarTimeRef.current = null;
@@ -692,6 +853,8 @@ export function CandleChart({
             readoutRafRef.current = null;
         }
         loadedKeyRef.current = ''; // freeze tick updates while loading
+        rawIdentityRef.current = '';
+        pivotPrimitiveRef.current?.setData(null);
         lastBarRef.current = null;
         loadMoreRef.current = null;
         setEmpty(false);
@@ -704,6 +867,8 @@ export function CandleChart({
             volSeriesRef.current?.setData([]);
             barsRef.current = [];
             rawRef.current = [];
+            rawIdentityRef.current = loadKey;
+            invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars([]);
             setDataVersion((v) => v + 1);
             loadedKeyRef.current = loadKey; // live bars may build from here
@@ -726,6 +891,7 @@ export function CandleChart({
                 })),
             );
             barsRef.current = bars;
+            invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
         };
@@ -792,6 +958,7 @@ export function CandleChart({
                     return;
                 }
                 rawRef.current = raw;
+                rawIdentityRef.current = loadKey;
                 applyBars(bars);
                 lastBarRef.current = bars[bars.length - 1] ?? null;
                 if (lastBarRef.current) {
@@ -842,6 +1009,23 @@ export function CandleChart({
         const tickTime = wallClockToUtc(
             `${liveQuote.date}T${liveQuote.time}`,
         );
+        const rawMinuteTime = Math.floor(tickTime / 60) * 60;
+        const rawTail = rawRef.current[rawRef.current.length - 1];
+        if (!rawTail || rawMinuteTime > rawTail.time) {
+            rawRef.current.push({
+                time: rawMinuteTime,
+                open: price,
+                high: price,
+                low: price,
+                close: price,
+                volume: quote?.tick?.volume ?? 0,
+            });
+        } else if (rawMinuteTime === rawTail.time) {
+            rawTail.high = Math.max(rawTail.high, price);
+            rawTail.low = Math.min(rawTail.low, price);
+            rawTail.close = price;
+            rawTail.volume += quote?.tick?.volume ?? 0;
+        }
         const bucketSec = tf.minutes * 60;
         const bucket =
             tf.minutes >= 1440
@@ -875,6 +1059,8 @@ export function CandleChart({
         markFormingBar(bar.time);
         if (addedBar) setCanonicalReadoutBars(barsRef.current);
         else scheduleKbarReadoutRef.current();
+        if (addedBar) invalidateIndicatorRefreshRef.current();
+        else scheduleIndicatorRefreshRef.current();
         try {
             series.update({
                 time: bar.time as UTCTimestamp,
@@ -897,26 +1083,209 @@ export function CandleChart({
     // 自訂指標增刪改 → 重算指標 effect；被刪掉的型別把殘留實例一併清掉
     const [customVer, setCustomVer] = useState(0);
     useEffect(
-        () => subscribeInstances(() => setInstances(loadInstances())),
-        [],
-    );
-    useEffect(
         () =>
             subscribeCustoms(() => {
                 setCustomVer((v) => v + 1);
-                setInstances((cur) => {
+                updateInstances((cur) => {
                     const kept = cur.filter((i) => DEF_BY_TYPE.has(i.type));
                     if (kept.length === cur.length) return cur;
-                    saveInstances(kept);
                     return kept;
                 });
             }),
         [],
     );
 
+    const refreshMarketOverlays = () => {
+        const primitive = marketOverlayPrimitiveRef.current;
+        if (!primitive) return;
+        const active = getInstancesSnapshot().filter(
+            (instance) =>
+                !instance.hidden &&
+                (!instance.visibleTf ||
+                    instance.visibleTf.includes(tf.minutes)),
+        );
+        const showFvg = active.some(
+            (instance) => instance.type === 'fair-value-gap',
+        );
+        const fvg = showFvg
+            ? detectFairValueGaps(barsRef.current)
+            : { zones: [], markers: [] };
+        const profileInstance = active.find(
+            (instance) => instance.type === 'fixed-volume-profile',
+        );
+        const anchors = profileInstance
+            ? fixedRangeAnchorsRef.current.get(
+                  `${profileInstance.id}|${contract.code}|${tf.minutes}`,
+              )
+            : undefined;
+        const profile = anchors
+            ? fixedRangeVolumeProfile(barsRef.current, anchors)
+            : null;
+        primitive.setData(fvg.zones, fvg.markers, profile, {
+            bullish: 'rgba(32, 201, 151, 0.20)',
+            bearish: 'rgba(255, 64, 85, 0.20)',
+            profile: 'rgba(61, 139, 255, 0.28)',
+            poc: '#e0a43c',
+            valueArea: colors.text,
+        });
+    };
+    marketOverlayRefreshRef.current = refreshMarketOverlays;
+
+    const refreshPivot = () => {
+        const primitive = pivotPrimitiveRef.current;
+        if (!primitive) return;
+        const instance = getInstancesSnapshot().find(
+            (item) =>
+                item.type === 'traditional-pivot' &&
+                !item.hidden &&
+                (!item.visibleTf || item.visibleTf.includes(tf.minutes)),
+        );
+        if (
+            !instance ||
+            pivotSupportReason(contract.security_type, tf.minutes) ||
+            rawIdentityRef.current !== `${contract.code}|${tf.minutes}`
+        ) {
+            primitive.setData(null);
+            return;
+        }
+        const days = buildPivotReferenceDays(rawRef.current);
+        const key = `${instance.id}|${contract.code}|${tf.minutes}`;
+        const pinnedDate = pivotPinnedDateRef.current.get(key);
+        const reference = pinnedDate
+            ? (days.find(
+                  (day) =>
+                      day.date === pinnedDate && day.status === 'completed',
+              ) ?? null)
+            : latestCompletedPivot(days);
+        pivotReferenceRef.current.set(key, reference);
+        primitive.setData(reference, '#e0a43c', colors.text);
+    };
+    pivotRefreshRef.current = refreshPivot;
+
+    const refreshIndicatorData = () => {
+        const bars = barsRef.current;
+        if (bars.length === 0) return;
+        const generation = indicatorGenerationRef.current;
+        const lastValue = (points: IndicatorPoint[]) => {
+            for (let index = points.length - 1; index >= 0; index--) {
+                if (points[index]!.value !== undefined) {
+                    return points[index]!.value;
+                }
+            }
+            return undefined;
+        };
+        for (const inst of getInstancesSnapshot()) {
+            const def = DEF_BY_TYPE.get(inst.type);
+            if (!def || def.kind !== 'series' || inst.hidden) continue;
+            if (inst.visibleTf && !inst.visibleTf.includes(tf.minutes)) {
+                continue;
+            }
+            const params = Object.fromEntries(
+                def.params.map((param) => [
+                    param.key,
+                    inst.params[param.key] ?? param.def,
+                ]),
+            );
+            let output: Record<string, IndicatorPoint[]>;
+            const chartIdentity = `${contract.code}:${tf.minutes}`;
+            const setRuntime = (
+                state: 'computing' | 'ready' | 'error',
+                reasonCode?: 'compute-failed',
+            ) => {
+                const previous = indicatorRuntimeRef.current.get(inst.id);
+                const next = {
+                    chartIdentity,
+                    generation,
+                    state,
+                    ...(reasonCode ? { reasonCode } : {}),
+                };
+                if (
+                    previous?.chartIdentity === next.chartIdentity &&
+                    previous.generation === next.generation &&
+                    previous.state === next.state &&
+                    previous.reasonCode === next.reasonCode
+                ) {
+                    return;
+                }
+                indicatorRuntimeRef.current.set(inst.id, next);
+                setIndicatorRuntimeVersion((version) => version + 1);
+            };
+            setRuntime('computing');
+            try {
+                output = indicatorCheckpointRef.current.compute(
+                    inst.id,
+                    inst.type,
+                    bars,
+                    params,
+                    def.compute,
+                );
+            } catch {
+                setRuntime('error', 'compute-failed');
+                continue;
+            }
+            if (generation !== indicatorGenerationRef.current) return;
+            for (const definition of def.outputs) {
+                const runtime = indSeriesByKeyRef.current.get(
+                    `${inst.id}:${definition.key}`,
+                );
+                const points = output[definition.key];
+                if (!runtime || !points) continue;
+                try {
+                    if (runtime.plot === 'histogram') {
+                        runtime.series.setData(
+                            points
+                                .filter((point) => point.value !== undefined)
+                                .map((point) => ({
+                                    time: point.time as UTCTimestamp,
+                                    value: point.value!,
+                                    color: runtime.signed
+                                        ? point.value! >= 0
+                                            ? colors.upVol
+                                            : colors.downVol
+                                        : runtime.color,
+                                })) as SeriesDataItemTypeMap['Histogram'][],
+                        );
+                    } else {
+                        runtime.series.setData(
+                            points.map((point) =>
+                                point.value === undefined
+                                    ? { time: point.time as UTCTimestamp }
+                                    : {
+                                          time: point.time as UTCTimestamp,
+                                          value: point.value,
+                                      },
+                            ) as SeriesDataItemTypeMap['Line'][],
+                        );
+                    }
+                } catch {
+                    // A single indicator runtime must not take down the chart.
+                }
+                const meta = legendMetaRef.current
+                    .get(inst.id)
+                    ?.find((item) => item.series === runtime.series);
+                if (meta) meta.last = lastValue(points);
+            }
+            setRuntime('ready');
+        }
+        updateLegendRef.current();
+    };
+    indicatorDataRefreshRef.current = refreshIndicatorData;
+
     // indicator instances → chart series: overlays on the main pane,
     // every oscillator instance in its own sub-pane (lightweight-charts v5)
-    const instancesKey = JSON.stringify(instances);
+    const indicatorStructureKey = JSON.stringify(
+        instances.map(({ params: _params, ...instance }) => instance),
+    );
+    const indicatorParamsKey = JSON.stringify(
+        instances.map((instance) => ({
+            id: instance.id,
+            params: instance.params,
+        })),
+    );
+    const indicatorStructureDataKey =
+        barsRef.current.length > 0
+            ? `${contract.code}:${tf.minutes}:ready`
+            : `${contract.code}:${tf.minutes}:empty`;
     useEffect(() => {
         const chart = chartRef.current;
         if (!chart) return;
@@ -943,6 +1312,7 @@ export function CandleChart({
             }
         }
         indSeriesRef.current = [];
+        indSeriesByKeyRef.current.clear();
         // drop the now-empty sub-panes (pane 0 = main chart)
         try {
             for (let i = chart.panes().length - 1; i >= 1; i--) {
@@ -957,6 +1327,8 @@ export function CandleChart({
             paneAssignRef.current = paneAssign; // no panes exist right now
             setPaneTops({});
             reconcileDayPrimitivesRef.current();
+            marketOverlayRefreshRef.current();
+            pivotRefreshRef.current();
             return;
         }
 
@@ -987,7 +1359,7 @@ export function CandleChart({
             } catch {
                 continue; // a bad param combination must not kill the chart
             }
-            const pane = def.category === 'pane' ? paneIdx++ : 0;
+            const pane = def.render.pane === 'dedicated' ? paneIdx++ : 0;
             if (pane > 0) paneAssign.set(inst.id, pane);
             let firstSeries: ISeriesApi<'Line' | 'Histogram'> | null = null;
             const metas: {
@@ -1018,6 +1390,9 @@ export function CandleChart({
                 priceLineVisible: false,
                 lastValueVisible: inst.showLabels ?? false,
             };
+            const renderTargetOpt = def.render.priceScaleId
+                ? { priceScaleId: def.render.priceScaleId }
+                : {};
             for (const o of def.outputs) {
                 const pts = out[o.key];
                 if (!pts) continue;
@@ -1028,7 +1403,12 @@ export function CandleChart({
                 if (st.plot === 'histogram') {
                     s = chart.addSeries(
                         HistogramSeries,
-                        { color, ...labelOpts, ...priceFormatOpt },
+                        {
+                            color,
+                            ...labelOpts,
+                            ...renderTargetOpt,
+                            ...priceFormatOpt,
+                        },
                         pane,
                     );
                     s.setData(
@@ -1056,6 +1436,7 @@ export function CandleChart({
                             ),
                             bottomColor: 'rgba(0, 0, 0, 0)',
                             crosshairMarkerVisible: false,
+                            ...renderTargetOpt,
                             ...labelOpts,
                             ...priceFormatOpt,
                         },
@@ -1077,6 +1458,7 @@ export function CandleChart({
                                     ? LineType.WithSteps
                                     : LineType.Simple,
                             crosshairMarkerVisible: false,
+                            ...renderTargetOpt,
                             ...(st.plot === 'circles'
                                 ? {
                                       lineVisible: false,
@@ -1094,6 +1476,12 @@ export function CandleChart({
                 indSeriesRef.current.push(
                     s as ISeriesApi<'Line' | 'Histogram'>,
                 );
+                indSeriesByKeyRef.current.set(`${inst.id}:${o.key}`, {
+                    series: s,
+                    plot: st.plot,
+                    signed: o.signed,
+                    color,
+                });
                 firstSeries ??= s as ISeriesApi<'Line' | 'Histogram'>;
                 metas.push({
                     label: o.label,
@@ -1171,22 +1559,38 @@ export function CandleChart({
             setPaneTops({}); // pane API 不可用 → 副圖 legend 退回主圖堆疊
         }
         updateLegendRef.current(); // seed legend with latest values
+        marketOverlayRefreshRef.current();
+        pivotRefreshRef.current();
         return () => {
             paneRoRef.current?.disconnect();
             paneRoRef.current = null;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [dataVersion, instancesKey, themeKey, tf.minutes, customVer]);
+    }, [
+        customVer,
+        indicatorStructureDataKey,
+        indicatorStructureKey,
+        themeKey,
+        tf.minutes,
+    ]);
 
-    const commitInstances = (list: IndicatorInstance[]) => {
-        setInstances(list);
-        saveInstances(list);
+    useEffect(() => {
+        indicatorDataRefreshRef.current();
+        marketOverlayRefreshRef.current();
+        pivotRefreshRef.current();
+    }, [dataVersion, indicatorParamsKey, overlayRuntimeVersion]);
+
+    const closeSettings = () => {
+        setSettingsFor(null);
+        setSettingsDraft(null);
+        setSettingsIsNew(false);
+        setSettingsConflict(null);
     };
-    // 點選指標 → 先開設定（圖上即時預覽），確定才算加入、取消整個撤掉
+    // 點選指標 → 先建立 modal-local draft；確定後才寫入 canonical store。
     const addIndicator = (type: string) => {
         const def = DEF_BY_TYPE.get(type);
         if (!def) return;
-        if (def.kind === 'readout' && def.singleton) {
+        if (def.kind !== 'series' && def.singleton) {
             const existing = instances.find((item) => item.type === type);
             if (existing) {
                 setPickerOpen(false);
@@ -1194,47 +1598,100 @@ export function CandleChart({
                 return;
             }
         }
-        settingsSnapshotRef.current = JSON.stringify(instances); // 不含新實例
         const inst = newInstance(type);
-        commitInstances([...instances, inst]);
         setPickerOpen(false);
         setSettingsFor(inst.id);
+        setSettingsDraft(inst);
+        setSettingsIsNew(true);
+        setSettingsConflict(null);
     };
     const removeIndicator = (id: string) => {
-        if (settingsFor === id) setSettingsFor(null);
-        commitInstances(instances.filter((i) => i.id !== id));
+        if (!settingsIsNew) {
+            updateInstances((current) =>
+                current.filter((instance) => instance.id !== id),
+            );
+        }
+        for (const key of fixedRangeAnchorsRef.current.keys()) {
+            if (key.startsWith(`${id}|`)) {
+                fixedRangeAnchorsRef.current.delete(key);
+            }
+        }
+        for (const key of pivotPinnedDateRef.current.keys()) {
+            if (key.startsWith(`${id}|`)) pivotPinnedDateRef.current.delete(key);
+        }
+        for (const key of pivotReferenceRef.current.keys()) {
+            if (key.startsWith(`${id}|`)) pivotReferenceRef.current.delete(key);
+        }
+        if (rangeSelectionRef.current?.instanceId === id) {
+            rangeSelectionRef.current = null;
+        }
+        if (pivotSelectionRef.current === id) pivotSelectionRef.current = null;
+        if (settingsFor === id) closeSettings();
     };
-    const patchInstance = (id: string, patch: Partial<IndicatorInstance>) => {
-        commitInstances(
-            instances.map((i) => (i.id === id ? { ...i, ...patch } : i)),
+    const patchStoredInstance = (
+        id: string,
+        patch: Partial<IndicatorInstance>,
+    ) => {
+        updateInstances((current) =>
+            current.map((instance) =>
+                instance.id === id ? { ...instance, ...patch } : instance,
+            ),
         );
     };
     const openSettings = (id: string) => {
-        settingsSnapshotRef.current = JSON.stringify(instances);
+        const current = getInstancesSnapshot().find(
+            (instance) => instance.id === id,
+        );
+        if (!current) return;
         setLegendMenuFor(null);
         setSettingsFor(id);
+        setSettingsDraft({
+            ...current,
+            params: { ...current.params },
+            colors: { ...current.colors },
+            ...(current.styles
+                ? {
+                      styles: Object.fromEntries(
+                          Object.entries(current.styles).map(([key, value]) => [
+                              key,
+                              { ...value },
+                          ]),
+                      ),
+                  }
+                : {}),
+            ...(current.visibleTf
+                ? { visibleTf: [...current.visibleTf] }
+                : {}),
+        });
+        setSettingsIsNew(false);
+        setSettingsConflict(null);
     };
     const duplicateIndicator = (id: string) => {
-        const idx = instances.findIndex((i) => i.id === id);
-        if (idx < 0) return;
-        const def = DEF_BY_TYPE.get(instances[idx]!.type);
-        if (def?.kind === 'readout') return;
-        const dup = duplicateInstance(instances[idx]!);
-        const next = [...instances];
-        next.splice(idx + 1, 0, dup);
-        commitInstances(next);
+        updateInstances((current) => {
+            const idx = current.findIndex((instance) => instance.id === id);
+            if (idx < 0) return current;
+            const source = current[idx]!;
+            if (DEF_BY_TYPE.get(source.type)?.kind === 'readout') return current;
+            const next = [...current];
+            next.splice(idx + 1, 0, duplicateInstance(source));
+            return next;
+        });
     };
     // 視覺順序：陣列順序 = 疊圖 z-order 與副圖 pane 排序
     const moveIndicator = (id: string, dir: -1 | 1) => {
-        const idx = instances.findIndex((i) => i.id === id);
-        if (idx < 0) return;
-        if (DEF_BY_TYPE.get(instances[idx]!.type)?.kind === 'readout') return;
-        const to = idx + dir;
-        if (idx < 0 || to < 0 || to >= instances.length) return;
-        const next = [...instances];
-        const [item] = next.splice(idx, 1);
-        next.splice(to, 0, item!);
-        commitInstances(next);
+        updateInstances((current) => {
+            const idx = current.findIndex((instance) => instance.id === id);
+            if (idx < 0) return current;
+            if (DEF_BY_TYPE.get(current[idx]!.type)?.kind === 'readout') {
+                return current;
+            }
+            const to = idx + dir;
+            if (to < 0 || to >= current.length) return current;
+            const next = [...current];
+            const [item] = next.splice(idx, 1);
+            next.splice(to, 0, item!);
+            return next;
+        });
     };
     const toggleFavorite = (type: string) => {
         const favs = loadFavorites();
@@ -1242,18 +1699,39 @@ export function CandleChart({
         else favs.add(type);
         saveFavorites(favs);
     };
-    const cancelSettings = () => {
-        try {
-            const snap = JSON.parse(
-                settingsSnapshotRef.current,
-            ) as IndicatorInstance[];
-            commitInstances(snap);
-        } catch {
-            // snapshot unreadable — keep current state
-        }
-        setSettingsFor(null);
+    const patchSettingsDraft = (patch: Partial<IndicatorInstance>) => {
+        setSettingsDraft((draft) =>
+            draft ? { ...draft, ...patch } : draft,
+        );
     };
-    const settingsInst = instances.find((i) => i.id === settingsFor) ?? null;
+    const commitSettings = () => {
+        const draft = settingsDraft;
+        if (!draft) return;
+        let conflict = false;
+        updateInstances((current) => {
+            const result = commitIndicatorDraft(
+                current,
+                draft,
+                settingsIsNew,
+            );
+            conflict = result.conflict;
+            return result.instances;
+        });
+        if (conflict) {
+            setSettingsConflict(
+                '此指標已在其他圖表中移除。草稿未寫回，請取消後重新新增。',
+            );
+            return;
+        }
+        closeSettings();
+    };
+    const settingsInst = settingsDraft;
+    const retryIndicator = (id: string) => {
+        indicatorCheckpointRef.current.clear();
+        indicatorRuntimeRef.current.delete(id);
+        setIndicatorRuntimeVersion((version) => version + 1);
+        indicatorDataRefreshRef.current();
+    };
 
     // recalibrate the view — re-fit both axes after the user has panned or
     // dragged the price scale into a corner (issue #6: no reset control)
@@ -1442,9 +1920,163 @@ export function CandleChart({
     // 單列 legend（主圖堆疊與各副圖 pane 共用同一套列與控制）
     const renderLegendRow = (inst: IndicatorInstance) => {
         const def = DEF_BY_TYPE.get(inst.type);
-        if (!def || def.kind !== 'series') return null;
+        if (!def) return null;
+        if (def.kind === 'primitive') {
+            const offTf =
+                !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
+            const dimmed = !!inst.hidden || offTf;
+            const anchorKey = `${inst.id}|${contract.code}|${tf.minutes}`;
+            const anchors = fixedRangeAnchorsRef.current.get(anchorKey);
+            const selection = rangeSelectionRef.current;
+            const selecting = selection?.instanceId === inst.id;
+            const pivotKey = `${inst.id}|${contract.code}|${tf.minutes}`;
+            const pivotReference = pivotReferenceRef.current.get(pivotKey);
+            const pivotPinned = pivotPinnedDateRef.current.has(pivotKey);
+            return (
+                <div
+                    key={inst.id}
+                    className={styles.legendItem[dimmed ? 'hidden' : 'normal']}
+                >
+                    <button
+                        className={styles.legendLabel}
+                        title='開啟指標設定'
+                        onClick={() => openSettings(inst.id)}
+                    >
+                        {instanceLabel(inst)}
+                    </button>
+                    {offTf && (
+                        <span className={styles.legendNote}>此時框停用</span>
+                    )}
+                    {inst.type === 'fixed-volume-profile' && !offTf && (
+                        <button
+                            className={styles.legendCtrlBtn}
+                            title='依序選取兩根 K 棒；交易模式優先'
+                            disabled={mode !== 'observe'}
+                            onClick={() => {
+                                rangeSelectionRef.current = {
+                                    instanceId: inst.id,
+                                    firstTime: null,
+                                };
+                                pivotSelectionRef.current = null;
+                                setOverlayRuntimeVersion(
+                                    (version) => version + 1,
+                                );
+                            }}
+                        >
+                            {selecting
+                                ? selection.firstTime === null
+                                    ? '請選第一根 K 棒'
+                                    : '請選第二根 K 棒'
+                                : anchors
+                                  ? '重新設定區間'
+                                  : '請設定固定區間'}
+                        </button>
+                    )}
+                    {inst.type === 'traditional-pivot' && !offTf && (
+                        <>
+                            {pivotReference ? (
+                                <span className={styles.legendVals}>
+                                    <span className={styles.legendVal}>
+                                        {pivotReference.date} →{' '}
+                                        {pivotReference.applicationDate}{' '}
+                                        completed
+                                    </span>
+                                    {Object.entries(pivotReference.levels).map(
+                                        ([key, value]) => (
+                                            <span
+                                                key={key}
+                                                className={styles.legendVal}
+                                            >
+                                                {key.toUpperCase()}{' '}
+                                                {fmtPrice(value)}
+                                            </span>
+                                        ),
+                                    )}
+                                </span>
+                            ) : (
+                                <span className={styles.legendNote}>
+                                    尚無 completed reference
+                                </span>
+                            )}
+                            <button
+                                className={styles.legendCtrlBtn}
+                                disabled={
+                                    mode !== 'observe' ||
+                                    Boolean(
+                                        pivotSupportReason(
+                                            contract.security_type,
+                                            tf.minutes,
+                                        ),
+                                    )
+                                }
+                                title='游標觀察模式下點選歷史 K 棒固定 reference'
+                                onClick={() => {
+                                    rangeSelectionRef.current = null;
+                                    pivotSelectionRef.current = inst.id;
+                                    setOverlayRuntimeVersion(
+                                        (version) => version + 1,
+                                    );
+                                }}
+                            >
+                                {pivotSelectionRef.current === inst.id
+                                    ? '請點歷史 K 棒'
+                                    : '固定歷史'}
+                            </button>
+                            {pivotPinned && (
+                                <button
+                                    className={styles.legendCtrlBtn}
+                                    onClick={() => {
+                                        pivotPinnedDateRef.current.delete(
+                                            pivotKey,
+                                        );
+                                        setOverlayRuntimeVersion(
+                                            (version) => version + 1,
+                                        );
+                                    }}
+                                >
+                                    回到最新
+                                </button>
+                            )}
+                        </>
+                    )}
+                    <span className={styles.legendCtrls}>
+                        <button
+                            className={styles.legendCtrlBtn}
+                            title={inst.hidden ? '顯示' : '隱藏'}
+                            onClick={() =>
+                                patchStoredInstance(inst.id, {
+                                    hidden: !inst.hidden,
+                                })
+                            }
+                        >
+                            {inst.hidden ? (
+                                <EyeOff size={11} />
+                            ) : (
+                                <Eye size={11} />
+                            )}
+                        </button>
+                        <button
+                            className={styles.legendCtrlBtn}
+                            title='設定'
+                            onClick={() => openSettings(inst.id)}
+                        >
+                            <Settings2 size={11} />
+                        </button>
+                        <button
+                            className={styles.legendCtrlBtn}
+                            title='移除'
+                            onClick={() => removeIndicator(inst.id)}
+                        >
+                            <X size={11} />
+                        </button>
+                    </span>
+                </div>
+            );
+        }
+        if (def.kind !== 'series') return null;
         const idx = instances.findIndex((i) => i.id === inst.id);
         const vals = legendValues[inst.id] ?? [];
+        const runtime = indicatorRuntimeRef.current.get(inst.id);
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
         const dimmed = inst.hidden || offTf;
@@ -1487,14 +2119,35 @@ export function CandleChart({
                                             ))}
                                         </span>
                                     )}
+                                    {runtime?.state === 'error' && (
+                                        <span
+                                            className={styles.legendNote}
+                                            title='compute-failed'
+                                        >
+                                            指標計算失敗
+                                        </span>
+                                    )}
                                     <span className={styles.legendCtrls}>
+                                        {runtime?.state === 'error' && (
+                                            <button
+                                                className={
+                                                    styles.legendCtrlBtn
+                                                }
+                                                title='重試指標計算'
+                                                onClick={() =>
+                                                    retryIndicator(inst.id)
+                                                }
+                                            >
+                                                <RotateCw size={11} />
+                                            </button>
+                                        )}
                                         <button
                                             className={styles.legendCtrlBtn}
                                             title={
                                                 inst.hidden ? '顯示' : '隱藏'
                                             }
                                             onClick={() =>
-                                                patchInstance(inst.id, {
+                                                patchStoredInstance(inst.id, {
                                                     hidden: !inst.hidden,
                                                 })
                                             }
@@ -1698,7 +2351,9 @@ export function CandleChart({
                         className={styles.legendCtrlBtn}
                         title={inst.hidden ? '顯示' : '隱藏'}
                         onClick={() =>
-                            patchInstance(inst.id, { hidden: !inst.hidden })
+                            patchStoredInstance(inst.id, {
+                                hidden: !inst.hidden,
+                            })
                         }
                     >
                         {inst.hidden ? <EyeOff size={11} /> : <Eye size={11} />}
@@ -1724,7 +2379,9 @@ export function CandleChart({
     // 主圖堆疊只放：主圖疊加類、被隱藏/此時框停用、或 pane 尚未量到位置的
     const mainLegendInsts = nonReadoutInstances.filter((inst) => {
         const def = DEF_BY_TYPE.get(inst.type);
-        if (!def || def.kind !== 'series') return false;
+        if (!def) return false;
+        if (def.kind === 'primitive') return true;
+        if (def.kind !== 'series') return false;
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
         return (
@@ -1797,9 +2454,33 @@ export function CandleChart({
                 >
                     指標
                 </button>
+                {indicatorPersistence.state === 'error' && (
+                    <span
+                        className={styles.legendNote}
+                        title={indicatorPersistence.reasonCode}
+                    >
+                        設定尚未保存
+                    </span>
+                )}
                 {pickerOpen && (
                     <IndicatorDialog
                         instances={instances}
+                        disabledTypes={
+                            pivotSupportReason(
+                                contract.security_type,
+                                tf.minutes,
+                            )
+                                ? new Map([
+                                      [
+                                          'traditional-pivot',
+                                          pivotSupportReason(
+                                              contract.security_type,
+                                              tf.minutes,
+                                          )!,
+                                      ],
+                                  ])
+                                : undefined
+                        }
                         onAdd={addIndicator}
                         onClose={() => setPickerOpen(false)}
                     />
@@ -1811,12 +2492,11 @@ export function CandleChart({
                             label: t.label,
                             minutes: t.minutes,
                         }))}
-                        onPatch={(patch) =>
-                            patchInstance(settingsInst.id, patch)
-                        }
+                        errorMessage={settingsConflict ?? undefined}
+                        onPatch={patchSettingsDraft}
                         onRemove={() => removeIndicator(settingsInst.id)}
-                        onCommit={() => setSettingsFor(null)}
-                        onCancel={cancelSettings}
+                        onCommit={commitSettings}
+                        onCancel={closeSettings}
                     />
                 )}
             </div>

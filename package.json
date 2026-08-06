@@ -7,7 +7,8 @@
     "scripts": {
         "dev": "vite",
         "build": "tsc -b && vite build",
-        "test": "vitest run",
+        "test": "vitest run --exclude '**/*.browser.test.ts'",
+        "test:browser": "vitest run --config vitest.browser.config.ts",
         "local-runtime": "./scripts/realtimestock-runtime",
         "preview": "vite preview"
     },
@@ -42,6 +43,8 @@
         "@types/react-dom": "^19.2.3",
         "@vanilla-extract/vite-plugin": "^5.2.2",
         "@vitejs/plugin-react": "^6.0.1",
+        "@vitest/browser-playwright": "4.1.10",
+        "playwright": "^1.62.1",
         "typescript": "~5.9.3",
         "vite": "^8.0.1",
         "vitest": "^4.1.10"

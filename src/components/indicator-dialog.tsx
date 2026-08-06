@@ -84,10 +84,12 @@ const CATEGORIES: { key: Category; label: string }[] = [
 
 export function IndicatorDialog({
     instances,
+    disabledTypes,
     onAdd,
     onClose,
 }: {
-    instances: IndicatorInstance[];
+    instances: readonly IndicatorInstance[];
+    disabledTypes?: ReadonlyMap<string, string>;
     onAdd: (type: string) => void;
     onClose: () => void;
 }) {
@@ -158,10 +160,13 @@ export function IndicatorDialog({
 
     const renderRow = (d: IndicatorDef) => {
         const added = counts.get(d.type) ?? 0;
+        const disabledReason = disabledTypes?.get(d.type);
         return (
             <button
                 key={d.type}
                 className={styles.row}
+                disabled={Boolean(disabledReason)}
+                title={disabledReason}
                 onClick={() => onAdd(d.type)}
             >
                 {d.kind === 'series' ? (
@@ -184,7 +189,9 @@ export function IndicatorDialog({
                             <span className={styles.customTag}>自訂</span>
                         )}
                     </span>
-                    <span className={styles.rowDesc}>{d.desc}</span>
+                    <span className={styles.rowDesc}>
+                        {disabledReason ?? d.desc}
+                    </span>
                 </span>
                 {added > 0 && (
                     <span className={styles.rowAdded}>已加入 {added}</span>
@@ -455,6 +462,7 @@ function ColorPanel({
 export function IndicatorSettingsModal({
     inst,
     timeframes,
+    errorMessage,
     onPatch,
     onRemove,
     onCommit,
@@ -462,6 +470,7 @@ export function IndicatorSettingsModal({
 }: {
     inst: IndicatorInstance;
     timeframes: { label: string; minutes: number }[];
+    errorMessage?: string;
     onPatch: (patch: Partial<IndicatorInstance>) => void;
     onRemove: () => void;
     onCommit: () => void;
@@ -469,7 +478,7 @@ export function IndicatorSettingsModal({
 }) {
     const def = DEF_BY_TYPE.get(inst.type);
     const [tab, setTab] = useState<'inputs' | 'style' | 'visibility'>(
-        def?.kind === 'readout'
+        def?.kind !== 'series'
             ? 'visibility'
             : def && def.params.length > 0
               ? 'inputs'
@@ -491,6 +500,18 @@ export function IndicatorSettingsModal({
     }, []);
 
     if (!def) return null;
+
+    const effectiveParams = Object.fromEntries(
+        def.params.map((param) => [
+            param.key,
+            inst.params[param.key] ?? param.def,
+        ]),
+    );
+    const paramErrors =
+        def.kind === 'series'
+            ? (def.validateParams?.(effectiveParams) ?? {})
+            : {};
+    const hasParamErrors = Object.keys(paramErrors).length > 0;
 
     const patchStyle = (key: string, patch: OutputStyle) => {
         onPatch({
@@ -567,32 +588,62 @@ export function IndicatorSettingsModal({
                 <div className={styles.settingsBody}>
                     {def.kind === 'series' &&
                         tab === 'inputs' &&
-                        def.params.map((p) => (
-                            <label key={p.key} className={styles.fieldRow}>
-                                <span>{p.label}</span>
-                                <input
-                                    type='number'
-                                    className={styles.fieldInput}
-                                    min={p.min}
-                                    max={p.max}
-                                    step={p.step ?? 1}
-                                    value={inst.params[p.key] ?? p.def}
-                                    onChange={(e) => {
-                                        const v = Number(e.target.value);
-                                        if (!Number.isFinite(v)) return;
-                                        onPatch({
-                                            params: {
-                                                ...inst.params,
-                                                [p.key]: Math.min(
-                                                    p.max,
-                                                    Math.max(p.min, v),
-                                                ),
-                                            },
-                                        });
-                                    }}
-                                />
-                            </label>
-                        ))}
+                        def.params.map((p) => {
+                            const errorId = `indicator-${inst.id}-${p.key}-error`;
+                            const error = paramErrors[p.key];
+                            return (
+                                <div key={p.key} className={styles.fieldGroup}>
+                                    <label className={styles.fieldRow}>
+                                        <span>{p.label}</span>
+                                        <input
+                                            type='number'
+                                            className={`${styles.fieldInput}${
+                                                error
+                                                    ? ` ${styles.fieldInputError}`
+                                                    : ''
+                                            }`}
+                                            min={p.min}
+                                            max={p.max}
+                                            step={p.step ?? 1}
+                                            value={inst.params[p.key] ?? p.def}
+                                            aria-invalid={Boolean(error)}
+                                            aria-describedby={
+                                                error ? errorId : undefined
+                                            }
+                                            onChange={(e) => {
+                                                const v = Number(e.target.value);
+                                                if (!Number.isFinite(v)) return;
+                                                const stepped =
+                                                    (p.step ?? 1) >= 1
+                                                        ? Math.round(v)
+                                                        : v;
+                                                onPatch({
+                                                    params: {
+                                                        ...inst.params,
+                                                        [p.key]: Math.min(
+                                                            p.max,
+                                                            Math.max(
+                                                                p.min,
+                                                                stepped,
+                                                            ),
+                                                        ),
+                                                    },
+                                                });
+                                            }}
+                                        />
+                                    </label>
+                                    {error && (
+                                        <span
+                                            id={errorId}
+                                            className={styles.fieldError}
+                                            role='alert'
+                                        >
+                                            {error}
+                                        </span>
+                                    )}
+                                </div>
+                            );
+                        })}
                     {def.kind === 'series' && tab === 'style' && (
                         <>
                             {def.outputs.map((o) => {
@@ -807,6 +858,11 @@ export function IndicatorSettingsModal({
                         </>
                     )}
                 </div>
+                {errorMessage && (
+                    <div className={styles.modalConflict} role='alert'>
+                        {errorMessage}
+                    </div>
+                )}
                 <div className={styles.settingsFooter}>
                     <div className={styles.defaultsWrap}>
                         {def.kind === 'series' && (
@@ -821,6 +877,7 @@ export function IndicatorSettingsModal({
                                     <div className={styles.defaultsMenu}>
                                         <button
                                             className={styles.defaultsItem}
+                                            disabled={hasParamErrors}
                                             onClick={() => {
                                                 const f = factoryInstance(inst);
                                                 onPatch({
@@ -838,6 +895,7 @@ export function IndicatorSettingsModal({
                                         </button>
                                         <button
                                             className={styles.defaultsItem}
+                                            disabled={hasParamErrors}
                                             onClick={() => {
                                                 saveTypeDefault(inst);
                                                 setDefaultsOpen(false);
@@ -873,7 +931,16 @@ export function IndicatorSettingsModal({
                         >
                             取消
                         </button>
-                        <button className={styles.okBtn} onClick={onCommit}>
+                        <button
+                            className={styles.okBtn}
+                            onClick={onCommit}
+                            disabled={hasParamErrors}
+                            title={
+                                hasParamErrors
+                                    ? '請先修正輸入欄位'
+                                    : undefined
+                            }
+                        >
                             確定
                         </button>
                     </div>

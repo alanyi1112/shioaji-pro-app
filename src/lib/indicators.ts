@@ -9,7 +9,63 @@ export interface IndicatorPoint {
     value?: number;
 }
 
+export const REFERENCE_FORMULA_VERSION = 'multichart-ecae7ca-v1';
+
+export function roundReference(value: number): number {
+    return Number(value.toFixed(6));
+}
+
+export function boundedInteger(
+    value: number,
+    minimum: number,
+    maximum: number,
+    label: string,
+): number {
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+        throw new RangeError(`${label}:out-of-range`);
+    }
+    return value;
+}
+
+export function chronologicalCandles(bars: Candle[]): Candle[] {
+    return bars
+        .filter(
+            (bar) =>
+                Number.isFinite(bar.time) &&
+                Number.isFinite(bar.open) &&
+                Number.isFinite(bar.high) &&
+                Number.isFinite(bar.low) &&
+                Number.isFinite(bar.close) &&
+                Number.isFinite(bar.volume),
+        )
+        .slice()
+        .sort((left, right) => left.time - right.time);
+}
+
 const tp = (b: Candle) => (b.high + b.low + b.close) / 3;
+
+function referenceSmaValues(values: number[], period: number): (number | undefined)[] {
+    boundedInteger(period, 1, 500, 'period');
+    let sum = 0;
+    return values.map((value, index) => {
+        sum += value;
+        if (index >= period) sum -= values[index - period]!;
+        return index + 1 < period ? undefined : roundReference(sum / period);
+    });
+}
+
+export function referenceSma(
+    bars: Candle[],
+    period: number,
+    source: 'close' | 'volume' = 'close',
+): IndicatorPoint[] {
+    const rows = chronologicalCandles(bars);
+    const values = referenceSmaValues(
+        rows.map((bar) => bar[source]),
+        period,
+    );
+    return rows.map((bar, index) => ({ time: bar.time, value: values[index] }));
+}
 
 export function sma(bars: Candle[], period: number): IndicatorPoint[] {
     const out: IndicatorPoint[] = [];
@@ -73,27 +129,36 @@ export function bollinger(
     period = 20,
     mult = 2,
 ): { mid: IndicatorPoint[]; upper: IndicatorPoint[]; lower: IndicatorPoint[] } {
+    boundedInteger(period, 2, 200, 'boll-period');
+    if (!Number.isFinite(mult) || mult < 0.5 || mult > 5) {
+        throw new RangeError('boll-mult:out-of-range');
+    }
+    const rows = chronologicalCandles(bars);
     const mid: IndicatorPoint[] = [];
     const upper: IndicatorPoint[] = [];
     const lower: IndicatorPoint[] = [];
     let sum = 0;
     let sqSum = 0;
-    for (let i = 0; i < bars.length; i++) {
-        const c = bars[i]!.close;
+    for (let i = 0; i < rows.length; i++) {
+        const c = rows[i]!.close;
         sum += c;
         sqSum += c * c;
         if (i >= period) {
-            const o = bars[i - period]!.close;
+            const o = rows[i - period]!.close;
             sum -= o;
             sqSum -= o * o;
         }
+        const time = rows[i]!.time;
         if (i >= period - 1) {
             const mean = sum / period;
             const sd = Math.sqrt(Math.max(0, sqSum / period - mean * mean));
-            const t = bars[i]!.time;
-            mid.push({ time: t, value: mean });
-            upper.push({ time: t, value: mean + mult * sd });
-            lower.push({ time: t, value: mean - mult * sd });
+            mid.push({ time, value: roundReference(mean) });
+            upper.push({ time, value: roundReference(mean + mult * sd) });
+            lower.push({ time, value: roundReference(mean - mult * sd) });
+        } else {
+            mid.push({ time });
+            upper.push({ time });
+            lower.push({ time });
         }
     }
     return { mid, upper, lower };
@@ -224,11 +289,16 @@ function rma(values: number[], period: number): (number | undefined)[] {
 }
 
 export function atr(bars: Candle[], period = 14): IndicatorPoint[] {
-    const smoothed = rma(trueRanges(bars), period);
+    boundedInteger(period, 2, 100, 'atr-period');
+    const rows = chronologicalCandles(bars);
+    const smoothed = rma(trueRanges(rows), period);
     const out: IndicatorPoint[] = [];
-    for (let i = 0; i < bars.length; i++) {
+    for (let i = 0; i < rows.length; i++) {
         const v = smoothed[i];
-        if (v !== undefined) out.push({ time: bars[i]!.time, value: v });
+        out.push({
+            time: rows[i]!.time,
+            ...(v === undefined ? {} : { value: roundReference(v) }),
+        });
     }
     return out;
 }
@@ -301,25 +371,46 @@ export function supertrend(
 
 // ---- oscillators（副圖）----
 
-export function rsi(bars: Candle[], period = 14): IndicatorPoint[] {
+export function wilderRsiSeries(bars: Candle[], period = 14): IndicatorPoint[] {
+    boundedInteger(period, 2, 100, 'rsi-period');
+    const rows = chronologicalCandles(bars);
+    let averageGain: number | null = null;
+    let averageLoss: number | null = null;
     const gains: number[] = [];
     const losses: number[] = [];
-    for (let i = 1; i < bars.length; i++) {
-        const chg = bars[i]!.close - bars[i - 1]!.close;
-        gains.push(Math.max(0, chg));
-        losses.push(Math.max(0, -chg));
-    }
-    const avgG = rma(gains, period);
-    const avgL = rma(losses, period);
-    const out: IndicatorPoint[] = [];
-    for (let i = 0; i < gains.length; i++) {
-        const g = avgG[i];
-        const l = avgL[i];
-        if (g === undefined || l === undefined) continue;
-        const v = l === 0 ? 100 : 100 - 100 / (1 + g / l);
-        out.push({ time: bars[i + 1]!.time, value: v });
-    }
-    return out;
+    return rows.map((bar, index) => {
+        if (index === 0) return { time: bar.time };
+        const change = bar.close - rows[index - 1]!.close;
+        const gain = Math.max(change, 0);
+        const loss = Math.max(-change, 0);
+        gains.push(gain);
+        losses.push(loss);
+        if (index < period) return { time: bar.time };
+        if (averageGain === null || averageLoss === null) {
+            averageGain =
+                gains.slice(0, period).reduce((sum, item) => sum + item, 0) /
+                period;
+            averageLoss =
+                losses.slice(0, period).reduce((sum, item) => sum + item, 0) /
+                period;
+        } else {
+            averageGain =
+                (averageGain * (period - 1) + gain) / period;
+            averageLoss =
+                (averageLoss * (period - 1) + loss) / period;
+        }
+        const value =
+            averageGain === 0 && averageLoss === 0
+                ? 50
+                : averageLoss === 0
+                  ? 100
+                  : 100 - 100 / (1 + averageGain / averageLoss);
+        return { time: bar.time, value: roundReference(value) };
+    });
+}
+
+export function rsi(bars: Candle[], period = 14): IndicatorPoint[] {
+    return wilderRsiSeries(bars, period);
 }
 
 export function macd(
@@ -328,49 +419,103 @@ export function macd(
     slow = 26,
     signalPeriod = 9,
 ): { macd: IndicatorPoint[]; signal: IndicatorPoint[]; hist: IndicatorPoint[] } {
-    const fastE = ema(bars, fast);
-    const slowE = ema(bars, slow);
-    const fastAt = new Map(fastE.map((p) => [p.time, p.value!]));
+    boundedInteger(fast, 2, 200, 'macd-fast');
+    boundedInteger(slow, 3, 200, 'macd-slow');
+    boundedInteger(signalPeriod, 2, 100, 'macd-signal');
+    if (fast >= slow) throw new RangeError('macd-period-order');
+    const rows = chronologicalCandles(bars);
+    const closes = rows.map((bar) => bar.close);
+    const emaValues = (values: number[], period: number): (number | undefined)[] => {
+        const alpha = 2 / (period + 1);
+        let current: number | null = null;
+        return values.map((value, index) => {
+            if (index + 1 < period) return undefined;
+            if (current === null) {
+                current =
+                    values
+                        .slice(index + 1 - period, index + 1)
+                        .reduce((sum, item) => sum + item, 0) / period;
+            } else {
+                current = value * alpha + current * (1 - alpha);
+            }
+            return current;
+        });
+    };
+    const fastValues = emaValues(closes, fast);
+    const slowValues = emaValues(closes, slow);
+    const macdValues = rows.map((_, index) => {
+        const fastValue = fastValues[index];
+        const slowValue = slowValues[index];
+        return fastValue === undefined || slowValue === undefined
+            ? undefined
+            : fastValue - slowValue;
+    });
+    const signalValues = emaValues(
+        macdValues.map((value) => value ?? 0),
+        signalPeriod,
+    );
     const macdLine: IndicatorPoint[] = [];
-    for (const p of slowE) {
-        const f = fastAt.get(p.time);
-        if (f === undefined || p.value === undefined) continue;
-        macdLine.push({ time: p.time, value: f - p.value });
-    }
-    const signal = emaOf(macdLine, signalPeriod);
-    const sigAt = new Map(signal.map((p) => [p.time, p.value!]));
+    const signal: IndicatorPoint[] = [];
     const hist: IndicatorPoint[] = [];
-    for (const p of macdLine) {
-        const s = sigAt.get(p.time);
-        if (s === undefined || p.value === undefined) continue;
-        hist.push({ time: p.time, value: p.value - s });
-    }
+    rows.forEach((bar, index) => {
+        const lineValue = macdValues[index];
+        const signalValue = signalValues[index];
+        macdLine.push({
+            time: bar.time,
+            ...(lineValue === undefined
+                ? {}
+                : { value: roundReference(lineValue) }),
+        });
+        signal.push({
+            time: bar.time,
+            ...(lineValue === undefined || signalValue === undefined
+                ? {}
+                : { value: roundReference(signalValue) }),
+        });
+        hist.push({
+            time: bar.time,
+            ...(lineValue === undefined || signalValue === undefined
+                ? {}
+                : { value: roundReference(lineValue - signalValue) }),
+        });
+    });
     return { macd: macdLine, signal, hist };
 }
 
-// KD（Stochastic）台股慣用 (9,3,3)：RSV 的 SMA 平滑
+// KD（Stochastic）參考契約：K、D 由 50 開始做 9/3/3 遞迴平滑。
 export function stoch(
     bars: Candle[],
     kPeriod = 9,
     kSmooth = 3,
     dPeriod = 3,
 ): { k: IndicatorPoint[]; d: IndicatorPoint[] } {
-    const rsv: IndicatorPoint[] = [];
-    for (let i = kPeriod - 1; i < bars.length; i++) {
+    boundedInteger(kPeriod, 2, 100, 'kd-period');
+    boundedInteger(kSmooth, 1, 20, 'kd-rsv-weight');
+    boundedInteger(dPeriod, 1, 20, 'kd-k-weight');
+    const rows = chronologicalCandles(bars);
+    const k: IndicatorPoint[] = [];
+    const d: IndicatorPoint[] = [];
+    let currentK = 50;
+    let currentD = 50;
+    for (let i = 0; i < rows.length; i++) {
+        if (i < kPeriod - 1) {
+            k.push({ time: rows[i]!.time });
+            d.push({ time: rows[i]!.time });
+            continue;
+        }
         let hi = -Infinity;
         let lo = Infinity;
         for (let j = i - kPeriod + 1; j <= i; j++) {
-            hi = Math.max(hi, bars[j]!.high);
-            lo = Math.min(lo, bars[j]!.low);
+            hi = Math.max(hi, rows[j]!.high);
+            lo = Math.min(lo, rows[j]!.low);
         }
         const range = hi - lo;
-        rsv.push({
-            time: bars[i]!.time,
-            value: range === 0 ? 50 : ((bars[i]!.close - lo) / range) * 100,
-        });
+        const rsv = range === 0 ? 50 : ((rows[i]!.close - lo) / range) * 100;
+        currentK = (currentK * (kSmooth - 1) + rsv) / kSmooth;
+        currentD = (currentD * (dPeriod - 1) + currentK) / dPeriod;
+        k.push({ time: rows[i]!.time, value: roundReference(currentK) });
+        d.push({ time: rows[i]!.time, value: roundReference(currentD) });
     }
-    const k = smaOf(rsv, kSmooth);
-    const d = smaOf(k, dPeriod);
     return { k, d };
 }
 
@@ -397,7 +542,10 @@ export function stochRsi(
     kSmooth = 3,
     dSmooth = 3,
 ): { k: IndicatorPoint[]; d: IndicatorPoint[] } {
-    const r = rsi(bars, rsiPeriod);
+    const r = wilderRsiSeries(bars, rsiPeriod).filter(
+        (point): point is IndicatorPoint & { value: number } =>
+            point.value !== undefined,
+    );
     const raw: IndicatorPoint[] = [];
     for (let i = stochPeriod - 1; i < r.length; i++) {
         let hi = -Infinity;

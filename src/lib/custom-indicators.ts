@@ -121,6 +121,7 @@ function toDef(c: CustomIndicator): IndicatorDef {
         desc: c.desc || '自訂指標',
         aliases: ['custom', '自訂', c.name, c.short].filter(Boolean),
         category: c.category,
+        render: { pane: c.category === 'pane' ? 'dedicated' : 'main' },
         params: c.params,
         outputs,
         ...(c.levels && c.levels.length > 0 ? { levels: c.levels } : {}),
