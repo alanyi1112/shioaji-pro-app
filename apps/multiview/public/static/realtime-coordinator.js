@@ -1,6 +1,7 @@
 (function initRealtimeCoordinator(globalScope) {
   const MAX_SYMBOLS = 8;
   const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+  const DEMAND_RETRY_DELAYS_MS = [1000, 5000, 15000, 30000];
   const DEGRADED_AFTER_MS = 5000;
   const STALE_AFTER_MS = 15000;
 
@@ -245,7 +246,11 @@
     const sequences = new Map();
     const activeSymbols = new Set();
     const cooldowns = new Map();
+    const demandInflight = new Map();
+    const demandRetryAttempts = new Map();
+    const demandRetryTimers = new Map();
     let source;
+    let sourceOpen = false;
     let enabled = options.enabled !== false;
     let generation = 0;
     let mode;
@@ -433,25 +438,87 @@
 
     async function subscribeUpstream(symbol, currentGeneration) {
       const contract = await resolveContract(symbol);
-      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return;
+      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
       const quote_type = contract.security_type === "IND" ? "Quote" : "Tick";
       await api("/api/v1/stream/subscribe", { method: "POST", body: JSON.stringify({ ...contract, quote_type, intraday_odd: false }) });
-      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return;
-      activeSymbols.add(symbol);
+      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
       acceptance?.increment("subscribeCount");
       const rows = await api("/api/v1/data/snapshots", { method: "POST", body: JSON.stringify({ contracts: [contract] }) });
       const snapshot = Array.isArray(rows) ? snapshotFromRest(symbol, contract, rows[0] || {}) : null;
-      if (snapshot && currentGeneration === generation) {
-        dispatch(snapshot);
-        const kbars = await api("/api/v1/data/kbars", {
-          method: "POST",
-          body: JSON.stringify({ contract, start: snapshot.sessionDate, end: snapshot.sessionDate }),
+      if (!snapshot) throw new Error("shioaji_snapshot_invalid");
+      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
+      const kbars = await api("/api/v1/data/kbars", {
+        method: "POST",
+        body: JSON.stringify({ contract, start: snapshot.sessionDate, end: snapshot.sessionDate }),
+      });
+      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
+      dispatch(snapshot);
+      dispatchSession(symbol, sessionFromKbars(kbars));
+      activeSymbols.add(symbol);
+      return true;
+    }
+
+    function clearDemandRetry(symbol) {
+      const timer = demandRetryTimers.get(symbol);
+      if (timer) clearTimeoutImpl(timer);
+      demandRetryTimers.delete(symbol);
+      demandRetryAttempts.delete(symbol);
+    }
+
+    function scheduleDemandRetry(symbol) {
+      if (!enabled || mode !== "simulation" || !sourceOpen || !desiredSymbols().includes(symbol) || demandRetryTimers.has(symbol)) return;
+      const attempt = Number(demandRetryAttempts.get(symbol) || 0);
+      const delay = DEMAND_RETRY_DELAYS_MS[Math.min(attempt, DEMAND_RETRY_DELAYS_MS.length - 1)];
+      demandRetryAttempts.set(symbol, attempt + 1);
+      acceptance?.increment("realtimeRetryCount");
+      acceptance?.setReason("shioaji_demand_retry");
+      const timer = setTimeoutImpl(() => {
+        demandRetryTimers.delete(symbol);
+        void reconcileSymbol(symbol);
+      }, delay);
+      demandRetryTimers.set(symbol, timer);
+    }
+
+    function reconcileSymbol(symbol) {
+      if (!enabled || mode !== "simulation" || !sourceOpen || activeSymbols.has(symbol) || !desiredSymbols().includes(symbol) || demandRetryTimers.has(symbol)) return Promise.resolve(false);
+      const existing = demandInflight.get(symbol);
+      if (existing) return existing;
+      const currentGeneration = generation;
+      const task = subscribeUpstream(symbol, currentGeneration)
+        .then((activated) => {
+          if (!activated) return false;
+          const recovered = Number(demandRetryAttempts.get(symbol) || 0) > 0;
+          clearDemandRetry(symbol);
+          if (recovered) {
+            acceptance?.increment("realtimeRecoveryCount");
+            acceptance?.setReason("shioaji_demand_recovered");
+          }
+          return true;
+        })
+        .catch((error) => {
+          const reasonCode = String(error?.message || "").includes("SessionNotEstablished")
+            ? "shioaji_business_unavailable"
+            : "shioaji_subscription_failed";
+          notifyState(symbol, "fallback", reasonCode);
+          scheduleDemandRetry(symbol);
+          return false;
+        })
+        .finally(() => {
+          if (demandInflight.get(symbol) === task) demandInflight.delete(symbol);
+          if (currentGeneration !== generation && sourceOpen && desiredSymbols().includes(symbol)) void reconcileSymbol(symbol);
         });
-        if (currentGeneration === generation) dispatchSession(symbol, sessionFromKbars(kbars));
+      demandInflight.set(symbol, task);
+      return task;
+    }
+
+    function reconcileDemand() {
+      for (const symbol of desiredSymbols()) {
+        if (!activeSymbols.has(symbol)) void reconcileSymbol(symbol);
       }
     }
 
     async function unsubscribeUpstream(symbol) {
+      clearDemandRetry(symbol);
       const contract = contracts.get(symbol);
       activeSymbols.delete(symbol);
       if (!contract) return;
@@ -467,9 +534,9 @@
       source = new EventSourceImpl(`${endpoint}/api/v1/stream/data`);
       acceptance?.setGauge("sseOpenCount", 1);
       source.onopen = () => {
-        const current = generation;
+        sourceOpen = true;
         activeSymbols.clear();
-        for (const symbol of desiredSymbols()) void subscribeUpstream(symbol, current).catch((error) => notifyState(symbol, "fallback", String(error.message || "shioaji_unavailable")));
+        reconcileDemand();
       };
       for (const eventName of ["tick_stk", "quote_idx"]) {
         source.addEventListener(eventName, (event) => {
@@ -480,6 +547,7 @@
         });
       }
       source.onerror = () => {
+        sourceOpen = false;
         for (const symbol of desiredSymbols()) notifyState(symbol, "fallback", "shioaji_stream_unavailable");
       };
     }
@@ -488,11 +556,13 @@
       generation += 1;
       const closing = source;
       source = undefined;
+      sourceOpen = false;
       acceptance?.setGauge("sseOpenCount", 0);
       acceptance?.setReason(reasonCode);
       try { closing?.close(); } catch { /* already closed */ }
       const active = [...activeSymbols];
       activeSymbols.clear();
+      for (const symbol of demandRetryTimers.keys()) clearDemandRetry(symbol);
       for (const symbol of active) void unsubscribeUpstream(symbol);
       for (const symbol of desiredSymbols()) notifyState(symbol, "fallback", reasonCode);
     }
@@ -522,6 +592,7 @@
         }
         mode = next;
         connectSource();
+        reconcileDemand();
       } catch {
         for (const symbol of desiredSymbols()) notifyState(symbol, "fallback", "shioaji_business_unavailable");
       }
@@ -561,6 +632,7 @@
             return;
           }
           if (!desiredSymbols().includes(symbol)) {
+            clearDemandRetry(symbol);
             const cooldown = setTimeoutImpl(() => {
               cooldowns.delete(symbol);
               if (!desiredSymbols().includes(symbol)) void unsubscribeUpstream(symbol);
@@ -580,6 +652,7 @@
         updateDemandMetric();
         for (const timer of cooldowns.values()) clearTimeoutImpl(timer);
         cooldowns.clear();
+        for (const symbol of demandRetryTimers.keys()) clearDemandRetry(symbol);
         if (modeTimer) clearIntervalImpl(modeTimer);
         closeSource("coordinator_destroyed");
       },

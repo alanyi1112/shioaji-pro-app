@@ -164,7 +164,7 @@ pnpm dev
 ### 5. macOS 常駐與正式行情唯讀切換
 
 本機長時間測試可使用安全 runtime 指令，讓登入後預設自動啟動 simulation，
-並以手動命令暫時切換正式行情唯讀：
+並以 business-session watchdog 自動處理「HTTP 仍健康但 simulation session 已失效」，也可用手動命令暫時切換正式行情唯讀：
 
 ```sh
 pnpm local-runtime install
@@ -175,6 +175,8 @@ pnpm local-runtime simulation
 
 完整的安裝、回復與安全邊界請見
 [macOS 本機常駐與安全模式切換](docs/local-runtime-macos.md)。
+
+watchdog 只會在已曾成功的 simulation generation 連續偵測到 `SessionNotEstablished` 時，以有限次數與退避策略重啟 8080 simulation API；不會操作 production、5173、5174、D1、盤後 pipeline、CA 或交易 API。5173 會保持可操作的 `OFFLINE` 工作區並自動重載自選清單。
 
 ### 6. MultiView 多圖看盤（本機）
 

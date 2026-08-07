@@ -19,12 +19,14 @@ export function getRuntimeMode(): RuntimeMode {
     return currentMode;
 }
 
+export function subscribeRuntimeMode(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+}
+
 export function useRuntimeMode(): RuntimeMode {
     return useSyncExternalStore(
-        (listener) => {
-            listeners.add(listener);
-            return () => listeners.delete(listener);
-        },
+        subscribeRuntimeMode,
         getRuntimeMode,
     );
 }

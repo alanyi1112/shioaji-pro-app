@@ -2,7 +2,13 @@
 // on shioaji server ≥1.5.3). Every list is editable; edits sync via PUT.
 // First run migrates the old local list / creates a default one.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+    useCallback,
+    useEffect,
+    useRef,
+    useState,
+    useSyncExternalStore,
+} from 'react';
 import {
     ensureContract,
     primeContract,
@@ -24,6 +30,10 @@ import {
 import { onContractEvent, registerCodeAlias } from '../lib/stream';
 import { notify } from '../lib/trade';
 import { getRuntimeMode } from '../lib/runtime-mode';
+import {
+    getBusinessSessionSnapshot,
+    subscribeBusinessSession,
+} from '../lib/business-session-monitor';
 import type { ContractInfo, SecurityType } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
 
@@ -50,6 +60,10 @@ const DEFAULT_SYMBOLS: { code: string; type: SecurityType }[] = [
 
 const LEGACY_KEY = 'sj-pro-watchlist';
 const ACTIVE_KEY = 'sj-pro-active-watchlist';
+
+export function serviceRecoveryDelayMs(failedAttempts: number): number {
+    return Math.min(30_000, 5_000 * 2 ** Math.max(0, failedAttempts));
+}
 
 function isSessionUnavailable(error: unknown): boolean {
     return (
@@ -99,6 +113,23 @@ function serviceIssueFor(error: unknown): WatchlistServiceIssue {
     };
 }
 
+function monitoredServiceIssue(
+    status: 'session-unavailable' | 'unavailable',
+): WatchlistServiceIssue {
+    if (status === 'session-unavailable') {
+        return {
+            kind: 'session-unavailable',
+            title: '模擬行情 session 尚未建立',
+            detail: 'Shioaji simulation business session 已失效；工作區會保持開啟並自動重新檢查。',
+        };
+    }
+    return {
+        kind: 'unavailable',
+        title: '本機 Shioaji API 暫時無法使用',
+        detail: '工作區會保持開啟並自動重新檢查 127.0.0.1 的 simulation API。',
+    };
+}
+
 async function resolveContract(
     code: string,
     type?: SecurityType | null,
@@ -108,6 +139,10 @@ async function resolveContract(
 }
 
 export function useWatchlist() {
+    const businessSession = useSyncExternalStore(
+        subscribeBusinessSession,
+        getBusinessSessionSnapshot,
+    );
     const [items, setItems] = useState<WatchItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [initialLoading, setInitialLoading] = useState(true);
@@ -118,9 +153,14 @@ export function useWatchlist() {
     const [activeListId, setActiveListId] = useState<string>('');
     const subscribed = useRef(new Set<string>());
     const initStarted = useRef(false);
+    const retryPromise = useRef<Promise<void> | null>(null);
+    const recoveryAttempts = useRef(0);
+    const recoveryNotificationShown = useRef(false);
     const loadSeq = useRef(0);
     const activeIdRef = useRef('');
     activeIdRef.current = activeListId;
+    const serviceIssueRef = useRef(serviceIssue);
+    serviceIssueRef.current = serviceIssue;
 
     const subscribeContract = useCallback(async (contract: ContractInfo) => {
         if (contract.target_code) {
@@ -454,27 +494,42 @@ export function useWatchlist() {
         [loadList, refreshLists],
     );
 
-    const retryService = useCallback(async () => {
-        if (serviceRetrying) return;
-        setServiceRetrying(true);
-        try {
-            await initialize(false);
-            setServiceIssue(null);
-            notify({
-                kind: 'ok',
-                title:
-                    getRuntimeMode() === 'production-readonly'
-                        ? '正式行情已恢復'
-                        : '模擬服務已恢復',
-                body: '自選清單與即時服務已重新連線',
-            });
-        } catch (error) {
-            setLoading(false);
-            setServiceIssue(serviceIssueFor(error));
-        } finally {
-            setServiceRetrying(false);
-        }
-    }, [initialize, serviceRetrying]);
+    const retryService = useCallback((): Promise<void> => {
+        if (retryPromise.current) return retryPromise.current;
+        const hadIssue = serviceIssueRef.current !== null;
+        const task = (async () => {
+            setServiceRetrying(true);
+            try {
+                await initialize(false);
+                recoveryAttempts.current = 0;
+                setServiceIssue(null);
+                if (hadIssue && !recoveryNotificationShown.current) {
+                    recoveryNotificationShown.current = true;
+                    notify({
+                        kind: 'ok',
+                        title:
+                            getRuntimeMode() === 'production-readonly'
+                                ? '正式行情已恢復'
+                                : '模擬服務已恢復',
+                        body: '自選清單與即時服務已重新連線',
+                    });
+                }
+            } catch (error) {
+                setLoading(false);
+                recoveryNotificationShown.current = false;
+                setServiceIssue(serviceIssueFor(error));
+            } finally {
+                setServiceRetrying(false);
+            }
+        })();
+        const tracked = task.finally(() => {
+            if (retryPromise.current === tracked) {
+                retryPromise.current = null;
+            }
+        });
+        retryPromise.current = tracked;
+        return tracked;
+    }, [initialize]);
 
     // boot: load lists; migrate legacy local list / create default if empty.
     // The first fetch can race a server that is still warming up after an
@@ -484,13 +539,47 @@ export function useWatchlist() {
         if (initStarted.current) return;
         initStarted.current = true;
         void initialize(true)
-            .then(() => setServiceIssue(null))
+            .then(() => {
+                recoveryAttempts.current = 0;
+                setServiceIssue(null);
+            })
             .catch((error) => {
                 setLoading(false);
+                recoveryNotificationShown.current = false;
                 setServiceIssue(serviceIssueFor(error));
             })
             .finally(() => setInitialLoading(false));
     }, [initialize]);
+
+    useEffect(() => {
+        if (
+            initialLoading ||
+            getRuntimeMode() !== 'simulation' ||
+            (businessSession.status !== 'session-unavailable' &&
+                businessSession.status !== 'unavailable')
+        ) {
+            return;
+        }
+        recoveryNotificationShown.current = false;
+        setServiceIssue(monitoredServiceIssue(businessSession.status));
+    }, [businessSession.status, initialLoading]);
+
+    useEffect(() => {
+        if (
+            initialLoading ||
+            serviceRetrying ||
+            !serviceIssue ||
+            getRuntimeMode() !== 'simulation'
+        ) {
+            return;
+        }
+        const delay = serviceRecoveryDelayMs(recoveryAttempts.current);
+        const timer = setTimeout(() => {
+            recoveryAttempts.current += 1;
+            void retryService();
+        }, delay);
+        return () => clearTimeout(timer);
+    }, [initialLoading, retryService, serviceIssue, serviceRetrying]);
 
     useEffect(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;

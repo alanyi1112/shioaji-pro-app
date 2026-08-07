@@ -1,11 +1,13 @@
 (function initAcceptanceMetrics(globalScope) {
-  const VERSION = 1;
+  const VERSION = 2;
   const MAX_COUNTER = 1_000_000_000;
   const MAX_DURATION_MS = 60 * 60 * 1000;
   const COUNTERS = new Set([
     "subscribeCount",
     "unsubscribeCount",
     "requestCount",
+    "realtimeRetryCount",
+    "realtimeRecoveryCount",
     "indicatorFullRecomputeCount",
     "renderCount",
     "longTaskCount",
@@ -28,6 +30,8 @@
     subscribeCount: 0,
     unsubscribeCount: 0,
     requestCount: 0,
+    realtimeRetryCount: 0,
+    realtimeRecoveryCount: 0,
     indicatorFullRecomputeCount: 0,
     renderCount: 0,
     longTaskCount: 0,
@@ -69,6 +73,8 @@
       subscribeCount: values.subscribeCount,
       unsubscribeCount: values.unsubscribeCount,
       requestCount: values.requestCount,
+      realtimeRetryCount: values.realtimeRetryCount,
+      realtimeRecoveryCount: values.realtimeRecoveryCount,
       indicatorFullRecomputeCount: values.indicatorFullRecomputeCount,
       renderCount: values.renderCount,
       longTaskCount: values.longTaskCount,

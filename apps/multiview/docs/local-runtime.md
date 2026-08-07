@@ -47,6 +47,10 @@ pnpm local-runtime uninstall
 5174、D1 integrity／schema coverage、即時來源與盤後資料狀態。HTTP 200 或 SSE
 heartbeat 不代表行情可用。
 
+頁面級 coordinator 會在 SSE open、每 15 秒 mode check、頁面回到前景及網路恢復時，比對畫面需要的商品與已完成 bootstrap 的商品。缺少的商品採 per-symbol single-flight 與 1／5／15／30 秒後封頂 30 秒退避；subscribe、Snapshot 與當日 Kbars 都成功後才視為 active。整個頁面仍最多一條 SSE，相同商品不會因多 panel 產生多條 recovery flow。
+
+驗收 metrics 只增加 bounded retry／recovery 計數與固定 reason code，不保存商品、行情內容、個人清單、帳戶或秘密。watchdog 重啟 8080 時不會重啟 5174；MultiView 會沿用既有 `自動` Yahoo fallback 或 `Shioaji 即時` unavailable 語意，待 business session 恢復後自行補回缺少 demand。
+
 ## 台股行情來源
 
 頁面提供三種模式：

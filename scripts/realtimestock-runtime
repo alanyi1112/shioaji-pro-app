@@ -9,6 +9,7 @@ USER_ID="$(id -u)"
 LAUNCH_DOMAIN="gui/${USER_ID}"
 
 SIM_LABEL="com.alanyi.realtimestock.simulation-api"
+WATCHDOG_LABEL="com.alanyi.realtimestock.business-session-watchdog"
 WEB_LABEL="com.alanyi.realtimestock.web"
 MULTIVIEW_LABEL="com.alanyi.realtimestock.multiview"
 MULTIVIEW_DAILY_LABEL="com.alanyi.realtimestock.multiview-daily-pipeline"
@@ -22,6 +23,7 @@ GENERATED_DIR="${APP_SUPPORT}/LaunchAgents"
 USER_LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 MODE_FILE="${APP_SUPPORT}/runtime-mode"
 SIM_PLIST="${USER_LAUNCH_AGENTS}/${SIM_LABEL}.plist"
+WATCHDOG_PLIST="${USER_LAUNCH_AGENTS}/${WATCHDOG_LABEL}.plist"
 WEB_PLIST="${USER_LAUNCH_AGENTS}/${WEB_LABEL}.plist"
 MULTIVIEW_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_LABEL}.plist"
 MULTIVIEW_DAILY_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_DAILY_LABEL}.plist"
@@ -33,6 +35,8 @@ NODE_BIN="/opt/homebrew/bin/node"
 VITE_BIN="${REPO_DIR}/node_modules/vite/bin/vite.js"
 MULTIVIEW_CLI="${REPO_DIR}/apps/multiview/node_modules/vinext/dist/cli.js"
 MULTIVIEW_STATE_SCRIPT="${REPO_DIR}/scripts/multiview-state"
+WATCHDOG_SCRIPT="${REPO_DIR}/scripts/realtimestock-watchdog.mjs"
+WATCHDOG_STATE_DIR="${REALTIME_STOCK_WATCHDOG_STATE_DIR:-${APP_SUPPORT}/watchdog}"
 MULTIVIEW_STATE_DIR="${REALTIME_STOCK_MULTIVIEW_STATE_DIR:-${APP_SUPPORT}/MultiView}"
 MULTIVIEW_PIPELINE_SECRET_FILE="${MULTIVIEW_STATE_DIR}/pipeline-secret"
 
@@ -74,6 +78,10 @@ ensure_runtime_dependencies() {
     fi
     if [[ ! -f "${VITE_BIN}" ]]; then
         print -u2 "找不到 Vite：${VITE_BIN}，請先在專案安裝依賴"
+        return 1
+    fi
+    if [[ ! -f "${WATCHDOG_SCRIPT}" ]]; then
+        print -u2 "找不到 business-session watchdog：${WATCHDOG_SCRIPT}"
         return 1
     fi
     if [[ ! -f "${MULTIVIEW_CLI}" || ! -x "${MULTIVIEW_STATE_SCRIPT}" ]]; then
@@ -145,6 +153,27 @@ write_plists() {
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>10</integer>
+<key>StandardOutPath</key><string>/dev/null</string>
+<key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>
+EOF
+
+    cat > "${WATCHDOG_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${WATCHDOG_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>watchdog-once</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}</string>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>${HOME}</string>
+<key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+<key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+<key>REALTIME_STOCK_APP_SUPPORT</key><string>${APP_SUPPORT}</string>
+<key>REALTIME_STOCK_WATCHDOG_STATE_DIR</key><string>${WATCHDOG_STATE_DIR}</string>
+</dict>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>30</integer>
 <key>StandardOutPath</key><string>/dev/null</string>
 <key>StandardErrorPath</key><string>/dev/null</string>
 </dict></plist>
@@ -249,7 +278,7 @@ EOF
 
     mkdir -p "${MULTIVIEW_STATE_DIR}/logs"
     chmod 700 "${MULTIVIEW_STATE_DIR}/logs"
-    chmod 600 "${SIM_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    chmod 600 "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
 }
 
 job_loaded() {
@@ -269,6 +298,39 @@ bootstrap_job() {
     if ! job_loaded "${label}"; then
         launchctl bootstrap "${LAUNCH_DOMAIN}" "${plist}"
     fi
+}
+
+watchdog_environment() {
+    env \
+        REALTIME_STOCK_REPO_DIR="${REPO_DIR}" \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_WATCHDOG_STATE_DIR="${WATCHDOG_STATE_DIR}" \
+        REALTIME_STOCK_MODE_FILE="${MODE_FILE}" \
+        REALTIME_STOCK_SIM_SERVICE_TARGET="${LAUNCH_DOMAIN}/${SIM_LABEL}" \
+        "${NODE_BIN}" "${WATCHDOG_SCRIPT}" "$1"
+}
+
+reset_watchdog() {
+    watchdog_environment reset
+}
+
+watchdog_status() {
+    if [[ -f "${WATCHDOG_SCRIPT}" && -x "${NODE_BIN}" ]]; then
+        watchdog_environment status
+    else
+        print 'business_watchdog_state=unavailable'
+        print 'business_watchdog_consecutive_failures=0'
+        print 'business_watchdog_restart_count=0'
+        print 'business_watchdog_last_reason=unknown'
+        print 'business_watchdog_next_eligible_at=0'
+    fi
+}
+
+watchdog_once() {
+    if [[ ! -f "${WATCHDOG_SCRIPT}" || ! -x "${NODE_BIN}" ]]; then
+        return 1
+    fi
+    watchdog_environment once
 }
 
 wait_port_free() {
@@ -381,12 +443,14 @@ ensure_web_job() {
 switch_simulation() {
     local business_status
     ensure_runtime_dependencies
-    [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${MULTIVIEW_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
+    [[ -f "${SIM_PLIST}" && -f "${WATCHDOG_PLIST}" && -f "${WEB_PLIST}" && -f "${MULTIVIEW_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
 
+    bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
     wait_port_free 8080
     write_mode simulation
+    reset_watchdog
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
     ensure_web_job
 
@@ -404,6 +468,8 @@ switch_simulation() {
         print -u2 "simulation HTTP 服務已啟動，但行情 session 尚未建立（${business_status}）；介面維持 OFFLINE，MultiView 使用延遲備援"
     fi
 
+    bootstrap_job "${WATCHDOG_LABEL}" "${WATCHDOG_PLIST}"
+
     restart_multiview || true
     bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
     bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
@@ -415,8 +481,9 @@ switch_simulation() {
 switch_production_readonly() {
     ensure_runtime_dependencies
     assert_no_ca
-    [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
+    [[ -f "${SIM_PLIST}" && -f "${WATCHDOG_PLIST}" && -f "${WEB_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
 
+    bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
     bootout_job "${MULTIVIEW_LABEL}"
@@ -454,11 +521,13 @@ runtime_status() {
     local info simulation health market web_http multiview_http multiview_health state_status
     print "runtime_mode=$(read_mode)"
     print "simulation_job=$(job_loaded "${SIM_LABEL}" && print loaded || print stopped)"
+    print "business_watchdog_job=$(job_loaded "${WATCHDOG_LABEL}" && print loaded || print stopped)"
     print "production_readonly_job=$(job_loaded "${PROD_LABEL}" && print loaded || print stopped)"
     print "web_job=$(job_loaded "${WEB_LABEL}" && print loaded || print stopped)"
     print "multiview_job=$(job_loaded "${MULTIVIEW_LABEL}" && print loaded || print stopped)"
     print "multiview_daily_pipeline_job=$(job_loaded "${MULTIVIEW_DAILY_LABEL}" && print loaded || print stopped)"
     print "multiview_tdcc_pipeline_job=$(job_loaded "${MULTIVIEW_TDCC_LABEL}" && print loaded || print stopped)"
+    watchdog_status
 
     info="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/info 2>/dev/null || true)"
     if [[ -n "${info}" ]]; then
@@ -512,6 +581,7 @@ install_runtime() {
     install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"
     write_plists
     bootout_job "${PROD_LABEL}"
+    bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${SIM_LABEL}"
     bootout_job "${WEB_LABEL}"
     bootout_job "${MULTIVIEW_LABEL}"
@@ -523,6 +593,7 @@ install_runtime() {
     MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" migrate
     ensure_multiview_pipeline_secret
     write_mode simulation
+    reset_watchdog
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
     bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
 
@@ -540,6 +611,8 @@ install_runtime() {
         print -u2 "simulation HTTP 服務已啟動，但行情 session 尚未建立（${business_status}）；介面維持 OFFLINE，MultiView 使用延遲備援"
     fi
 
+    bootstrap_job "${WATCHDOG_LABEL}" "${WATCHDOG_PLIST}"
+
     bootstrap_job "${MULTIVIEW_LABEL}" "${MULTIVIEW_PLIST}"
     bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
     bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
@@ -554,12 +627,15 @@ install_runtime() {
 
 uninstall_runtime() {
     bootout_job "${PROD_LABEL}"
+    bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${SIM_LABEL}"
     bootout_job "${WEB_LABEL}"
     bootout_job "${MULTIVIEW_LABEL}"
     bootout_job "${MULTIVIEW_DAILY_LABEL}"
     bootout_job "${MULTIVIEW_TDCC_LABEL}"
-    command rm -f "${SIM_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    command rm -f "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    command rm -f "${WATCHDOG_STATE_DIR}/state.json" "${WATCHDOG_STATE_DIR}/watchdog-once.lock"
+    command rmdir "${WATCHDOG_STATE_DIR}" 2>/dev/null || true
     command rm -f "${INSTALLED_SCRIPT}"
     write_mode simulation
     print "已移除 RealTimeStock LaunchAgent；.env、MultiView D1、備份、清單與設定仍保留在 ${MULTIVIEW_STATE_DIR}"
@@ -654,6 +730,8 @@ case "${command_name}" in
     multiview-daily) service_multiview_daily_pipeline ;;
     multiview-tdcc) service_multiview_tdcc_pipeline ;;
     status) runtime_status ;;
+    watchdog-once) watchdog_once ;;
+    watchdog-reset) reset_watchdog ;;
     service-api-simulation) service_api_simulation ;;
     service-api-production-readonly) service_api_production_readonly ;;
     service-web) service_web ;;

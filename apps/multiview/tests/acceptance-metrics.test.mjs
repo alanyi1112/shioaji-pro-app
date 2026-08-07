@@ -26,6 +26,8 @@ test("驗收快照只公開固定去識別化 schema", () => {
   sandbox.QuoteChartAcceptance.setGauge("activeDemandCount", 7);
   sandbox.QuoteChartAcceptance.increment("subscribeCount", 7);
   sandbox.QuoteChartAcceptance.increment("requestCount", 12);
+  sandbox.QuoteChartAcceptance.increment("realtimeRetryCount", 2);
+  sandbox.QuoteChartAcceptance.increment("realtimeRecoveryCount", 1);
 
   const snapshot = sandbox.__MULTIVIEW_ACCEPTANCE__;
   assert.deepEqual(Object.keys(snapshot), [
@@ -36,6 +38,8 @@ test("驗收快照只公開固定去識別化 schema", () => {
     "subscribeCount",
     "unsubscribeCount",
     "requestCount",
+    "realtimeRetryCount",
+    "realtimeRecoveryCount",
     "indicatorFullRecomputeCount",
     "renderCount",
     "longTaskCount",
@@ -46,6 +50,8 @@ test("驗收快照只公開固定去識別化 schema", () => {
   ]);
   assert.equal(snapshot.panelCount, 8);
   assert.equal(snapshot.activeDemandCount, 7);
+  assert.equal(snapshot.realtimeRetryCount, 2);
+  assert.equal(snapshot.realtimeRecoveryCount, 1);
   assert.equal(snapshot.heapStatus, "unsupported");
   assert.equal(snapshot.heapUsedBytes, null);
   assert.equal(Object.prototype.propertyIsEnumerable.call(sandbox, "__MULTIVIEW_ACCEPTANCE__"), false);
@@ -89,5 +95,5 @@ test("browser tool 可從隱藏 output 讀取同一份安全 schema", () => {
   assert.equal(appended.length, 1);
   assert.equal(output.hidden, true);
   assert.equal(JSON.parse(output.textContent).panelCount, 6);
-  assert.equal(output.attributes["data-schema-version"], "1");
+  assert.equal(output.attributes["data-schema-version"], "2");
 });

@@ -70,14 +70,24 @@ function harness() {
   };
 }
 
-function localHarness({ simulation = true } = {}) {
+function localHarness({
+  simulation = true,
+  infoFailures = 0,
+  snapshotFailures = 0,
+  snapshotAlwaysFails = false,
+} = {}) {
   const sources = [];
   const requests = [];
   const timers = new Map();
+  const intervals = new Map();
   const windowTarget = eventTarget();
   const documentTarget = eventTarget();
   documentTarget.hidden = false;
   let timerId = 0;
+  let intervalId = 0;
+  let currentSimulation = simulation;
+  let remainingInfoFailures = infoFailures;
+  let remainingSnapshotFailures = snapshotFailures;
   class FakeEventSource {
     constructor(url) {
       this.url = url;
@@ -93,10 +103,22 @@ function localHarness({ simulation = true } = {}) {
     const url = new URL(String(input), "http://127.0.0.1:5174");
     const body = init.body ? JSON.parse(init.body) : null;
     requests.push({ path: url.pathname, search: url.search, method: init.method || "GET", body });
-    if (url.pathname.endsWith("/api/v1/info")) return Response.json({ simulation });
+    if (url.pathname.endsWith("/api/v1/info")) {
+      if (remainingInfoFailures > 0) {
+        remainingInfoFailures -= 1;
+        return Response.json({ reasonCode: "api_unavailable" }, { status: 503 });
+      }
+      return Response.json({ simulation: currentSimulation });
+    }
     if (url.pathname.includes("/api/v1/data/contracts/")) return Response.json({ code: "2330", security_type: "STK", exchange: "TSE" });
     if (url.pathname.endsWith("/api/v1/stream/subscribe") || url.pathname.endsWith("/api/v1/stream/unsubscribe")) return Response.json({ ok: true });
-    if (url.pathname.endsWith("/api/v1/data/snapshots")) return Response.json([{ datetime: "2026-08-06 09:01:00", open: 100, high: 102, low: 99, close: 101, average_price: 100.5, volume: 3, total_volume: 12 }]);
+    if (url.pathname.endsWith("/api/v1/data/snapshots")) {
+      if (snapshotAlwaysFails || remainingSnapshotFailures > 0) {
+        remainingSnapshotFailures = Math.max(0, remainingSnapshotFailures - 1);
+        return Response.json({ reasonCode: "SessionNotEstablished" }, { status: 503 });
+      }
+      return Response.json([{ datetime: "2026-08-06 09:01:00", open: 100, high: 102, low: 99, close: 101, average_price: 100.5, volume: 3, total_volume: 12 }]);
+    }
     if (url.pathname.endsWith("/api/v1/data/kbars")) return Response.json({
       datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
       Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7], Amount: [505, 714],
@@ -113,16 +135,22 @@ function localHarness({ simulation = true } = {}) {
     documentTarget,
     setTimeoutImpl(callback, delay) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeoutImpl(id) { timers.delete(id); },
-    setIntervalImpl() { return 1; },
-    clearIntervalImpl() {},
+    setIntervalImpl(callback, delay) { const id = ++intervalId; intervals.set(id, { callback, delay }); return id; },
+    clearIntervalImpl(id) { intervals.delete(id); },
   });
   return {
-    coordinator, sources, requests,
+    coordinator, sources, requests, windowTarget, documentTarget,
+    setSimulation(value) { currentSimulation = value; },
     runTimer(delay) {
       const [id, timer] = [...timers].find(([, item]) => item.delay === delay) || [];
       assert.ok(timer, `找不到 ${delay}ms timer`);
       timers.delete(id);
       timer.callback();
+    },
+    runInterval(delay) {
+      const interval = [...intervals.values()].find((item) => item.delay === delay);
+      assert.ok(interval, `找不到 ${delay}ms interval`);
+      interval.callback();
     },
   };
 }
@@ -239,4 +267,90 @@ test("本機 coordinator 在非 simulation 模式不建立 SSE 並顯示備援",
   assert.equal(h.requests.some((item) => item.path.endsWith("/contracts/2330")), false);
   assert.equal(states.at(-1)?.state, "fallback");
   assert.equal(states.at(-1)?.reasonCode, "simulation_required");
+});
+
+test("本機 API restart 後由 15 秒 mode check 自動建立唯一 SSE", async () => {
+  const h = localHarness({ infoFailures: 1 });
+  h.coordinator.subscribe("panel-0", { symbol: "2330.TW" }, () => {});
+  await settle();
+  assert.equal(h.sources.length, 0);
+
+  h.runInterval(15_000);
+  await settle();
+  assert.equal(h.sources.length, 1);
+  assert.equal(h.coordinator.connectionCount(), 1);
+});
+
+test("SSE 早於 business session 時，首次補訂閱失敗後依退避恢復", async () => {
+  const h = localHarness({ snapshotFailures: 1 });
+  const snapshots = [];
+  h.coordinator.subscribe("panel-0", { symbol: "2330.TW" }, (item) => snapshots.push(item));
+  await settle();
+  h.sources[0].open();
+  await settle();
+
+  assert.equal(h.coordinator.subscriptionCount(), 0);
+  assert.equal(h.sources.length, 1);
+  h.runTimer(1_000);
+  await settle();
+
+  assert.equal(h.coordinator.subscriptionCount(), 1);
+  assert.equal(snapshots.length, 1);
+  assert.equal(h.sources.length, 1);
+});
+
+test("相同 canonical demand 的恢復採 single-flight", async () => {
+  const h = localHarness();
+  h.coordinator.subscribe("panel-a", { symbol: "2330.TW" }, () => {});
+  h.coordinator.subscribe("panel-b", { symbol: "2330.TW" }, () => {});
+  await settle();
+  h.sources[0].open();
+  await settle();
+
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/stream/subscribe")).length, 1);
+  assert.equal(h.coordinator.subscriptionCount(), 1);
+  assert.equal(h.sources.length, 1);
+});
+
+test("持續 SessionNotEstablished 不因 mode check 或 online 事件形成 request storm", async () => {
+  const h = localHarness({ snapshotAlwaysFails: true });
+  h.coordinator.subscribe("panel-0", { symbol: "2330.TW" }, () => {});
+  await settle();
+  h.sources[0].open();
+  await settle();
+  const snapshotRequests = () => h.requests.filter((item) => item.path.endsWith("/data/snapshots")).length;
+  assert.equal(snapshotRequests(), 1);
+
+  h.runInterval(15_000);
+  h.windowTarget.dispatch("online");
+  await settle();
+  assert.equal(snapshotRequests(), 1);
+
+  h.runTimer(1_000);
+  await settle();
+  assert.equal(snapshotRequests(), 2);
+  h.runInterval(15_000);
+  await settle();
+  assert.equal(snapshotRequests(), 2);
+  assert.equal(h.sources.length, 1);
+});
+
+test("simulation 來源切換會原子關閉舊 SSE，切回後只建立一條新 SSE", async () => {
+  const h = localHarness();
+  h.coordinator.subscribe("panel-0", { symbol: "2330.TW" }, () => {});
+  await settle();
+  h.sources[0].open();
+  await settle();
+
+  h.setSimulation(false);
+  h.runInterval(15_000);
+  await settle();
+  assert.equal(h.coordinator.connectionCount(), 0);
+  assert.equal(h.sources[0].closed, true);
+
+  h.setSimulation(true);
+  h.runInterval(15_000);
+  await settle();
+  assert.equal(h.sources.length, 2);
+  assert.equal(h.coordinator.connectionCount(), 1);
 });

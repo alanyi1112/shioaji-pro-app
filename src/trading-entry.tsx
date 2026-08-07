@@ -4,6 +4,7 @@ import App from './App';
 import { OnboardingSetup } from './components/onboarding-setup';
 import { startAnalytics } from './lib/analytics';
 import { bootstrap } from './lib/boot';
+import { startBusinessSessionMonitor } from './lib/business-session-monitor';
 import { startRuntimeModeSync } from './lib/runtime-mode';
 import { isTauri, loadDesktopSettings } from './lib/tauri';
 import { initTheme } from './lib/theme-store';
@@ -32,6 +33,7 @@ export function renderTradingApp(root: Root) {
     startAnalytics();
     startTriggerEngine();
     startRuntimeModeSync();
+    startBusinessSessionMonitor();
     bootstrap();
 
     root.render(

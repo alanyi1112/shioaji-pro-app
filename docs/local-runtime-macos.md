@@ -16,9 +16,24 @@ pnpm local-runtime install
 pnpm local-runtime status
 ```
 
-安裝會建立 simulation API、Vite Web、MultiView 與 bounded 盤後資料 pipeline 的使用者層級 LaunchAgent。服務都只監聽 loopback；MultiView 只會在 simulation 模式啟動。
+安裝會建立 simulation API、business-session watchdog、Vite Web、MultiView 與 bounded 盤後資料 pipeline 的使用者層級 LaunchAgent。服務都只監聽 loopback；MultiView 與 watchdog 只會在 simulation 模式啟動。
 
 安裝或切回 simulation 時，runtime 會先確認 8080 的模式與 health endpoint，再以 2330 snapshot 等待行情業務 session；完成判定後才啟動 MultiView。若盤後維護或上游 session 暫時無法建立，5173 仍可啟動，但介面會維持 `OFFLINE`，MultiView 改用延遲備援，不會把「HTTP 程序正在監聽」誤報成即時行情可用。
+
+## Business-session 自動恢復
+
+watchdog 每 30 秒以固定 2330 Snapshot 檢查 simulation business session。只有同一個已曾成功的 simulation API generation 連續三次回報 `SessionNotEstablished`，才會只對 8080 simulation API job 執行有限重啟；5173、5174、D1 與盤後 pipeline 都不會被 watchdog 重啟。
+
+每次重啟後保留 90 秒恢復期，後續依 2／5 分鐘退避；同一 incident 最多重啟三次，之後進入 `circuit-open`。執行下列命令可查看去識別化狀態；若確認本機 simulation 設定可用，可用 `simulation` 人工重設 circuit 並重建服務：
+
+```sh
+pnpm local-runtime status
+pnpm local-runtime simulation
+```
+
+watchdog 不會修復、啟動或探測 production 行情，也不會載入 CA、帳戶或呼叫交易 API。若 runtime mode 不是 `simulation`，watchdog job 會在切換前停止；隔離狀態機則只會回報 `idle-non-simulation`。
+
+5173 另有一個 document-scoped monitor，以相同的低頻 Snapshot 判斷 business session。中途失效時工作區保持開啟、header 顯示 `OFFLINE`，並以 5／10／20／30 秒後封頂 30 秒的 single-flight 退避重載自選清單；手動「重新檢查」會併入同一個 recovery flow。
 
 交易終端「版面 → MultiView」會先開啟 5173 的輕量 launcher。launcher 只讀取 5174 的固定 health endpoint 與 Shioaji mode；確認 simulation 後才導向 MultiView。若 5174 未啟動，畫面會保留可操作的重試與重啟指引。
 
@@ -72,6 +87,9 @@ pnpm local-runtime status
 - `api_health`：本機 server health。
 - `api_business_session`：以 2330 snapshot 驗證的行情業務 session 狀態。
 - `market_snapshot_2330`：行情業務 session 是否可回應。
+- `business_watchdog_job`：simulation-only watchdog LaunchAgent 是否載入。
+- `business_watchdog_state`：`startup-grace`、`healthy`、`suspect`、`recovering`、`backoff`、`circuit-open` 或 `idle-non-simulation`。
+- `business_watchdog_consecutive_failures`、`business_watchdog_restart_count`、`business_watchdog_last_reason`、`business_watchdog_next_eligible_at`：固定 allowlist 診斷欄位，不含 response body、商品清單、帳戶或秘密。
 - `multiview_listener`：5174 是否存在。
 - `multiview_after_hours_market／chip／tdcc／pe`：最近一次安全 seed report 的資料族群結果。
 
