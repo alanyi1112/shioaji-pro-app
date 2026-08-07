@@ -91,3 +91,11 @@
 - [ ] 8.9 gates 全部成立後分階段啟用 Cloudflare feature flag；等待 exact-commit deploy 並監測至少一個完整交易日
 - [ ] 8.10 執行 feature-flag rollback 演練，確認可立即停止 gateway uplink 並恢復既有批次行情，不刪除 canonical history 或影響 Sites
 - [x] 8.11 更新繁體中文部署、gateway service、秘密輪替、事故處理、降載、回滾與驗收文件，最後再判定是否可歸檔
+
+## 9. 本機 MultiView 整合修正
+
+- [x] 9.1 將 RealTimeStock「版面」選單的 MultiView launcher 改為每次使用 `_blank` 建立新分頁，新增連續呼叫測試，並以瀏覽器確認按兩次產生兩個不同的 `127.0.0.1:5174` 分頁
+- [x] 9.2 在 Yahoo 上游轉換、candle history 合併／讀回與 API 圖表輸出加入 OHLCV 結構驗證，拒絕零價、負成交量與不合理 high／low，同時保留結構合法的負價格商品
+- [x] 9.3 升級 candle cache contract；先備份本機 D1，再以 TWSE 官方 OHLCV 取代 0050／0056 的 2026-08-06 異常日 K、清除相關舊 cache，並通過 integrity、API 連續交易日與圖表價格尺度驗收
+- [x] 9.4 將一般商品右鍵功能表縮為約 `176px`、長篇詳細資料展開時才加寬；將同頁下單面板背景遮罩調為 `rgba(2, 6, 23, 0.52)` 與 `blur(2px)`，保留關閉及焦點恢復行為
+- [x] 9.5 完成 root 144 項測試、MultiView 467 項測試、lint、兩個 build、`git diff --check`、simulation runtime、business session、5173／5174 與 D1 health 驗證

@@ -1,6 +1,6 @@
 import { computeIndicators, type Candle, type IndicatorParameters } from "./indicators";
 import { inferTaiwanMarketPhase, inferUnitedStatesMarketPhase, type MarketPhase } from "./market-phase";
-import type { CandleHistoryCacheMetadata, HistoryCandle } from "./candle-history";
+import { isStructurallyValidCandle, type CandleHistoryCacheMetadata, type HistoryCandle } from "./candle-history";
 import { buildTraditionalPivotIndicator, pivotReferenceInterval, referencePeriodKey, type PivotMode } from "./pivot-points";
 
 const INTERVAL_SECONDS: Record<string, number> = { "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400, "1wk": 604800, "1mo": 2592000 };
@@ -139,7 +139,8 @@ async function yahooCandles(symbol: string, interval: string, mode: "full" | "ta
   let rows = timestamps.flatMap((time, index) => {
     const values = [quote.open?.[index], quote.high?.[index], quote.low?.[index], quote.close?.[index]];
     if (values.some((value) => typeof value !== "number" || !Number.isFinite(value))) return [];
-    return [{ time, open: values[0], high: values[1], low: values[2], close: values[3], volume: Number(quote.volume?.[index] ?? 0) } as HistoryCandle];
+    const candidate = { time, open: values[0], high: values[1], low: values[2], close: values[3], volume: Number(quote.volume?.[index] ?? 0) } as HistoryCandle;
+    return isStructurallyValidCandle(candidate) ? [candidate] : [];
   });
   if (interval === "4h") rows = aggregateFourHours(rows);
   if (interval === "1wk") rows = aggregateWeeklyCandles(rows, String(result?.meta?.exchangeTimezoneName || "UTC"));
@@ -202,8 +203,19 @@ export function candlePayloadFromRows(
 ) {
   const rawLatest = rows[rows.length - 1];
   const ignoredSessionDates: string[] = [];
+  const invalidCandleSessionDates: string[] = [];
   const isTaiwanDaily = interval === "1d" && /\.(TW|TWO)$/.test(symbol.toUpperCase());
-  const normalizedRows = isTaiwanDaily ? rows.reduce<Candle[]>((accepted, row) => {
+  const normalizedRows = rows.reduce<HistoryCandle[]>((accepted, row) => {
+    if (!isStructurallyValidCandle(row)) {
+      if (Number.isFinite(row?.time) && row.time > 0) {
+        invalidCandleSessionDates.push(sessionDateInTimeZone(row.time, isTaiwanDaily ? "Asia/Taipei" : "UTC"));
+      }
+      return accepted;
+    }
+    if (!isTaiwanDaily) {
+      accepted.push(row);
+      return accepted;
+    }
     const previous = accepted[accepted.length - 1];
     const isPlaceholder = Boolean(previous)
       && row.volume === 0
@@ -217,7 +229,7 @@ export function candlePayloadFromRows(
     }
     accepted.push(row);
     return accepted;
-  }, []) : rows;
+  }, []);
   const sourceTimeZone = rawLatest?.sourceTimeZone || (isTaiwanDaily ? "Asia/Taipei" : "UTC");
   const requested = Math.max(1, Math.min(displayCount, 1600));
   const displayRows = normalizedRows.slice(-requested);
@@ -283,7 +295,14 @@ export function candlePayloadFromRows(
   indicators.val = displayProfile.val;
   const dataQuality = {
     ignoredSessionDates,
-    ...(ignoredSessionDates.length ? { reason: "zero_volume_flat_carry_forward" } : {}),
+    ...(invalidCandleSessionDates.length ? { invalidCandleSessionDates } : {}),
+    ...(invalidCandleSessionDates.length && ignoredSessionDates.length
+      ? { reason: "invalid_ohlc_and_zero_volume_flat_carry_forward" }
+      : invalidCandleSessionDates.length
+        ? { reason: "invalid_ohlc" }
+        : ignoredSessionDates.length
+          ? { reason: "zero_volume_flat_carry_forward" }
+          : {}),
     ...(symbol.trim().toUpperCase() === "^SOX"
       && normalizedRows.length > 0
       && normalizedRows.every((row) => Number(row.volume) === 0)

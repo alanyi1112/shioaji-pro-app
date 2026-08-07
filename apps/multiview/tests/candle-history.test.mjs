@@ -8,6 +8,7 @@ import {
   candleHistoryTtlSeconds,
   changedCandleHistoryTail,
   clearCandleHistoryRuntimeState,
+  isStructurallyValidCandle,
   mergeCandleHistory,
   readCandleHistory,
   requiredCandleHistoryRows,
@@ -220,6 +221,48 @@ test("merge 依 time 去重排序，incoming 覆蓋同 time 尾端資料", () =>
   assert.equal(merged[1].close, 20);
   assert.equal(merged[1].quoteTime, 22);
   assert.equal(merged[1].sourceUpdatedAt, "new");
+});
+
+test("K 線結構驗證拒絕空值轉零、零價、負量與不一致 OHLC，並保留合法負價格", () => {
+  const malformed = [
+    { ...candle(4, 4), open: null },
+    { time: 5, open: 0, high: 0, low: 0, close: 103.04, volume: 0 },
+    { time: 6, open: 0, high: 0, low: 0, close: 0, volume: 10 },
+    { ...candle(7, 7), volume: -1 },
+    { time: 8, open: 10, high: 9, low: 8, close: 10, volume: 10 },
+  ];
+  for (const row of malformed) assert.equal(isStructurallyValidCandle(row), false);
+  const negativePrice = { time: 9, open: -5, high: -2, low: -10, close: -7, volume: 10 };
+  assert.equal(isStructurallyValidCandle(negativePrice), true);
+  assert.deepEqual(
+    mergeCandleHistory([], [...malformed, negativePrice]).map((row) => row.time),
+    [9],
+  );
+});
+
+test("Yahoo 上游的不完整 OHLC 在寫入歷史及 API 輸出前就會被拒絕", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ chart: { result: [{
+    timestamp: [1, 2, 3],
+    meta: { regularMarketTime: 3, marketState: "CLOSED", exchangeTimezoneName: "America/New_York" },
+    indicators: { quote: [{
+      open: [100, 0, 102], high: [102, 0, 104], low: [99, 0, 101], close: [101, 103.04, 103], volume: [1000, 0, 1200],
+    }] },
+  }] } });
+  try {
+    const service = await builtWorker("invalid-upstream-ohlc");
+    const response = await service.fetch(
+      new Request("http://localhost/api/candles?symbol=AAPL&interval=1d&display_count=20"),
+      workerEnvironment(undefined),
+      workerContext,
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.deepEqual(payload.candles.map((row) => row.time), [1, 3]);
+    assert.equal(payload.candles.some((row) => row.open === 0 && row.high === 0 && row.low === 0), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("merge 保留官方收盤 K 棒，不被盤中 MIS 或 Yahoo 覆蓋", () => {

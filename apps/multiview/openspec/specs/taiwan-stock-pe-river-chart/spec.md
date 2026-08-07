@@ -194,7 +194,7 @@ TBD - created by archiving change add-taiwan-stock-pe-river-chart. Update Purpos
 
 ### Requirement: 完整 panel PNG 必須包含目前可見河流圖
 
-啟用河流圖時，「儲存此商品所有線圖為圖片」MUST 擷取與畫面相同的 verified／provisional 七條界線、六個 band、七個同色框線標籤、主 K 線與目前可見的 provisional 狀態提示；匯出不得因 SVG clone、responsive viewport 或 overflow 計算遺失河流圖，也不得把 provisional 樣式改成官方或加入畫面上不存在的同業資料。右鍵選單及其中的詳細說明 MUST 維持 export-excluded，不得因匯出而自動展開。
+啟用河流圖時，「儲存圖片」MUST 擷取與畫面相同的 verified／provisional 七條界線、六個 band、七個同色框線標籤、主 K 線與目前可見的 provisional 狀態提示；匯出不得因 SVG clone、responsive viewport 或 overflow 計算遺失河流圖，也不得把 provisional 樣式改成官方或加入畫面上不存在的同業資料。右鍵選單及其中的詳細說明 MUST 維持 export-excluded，不得因匯出而自動展開。
 
 #### Scenario: 匯出只有 verified 河流的單一 panel
 - **WHEN** verified 河流圖已完成繪製且使用者匯出該商品所有線圖

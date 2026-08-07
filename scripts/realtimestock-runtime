@@ -286,12 +286,12 @@ wait_port_free() {
 
 wait_api_mode() {
     local expected="$1"
-    local attempt actual
+    local attempt actual health_http
     for attempt in {1..30}; do
         actual="$(curl -fsS --max-time 2 http://127.0.0.1:8080/api/v1/info 2>/dev/null | jq -r '.simulation // empty' 2>/dev/null || true)"
         if [[ "${actual}" == "${expected}" ]]; then
-            curl -fsS --max-time 2 http://127.0.0.1:8080/api/v1/health >/dev/null
-            return 0
+            health_http="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/health 2>/dev/null || true)"
+            [[ "${health_http}" == '200' ]] && return 0
         fi
         sleep 1
     done
@@ -359,11 +359,27 @@ snapshot_status() {
     fi
 }
 
+wait_business_session() {
+    local max_attempts="${1:-30}"
+    local attempt session_state='unavailable'
+    for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
+        session_state="$(snapshot_status)"
+        if [[ "${session_state}" == 'available' ]]; then
+            print 'available'
+            return 0
+        fi
+        sleep 1
+    done
+    print -r -- "${session_state}"
+    return 1
+}
+
 ensure_web_job() {
     bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
 }
 
 switch_simulation() {
+    local business_status
     ensure_runtime_dependencies
     [[ -f "${SIM_PLIST}" && -f "${WEB_PLIST}" && -f "${MULTIVIEW_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
 
@@ -373,18 +389,25 @@ switch_simulation() {
     write_mode simulation
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
     ensure_web_job
-    restart_multiview || true
-    bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
-    bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
 
     if ! wait_api_mode true; then
-        print -u2 'simulation API 未能在 30 秒內通過模式與健康檢查'
+        print -u2 'simulation API 未能在 30 秒內完成監聽與模式確認'
         return 1
     fi
     if ! wait_web; then
         print -u2 '本機 Web 未能在 20 秒內啟動'
         return 1
     fi
+    if business_status="$(wait_business_session 30)"; then
+        print 'simulation 行情 session 已建立'
+    else
+        print -u2 "simulation HTTP 服務已啟動，但行情 session 尚未建立（${business_status}）；介面維持 OFFLINE，MultiView 使用延遲備援"
+    fi
+
+    restart_multiview || true
+    bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
+    bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
+
     print '已切換至 simulation'
     runtime_status
 }
@@ -445,6 +468,7 @@ runtime_status() {
         print "api_listener=up"
         print "api_simulation=${simulation}"
         print "api_health=${health}"
+        print "api_business_session=${market}"
         print "market_snapshot_2330=${market}"
     else
         print 'api_listener=down'
@@ -482,6 +506,7 @@ runtime_status() {
 }
 
 install_runtime() {
+    local business_status
     ensure_runtime_dependencies
     mkdir -p "${INSTALLED_BIN_DIR}"
     install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"
@@ -500,18 +525,25 @@ install_runtime() {
     write_mode simulation
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
     bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
-    bootstrap_job "${MULTIVIEW_LABEL}" "${MULTIVIEW_PLIST}"
-    bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
-    bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
 
     if ! wait_api_mode true; then
-        print -u2 '安裝完成，但 simulation API 尚未通過健康檢查'
+        print -u2 '安裝完成，但 simulation API 尚未完成監聽與模式確認'
         return 1
     fi
     if ! wait_web; then
         print -u2 '安裝完成，但本機 Web 尚未通過健康檢查'
         return 1
     fi
+    if business_status="$(wait_business_session 30)"; then
+        print 'simulation 行情 session 已建立'
+    else
+        print -u2 "simulation HTTP 服務已啟動，但行情 session 尚未建立（${business_status}）；介面維持 OFFLINE，MultiView 使用延遲備援"
+    fi
+
+    bootstrap_job "${MULTIVIEW_LABEL}" "${MULTIVIEW_PLIST}"
+    bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
+    bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
+
     if ! wait_multiview; then
         print -u2 '安裝完成，但 MultiView 尚未通過健康檢查；simulation API 與本機 Web 維持執行'
         return 1

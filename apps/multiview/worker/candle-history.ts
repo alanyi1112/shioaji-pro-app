@@ -132,16 +132,32 @@ export function requiredCandleHistoryRows(symbol: string, interval: string, disp
   return requestedDisplayRows(displayCount) + CANDLE_HISTORY_WARMUP_ROWS + taiwanDailyBuffer;
 }
 
-function normalizeHistoryCandle(row: HistoryCandle): HistoryCandle | null {
+export function isStructurallyValidCandle(
+  row: Partial<HistoryCandle> | null | undefined,
+): row is HistoryCandle {
+  if (!row) return false;
   const values = [row.time, row.open, row.high, row.low, row.close, row.volume];
-  if (values.some((value) => !Number.isFinite(Number(value)))) return null;
+  if (values.some((value) => typeof value !== "number" || !Number.isFinite(value))) return false;
+  if (row.time! <= 0 || row.volume! < 0) return false;
+  if ([row.open, row.high, row.low, row.close].every((value) => value === 0)) return false;
+  const scale = Math.max(1, Math.abs(row.open!), Math.abs(row.high!), Math.abs(row.low!), Math.abs(row.close!));
+  // Yahoo 的外匯日線偶爾會有極小的 OHLC rounding 差異；容許 0.1%，
+  // 但仍拒絕像 0050／0056 開高低為 0、收盤價有效的巨大異常棒。
+  const epsilon = scale * 0.001;
+  return row.high! + epsilon >= Math.max(row.open!, row.close!)
+    && row.low! - epsilon <= Math.min(row.open!, row.close!)
+    && row.high! + epsilon >= row.low!;
+}
+
+function normalizeHistoryCandle(row: HistoryCandle): HistoryCandle | null {
+  if (!isStructurallyValidCandle(row)) return null;
   const normalized: HistoryCandle = {
-    time: Number(row.time),
-    open: Number(row.open),
-    high: Number(row.high),
-    low: Number(row.low),
-    close: Number(row.close),
-    volume: Number(row.volume),
+    time: row.time,
+    open: row.open,
+    high: row.high,
+    low: row.low,
+    close: row.close,
+    volume: row.volume,
   };
   if (Number.isFinite(Number(row.quoteTime))) normalized.quoteTime = Number(row.quoteTime);
   if (row.marketSession) normalized.marketSession = String(row.marketSession);

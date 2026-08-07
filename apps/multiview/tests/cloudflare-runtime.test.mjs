@@ -20,7 +20,7 @@ async function builtWorker() {
 }
 
 test("Sites 與 Cloudflare visible panels 共用頁面級 batch coordinator，production panel path 不建立 EventSource", () => {
-  assert.match(indexHtml, /acceptance-metrics\.js\?v=20260807-runtime-e2e-v1[\s\S]*live-batch-coordinator\.js\?v=20260807-runtime-e2e-v1[\s\S]*realtime-coordinator\.js\?v=20260731-shioaji-realtime-v1[\s\S]*realtime-charts\.js\?v=20260731-shioaji-realtime-v1[\s\S]*chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*panel-reordering\.js\?v=20260804-panel-reorder-v1[\s\S]*app\.js\?v=20260805-compact-subchart-axis-v1/);
+  assert.match(indexHtml, /acceptance-metrics\.js\?v=20260807-runtime-e2e-v1[\s\S]*live-batch-coordinator\.js\?v=20260807-runtime-e2e-v1[\s\S]*realtime-coordinator\.js\?v=20260731-shioaji-realtime-v1[\s\S]*realtime-charts\.js\?v=20260731-shioaji-realtime-v1[\s\S]*chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*panel-reordering\.js\?v=20260804-panel-reorder-v1[\s\S]*app\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(appSource, /const liveBatchCoordinator = window\.QuoteChartLiveBatch\.createLiveBatchCoordinator\(\)/);
   assert.match(appSource, /liveBatchCoordinator\.subscribe\(panelSubscriptionId/);
   assert.match(coordinatorSource, /fetchImpl\("\/api\/candles\/batch"/);

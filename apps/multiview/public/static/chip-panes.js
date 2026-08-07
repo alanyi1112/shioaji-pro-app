@@ -996,7 +996,7 @@
     exportMenuItem.type = "button";
     exportMenuItem.className = "chip-pane-context-menu-action chip-pane-context-menu-export";
     exportMenuItem.setAttribute("role", "menuitem");
-    exportMenuItem.textContent = "儲存此商品所有線圖為圖片";
+    exportMenuItem.textContent = "儲存圖片";
     const exportSeparator = document.createElement("div");
     exportSeparator.className = "chip-pane-context-separator";
     exportSeparator.setAttribute("role", "separator");

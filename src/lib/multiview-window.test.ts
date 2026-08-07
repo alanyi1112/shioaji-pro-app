@@ -7,16 +7,21 @@ import {
 } from './multiview-window';
 
 describe('MultiView window', () => {
-    it('預設同步開啟 5173 launcher 並只攜帶合法 5174 target', () => {
+    it('每次都以新分頁同步開啟 5173 launcher，並只攜帶合法 5174 target', () => {
         const open = vi.fn(() => null);
-        openMultiViewWindow(
-            { open } as unknown as Window,
-            undefined,
-            'http://127.0.0.1:5173',
-        );
-        expect(open).toHaveBeenCalledWith(
+        const target = { open } as unknown as Window;
+        openMultiViewWindow(target, undefined, 'http://127.0.0.1:5173');
+        openMultiViewWindow(target, undefined, 'http://127.0.0.1:5173');
+        expect(open).toHaveBeenCalledTimes(2);
+        expect(open).toHaveBeenNthCalledWith(
+            1,
             'http://127.0.0.1:5173/?popout=multiview-launcher&target=http%3A%2F%2F127.0.0.1%3A5174%2F',
-            'realtimestock-multiview',
+            '_blank',
+        );
+        expect(open).toHaveBeenNthCalledWith(
+            2,
+            'http://127.0.0.1:5173/?popout=multiview-launcher&target=http%3A%2F%2F127.0.0.1%3A5174%2F',
+            '_blank',
         );
     });
 

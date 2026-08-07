@@ -48,3 +48,27 @@
 - **THEN** 系統 MAY 暫時提供最後 overlay
 - **AND** cache metadata MUST 表示 provisional／closing
 - **AND** MUST NOT 將其標示為 verified canonical history
+
+### Requirement: Candle history 必須拒絕結構不合法的 OHLCV
+
+系統 MUST 在上游轉換、history 合併／讀回及 API 圖表輸出三個邊界驗證 candle 結構；`time`、OHLCV MUST 為有限數值、`time` MUST 大於零、`volume` MUST 不得為負，且 high／low MUST 在容許上游微小 rounding 差異後仍包住 open、close 與彼此範圍。系統 MUST 拒絕全零價格，或只有 close 有效而 open／high／low 為零的異常列，且 MUST NOT 讓該列進入指標計算、圖表價格尺度或持久化更新。
+
+#### Scenario: Yahoo 回傳數值型但結構不合法的日 K
+
+- **WHEN** 上游日 K 的 open、high、low 為 `0`，但 close 為有效非零價格
+- **THEN** 系統 MUST 在寫入 `candle_history` 前拒絕該列
+- **AND** API candles 與 indicators MUST NOT 包含該列
+- **AND** 圖表 MUST NOT 因該列把價格尺度延伸至零
+
+#### Scenario: 既有 history 或 cache 已含異常列
+
+- **WHEN** D1 history、Worker memory 或舊 cache contract 已保存結構不合法的 candle
+- **THEN** history 讀回與 response 組裝 MUST 再次排除該列
+- **AND** cache contract MUST 升版或清除相關 cache，避免舊 payload 繼續回應
+- **AND** 若同交易日已有可驗證的 TWSE／TPEx 官方 OHLCV，系統 MUST 以官方 row 取代異常 row，且較低來源順位不得再覆蓋
+
+#### Scenario: 合法市場曾出現負價格
+
+- **WHEN** 商品的 open、high、low、close 包絡關係合法但價格為負
+- **THEN** 系統 MUST NOT 只因價格小於零而拒絕 candle
+- **AND** 仍 MUST 套用有限數值、成交量與 OHLC 結構檢查

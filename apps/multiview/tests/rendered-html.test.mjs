@@ -483,8 +483,8 @@ test("主圖估算融資成本與清單 metadata UI 保留偏好、缺值及無�
   assert.match(appScript, /quoteChart\.estimatedMarginCost\.v1:/);
   assert.match(appScript, /state\.activeMarketTabId/);
   assert.match(appScript, /estimatedMarginAbortController\?\.abort\(\)/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260805-compact-subchart-axis-v1/);
-  assert.match(indexHtml, /chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*app\.js\?v=20260805-compact-subchart-axis-v1/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
+  assert.match(indexHtml, /chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*app\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(appScript, /requestData\?\.\(\{[\s\S]*datasets: \["margin-short"\]/);
   assert.match(appScript, /加入日期未知/);
   assert.match(indexHtml, /id="watchlist-symbol-recommender"[^>]*maxlength="80"/);
@@ -1237,7 +1237,7 @@ test("台股盤中 stale cache 保留來源時間並以 freshness 優先", async
     dataQuality: { ignoredSessionDates: [] }, indicators: {},
     dataWindow: { cache: { store: "d1", state: "hit", source: "yfinance" } },
   };
-  db.candles.set("quote-state-v14-shared-official-tail|2330.TW|1d|20|r5.10-k9.3.3-m12.26.9-a14|pivot:off", { payload: JSON.stringify(cached), expires_at: 0 });
+  db.candles.set("quote-state-v15-valid-ohlc|2330.TW|1d|20|r5.10-k9.3.3-m12.26.9-a14|pivot:off", { payload: JSON.stringify(cached), expires_at: 0 });
   globalThis.fetch = async () => { throw new Error("primary unavailable"); };
   try {
     const response = await (await worker()).fetch(new Request("http://localhost/api/candles?symbol=2330.TW&interval=1d&display_count=20"), { ...environment(), DB: db }, context);
@@ -1890,11 +1890,11 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(chipScript, /pinToBottomMenuItem\.removeEventListener\("click", pinToBottomFromContextMenu\)/);
   assert.match(chipScript, /function startPaneDrag\(id, event\)/);
   assert.match(styles, /\.chart-panel\.has-no-subchart \.subchart-slot\s*\{[^}]*display: none;/s);
-  assert.match(indexHtml, /styles\.css\?v=20260805-chip-readout-heights-v2/);
+  assert.match(indexHtml, /styles\.css\?v=20260807-toolbar-spacing-v2/);
   assert.match(indexHtml, /chart-annotations\.js\?v=20260727-fibonacci-snap-coexist-v1/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260805-compact-subchart-axis-v1/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(indexHtml, /panel-image-export\.js\?v=20260721-panel-frame-v4/);
-  assert.match(indexHtml, /app\.js\?v=20260805-compact-subchart-axis-v1/);
+  assert.match(indexHtml, /app\.js\?v=20260807-inline-ticket-toolbar-v1/);
 });
 
 test("固定範圍 VP 價格標籤無範圍前綴，水平線為 1px 且控制線為 2px", async () => {
@@ -2154,7 +2154,7 @@ test("多層副圖一般 wheel 捲頁且保持圖表範圍，Alt wheel 明確縮
     readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8"),
   ]);
   assert.match(indexHtml, /chart-interactions\.js[^<]*<\/script>[\s\S]*chip-panes\.js[^<]*<\/script>[\s\S]*live-batch-coordinator\.js[^<]*<\/script>[\s\S]*app\.js/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260805-compact-subchart-axis-v1/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(appScript, /QuoteChartInteractions\.chartInteractionOptions\(mode\)/);
   assert.match(appScript, /bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\)/);
   assert.match(appScript, /mainWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\);\s*chart = LightweightCharts\.createChart/s);
@@ -2339,4 +2339,14 @@ test("籌碼資料提示位於副圖尾端且提供可關閉控制", async () =>
   assert.match(styles, /\.chip-pane-notice\s*\{[^}]*display: flex;[^}]*border-top:/s);
   assert.match(styles, /\.subchart-slot\.is-mode-a-chip \.chip-pane-region\s*\{[^}]*display: flex;[^}]*flex-direction: column;/s);
   assert.doesNotMatch(styles, /\.subchart-slot\.is-mode-a-chip \.chip-pane-(?:empty|notice)[^{]*\{[^}]*position: absolute;/s);
+});
+
+test("頂端工具列縮窄台股來源並將顯示控制群組固定在最右側", async () => {
+  const styles = await readFile(new URL("../public/static/styles.css", import.meta.url), "utf8");
+
+  assert.match(indexHtml, /class="source-mode-control source-mode-primary"/);
+  assert.match(indexHtml, /class="display-controls" aria-label="圖表顯示設定"[\s\S]*class="chart-count-control"[\s\S]*class="chip-mode-control"/);
+  assert.match(styles, /\.source-mode-primary select\s*\{[^}]*width: 120px;[^}]*min-width: 120px;[^}]*max-width: 120px;/s);
+  assert.match(styles, /\.display-controls\s*\{[^}]*display: inline-flex;[^}]*margin-left: auto;[^}]*flex: 0 0 auto;/s);
+  assert.match(styles, /\.market-tabs\s*\{[^}]*overflow: visible;/s);
 });

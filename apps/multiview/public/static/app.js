@@ -249,6 +249,7 @@ async function init() {
   state.mainReadoutMode = normalizeMainReadoutMode(localStorage.getItem(MAIN_READOUT_MODE_KEY));
   state.indicatorParameters = readIndicatorParameters();
   initIndicatorSettingsDialog();
+  initOrderTicketOverlay();
   countSelect.value = state.singleChartRequest ? "1" : CHART_COUNTS.includes(saved) ? String(saved) : "4";
   countSelect.addEventListener("change", () => {
     const nextCount = Number(countSelect.value);
@@ -485,6 +486,49 @@ function orderBridgeUrl(contract) {
   url.searchParams.set("security_type", contract.security_type);
   url.searchParams.set("exchange", contract.exchange);
   return url.toString();
+}
+
+let orderTicketReturnFocus;
+
+function initOrderTicketOverlay() {
+  const overlay = document.getElementById("order-ticket-overlay");
+  const closeButton = document.getElementById("order-ticket-close");
+  if (!overlay || !closeButton || overlay.dataset.initialized === "true") return;
+  overlay.dataset.initialized = "true";
+  closeButton.addEventListener("click", closeOrderTicketOverlay);
+  overlay.addEventListener("pointerdown", (event) => {
+    if (event.target === overlay) closeOrderTicketOverlay();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !overlay.hidden) closeOrderTicketOverlay();
+  });
+}
+
+function openOrderTicketOverlay(contract) {
+  const overlay = document.getElementById("order-ticket-overlay");
+  const frame = document.getElementById("order-ticket-frame");
+  const closeButton = document.getElementById("order-ticket-close");
+  if (!overlay || !(frame instanceof HTMLIFrameElement) || !closeButton) return false;
+  orderTicketReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  frame.title = `RealTimeStock 下單面板・${contract.code}`;
+  frame.src = orderBridgeUrl(contract);
+  overlay.hidden = false;
+  overlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("has-order-ticket-overlay");
+  closeButton.focus({ preventScroll: true });
+  return true;
+}
+
+function closeOrderTicketOverlay() {
+  const overlay = document.getElementById("order-ticket-overlay");
+  const frame = document.getElementById("order-ticket-frame");
+  if (!overlay || overlay.hidden) return;
+  overlay.hidden = true;
+  overlay.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("has-order-ticket-overlay");
+  if (frame instanceof HTMLIFrameElement) frame.src = "about:blank";
+  orderTicketReturnFocus?.focus?.({ preventScroll: true });
+  orderTicketReturnFocus = undefined;
 }
 
 function parseSingleChartViewRequest(search = "") {
@@ -3210,7 +3254,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   const panelExportAction = document.createElement("button");
   panelExportAction.type = "button";
   panelExportAction.setAttribute("role", "menuitem");
-  panelExportAction.textContent = "儲存此商品所有線圖為圖片";
+  panelExportAction.textContent = "儲存圖片";
   panelContextMenu.appendChild(panelExportAction);
   const panelOrderAction = document.createElement("button");
   panelOrderAction.type = "button";
@@ -3498,7 +3542,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       });
     } finally {
       panelExportAction.disabled = false;
-      panelExportAction.textContent = "儲存此商品所有線圖為圖片";
+      panelExportAction.textContent = "儲存圖片";
     }
   }
 
@@ -3511,14 +3555,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function handlePanelOrderClick() {
     if (!panelOrderContract) return;
-    const popup = window.open(orderBridgeUrl(panelOrderContract), `realtimestock-ticket-${panelOrderContract.code}`);
-    if (!popup) {
-      status.textContent = "瀏覽器已阻擋下單面板彈出視窗；請允許 127.0.0.1:5174 開啟視窗後重試";
-      status.classList.add("is-visible");
-      return;
-    }
-    try { popup.opener = null; popup.focus(); } catch { /* cross-origin redirect may already have started */ }
     closePanelContextMenu();
+    if (!openOrderTicketOverlay(panelOrderContract)) {
+      status.textContent = "下單面板無法載入；請重新整理 MultiView 後再試";
+      status.classList.add("is-visible");
+    }
   }
 
   function handleRemoveTechnicalSubchart() {
@@ -8748,7 +8789,13 @@ function formatQuoteVerificationTitle(verification, dataQuality) {
   const ignoredDates = Array.isArray(dataQuality?.ignoredSessionDates)
     ? dataQuality.ignoredSessionDates.map(formatQuoteSessionDate).filter(Boolean)
     : [];
-  const normalizedPrefix = ignoredDates.length ? `已忽略 ${ignoredDates[ignoredDates.length - 1]} 無成交占位資料；` : "";
+  const invalidDates = Array.isArray(dataQuality?.invalidCandleSessionDates)
+    ? dataQuality.invalidCandleSessionDates.map(formatQuoteSessionDate).filter(Boolean)
+    : [];
+  const qualityMessages = [];
+  if (ignoredDates.length) qualityMessages.push(`已忽略 ${ignoredDates[ignoredDates.length - 1]} 無成交占位資料`);
+  if (invalidDates.length) qualityMessages.push(`已忽略 ${invalidDates[invalidDates.length - 1]} 不完整 K 線`);
+  const normalizedPrefix = qualityMessages.length ? `${qualityMessages.join("；")}；` : "";
   if (String(value.status || verification || "").toLowerCase() === "verified") {
     return `${normalizedPrefix}報價已由${provider}核對${referenceDate ? `（${referenceDate}）` : ""}`;
   }

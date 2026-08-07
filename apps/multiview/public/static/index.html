@@ -12,15 +12,22 @@
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:image" content="__SITE_ORIGIN__/og.png" />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/static/styles.css?v=20260805-chip-readout-heights-v2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260807-toolbar-spacing-v2" />
     <script src="/vendor/lightweight-charts.standalone.production.js?v=5.0.9"></script>
   </head>
   <body>
     <header class="topbar">
       <div class="brand">
         <h1>報價線圖 multiview</h1>
-        <span id="connection-status">本地模式</span>
-        <a class="license-attribution" href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">Charts by TradingView Lightweight Charts</a>
+        <label class="source-mode-control source-mode-primary">
+          <span>台股行情</span>
+          <select id="source-mode" aria-label="台股行情來源模式">
+            <option value="auto" selected>自動</option>
+            <option value="shioaji">Shioaji 即時</option>
+            <option value="yahoo">Yahoo 延遲</option>
+          </select>
+        </label>
+        <span id="connection-status" class="visually-hidden" aria-live="polite">本地模式</span>
       </div>
       <nav id="market-tabs" class="market-tabs" aria-label="市場商品頁籤">
         <button type="button" class="market-tab is-active" data-market-tab="台股">台股</button>
@@ -34,42 +41,43 @@
         <button id="category-page-next" type="button" aria-label="下一頁">›</button>
       </div>
       <div class="auth-controls" aria-label="個人清單登入">
-        <span id="auth-status">個人清單未登入</span>
+        <span id="auth-status" class="visually-hidden">個人清單未登入</span>
         <button id="watchlist-manage" type="button">我的清單</button>
         <button id="access-manage" type="button" hidden>登入名單</button>
         <button id="auth-login" type="button" hidden>Sites 帳戶</button>
         <button id="auth-logout" type="button" hidden>登出</button>
       </div>
-      <label class="source-mode-control">
-        <span>台股行情</span>
-        <select id="source-mode" aria-label="台股行情來源模式">
-          <option value="auto" selected>自動</option>
-          <option value="shioaji">Shioaji 即時</option>
-          <option value="yahoo">Yahoo 延遲</option>
-        </select>
-      </label>
-      <label class="chart-count-control">
-        <span>圖表數量</span>
-        <select id="chart-count">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-          <option value="6">6</option>
-          <option value="8">8</option>
-        </select>
-      </label>
-      <label class="chip-mode-control">
-        <span>主副圖</span>
-        <select id="compact-subchart-mode" aria-disabled="false">
-          <option value="main">主圖</option>
-          <option value="single" selected>單一副圖</option>
-          <option value="multi">多層副圖</option>
-        </select>
-      </label>
+      <div class="display-controls" aria-label="圖表顯示設定">
+        <label class="chart-count-control">
+          <span>圖表數量</span>
+          <select id="chart-count">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="6">6</option>
+            <option value="8">8</option>
+          </select>
+        </label>
+        <label class="chip-mode-control">
+          <span>主副圖</span>
+          <select id="compact-subchart-mode" aria-disabled="false">
+            <option value="main">主圖</option>
+            <option value="single" selected>單一副圖</option>
+            <option value="multi">多層副圖</option>
+          </select>
+        </label>
+      </div>
     </header>
+    <a class="license-attribution" href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">Charts by TradingView Lightweight Charts</a>
     <p id="panel-reorder-status" class="panel-reorder-status" role="status" aria-live="polite"></p>
     <main id="chart-grid" class="chart-grid grid-4" aria-label="即時交易圖表"></main>
+    <div id="order-ticket-overlay" class="order-ticket-overlay" hidden aria-hidden="true">
+      <section class="order-ticket-modal" role="dialog" aria-modal="true" aria-label="下單面板">
+        <iframe id="order-ticket-frame" class="order-ticket-frame" title="RealTimeStock 下單面板" src="about:blank"></iframe>
+        <button id="order-ticket-close" class="order-ticket-close" type="button" aria-label="關閉下單面板" title="關閉下單面板">×</button>
+      </section>
+    </div>
     <dialog id="watchlist-dialog" class="watchlist-dialog" aria-labelledby="watchlist-title">
       <form method="dialog" class="watchlist-shell">
         <header class="watchlist-header">
@@ -443,7 +451,7 @@
     <script src="/static/chart-annotations.js?v=20260727-fibonacci-snap-coexist-v1"></script>
     <script src="/static/pe-river-overlay.js?v=20260727-pe-river-context-v1"></script>
     <script src="/static/chart-axis-formatting.js?v=20260805-compact-subchart-axis-v1"></script>
-    <script src="/static/chip-panes.js?v=20260805-compact-subchart-axis-v1"></script>
+    <script src="/static/chip-panes.js?v=20260807-inline-ticket-toolbar-v1"></script>
     <script src="/static/quote-display-state.js?v=20260718-market-closed-v1"></script>
     <script src="/static/acceptance-metrics.js?v=20260807-runtime-e2e-v1"></script>
     <script src="/static/live-batch-coordinator.js?v=20260807-runtime-e2e-v1"></script>
@@ -452,6 +460,6 @@
     <script src="/static/realtime-indicators.js?v=20260806-local-shioaji-v1"></script>
     <script src="/static/chart-payload.js?v=20260805-crosshair-alignment-v1"></script>
     <script src="/static/panel-reordering.js?v=20260804-panel-reorder-v1"></script>
-    <script src="/static/app.js?v=20260805-compact-subchart-axis-v1"></script>
+    <script src="/static/app.js?v=20260807-inline-ticket-toolbar-v1"></script>
   </body>
 </html>

@@ -765,8 +765,9 @@ test("十二個籌碼 pane 共用詳細資料與圖片匯出，技術副圖沒�
   assert.match(chipSource, /const detailsMenuItem = document\.createElement\("button"\)/);
   assert.match(chipSource, /detailsMenuItem\.textContent = "詳細資料"/);
   assert.match(chipSource, /coordinateToTime\?\.\(event\.clientX - rect\.left\)/);
-  assert.match(chipSource, /exportMenuItem\.textContent = "儲存此商品所有線圖為圖片"/);
-  assert.match(appSource, /panelExportAction\.textContent = "儲存此商品所有線圖為圖片"/);
+  assert.match(chipSource, /exportMenuItem\.textContent = "儲存圖片"/);
+  assert.match(appSource, /panelExportAction\.textContent = "儲存圖片"/);
+  assert.doesNotMatch(`${chipSource}\n${appSource}`, /儲存此商品所有線圖為圖片/);
   assert.match(appSource, /panelRemoveTechnicalAction\.textContent = "移除副圖"/);
   assert.match(appSource, /const fromTechnicalSubchart = Boolean\(event\.target\?\.closest\?\.\("\.indicator-wrap"\)\) && isTechnicalSubchartVisible\(\)/);
   assert.match(appSource, /function handleRemoveTechnicalSubchart\(\)[\s\S]*?input\.checked = false;[\s\S]*?applySubchartPresentation\(subchartPresentation\);[\s\S]*?applyPayload\(lastPayload\)/);

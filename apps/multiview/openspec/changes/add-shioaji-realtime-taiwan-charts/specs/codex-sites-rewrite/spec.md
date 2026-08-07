@@ -65,3 +65,37 @@ Shioaji 只可成為支援台股的可選盤中來源；美股、匯率、債券
 - **THEN** 非台股市場與所有非行情功能 MUST 正常運作
 - **AND** 台股 MUST 使用既有延遲來源與盤後官方核對
 - **AND** Cloudflare deployment MUST NOT 因 realtime health 失敗而整站回滾
+
+### Requirement: 本機 MultiView 入口必須支援多個獨立看盤分頁
+
+RealTimeStock 本機「版面」選單的 MultiView 入口 MUST 在每次啟用時建立新的 top-level browsing context，並透過受限 loopback launcher 前往 MultiView；系統 MUST NOT 以固定 window name 重複利用先前已開啟的 MultiView 分頁。
+
+#### Scenario: 連續兩次開啟 MultiView
+
+- **WHEN** 使用者在「版面」選單連續兩次按下「MultiView（開新分頁）」
+- **THEN** 瀏覽器 MUST 產生兩個不同的 MultiView 分頁
+- **AND** 兩個分頁 MUST 各自載入本機 `127.0.0.1:5174`
+- **AND** 既有分頁 MUST NOT 因第二次操作被重新導向或取得焦點取代
+
+### Requirement: MultiView 操作層必須維持緊湊選單與清楚的 Modal 層次
+
+一般商品右鍵功能表 MUST 使用適合「儲存圖片」與「下單」的緊湊寬度；只有展開長篇詳細資料時 MAY 加寬。下單面板 MUST 疊加於同一 MultiView 頁面，不另開分頁，且背景遮罩 MUST 讓後方圖表仍可辨識，同時保留 modal 的焦點層次與關閉操作。
+
+#### Scenario: 開啟一般商品右鍵功能表
+
+- **WHEN** 功能表只顯示一般短操作項目
+- **THEN** 功能表桌面寬度 MUST 為約 `176px`，不得沿用至少 `250px` 的空白寬度
+- **AND** 文字 MUST 保持左對齊且操作目標仍可清楚點選
+
+#### Scenario: 展開長篇詳細資料
+
+- **WHEN** 功能表展開本益比河流圖或其他長篇詳細資料
+- **THEN** 功能表 MAY 加寬至最多約 `520px`
+- **AND** MUST NOT 把詳細資料硬擠在一般短選單寬度內
+
+#### Scenario: 開啟同頁下單面板
+
+- **WHEN** 使用者從商品右鍵功能表選擇「下單」
+- **THEN** MultiView MUST 在同頁顯示既有 RealTimeStock 下單面板
+- **AND** 背景遮罩 MUST 使用約 `0.52` alpha 與最多 `2px` blur，讓後方圖表比原 `0.76` 遮罩更清楚
+- **AND** 點擊遮罩、按 Escape 或關閉按鈕 MUST 可關閉面板並恢復原焦點

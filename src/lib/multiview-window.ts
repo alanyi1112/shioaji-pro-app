@@ -185,6 +185,6 @@ export function openMultiViewWindow(
 ) {
     return target.open(
         resolveMultiViewLauncherUrl(configured, appOrigin),
-        'realtimestock-multiview',
+        '_blank',
     );
 }

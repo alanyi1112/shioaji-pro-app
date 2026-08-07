@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { handleLocalOrderTicketBridge } from "../worker/local-order-ticket-bridge.ts";
+
+const [indexHtml, appSource, styles] = await Promise.all([
+  readFile(new URL("../public/static/index.html", import.meta.url), "utf8"),
+  readFile(new URL("../public/static/app.js", import.meta.url), "utf8"),
+  readFile(new URL("../public/static/styles.css", import.meta.url), "utf8"),
+]);
 
 const origin = "http://127.0.0.1:5174/local-order-ticket";
 const contract = { code: "2330", security_type: "STK", exchange: "TSE", target_code: null };
@@ -62,4 +69,20 @@ test("非 simulation 模式不開啟 5173 下單面板", async () => {
   );
   assert.equal(response.status, 409);
   assert.equal((await response.json()).reasonCode, "simulation_required");
+});
+
+test("MultiView 以同頁遮罩 iframe 顯示既有 OrderTicket，不另開分頁", () => {
+  assert.match(indexHtml, /id="order-ticket-overlay"[^>]*hidden/);
+  assert.match(indexHtml, /id="order-ticket-frame"[^>]*title="RealTimeStock 下單面板"/);
+  assert.match(appSource, /function openOrderTicketOverlay\(contract\)/);
+  assert.match(appSource, /frame\.src = orderBridgeUrl\(contract\)/);
+  assert.match(appSource, /function closeOrderTicketOverlay\(\)[\s\S]*?frame\.src = "about:blank"/);
+  assert.doesNotMatch(appSource, /window\.open\(orderBridgeUrl\(panelOrderContract\)/);
+  assert.match(styles, /\.order-ticket-overlay\s*\{[\s\S]*?background:\s*rgba\(2, 6, 23, 0\.52\);[\s\S]*?backdrop-filter:\s*blur\(2px\);/);
+  assert.match(styles, /\.order-ticket-modal\s*\{[\s\S]*?width: min\(420px,[\s\S]*?height: min\(500px,/);
+});
+
+test("商品右鍵選單維持精簡寬度，詳細資料展開時才加寬", () => {
+  assert.match(styles, /\.panel-context-menu\s*\{[\s\S]*?width:\s*min\(176px, calc\(100vw - 16px\)\);[\s\S]*?min-width:\s*0;/);
+  assert.match(styles, /\.panel-context-menu:has\(\.panel-context-menu-pe-river-details:not\(\[hidden\]\)\)\s*\{[\s\S]*?width:\s*min\(520px, calc\(100vw - 16px\)\);/);
 });
