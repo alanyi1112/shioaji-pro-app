@@ -266,7 +266,13 @@
                 <button type="button" class="chart-tool-button" data-chart-tool="retracement">費波那契回撤</button>
                 <button type="button" class="chart-tool-button" data-chart-tool="extension">費波那契拓展</button>
                 <button type="button" class="chart-tool-button" data-chart-tool="price-range">價格範圍</button>
-                <button type="button" class="chart-tool-clear" title="清除主圖費波那契與價格範圍">清除繪圖</button>
+                <select class="chart-tool-clear" aria-label="清除主圖繪圖" title="精準清除目前時間級別或目前商品的繪圖">
+                  <option value="">清除…</option>
+                  <option value="retracement">清除回撤</option>
+                  <option value="extension">清除拓展</option>
+                  <option value="all-fibonacci">全部清除</option>
+                  <option value="price-range">清除價格範圍</option>
+                </select>
               </div>
             </div>
           </details>
@@ -448,7 +454,7 @@
     <script src="/static/chart-interactions.js?v=20260729-main-subchart-modes-v1"></script>
     <script src="/static/html2canvas.min.js?v=1.4.1"></script>
     <script src="/static/panel-image-export.js?v=20260721-panel-frame-v4"></script>
-    <script src="/static/chart-annotations.js?v=20260727-fibonacci-snap-coexist-v1"></script>
+    <script src="/static/chart-annotations.js?v=20260809-fibonacci-levels-persistence-v2"></script>
     <script src="/static/pe-river-overlay.js?v=20260727-pe-river-context-v1"></script>
     <script src="/static/chart-axis-formatting.js?v=20260805-compact-subchart-axis-v1"></script>
     <script src="/static/chip-panes.js?v=20260807-inline-ticket-toolbar-v1"></script>

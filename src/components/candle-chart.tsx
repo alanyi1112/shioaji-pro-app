@@ -45,8 +45,10 @@ import {
     IndicatorDialog,
     IndicatorSettingsModal,
 } from './indicator-dialog';
+import { IndicatorReadoutValues } from './indicator-readout-values';
 import { FibonacciOverlay } from './fibonacci-overlay';
 import {
+    buildIndicatorReadoutDisplay,
     colorWithOpacity,
     commitIndicatorDraft,
     DEF_BY_TYPE,
@@ -73,6 +75,7 @@ import { DayBoundaryPaneManager } from '../lib/day-boundary-primitive';
 import {
     buildCandleTimeIndex,
     buildKbarReadoutDisplay,
+    buildPreviousSessionCloseIndex,
     formingDeadline,
     isReadoutBarForming,
     resolveReadoutReference,
@@ -88,6 +91,7 @@ import {
     createFibonacciController,
     dispatchFibonacciPointer,
     fibonacciIdentity,
+    subscribeFibonacciProductClear,
     futureTimeForLogicalPosition,
     resolveFibonacciAnchorPoint,
     type FibonacciController,
@@ -317,7 +321,10 @@ export function CandleChart({
     const [legendMenuFor, setLegendMenuFor] = useState<string | null>(null);
     // legend live values: instId -> per-output {label,text,color}
     const [legendValues, setLegendValues] = useState<
-        Record<string, { label: string; text: string; color: string }[]>
+        Record<
+            string,
+            { key: string; label: string; text: string; color: string }[]
+        >
     >({});
     const [, setIndicatorRuntimeVersion] = useState(0);
     const indicatorRuntimeRef = useRef(
@@ -335,6 +342,7 @@ export function CandleChart({
         new Map<
             string,
             {
+                key: string;
                 label: string;
                 color: string;
                 series: ISeriesApi<'Line' | 'Histogram'>;
@@ -391,6 +399,9 @@ export function CandleChart({
     // raw 1-min candles backing the current view — history pages merge here
     // and re-aggregate so buckets spanning a page seam stay correct
     const rawRef = useRef<Candle[]>([]);
+    const historicalReferenceRef = useRef<ReadonlyMap<string, number>>(
+        new Map(),
+    );
     const rawIdentityRef = useRef('');
     const loadMoreRef = useRef<(() => void) | null>(null);
     const resolveFibonacciPoint = (
@@ -476,6 +487,22 @@ export function CandleChart({
         scheduleFibonacciRenderRef.current();
     }, [fibonacciIdentityValue]);
 
+    useEffect(
+        () =>
+            subscribeFibonacciProductClear((productIdentity) => {
+                const changed =
+                    fibonacciControllerRef.current?.applyProductClear(
+                        productIdentity,
+                    ) ?? false;
+                if (!changed) return;
+                fibonacciGenerationRef.current += 1;
+                fibonacciFrameSchedulerRef.current?.invalidate();
+                setFibonacciNotice('已同步清除目前商品所有時間級別的費波那契圖形');
+                scheduleFibonacciRenderRef.current();
+            }),
+        [],
+    );
+
     useEffect(() => {
         const cancelPending = (message: string) => {
             if (!fibonacciControllerRef.current?.cancel()) return;
@@ -536,7 +563,7 @@ export function CandleChart({
     const updateLegend = (param?: MouseEventParams) => {
         const out: Record<
             string,
-            { label: string; text: string; color: string }[]
+            { key: string; label: string; text: string; color: string }[]
         > = {};
         legendMetaRef.current.forEach((metas, instId) => {
             out[instId] = metas.map((m) => {
@@ -546,6 +573,7 @@ export function CandleChart({
                     | undefined;
                 if (d && typeof d.value === 'number') v = d.value;
                 return {
+                    key: m.key,
                     label: m.label,
                     text:
                         v === undefined
@@ -584,6 +612,7 @@ export function CandleChart({
             const readoutReference = resolveReadoutReference({
                 candle,
                 reference: referenceRef.current,
+                historicalReferences: historicalReferenceRef.current,
                 securityType: contractRef.current.security_type,
                 forming,
             });
@@ -1186,6 +1215,7 @@ export function CandleChart({
             volSeriesRef.current?.setData([]);
             barsRef.current = [];
             rawRef.current = [];
+            historicalReferenceRef.current = new Map();
             rawIdentityRef.current = loadKey;
             invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars([]);
@@ -1210,6 +1240,8 @@ export function CandleChart({
                 })),
             );
             barsRef.current = bars;
+            historicalReferenceRef.current =
+                buildPreviousSessionCloseIndex(rawRef.current);
             invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
@@ -1685,6 +1717,7 @@ export function CandleChart({
             if (pane > 0) paneAssign.set(inst.id, pane);
             let firstSeries: ISeriesApi<'Line' | 'Histogram'> | null = null;
             const metas: {
+                key: string;
                 label: string;
                 color: string;
                 series: ISeriesApi<'Line' | 'Histogram'>;
@@ -1820,6 +1853,7 @@ export function CandleChart({
                 }
                 firstSeries ??= s as ISeriesApi<'Line' | 'Histogram'>;
                 metas.push({
+                    key: o.key,
                     label: o.label,
                     color: st.color,
                     series: s as ISeriesApi<'Line' | 'Histogram'>,
@@ -2106,7 +2140,7 @@ export function CandleChart({
                 ? '回撤'
                 : target === 'extension'
                   ? '拓展'
-                  : '全部費波那契圖形';
+                  : '目前商品所有時間級別的費波那契圖形';
         setFibonacciNotice(`已清除${label}`);
     };
 
@@ -2455,6 +2489,7 @@ export function CandleChart({
         if (def.kind !== 'series') return null;
         const idx = instances.findIndex((i) => i.id === inst.id);
         const vals = legendValues[inst.id] ?? [];
+        const readout = buildIndicatorReadoutDisplay(inst, vals);
         const runtime = indicatorRuntimeRef.current.get(inst.id);
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
@@ -2475,7 +2510,7 @@ export function CandleChart({
                                         title='開啟指標設定'
                                         onClick={() => openSettings(inst.id)}
                                     >
-                                        {instanceLabel(inst)}
+                                        {readout.label}
                                     </button>
                                     {offTf && (
                                         <span className={styles.legendNote}>
@@ -2483,20 +2518,9 @@ export function CandleChart({
                                         </span>
                                     )}
                                     {!dimmed && (
-                                        <span className={styles.legendVals}>
-                                            {vals.map((v, i) => (
-                                                <span
-                                                    key={i}
-                                                    className={
-                                                        styles.legendVal
-                                                    }
-                                                    style={{ color: v.color }}
-                                                    title={v.label}
-                                                >
-                                                    {v.text}
-                                                </span>
-                                            ))}
-                                        </span>
+                                        <IndicatorReadoutValues
+                                            values={readout.values}
+                                        />
                                     )}
                                     {runtime?.state === 'error' && (
                                         <span

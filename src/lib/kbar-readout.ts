@@ -83,6 +83,35 @@ export function buildCandleTimeIndex(bars: readonly Candle[]): Map<number, Candl
     return new Map(bars.map((bar) => [bar.time, bar]));
 }
 
+export function buildPreviousSessionCloseIndex(
+    rawBars: readonly Candle[],
+): Map<string, number> {
+    const sessions = new Map<string, { time: number; close?: number }>();
+    const chronological = [...rawBars]
+        .filter((bar) => Number.isFinite(bar.time))
+        .sort((a, b) => a.time - b.time);
+
+    for (const bar of chronological) {
+        const date = wallClockDateKey(bar.time);
+        const session = sessions.get(date) ?? { time: bar.time };
+        session.time = Math.max(session.time, bar.time);
+        if (Number.isFinite(bar.close) && bar.close > 0) {
+            session.close = bar.close;
+        }
+        sessions.set(date, session);
+    }
+
+    const dates = [...sessions.keys()].sort();
+    const references = new Map<string, number>();
+    for (let index = 1; index < dates.length; index += 1) {
+        const previous = sessions.get(dates[index - 1]!)?.close;
+        if (previous !== undefined) {
+            references.set(dates[index]!, previous);
+        }
+    }
+    return references;
+}
+
 export function resolveReadoutCandle(
     bars: readonly Candle[],
     index: ReadonlyMap<number, Candle>,
@@ -179,36 +208,36 @@ function priceReadoutField(
 export function resolveReadoutReference({
     candle,
     reference,
+    historicalReferences,
     securityType,
     forming,
     nowWallClockSeconds = taipeiWallClockNowSeconds(),
 }: {
     candle: Candle | null;
     reference: number | undefined;
+    historicalReferences?: ReadonlyMap<string, number>;
     securityType: SecurityType;
     forming: boolean;
     nowWallClockSeconds?: number;
 }): number | undefined {
-    if (
-        !candle ||
-        reference === undefined ||
-        !Number.isFinite(reference) ||
-        reference <= 0
-    ) {
-        return undefined;
-    }
+    if (!candle) return undefined;
+    const validReference = (value: number | undefined) =>
+        value !== undefined && Number.isFinite(value) && value > 0
+            ? value
+            : undefined;
     if (
         securityType === 'STK' ||
         securityType === 'IND' ||
         securityType === 'WRT'
     ) {
-        return wallClockDateKey(candle.time) ===
-            wallClockDateKey(nowWallClockSeconds)
-            ? reference
-            : undefined;
+        const candleDate = wallClockDateKey(candle.time);
+        if (candleDate === wallClockDateKey(nowWallClockSeconds)) {
+            return validReference(reference);
+        }
+        return validReference(historicalReferences?.get(candleDate));
     }
     if (securityType === 'FUT' || securityType === 'OPT') {
-        return forming ? reference : undefined;
+        return forming ? validReference(reference) : undefined;
     }
     return undefined;
 }

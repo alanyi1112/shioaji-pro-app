@@ -1,6 +1,8 @@
 import type { Candle } from './types/market';
 
 export const FIBONACCI_FORMULA_VERSION =
+    'multichart-ecae7ca-fibonacci-v2' as const;
+const LEGACY_FIBONACCI_FORMULA_VERSION =
     'multichart-ecae7ca-fibonacci-v1' as const;
 export const FIBONACCI_STORAGE_VERSION = 1 as const;
 export const FIBONACCI_STORAGE_PREFIX = 'realtimestock.fibonacci.v1';
@@ -17,11 +19,41 @@ export const FIBONACCI_LEVEL_COLORS = [
 export const FIBONACCI_MONOCHROME_COLOR = '#cbd5e1';
 export const FIBONACCI_PENDING_GUIDE_COLOR = '#38bdf8';
 
+const FIBONACCI_ADDED_LEVEL_COLORS = new Map<number, string>([
+    [-0.62, '#a78bfa'],
+    [-0.27, '#e879f9'],
+    [0.705, '#f472b6'],
+]);
+
+const FIBONACCI_LEGACY_LEVEL_COLORS: Record<
+    FibonacciKind,
+    ReadonlyMap<number, string>
+> = {
+    retracement: new Map([
+        [0, FIBONACCI_LEVEL_COLORS[0]],
+        [0.236, FIBONACCI_LEVEL_COLORS[1]],
+        [0.382, FIBONACCI_LEVEL_COLORS[2]],
+        [0.5, FIBONACCI_LEVEL_COLORS[3]],
+        [0.618, FIBONACCI_LEVEL_COLORS[4]],
+        [0.786, FIBONACCI_LEVEL_COLORS[5]],
+        [1, FIBONACCI_LEVEL_COLORS[6]],
+    ]),
+    extension: new Map([
+        [0.618, FIBONACCI_LEVEL_COLORS[0]],
+        [0.786, FIBONACCI_LEVEL_COLORS[1]],
+        [1, FIBONACCI_LEVEL_COLORS[2]],
+        [1.272, FIBONACCI_LEVEL_COLORS[3]],
+        [1.414, FIBONACCI_LEVEL_COLORS[4]],
+        [1.618, FIBONACCI_LEVEL_COLORS[5]],
+        [2, FIBONACCI_LEVEL_COLORS[6]],
+    ]),
+};
+
 export const RETRACEMENT_LEVELS = [
-    0, 0.236, 0.382, 0.5, 0.618, 0.786, 1,
+    -0.62, -0.27, 0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1,
 ] as const;
 export const EXTENSION_LEVELS = [
-    0.618, 0.786, 1, 1.272, 1.414, 1.618, 2,
+    0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2,
 ] as const;
 
 export type FibonacciKind = 'retracement' | 'extension';
@@ -85,7 +117,9 @@ export interface FibonacciIdentityParts {
 }
 
 export interface FibonacciStorage {
+    readonly length?: number;
     getItem(key: string): string | null;
+    key?(index: number): string | null;
     setItem(key: string, value: string): void;
     removeItem(key: string): void;
 }
@@ -101,6 +135,7 @@ export interface FibonacciController {
     };
     cancel(): boolean;
     clear(target: FibonacciClearTarget): void;
+    applyProductClear(productIdentity: string): boolean;
     getSnapshot(): FibonacciSnapshot;
     hasPending(): boolean;
 }
@@ -146,6 +181,21 @@ export function fibonacciPercentageText(ratio: number): string {
     return `${Number.isInteger(percentage) ? percentage.toFixed(0) : percentage.toFixed(1)}%`;
 }
 
+export function fibonacciLevelColor(
+    kind: FibonacciKind,
+    ratio: number,
+): string {
+    const addedColor =
+        kind === 'retracement' || ratio === 0.705
+            ? FIBONACCI_ADDED_LEVEL_COLORS.get(ratio)
+            : undefined;
+    return (
+        addedColor ??
+        FIBONACCI_LEGACY_LEVEL_COLORS[kind].get(ratio) ??
+        FIBONACCI_MONOCHROME_COLOR
+    );
+}
+
 export function fibonacciLevels(
     kind: FibonacciKind,
     anchors: readonly FibonacciPoint[],
@@ -180,11 +230,63 @@ export function fibonacciIdentity(parts: FibonacciIdentityParts): string {
     return `${securityType}|${exchange}|${code}|${timeframe}`;
 }
 
+export function fibonacciProductIdentity(identity: string): string {
+    const parts = String(identity || '').trim().split('|');
+    if (parts.length !== 4) return '';
+    const [securityType, exchange, code, timeframe] = parts;
+    if (
+        !securityType ||
+        !exchange ||
+        !code ||
+        !Number.isFinite(Number(timeframe)) ||
+        Number(timeframe) <= 0
+    ) {
+        return '';
+    }
+    return `${securityType}|${exchange}|${code}`;
+}
+
 export function fibonacciStorageKey(identity: string): string {
     const normalized = String(identity || '').trim();
     return normalized
         ? `${FIBONACCI_STORAGE_PREFIX}.${encodeURIComponent(normalized)}`
         : '';
+}
+
+function fibonacciIdentityFromStorageKey(key: string): string {
+    const prefix = `${FIBONACCI_STORAGE_PREFIX}.`;
+    if (!key.startsWith(prefix)) return '';
+    try {
+        return decodeURIComponent(key.slice(prefix.length));
+    } catch {
+        return '';
+    }
+}
+
+type FibonacciProductClearListener = (productIdentity: string) => void;
+const fibonacciProductClearListeners = new Set<FibonacciProductClearListener>();
+
+export function subscribeFibonacciProductClear(
+    listener: FibonacciProductClearListener,
+): () => void {
+    fibonacciProductClearListeners.add(listener);
+    return () => fibonacciProductClearListeners.delete(listener);
+}
+
+function publishFibonacciProductClear(productIdentity: string) {
+    fibonacciProductClearListeners.forEach((listener) =>
+        listener(productIdentity),
+    );
+}
+
+function storageKeys(storage: FibonacciStorage): string[] {
+    if (!storage.key || !Number.isFinite(storage.length)) return [];
+    const keys: string[] = [];
+    for (let index = 0; index < Number(storage.length); index += 1) {
+        const key = storage.key(index);
+        if (typeof key === 'string') keys.push(key);
+    }
+    return keys;
 }
 
 export function resolveFibonacciAnchorPoint(
@@ -413,6 +515,82 @@ export function createFibonacciController(options: {
         }
     };
 
+    const clearProductMemory = (productIdentity: string): boolean => {
+        let changed = false;
+        for (const rememberedIdentity of [...memoryByIdentity.keys()]) {
+            if (
+                fibonacciProductIdentity(rememberedIdentity) !==
+                productIdentity
+            ) {
+                continue;
+            }
+            const remembered = memoryByIdentity.get(rememberedIdentity) ?? [];
+            changed = changed || remembered.length > 0;
+            memoryByIdentity.delete(rememberedIdentity);
+        }
+        return changed;
+    };
+
+    const applyProductClear = (productIdentity: string): boolean => {
+        const normalizedProduct = String(productIdentity || '').trim();
+        if (!normalizedProduct) return false;
+        const memoryChanged = clearProductMemory(normalizedProduct);
+        const currentMatches =
+            fibonacciProductIdentity(identity) === normalizedProduct;
+        const currentChanged =
+            currentMatches && (completed.length > 0 || pending !== null);
+        if (currentMatches) {
+            completed = [];
+            pending = null;
+            nextOrder = 1;
+        }
+        if (memoryChanged || currentChanged) notify();
+        return memoryChanged || currentChanged;
+    };
+
+    const clearAllTimeframes = () => {
+        const productIdentity = fibonacciProductIdentity(identity);
+        if (!productIdentity) {
+            pending = null;
+            completed = [];
+            removeStored();
+            notify();
+            return;
+        }
+        clearProductMemory(productIdentity);
+        completed = [];
+        pending = null;
+        nextOrder = 1;
+        let removedCurrentKey = false;
+        if (storage) {
+            const keys = storageKeys(storage);
+            const matchingKeys = keys.filter(
+                (key) =>
+                    fibonacciProductIdentity(
+                        fibonacciIdentityFromStorageKey(key),
+                    ) === productIdentity,
+            );
+            const fallbackKey = fibonacciStorageKey(identity);
+            if (matchingKeys.length === 0 && fallbackKey) {
+                matchingKeys.push(fallbackKey);
+            }
+            try {
+                matchingKeys.forEach((key) => {
+                    storage.removeItem(key);
+                    if (key === fallbackKey) removedCurrentKey = true;
+                });
+                persistence = { state: 'ready' };
+            } catch {
+                setPersistenceError('storage-clear-failed');
+            }
+        }
+        if (!storage || !removedCurrentKey) {
+            memoryByIdentity.delete(identity);
+        }
+        notify();
+        publishFibonacciProductClear(productIdentity);
+    };
+
     const restore = (): FibonacciSnapshot => {
         identity = currentIdentity();
         pending = null;
@@ -451,9 +629,12 @@ export function createFibonacciController(options: {
                 formulaVersion?: unknown;
                 completed?: unknown;
             };
+            const supportedFormula =
+                parsed.formulaVersion === FIBONACCI_FORMULA_VERSION ||
+                parsed.formulaVersion === LEGACY_FIBONACCI_FORMULA_VERSION;
             if (
                 parsed.version !== FIBONACCI_STORAGE_VERSION ||
-                parsed.formulaVersion !== FIBONACCI_FORMULA_VERSION
+                !supportedFormula
             ) {
                 throw new Error('unsupported');
             }
@@ -462,7 +643,11 @@ export function createFibonacciController(options: {
             completed = normalized;
             nextOrder =
                 Math.max(0, ...completed.map((drawing) => drawing.order)) + 1;
-            remember();
+            if (parsed.formulaVersion === LEGACY_FIBONACCI_FORMULA_VERSION) {
+                save();
+            } else {
+                remember();
+            }
         } catch {
             completed = [];
             nextOrder = 1;
@@ -542,11 +727,12 @@ export function createFibonacciController(options: {
     };
 
     const clear = (target: FibonacciClearTarget) => {
+        if (target === 'all') {
+            clearAllTimeframes();
+            return;
+        }
         pending = null;
-        completed =
-            target === 'all'
-                ? []
-                : completed.filter((drawing) => drawing.kind !== target);
+        completed = completed.filter((drawing) => drawing.kind !== target);
         if (completed.length > 0) save();
         else removeStored();
         notify();
@@ -559,6 +745,7 @@ export function createFibonacciController(options: {
         addPoint,
         cancel,
         clear,
+        applyProductClear,
         getSnapshot: snapshot,
         hasPending: () => pending !== null,
     };

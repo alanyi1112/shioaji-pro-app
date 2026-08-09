@@ -3,6 +3,7 @@ import type { Candle } from './types/market';
 import {
     buildCandleTimeIndex,
     buildKbarReadoutDisplay,
+    buildPreviousSessionCloseIndex,
     formatKbarInterval,
     formingDeadline,
     isReadoutBarForming,
@@ -158,6 +159,50 @@ describe('K 棒價量 reference resolver', () => {
         ).toBeUndefined();
     });
 
+    it('歷史 STK／IND／WRT 使用 candle 日期對應的前一 session close', () => {
+        const references = new Map([
+            ['2026-08-05', 188],
+            ['2026-08-06', 193],
+        ]);
+        for (const securityType of ['STK', 'IND', 'WRT'] as const) {
+            expect(
+                resolveReadoutReference({
+                    candle: candle('2026-08-05T09:45:00'),
+                    reference: 999,
+                    historicalReferences: references,
+                    securityType,
+                    forming: false,
+                    nowWallClockSeconds: today,
+                }),
+            ).toBe(188);
+        }
+    });
+
+    it('週末最新 completed session 使用歷史索引，載入邊界保持 unavailable', () => {
+        const weekend = wallClockToUtc('2026-08-09T12:00:00');
+        const friday = candle('2026-08-07T13:25:00');
+        expect(
+            resolveReadoutReference({
+                candle: friday,
+                reference: 999,
+                historicalReferences: new Map([['2026-08-07', 193]]),
+                securityType: 'STK',
+                forming: false,
+                nowWallClockSeconds: weekend,
+            }),
+        ).toBe(193);
+        expect(
+            resolveReadoutReference({
+                candle: friday,
+                reference: 999,
+                historicalReferences: new Map(),
+                securityType: 'STK',
+                forming: false,
+                nowWallClockSeconds: weekend,
+            }),
+        ).toBeUndefined();
+    });
+
     it('FUT／OPT 只有可證明 forming 的最新 candle 使用 reference', () => {
         for (const securityType of ['FUT', 'OPT'] as const) {
             const bar = candle('2026-08-06T23:59:00');
@@ -180,6 +225,45 @@ describe('K 棒價量 reference resolver', () => {
                 }),
             ).toBeUndefined();
         }
+    });
+});
+
+describe('K 棒歷史昨收索引', () => {
+    it('依非連續交易日與最後有效 close 建立下一 session 的昨收', () => {
+        const rows = [
+            candle('2026-08-06T13:25:00', 191),
+            candle('2026-08-03T13:25:00', 180),
+            candle('2026-08-05T09:00:00', 185),
+            candle('2026-08-05T13:25:00', 188),
+            { ...candle('2026-08-05T13:29:00'), close: Number.NaN },
+        ];
+        expect([...buildPreviousSessionCloseIndex(rows)]).toEqual([
+            ['2026-08-05', 180],
+            ['2026-08-06', 188],
+        ]);
+    });
+
+    it('第一個載入日沒有 reference，prepend 後才補齊', () => {
+        const initial = [
+            candle('2026-08-06T09:00:00', 190),
+            candle('2026-08-07T09:00:00', 195),
+        ];
+        expect(buildPreviousSessionCloseIndex(initial).get('2026-08-06')).toBeUndefined();
+        expect(buildPreviousSessionCloseIndex(initial).get('2026-08-07')).toBe(190);
+
+        const prepended = [candle('2026-08-05T13:25:00', 188), ...initial];
+        expect(buildPreviousSessionCloseIndex(prepended).get('2026-08-06')).toBe(188);
+    });
+
+    it('前一 session 沒有有效 close 時不跨越該日借用更早資料', () => {
+        const rows = [
+            candle('2026-08-03T13:25:00', 180),
+            { ...candle('2026-08-05T13:25:00'), close: 0 },
+            candle('2026-08-06T09:00:00', 190),
+        ];
+        const references = buildPreviousSessionCloseIndex(rows);
+        expect(references.get('2026-08-05')).toBe(180);
+        expect(references.get('2026-08-06')).toBeUndefined();
     });
 });
 

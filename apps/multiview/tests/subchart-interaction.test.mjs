@@ -787,7 +787,8 @@ test("副圖 raw pointer 以 screen X 回映主圖 candle，不採漂移 pane �
 
 test("跨 pane range 同步攜帶真實 time range 並保留 logical viewport", () => {
   assert.match(chipSource, /options\.onRange\?\.\(range, definition\.id, chart\?\.timeScale\(\)\.getVisibleRange\?\.\(\)\)/);
-  assert.match(appSource, /function setSynchronizedVisibleTimeRange\(range, preferredLogicalRange\)/);
+  assert.match(appSource, /function setSynchronizedVisibleTimeRange\(range, preferredLogicalRange, \{ commit = true \} = \{\}\)/);
+  assert.match(appSource, /viewportCoordinator\?\.acceptCallback\?\.\("technical", range\)/);
   assert.match(appSource, /indicatorChart\.timeScale\(\)\.setVisibleRange\(range\)/);
   assert.match(appSource, /indicatorChart\.timeScale\(\)\.setVisibleLogicalRange\(fallbackLogicalRange\)/);
   assert.match(appSource, /chipPaneManager\?\.syncTimeRange\?\.\(range\)/);
@@ -801,6 +802,10 @@ test("alignment debug 可區分技術 series 空資料與未建立並記錄各 p
   assert.match(appSource, /indicatorVisibleTimeRange:/);
   assert.match(chipSource, /visibleLogicalRange: chart\?\.timeScale\(\)\.getVisibleLogicalRange\?\.\(\) \|\| null/);
   assert.match(chipSource, /visibleTimeRange: chart\?\.timeScale\(\)\.getVisibleRange\?\.\(\) \|\| null/);
+  assert.match(appSource, /viewportInvariant,/);
+  assert.match(appSource, /viewportState,/);
+  assert.match(appSource, /ensureInitialViewportInvariant\(\)/);
+  assert.match(appSource, /viewportCoordinator\?\.recordRepair\?\.\(canonicalRange\)/);
 });
 
 test("技術指標有資料但初次 time range 為空時只重建一次", () => {

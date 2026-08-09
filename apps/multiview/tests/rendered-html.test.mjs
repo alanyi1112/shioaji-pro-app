@@ -1891,7 +1891,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(chipScript, /function startPaneDrag\(id, event\)/);
   assert.match(styles, /\.chart-panel\.has-no-subchart \.subchart-slot\s*\{[^}]*display: none;/s);
   assert.match(indexHtml, /styles\.css\?v=20260807-toolbar-spacing-v2/);
-  assert.match(indexHtml, /chart-annotations\.js\?v=20260727-fibonacci-snap-coexist-v1/);
+  assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
   assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(indexHtml, /panel-image-export\.js\?v=20260721-panel-frame-v4/);
   assert.match(indexHtml, /app\.js\?v=20260807-inline-ticket-toolbar-v1/);
@@ -1934,12 +1934,12 @@ test("K 線縮放與平移後不會被 layout 或延遲 refit 重設", async () 
   const refitScheduleBlock = appScript.slice(appScript.indexOf("function scheduleTimeScaleRefit"), appScript.indexOf("function schedulePanelLayoutRefresh"));
 
   assert.match(appScript, /function armHistoryInteraction\(\) \{[\s\S]*?historyInteractionArmed = true;[\s\S]*?cancelScheduledTimeScaleRefit\(\);[\s\S]*?\}/);
-  assert.match(appScript, /surface\.addEventListener\("wheel", armHistoryInteraction/);
-  assert.match(appScript, /surface\.addEventListener\("pointerdown", armHistoryInteraction/);
+  assert.match(appScript, /bindViewportIntent\(surface, \{[\s\S]*?source: "main"[\s\S]*?onStart: handleViewportIntentStart/);
+  assert.match(appScript, /function handleViewportIntentStart\([\s\S]*?viewportCoordinator\?\.beginGesture[\s\S]*?armHistoryInteraction\(\)/);
   assert.match(applyPayloadBlock, /const userVisibleLogicalRange = !preserveVisibleLogicalRange && historyInteractionArmed/);
   assert.match(applyPayloadBlock, /else if \(isFiniteLogicalRange\(userVisibleLogicalRange\)\) \{[\s\S]*?setSynchronizedVisibleLogicalRange\(userVisibleLogicalRange\)/);
-  assert.match(layoutBlock, /const visibleLogicalRange = chart\.timeScale\(\)\.getVisibleLogicalRange\?\.\(\)/);
-  assert.match(layoutBlock, /setSynchronizedVisibleLogicalRange\(visibleLogicalRange\)/);
+  assert.match(layoutBlock, /const visibleLogicalRange = viewportCoordinator\?\.acceptedRange\?\.\(\) \|\| chart\.timeScale\(\)\.getVisibleLogicalRange\?\.\(\)/);
+  assert.match(layoutBlock, /setSynchronizedVisibleLogicalRange\(visibleLogicalRange, \{ commit: false \}\)/);
   assert.doesNotMatch(layoutBlock, /refitTimeScalesToCandles/);
   assert.match(synchronizedRangeBlock, /chipPaneManager\?\.syncRange\(range\)/);
   assert.match(refitScheduleBlock, /if \(historyInteractionArmed\) return/);
@@ -2157,16 +2157,15 @@ test("多層副圖一般 wheel 捲頁且保持圖表範圍，Alt wheel 明確縮
   assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(appScript, /QuoteChartInteractions\.chartInteractionOptions\(mode\)/);
   assert.match(appScript, /bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\)/);
-  assert.match(appScript, /mainWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\);\s*chart = LightweightCharts\.createChart/s);
-  assert.match(appScript, /indicatorWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(indicatorSurface, \(\) => subchartPresentation\.mode\);\s*indicatorChart = createIndicatorChart\(\)/s);
+  assert.match(appScript, /mainWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\);[\s\S]*?bindViewportIntent\(surface,[\s\S]*?chart = LightweightCharts\.createChart/s);
+  assert.match(appScript, /indicatorWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(indicatorSurface, \(\) => subchartPresentation\.mode\);[\s\S]*?bindViewportIntent\(indicatorSurface,[\s\S]*?indicatorChart = createIndicatorChart\(\)/s);
   assert.match(appScript, /mainWheelRoutingCleanup\?\.\(\)/);
   assert.match(appScript, /indicatorWheelRoutingCleanup\?\.\(\)/);
   assert.match(chipScript, /setInteractionMode\(mode\)/);
-  assert.match(chipScript, /wheelRoutingCleanup = global\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => interactionMode\);\s*chart = global\.LightweightCharts\.createChart/s);
-  assert.match(chipScript, /let rangeInputEnabled = false;/);
-  assert.match(chipScript, /if \(rangeInputEnabled\) options\.onRange\?\.\(range, definition\.id, chart\?\.timeScale\(\)\.getVisibleRange\?\.\(\)\)/);
-  assert.match(chipScript, /deferRangeInputUntilLayoutSettles\(\);/);
-  assert.match(chipScript, /rangeInputEnabled = Boolean\(chart && !destroyed\)/);
+  assert.match(chipScript, /wheelRoutingCleanup = global\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => interactionMode\);[\s\S]*?bindViewportIntent\(surface,[\s\S]*?chart = global\.LightweightCharts\.createChart/s);
+  assert.match(chipScript, /options\.onRange\?\.\(range, definition\.id, chart\?\.timeScale\(\)\.getVisibleRange\?\.\(\)\)/);
+  assert.match(chipScript, /onViewportIntent\?\.\(\{ paneId: definition\.id, phase: "start", kind \}\)/);
+  assert.doesNotMatch(chipScript, /rangeInputEnabled|deferRangeInputUntilLayoutSettles/);
   assert.match(chipScript, /wheelRoutingCleanup\?\.\(\)/);
   assert.doesNotMatch(appScript, /setPageScrollEnabled/);
   assert.doesNotMatch(chipScript, /setPageScrollEnabled|pageScrollEnabled/);

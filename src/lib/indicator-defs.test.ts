@@ -7,6 +7,7 @@ import {
     LEGACY_V2_STORE_KEY,
     STORE_KEY,
     applyIndicatorStorageValue,
+    buildIndicatorReadoutDisplay,
     commitIndicatorDraft,
     getIndicatorPersistenceStatus,
     getInstancesSnapshot,
@@ -32,6 +33,98 @@ describe('indicator definition union', () => {
         expect(def.singleton).toBe(true);
         expect('outputs' in def).toBe(false);
         expect('compute' in def).toBe(false);
+    });
+
+    it('BOLL readout 依上中下排序且保留 output 顏色', () => {
+        const def = DEF_BY_TYPE.get('boll');
+        expect(def?.kind).toBe('series');
+        if (!def || def.kind !== 'series') throw new Error('missing boll');
+        expect(def.outputs.map((output) => output.key)).toEqual([
+            'mid',
+            'upper',
+            'lower',
+        ]);
+
+        const display = buildIndicatorReadoutDisplay(
+            {
+                id: 'boll-1',
+                type: 'boll',
+                params: { period: 20, mult: 2 },
+                colors: {},
+            },
+            [
+                { key: 'mid', label: '中軌', text: '937.5', color: '#888888' },
+                { key: 'upper', label: '上軌', text: '952.9', color: '#5555ff' },
+                { key: 'lower', label: '下軌', text: '922.2', color: '#3333ff' },
+            ],
+        );
+        expect(display.label).toBe('BOLL(20,2)');
+        expect(
+            display.values.map(({ key, prefix, text, color }) => ({
+                key,
+                prefix,
+                text,
+                color,
+            })),
+        ).toEqual([
+            { key: 'upper', prefix: '上', text: '952.9', color: '#5555ff' },
+            { key: 'mid', prefix: '中軌', text: '937.5', color: '#888888' },
+            { key: 'lower', prefix: '下', text: '922.2', color: '#3333ff' },
+        ]);
+    });
+
+    it('均量與均線使用 readout 專用名稱、週期 prefix 與缺值', () => {
+        const values = [
+            { key: 'ma5', label: 'SMA5', text: '—', color: '#111111' },
+            { key: 'ma10', label: 'SMA10', text: '934.1', color: '#222222' },
+            { key: 'ma20', label: 'SMA20', text: '937.5', color: '#333333' },
+            { key: 'ma60', label: 'SMA60', text: '939.8', color: '#444444' },
+            { key: 'ma120', label: 'SMA120', text: '911.2', color: '#555555' },
+        ];
+        const ma = buildIndicatorReadoutDisplay(
+            { id: 'ma-pack', type: 'reference-ma-pack', params: {}, colors: {} },
+            values,
+        );
+        expect(ma.label).toBe('均線');
+        expect(ma.values.map(({ prefix, text }) => [prefix, text])).toEqual([
+            ['5MA', '—'],
+            ['10MA', '934.1'],
+            ['20MA', '937.5'],
+            ['60MA', '939.8'],
+            ['120MA', '911.2'],
+        ]);
+
+        const volume = buildIndicatorReadoutDisplay(
+            { id: 'volume-ma', type: 'volume-ma', params: {}, colors: {} },
+            values,
+        );
+        expect(volume.label).toBe('均量');
+        expect(volume.values.map(({ prefix }) => prefix)).toEqual([
+            '5MA',
+            '10MA',
+            '20MA',
+        ]);
+        expect(DEF_BY_TYPE.get('volume-ma')?.label).toBe(
+            'Volume MA 成交量均線',
+        );
+        expect(DEF_BY_TYPE.get('reference-ma-pack')?.label).toBe('參考均線組');
+    });
+
+    it('未設定 readout metadata 的 indicator 保持既有名稱與順序', () => {
+        const values = [
+            { key: 'line', label: 'MA', text: '100.0', color: '#abcdef' },
+        ];
+        expect(
+            buildIndicatorReadoutDisplay(
+                {
+                    id: 'sma-1',
+                    type: 'sma',
+                    params: { period: 20 },
+                    colors: {},
+                },
+                values,
+            ),
+        ).toEqual({ label: 'MA(20)', values });
     });
 
     it('normalization 保留一般順序並移除重複 readout', () => {

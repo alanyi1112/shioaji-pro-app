@@ -1,22 +1,4 @@
-# main-chart-fibonacci-tools Specification
-
-## Purpose
-
-定義主圖費波那契回撤與拓展工具的錨點吸附、雙類型共存、線條樣式、本機保存及完整 panel PNG 匯出行為。
-## Requirements
-### Requirement: 主圖必須提供費波那契繪圖工具入口
-
-系統 MUST 在每個 chart panel 的「主圖」選單提供獨立的「繪圖工具」入口，至少可啟動「費波那契回撤」與「費波那契拓展」，並清楚顯示目前等待的錨點數。工具入口不得改變均線、布林、成交量、FVG、Volume Profile、本益比河流圖或副圖的既有選取狀態。
-
-#### Scenario: 啟動回撤工具
-- **WHEN** 使用者在主圖選單選擇「費波那契回撤」
-- **THEN** 系統 MUST 進入等待兩個錨點的回撤選取狀態
-- **AND** 主 K 線、十字線與既有主圖指標 MUST 維持可見
-
-#### Scenario: 啟動拓展工具
-- **WHEN** 使用者在主圖選單選擇「費波那契拓展」
-- **THEN** 系統 MUST 進入等待三個錨點的拓展選取狀態
-- **AND** UI MUST 說明目前尚需選取的錨點數
+## MODIFIED Requirements
 
 ### Requirement: 費波那契回撤必須以兩個波段錨點計算並標示價格
 
@@ -46,53 +28,6 @@
 - **WHEN** 使用者已啟動費波那契工具，並將滑鼠移到下一個有效主圖位置但尚未點選
 - **THEN** 系統 MUST 預覽下一個錨點、暫態導引線與目前可計算的回撤十條或拓展八條水準
 - **AND** 暫態預覽 MUST NOT 寫入本機儲存，滑鼠離開主圖或按 Escape 後 MUST 消失
-
-### Requirement: 費波那契錨點必須依 K 棒與組合鍵吸附
-
-系統 MUST 讓費波那契 preview 與完成點選共用同一錨點解析規則。未按 macOS Option 或 Windows Alt 時，A MUST 吸附所點 K 棒的 `low`，B MUST 吸附所點 K 棒的 `high`；拓展 C 在所點位置有 K 棒時 MUST 吸附該 K 棒的 `low`，在尚無 K 棒的未來區域 MUST 使用游標自由價位。按住 Option／Alt 時，A／B／C MUST 略過價格吸附並使用游標自由價位。這裡的最低價與最高價只指所點單根 K 棒，不得自動搜尋整段區間極值。
-
-#### Scenario: 一般操作依序吸附 A 與 B
-- **WHEN** 使用者未按 Option／Alt，並在有 K 棒的位置選取 A 與 B
-- **THEN** A MUST 使用所點 K 棒的 `low`，B MUST 使用所點 K 棒的 `high`
-- **AND** preview、待選價格導引與完成保存 MUST 使用相同時間及價格
-
-#### Scenario: A 或 B 點在無 K 棒區域
-- **WHEN** 使用者未按 Option／Alt，並嘗試在沒有 K 棒的未來區域選取 A 或 B
-- **THEN** 系統 MUST 將該點視為無效且不得增加 pending 錨點
-- **AND** 既有已選錨點與完成註記 MUST 維持不變
-
-#### Scenario: C 依位置決定吸附或自由價位
-- **WHEN** 使用者未按 Option／Alt 選取拓展 C
-- **THEN** 有 K 棒的位置 MUST 使用該 K 棒 `low`
-- **AND** 沒有 K 棒的未來區域 MUST 保留游標換算的時間與自由價位
-
-#### Scenario: Option 或 Alt 解除所有錨點價格吸附
-- **WHEN** 使用者按住 macOS Option 或 Windows Alt 選取 A、B 或 C
-- **THEN** 系統 MUST 使用游標換算的自由價位，不得改寫為 K 棒 `low` 或 `high`
-- **AND** A／B 位於無 K 棒區域時亦 MUST 允許建立有效錨點
-
-### Requirement: 回撤與拓展必須各保留一張並依完成順序分色
-
-系統 MUST 對同一 canonical symbol 與 interval 最多保留一張費波那契回撤及一張費波那契拓展。完成新圖時 MUST 只取代相同種類的舊圖，不得清除另一種類；只有一種圖時 MUST 使用分級彩色，同時存在兩種圖時較早完成者 MUST 維持分級彩色，較晚完成者 MUST 以一致單色呈現。
-
-#### Scenario: 先畫回撤再畫拓展
-- **WHEN** 使用者先完成回撤，再完成拓展
-- **THEN** 兩張圖 MUST 同時存在，回撤 MUST 使用分級彩色，拓展 MUST 使用單色
-- **AND** 拓展完成不得清除或改寫回撤錨點
-
-#### Scenario: 先畫拓展再畫回撤
-- **WHEN** 使用者先完成拓展，再完成回撤
-- **THEN** 兩張圖 MUST 同時存在，拓展 MUST 使用分級彩色，回撤 MUST 使用單色
-
-#### Scenario: 重畫相同種類
-- **WHEN** 回撤與拓展都存在，使用者重新完成其中一種類型
-- **THEN** 系統 MUST 只取代該種類舊圖並把新完成圖視為較晚完成的單色圖
-- **AND** 未重畫的另一種類 MUST 保留並成為較早完成的彩色圖
-
-#### Scenario: 還原既有單張本機資料
-- **WHEN** 系統讀取舊版有效的單張費波那契本機註記
-- **THEN** 系統 MUST 將其安全遷移成對應種類的第一張彩色圖
-- **AND** MUST NOT 影響相同身份的價格範圍註記或發出後端寫入
 
 ### Requirement: 費波那契必須以細實線、分區色帶與左側標籤呈現
 

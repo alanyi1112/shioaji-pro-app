@@ -311,6 +311,8 @@ const legendItemBase = style({
     fontSize: '0.62rem',
     fontVariantNumeric: 'tabular-nums',
     width: 'fit-content',
+    maxWidth: '100%',
+    minWidth: 0,
     pointerEvents: 'auto',
 });
 
@@ -332,11 +334,15 @@ export const legendLabel = style({
 
 export const legendVals = style({
     display: 'inline-flex',
+    flexWrap: 'wrap',
     gap: '6px',
+    minWidth: 0,
+    maxWidth: '100%',
 });
 
 export const legendVal = style({
     fontWeight: 500,
+    whiteSpace: 'nowrap',
 });
 
 export const kbarReadoutTime = style({

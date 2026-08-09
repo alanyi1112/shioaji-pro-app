@@ -7,11 +7,14 @@ import {
     FIBONACCI_STORAGE_VERSION,
     fibonacciAnchorPriceGuide,
     fibonacciIdentity,
+    fibonacciLevelColor,
     fibonacciLevels,
+    fibonacciProductIdentity,
     fibonacciStorageKey,
     futureTimeForLogicalPosition,
     resolveFibonacciAnchorPoint,
     RETRACEMENT_LEVELS,
+    subscribeFibonacciProductClear,
     type FibonacciStorage,
 } from './fibonacci-annotations';
 
@@ -23,7 +26,11 @@ function memoryStorage(initial: Record<string, string> = {}): {
     return {
         values,
         storage: {
+            get length() {
+                return values.size;
+            },
             getItem: (key) => values.get(key) ?? null,
+            key: (index) => [...values.keys()][index] ?? null,
             setItem: (key, value) => values.set(key, value),
             removeItem: (key) => values.delete(key),
         },
@@ -33,13 +40,13 @@ function memoryStorage(initial: Record<string, string> = {}): {
 describe('MultiChart Fibonacci 公式基準', () => {
     it('鎖定來源版本、比率與六位小數 fixture', () => {
         expect(FIBONACCI_FORMULA_VERSION).toBe(
-            'multichart-ecae7ca-fibonacci-v1',
+            'multichart-ecae7ca-fibonacci-v2',
         );
         expect(RETRACEMENT_LEVELS).toEqual([
-            0, 0.236, 0.382, 0.5, 0.618, 0.786, 1,
+            -0.62, -0.27, 0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1,
         ]);
         expect(EXTENSION_LEVELS).toEqual([
-            0.618, 0.786, 1, 1.272, 1.414, 1.618, 2,
+            0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2,
         ]);
         expect(
             fibonacciLevels('retracement', [
@@ -51,11 +58,14 @@ describe('MultiChart Fibonacci 公式基準', () => {
                 Number(level.price.toFixed(6)),
             ]),
         ).toEqual([
+            ['-0.62', '-62%', 262],
+            ['-0.27', '-27%', 227],
             ['0', '0%', 200],
             ['0.236', '23.6%', 176.4],
             ['0.382', '38.2%', 161.8],
             ['0.5', '50%', 150],
             ['0.618', '61.8%', 138.2],
+            ['0.705', '70.5%', 129.5],
             ['0.786', '78.6%', 121.4],
             ['1', '100%', 100],
         ]);
@@ -65,7 +75,7 @@ describe('MultiChart Fibonacci 公式基準', () => {
                 { time: 2, price: 200 },
                 { time: 3, price: 150 },
             ]).map((level) => Number(level.price.toFixed(6))),
-        ).toEqual([211.8, 228.6, 250, 277.2, 291.4, 311.8, 350]);
+        ).toEqual([211.8, 220.5, 228.6, 250, 277.2, 291.4, 311.8, 350]);
     });
 
     it('支援下跌、平盤並拒絕非法輸入', () => {
@@ -74,7 +84,7 @@ describe('MultiChart Fibonacci 公式基準', () => {
                 { time: 1, price: 200 },
                 { time: 2, price: 100 },
             ]).map((level) => Number(level.price.toFixed(6))),
-        ).toEqual([100, 123.6, 138.2, 150, 161.8, 178.6, 200]);
+        ).toEqual([38, 73, 100, 123.6, 138.2, 150, 161.8, 170.5, 178.6, 200]);
         expect(
             fibonacciLevels('extension', [
                 { time: 1, price: 100 },
@@ -94,6 +104,16 @@ describe('MultiChart Fibonacci 公式基準', () => {
                 { time: 2, price: 200 },
             ]),
         ).toEqual([]);
+    });
+
+    it('新增比率使用固定色且既有比率維持各種類原色', () => {
+        expect(fibonacciLevelColor('retracement', -0.62)).toBe('#a78bfa');
+        expect(fibonacciLevelColor('retracement', -0.27)).toBe('#e879f9');
+        expect(fibonacciLevelColor('extension', -0.27)).toBe('#cbd5e1');
+        expect(fibonacciLevelColor('retracement', 0.705)).toBe('#f472b6');
+        expect(fibonacciLevelColor('extension', 0.705)).toBe('#f472b6');
+        expect(fibonacciLevelColor('retracement', 0.618)).toBe('#2dd4bf');
+        expect(fibonacciLevelColor('extension', 0.618)).toBe('#fb7185');
     });
 });
 
@@ -195,6 +215,7 @@ describe('Fibonacci controller 與 storage', () => {
         expect(fibonacciStorageKey(identity)).toBe(
             'realtimestock.fibonacci.v1.STK%7CTSE%7C2330%7C5',
         );
+        expect(fibonacciProductIdentity(identity)).toBe('STK|TSE|2330');
         expect(
             fibonacciIdentity({
                 securityType: null,
@@ -320,6 +341,101 @@ describe('Fibonacci controller 與 storage', () => {
         reloaded.addPoint({ time: 3, price: 60 });
         currentIdentity = identity;
         expect(reloaded.restore().completed[0]?.kind).toBe('retracement');
+    });
+
+    it('v1 anchors 會保留並依種類遷移為 v2 水準', () => {
+        const key = fibonacciStorageKey(identity);
+        const { storage, values } = memoryStorage({
+            [key]: JSON.stringify({
+                version: FIBONACCI_STORAGE_VERSION,
+                formulaVersion: 'multichart-ecae7ca-fibonacci-v1',
+                completed: [
+                    {
+                        kind: 'retracement',
+                        anchors: [
+                            { time: 1, price: 100 },
+                            { time: 2, price: 200 },
+                        ],
+                        order: 1,
+                    },
+                ],
+            }),
+        });
+        const controller = createFibonacciController({
+            getIdentity: () => identity,
+            storage,
+        });
+        expect(controller.restore().completed[0]?.levels).toHaveLength(10);
+        expect(JSON.parse(values.get(key)!).formulaVersion).toBe(
+            FIBONACCI_FORMULA_VERSION,
+        );
+    });
+
+    it('全部清除只移除目前商品所有 timeframe 並保留其他商品', () => {
+        const sameProduct60 = 'STK|TSE|2330|60';
+        const otherProduct = 'STK|TSE|2317|5';
+        const completedPayload = (formulaVersion = FIBONACCI_FORMULA_VERSION) =>
+            JSON.stringify({
+                version: FIBONACCI_STORAGE_VERSION,
+                formulaVersion,
+                completed: [
+                    {
+                        kind: 'retracement',
+                        anchors: [
+                            { time: 1, price: 100 },
+                            { time: 2, price: 200 },
+                        ],
+                        order: 1,
+                    },
+                ],
+            });
+        const { storage, values } = memoryStorage({
+            [fibonacciStorageKey(identity)]: completedPayload(),
+            [fibonacciStorageKey(sameProduct60)]: completedPayload(),
+            [fibonacciStorageKey(otherProduct)]: completedPayload(),
+        });
+        const controller = createFibonacciController({
+            getIdentity: () => identity,
+            storage,
+        });
+        controller.restore();
+        controller.clear('all');
+        expect(values.has(fibonacciStorageKey(identity))).toBe(false);
+        expect(values.has(fibonacciStorageKey(sameProduct60))).toBe(false);
+        expect(values.has(fibonacciStorageKey(otherProduct))).toBe(true);
+        expect(controller.getSnapshot().completed).toEqual([]);
+    });
+
+    it('同頁相同商品 controller 同步全部清除且不同商品不受影響', () => {
+        const { storage } = memoryStorage();
+        const sameProductIdentity = 'STK|TSE|2330|60';
+        const otherProductIdentity = 'STK|TSE|2317|5';
+        const first = createFibonacciController({
+            getIdentity: () => identity,
+            storage,
+        });
+        const sameProduct = createFibonacciController({
+            getIdentity: () => sameProductIdentity,
+            storage,
+        });
+        const otherProduct = createFibonacciController({
+            getIdentity: () => otherProductIdentity,
+            storage,
+        });
+        for (const controller of [first, sameProduct, otherProduct]) {
+            controller.restore();
+            controller.arm('retracement');
+            controller.addPoint({ time: 1, price: 100 });
+            controller.addPoint({ time: 2, price: 200 });
+        }
+        const unsubscribe = subscribeFibonacciProductClear((productIdentity) => {
+            sameProduct.applyProductClear(productIdentity);
+            otherProduct.applyProductClear(productIdentity);
+        });
+        first.clear('all');
+        unsubscribe();
+        expect(sameProduct.getSnapshot().completed).toEqual([]);
+        expect(otherProduct.getSnapshot().completed).toHaveLength(1);
     });
 
     it('損毀版本、非法 anchors 與同類重複安全正規化', () => {

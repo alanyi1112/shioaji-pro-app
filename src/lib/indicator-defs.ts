@@ -56,6 +56,16 @@ export interface SeriesRenderTarget {
     priceScaleId?: string;
 }
 
+export interface IndicatorReadoutOutput {
+    key: string;
+    prefix: string;
+}
+
+export interface IndicatorReadoutConfig {
+    label?: string;
+    outputs: IndicatorReadoutOutput[];
+}
+
 interface IndicatorDefBase {
     type: string;
     label: string; // list label, e.g. "MA 移動平均"
@@ -70,6 +80,7 @@ export interface SeriesIndicatorDef extends IndicatorDefBase {
     kind: 'series';
     outputs: OutputDef[];
     render: SeriesRenderTarget;
+    readout?: IndicatorReadoutConfig;
     // horizontal reference levels drawn in the sub-pane (e.g. RSI 30/70)
     levels?: number[];
     validateParams?: (params: Record<string, number>) => Record<string, string>;
@@ -140,6 +151,16 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
         aliases: ['ma pack', 'reference ma', '均線組', '多均線'],
         category: 'overlay',
         params: [],
+        readout: {
+            label: '均線',
+            outputs: [
+                { key: 'ma5', prefix: '5MA' },
+                { key: 'ma10', prefix: '10MA' },
+                { key: 'ma20', prefix: '20MA' },
+                { key: 'ma60', prefix: '60MA' },
+                { key: 'ma120', prefix: '120MA' },
+            ],
+        },
         outputs: [
             { key: 'ma5', label: 'SMA5', kind: 'line', color: '#e0a43c' },
             { key: 'ma10', label: 'SMA10', kind: 'line', color: '#b06fff' },
@@ -188,6 +209,13 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
             { key: 'period', label: '週期', def: 20, min: 2, max: 200 },
             { key: 'mult', label: '標準差倍數', def: 2, min: 0.5, max: 5, step: 0.5 },
         ],
+        readout: {
+            outputs: [
+                { key: 'upper', prefix: '上' },
+                { key: 'mid', prefix: '中軌' },
+                { key: 'lower', prefix: '下' },
+            ],
+        },
         outputs: [
             { key: 'mid', label: '中軌', kind: 'line', color: '#8b94a7' },
             { key: 'upper', label: '上軌', kind: 'line', color: '#5a89c9' },
@@ -207,6 +235,14 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
         category: 'overlay',
         render: { pane: 'main', priceScaleId: 'vol' },
         params: [],
+        readout: {
+            label: '均量',
+            outputs: [
+                { key: 'ma5', prefix: '5MA' },
+                { key: 'ma10', prefix: '10MA' },
+                { key: 'ma20', prefix: '20MA' },
+            ],
+        },
         outputs: [
             { key: 'ma5', label: 'Vol MA5', kind: 'line', color: '#e0a43c' },
             { key: 'ma10', label: 'Vol MA10', kind: 'line', color: '#b06fff' },
@@ -660,6 +696,44 @@ export function instanceLabel(inst: IndicatorInstance): string {
     if (def.kind === 'readout') return def.short;
     const args = def.params.map((p) => inst.params[p.key] ?? p.def);
     return args.length > 0 ? `${def.short}(${args.join(',')})` : def.short;
+}
+
+export interface IndicatorLegendValue {
+    key: string;
+    label: string;
+    text: string;
+    color: string;
+}
+
+export interface IndicatorReadoutValue extends IndicatorLegendValue {
+    prefix?: string;
+}
+
+export interface IndicatorReadoutDisplay {
+    label: string;
+    values: IndicatorReadoutValue[];
+}
+
+export function buildIndicatorReadoutDisplay(
+    inst: IndicatorInstance,
+    values: readonly IndicatorLegendValue[],
+): IndicatorReadoutDisplay {
+    const def = DEF_BY_TYPE.get(inst.type);
+    if (!def || def.kind !== 'series' || !def.readout) {
+        return {
+            label: instanceLabel(inst),
+            values: values.map((value) => ({ ...value })),
+        };
+    }
+
+    const valuesByKey = new Map(values.map((value) => [value.key, value]));
+    return {
+        label: def.readout.label ?? instanceLabel(inst),
+        values: def.readout.outputs.flatMap(({ key, prefix }) => {
+            const value = valuesByKey.get(key);
+            return value ? [{ ...value, prefix }] : [];
+        }),
+    };
 }
 
 export function newInstance(type: string): IndicatorInstance {

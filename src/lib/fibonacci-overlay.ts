@@ -1,8 +1,8 @@
 import {
-    FIBONACCI_LEVEL_COLORS,
     FIBONACCI_MONOCHROME_COLOR,
     FIBONACCI_PENDING_GUIDE_COLOR,
     fibonacciAnchorPriceGuide,
+    fibonacciLevelColor,
     fibonacciLevels,
     type FibonacciDrawing,
     type FibonacciKind,
@@ -102,11 +102,12 @@ function pointCoordinates(
 
 function drawingColor(
     role: FibonacciDrawing['role'] | 'secondary',
-    levelIndex: number,
+    kind: FibonacciKind,
+    ratio: number,
 ): string {
     return role === 'secondary'
         ? FIBONACCI_MONOCHROME_COLOR
-        : (FIBONACCI_LEVEL_COLORS[levelIndex] ?? FIBONACCI_MONOCHROME_COLOR);
+        : fibonacciLevelColor(kind, ratio);
 }
 
 function addAnchorsAndGuide(
@@ -209,20 +210,19 @@ function addLevels(
             if (!current || !next) continue;
             const top = clamp(Math.min(current.y, next.y), 0, options.height);
             const bottom = clamp(Math.max(current.y, next.y), 0, options.height);
-            if (bottom - top < 0.5) continue;
             model.bands.push({
                 key: `${options.keyPrefix}-band-${index}`,
                 x: lineStartX,
                 y: top,
                 width: options.rightEdge - lineStartX,
                 height: bottom - top,
-                color: drawingColor(options.role, current.levelIndex),
+                color: drawingColor(options.role, kind, current.ratio),
                 opacity: options.pending ? 0.12 * 0.72 : 0.12,
             });
         }
     }
     entries.forEach((entry) => {
-        const color = drawingColor(options.role, entry.levelIndex);
+        const color = drawingColor(options.role, kind, entry.ratio);
         model.lines.push({
             key: `${options.keyPrefix}-level-${entry.levelIndex}`,
             x1: lineStartX,

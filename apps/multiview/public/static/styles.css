@@ -1356,6 +1356,11 @@ select {
   display: none;
 }
 
+.chart-panel.is-intraday .chart-tool-button[data-chart-tool="retracement"],
+.chart-panel.is-intraday .chart-tool-button[data-chart-tool="extension"] {
+  display: none;
+}
+
 .chart-grid.grid-3 .symbol-select,
 .chart-grid.grid-4.is-mode-b-page-scroll .symbol-select,
 .chart-grid.grid-6 .symbol-select,
@@ -2584,6 +2589,16 @@ select {
   cursor: pointer;
 }
 
+.chart-tool-clear {
+  width: 100%;
+  padding: 2px 5px;
+}
+
+.chart-tool-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .chart-tool-button:hover,
 .chart-tool-button:focus-visible,
 .chart-tool-clear:hover,
@@ -2705,6 +2720,18 @@ select {
 
 .chart-annotation-fibonacci-level-6 {
   --fibonacci-level-color: #818cf8;
+}
+
+.chart-annotation-fibonacci-ratio-negative-0-62 {
+  --fibonacci-level-color: #a78bfa;
+}
+
+.chart-annotation-fibonacci-ratio-negative-0-27 {
+  --fibonacci-level-color: #e879f9;
+}
+
+.chart-annotation-fibonacci-ratio-0-705 {
+  --fibonacci-level-color: #f472b6;
 }
 
 .chart-annotation-fibonacci-guide {

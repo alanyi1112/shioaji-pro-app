@@ -3209,6 +3209,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   });
   const isPanelActive = () => !destroyed && panelLifecycle.isActive();
   const realtimeIndicatorScheduler = window.QuoteChartRealtimeIndicators.createLatestWinsScheduler({ delay: 150 });
+  let viewportCoordinator;
   let loadToken = 0;
   let overlayFrame = 0;
   let subchartPresentationFrame = 0;
@@ -3237,6 +3238,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let overlayHooksAttached = false;
   let mainWheelRoutingCleanup;
   let indicatorWheelRoutingCleanup;
+  let mainViewportIntentCleanup;
+  let indicatorViewportIntentCleanup;
   let fixedProfileState = FIXED_PROFILE_STATES.idle;
   let fixedProfileFirstTime;
   let fixedProfileRanges = [];
@@ -3316,6 +3319,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       }
     },
   });
+  const unsubscribeFibonacciProductClear = window.QuoteChartAnnotations?.subscribeProductClear?.((symbol) => {
+    if (!isPanelActive()) return;
+    const changed = chartAnnotationController?.applyProductClear?.(symbol);
+    if (changed) status.textContent = "已同步清除目前商品所有時間級別的費波那契圖形";
+  }) || (() => {});
 
   element.addEventListener("pointerenter", () => element.classList.add("is-hovered"));
   element.addEventListener("pointerleave", () => element.classList.remove("is-hovered"));
@@ -3337,16 +3345,26 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     inputs: chipIndicatorInputs,
     groupInputs: chipGroupInputs,
     getAxisSafeWidth: () => getAxisSafeWidth(),
-    getMainRange: () => chart?.timeScale().getVisibleLogicalRange?.(),
+    getMainRange: () => viewportCoordinator?.acceptedRange?.() || chart?.timeScale().getVisibleLogicalRange?.(),
     onLayoutChange: (change = {}) => {
       if (!isPanelActive()) return;
       schedulePanelLayoutRefresh({ preserveViewport: Boolean(change?.preserveViewport) });
     },
-    onRange: (range, _paneId, timeRange) => {
+    onRange: (range, paneId, timeRange) => {
       if (!isPanelActive() || isSyncingTimeScale) return;
+      if (!viewportCoordinator?.acceptCallback?.(`chip:${paneId}`, range)) return;
       if (isValidTimeRange(timeRange)) setSynchronizedVisibleTimeRange(timeRange, range);
       else syncVisibleLogicalRange(range, chart);
       scheduleAlignmentMeasurement();
+    },
+    onViewportIntent: ({ paneId, phase, kind }) => {
+      const source = `chip:${paneId}`;
+      if (phase === "start") {
+        viewportCoordinator?.beginGesture?.(source, kind);
+        armHistoryInteraction();
+      } else {
+        viewportCoordinator?.endGesture?.(source, kind);
+      }
     },
     onCrosshair: (pointer) => {
       if (!isPanelActive()) return;
@@ -3605,15 +3623,33 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         for (const menu of indicatorMenus) menu.open = false;
         return;
       }
+      if (intervalSelect.value === "intraday") {
+        status.textContent = "分時模式不提供費波那契繪圖，請切換至 K 線時間級別";
+        return;
+      }
       const kind = button.dataset.chartTool === "retracement" ? "retracement" : "extension";
       if (!chartAnnotationController?.armFibonacci(kind)) return;
       status.textContent = `費波那契${kind === "retracement" ? "回撤" : "拓展"}：請點選第 1 個錨點`;
       for (const menu of indicatorMenus) menu.open = false;
     });
   });
-  chartToolClear?.addEventListener("click", () => {
-    chartAnnotationController?.clear("all");
-    status.textContent = "主圖繪圖與價格範圍已清除";
+  chartToolClear?.addEventListener("change", () => {
+    const target = chartToolClear.value;
+    chartToolClear.value = "";
+    if (target === "retracement" || target === "extension") {
+      chartAnnotationController?.clear(target);
+      status.textContent = `已清除目前時間級別的費波那契${target === "retracement" ? "回撤" : "拓展"}`;
+      return;
+    }
+    if (target === "all-fibonacci") {
+      chartAnnotationController?.clearAllFibonacciIntervals?.();
+      status.textContent = "已清除目前商品所有時間級別的費波那契圖形";
+      return;
+    }
+    if (target === "price-range") {
+      chartAnnotationController?.clear("priceRange");
+      status.textContent = "已清除目前時間級別的價格範圍";
+    }
   });
   mainReadoutModeSelect?.addEventListener("change", () => {
     setMainReadoutMode(mainReadoutModeSelect.value);
@@ -3720,11 +3756,17 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (mainOnly) {
         try { indicatorChart?.clearCrosshairPosition?.(); } catch {}
       } else if (isTechnicalSubchartVisible() && indicatorChart) {
-        indicatorChart.resize(indicatorSurface.clientWidth, indicatorSurface.clientHeight);
-        syncIndicatorVisibleRangeToMain();
+        runViewportProgrammatic(() => {
+          indicatorChart.resize(indicatorSurface.clientWidth, indicatorSurface.clientHeight);
+          const acceptedRange = viewportCoordinator?.acceptedRange?.();
+          if (isFiniteLogicalRange(acceptedRange)) indicatorChart.timeScale().setVisibleLogicalRange(acceptedRange);
+          else syncIndicatorVisibleRangeToMain();
+        });
       } else {
-        chipPaneManager?.resize();
-        chipPaneManager?.syncRange(chart.timeScale().getVisibleLogicalRange?.());
+        runViewportProgrammatic(() => {
+          chipPaneManager?.resize();
+          chipPaneManager?.syncRange(viewportCoordinator?.acceptedRange?.() || chart.timeScale().getVisibleLogicalRange?.());
+        });
       }
       schedulePanelLayoutRefresh();
       scheduleAlignmentMeasurement();
@@ -3747,6 +3789,34 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     fillIntervalOptions(intervalSelect, intervalSelect.value, symbolSelect.value);
     updateLatestPriceInstrumentLabel(symbolSelect.value, priceLabel.dataset.sessionLabel || "");
     return symbolSelect.value !== previousSymbol;
+  }
+
+  function createPanelViewportCoordinator() {
+    const generation = loadToken;
+    return window.QuoteChartInteractions.createViewportCoordinator({
+      generation,
+      isCurrent: (candidate) => isPanelActive() && candidate === loadToken,
+      requestFrame: (callback) => panelLifecycle.requestFrame(callback),
+      cancelFrame: (frame) => panelLifecycle.cancelFrame(frame),
+      onRestore: (range) => {
+        if (!isPanelActive() || !isFiniteLogicalRange(range)) return;
+        setSynchronizedVisibleLogicalRange(range, { commit: false });
+        scheduleAlignmentMeasurement();
+      },
+    });
+  }
+
+  function runViewportProgrammatic(callback) {
+    return viewportCoordinator?.runProgrammatic ? viewportCoordinator.runProgrammatic(callback) : callback?.();
+  }
+
+  function handleViewportIntentStart({ source, kind }) {
+    viewportCoordinator?.beginGesture?.(source, kind);
+    armHistoryInteraction();
+  }
+
+  function handleViewportIntentEnd({ source, kind }) {
+    viewportCoordinator?.endGesture?.(source, kind);
   }
 
   function resetCharts() {
@@ -3813,6 +3883,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     mainWheelRoutingCleanup = undefined;
     indicatorWheelRoutingCleanup?.();
     indicatorWheelRoutingCleanup = undefined;
+    mainViewportIntentCleanup?.();
+    mainViewportIntentCleanup = undefined;
+    indicatorViewportIntentCleanup?.();
+    indicatorViewportIntentCleanup = undefined;
+    viewportCoordinator?.destroy?.();
+    viewportCoordinator = undefined;
     const chartToRemove = chart;
     const indicatorChartToRemove = indicatorChart;
     chart = undefined;
@@ -3872,6 +3948,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function buildChart() {
     resetCharts();
+    viewportCoordinator = createPanelViewportCoordinator();
     priceScaleMinWidth = SHARED_PRICE_SCALE_MIN_WIDTH;
     element.style.setProperty("--axis-safe-width", `${priceScaleMinWidth}px`);
     surface.innerHTML = "";
@@ -3883,6 +3960,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     renderProfileSummary({});
     fvgLayer.innerHTML = "";
     mainWheelRoutingCleanup = window.QuoteChartInteractions.bindWheelRouting(surface, () => subchartPresentation.mode);
+    mainViewportIntentCleanup = window.QuoteChartInteractions.bindViewportIntent(surface, {
+      source: "main",
+      getMode: () => subchartPresentation.mode,
+      onStart: handleViewportIntentStart,
+      onEnd: handleViewportIntentEnd,
+    });
     chart = LightweightCharts.createChart(surface, {
       autoSize: true,
       ...chartInteractionOptions(),
@@ -3980,6 +4063,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       priceFormat: { type: "volume" },
     }));
     indicatorWheelRoutingCleanup = window.QuoteChartInteractions.bindWheelRouting(indicatorSurface, () => subchartPresentation.mode);
+    indicatorViewportIntentCleanup = window.QuoteChartInteractions.bindViewportIntent(indicatorSurface, {
+      source: "technical",
+      getMode: () => subchartPresentation.mode,
+      onStart: handleViewportIntentStart,
+      onEnd: handleViewportIntentEnd,
+    });
     indicatorChart = createIndicatorChart();
     attachIndicatorChartSync();
     if (resizeObserver) resizeObserver.disconnect();
@@ -3996,8 +4085,6 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       surface.addEventListener(eventName, scheduleOverlayRender, { passive: true });
       indicatorSurface.addEventListener(eventName, scheduleOverlayRender, { passive: true });
     });
-    surface.addEventListener("wheel", armHistoryInteraction, { passive: true });
-    surface.addEventListener("pointerdown", armHistoryInteraction, { passive: true });
     surface.addEventListener("pointermove", handleSurfacePointerMove, { passive: true });
     surface.addEventListener("pointerleave", handleSurfacePointerLeave, { passive: true });
     surface.addEventListener("mouseleave", handleSurfacePointerLeave, { passive: true });
@@ -4017,8 +4104,6 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       surface.removeEventListener(eventName, scheduleOverlayRender);
       indicatorSurface.removeEventListener(eventName, scheduleOverlayRender);
     });
-    surface.removeEventListener("wheel", armHistoryInteraction);
-    surface.removeEventListener("pointerdown", armHistoryInteraction);
     surface.removeEventListener("pointermove", handleSurfacePointerMove);
     surface.removeEventListener("pointerleave", handleSurfacePointerLeave);
     surface.removeEventListener("mouseleave", handleSurfacePointerLeave);
@@ -5062,15 +5147,19 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
     const viewportSnapshot = pendingPanelViewportSnapshot;
     pendingPanelViewportSnapshot = undefined;
-    const visibleLogicalRange = chart.timeScale().getVisibleLogicalRange?.();
-    chart.resize(surface.clientWidth, surface.clientHeight);
-    if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.resize(indicatorSurface.clientWidth, indicatorSurface.clientHeight);
-    chipPaneManager?.resize();
-    syncIndicatorTimeAnchor();
-    if (viewportSnapshot) {
-      restoreViewportSnapshot(viewportSnapshot, lastPayload?.candles || []);
-      normalizePaneCoordinateAlignment(latestCandleTime());
-    } else if (isFiniteLogicalRange(visibleLogicalRange)) setSynchronizedVisibleLogicalRange(visibleLogicalRange);
+    const visibleLogicalRange = viewportCoordinator?.acceptedRange?.() || chart.timeScale().getVisibleLogicalRange?.();
+    runViewportProgrammatic(() => {
+      chart.resize(surface.clientWidth, surface.clientHeight);
+      if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.resize(indicatorSurface.clientWidth, indicatorSurface.clientHeight);
+      chipPaneManager?.resize();
+      syncIndicatorTimeAnchor();
+      if (viewportSnapshot) {
+        restoreViewportSnapshot(viewportSnapshot, lastPayload?.candles || []);
+        normalizePaneCoordinateAlignment(latestCandleTime());
+      } else if (isFiniteLogicalRange(visibleLogicalRange)) {
+        setSynchronizedVisibleLogicalRange(visibleLogicalRange, { commit: false });
+      }
+    });
     scheduleQuoteTimeFit();
     scheduleRenderedAxisSafeWidthSync();
     scheduleOverlayRender();
@@ -5148,11 +5237,14 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function normalizePaneCoordinateAlignment() {
     if (!chart) return;
-    const mainRange = chart.timeScale().getVisibleLogicalRange?.();
+    const mainRange = viewportCoordinator?.acceptedRange?.() || chart.timeScale().getVisibleLogicalRange?.();
     if (!isFiniteLogicalRange(mainRange)) return;
     isSyncingTimeScale = true;
-    if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.timeScale().setVisibleLogicalRange(mainRange);
-    chipPaneManager?.syncRange?.(mainRange);
+    runViewportProgrammatic(() => {
+      chart.timeScale().setVisibleLogicalRange(mainRange);
+      if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.timeScale().setVisibleLogicalRange(mainRange);
+      chipPaneManager?.syncRange?.(mainRange);
+    });
     releaseTimeScaleSyncAfterFrame();
   }
 
@@ -5224,25 +5316,29 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (!chart) return;
     const range = visibleRangeForCandles(candles);
     const logicalRange = visibleLogicalRangeForCandles(candles, RIGHT_OFFSET_BARS);
+    if (isFiniteLogicalRange(logicalRange)) viewportCoordinator?.commit?.(logicalRange);
     isSyncingTimeScale = true;
     try {
-      if (isFiniteLogicalRange(logicalRange)) {
-        applyPayloadStep("main-logical-range", () => chart.timeScale().setVisibleLogicalRange(logicalRange));
-        if (indicatorChart && isTechnicalSubchartVisible()) {
-          applyPayloadStep("indicator-logical-range", () => indicatorChart.timeScale().setVisibleLogicalRange(logicalRange));
+      runViewportProgrammatic(() => {
+        if (isFiniteLogicalRange(logicalRange)) {
+          applyPayloadStep("main-logical-range", () => chart.timeScale().setVisibleLogicalRange(logicalRange));
+          if (indicatorChart && isTechnicalSubchartVisible()) {
+            applyPayloadStep("indicator-logical-range", () => indicatorChart.timeScale().setVisibleLogicalRange(logicalRange));
+          }
+          applyPayloadStep("chip-logical-range", () => chipPaneManager?.syncRange?.(logicalRange));
+        } else {
+          setTimeScaleRangeForCandles(chart, range, candles);
+          if (indicatorChart && isTechnicalSubchartVisible()) setLogicalTimeScaleRangeForCandles(indicatorChart, candles);
+          chart.timeScale().fitContent();
+          if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.timeScale().fitContent();
         }
-        applyPayloadStep("chip-logical-range", () => chipPaneManager?.syncRange?.(logicalRange));
-      } else {
-        setTimeScaleRangeForCandles(chart, range, candles);
-        if (indicatorChart && isTechnicalSubchartVisible()) setLogicalTimeScaleRangeForCandles(indicatorChart, candles);
-        chart.timeScale().fitContent();
-        if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.timeScale().fitContent();
-      }
-      applyPayloadStep("indicator-range-sync", () => syncIndicatorVisibleRangeToMain());
+        applyPayloadStep("indicator-range-sync", () => syncIndicatorVisibleRangeToMain());
+      });
     } finally {
       releaseTimeScaleSyncAfterFrame();
     }
     scheduleOverlayRender();
+    scheduleAlignmentMeasurement();
   }
 
   function applyPreservedVisibleLogicalRange(range, oldCandleCount, newCandleCount) {
@@ -5296,37 +5392,43 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (isFiniteLogicalRange(range)) setSynchronizedVisibleLogicalRange(range);
   }
 
-  function setSynchronizedVisibleLogicalRange(range) {
+  function setSynchronizedVisibleLogicalRange(range, { commit = true } = {}) {
     if (!isFiniteLogicalRange(range) || !chart) return;
+    if (commit) viewportCoordinator?.commit?.(range);
     isSyncingTimeScale = true;
     try {
-      chart.timeScale().setVisibleLogicalRange(range);
-      if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.timeScale().setVisibleLogicalRange(range);
-      chipPaneManager?.syncRange(range);
+      runViewportProgrammatic(() => {
+        chart.timeScale().setVisibleLogicalRange(range);
+        if (indicatorChart && isTechnicalSubchartVisible()) indicatorChart.timeScale().setVisibleLogicalRange(range);
+        chipPaneManager?.syncRange(range);
+      });
     } finally {
       releaseTimeScaleSyncAfterFrame();
     }
     scheduleOverlayRender();
   }
 
-  function setSynchronizedVisibleTimeRange(range, preferredLogicalRange) {
+  function setSynchronizedVisibleTimeRange(range, preferredLogicalRange, { commit = true } = {}) {
     if (!isValidTimeRange(range) || !chart) return;
     const fallbackLogicalRange = isFiniteLogicalRange(preferredLogicalRange)
       ? preferredLogicalRange
       : chart.timeScale().getVisibleLogicalRange?.();
+    if (commit && isFiniteLogicalRange(fallbackLogicalRange)) viewportCoordinator?.commit?.(fallbackLogicalRange);
     isSyncingTimeScale = true;
     try {
-      chart.timeScale().setVisibleRange(range);
-      if (indicatorChart && isTechnicalSubchartVisible()) {
-        try { indicatorChart.timeScale().setVisibleRange(range); } catch {}
-        if (isFiniteLogicalRange(fallbackLogicalRange)) indicatorChart.timeScale().setVisibleLogicalRange(fallbackLogicalRange);
-        else setLogicalTimeScaleRangeForCandles(indicatorChart, lastPayload?.candles || []);
-      }
-      chipPaneManager?.syncTimeRange?.(range);
-      if (isFiniteLogicalRange(fallbackLogicalRange)) {
-        chart.timeScale().setVisibleLogicalRange(fallbackLogicalRange);
-        chipPaneManager?.syncRange?.(fallbackLogicalRange);
-      }
+      runViewportProgrammatic(() => {
+        chart.timeScale().setVisibleRange(range);
+        if (indicatorChart && isTechnicalSubchartVisible()) {
+          try { indicatorChart.timeScale().setVisibleRange(range); } catch {}
+          if (isFiniteLogicalRange(fallbackLogicalRange)) indicatorChart.timeScale().setVisibleLogicalRange(fallbackLogicalRange);
+          else setLogicalTimeScaleRangeForCandles(indicatorChart, lastPayload?.candles || []);
+        }
+        chipPaneManager?.syncTimeRange?.(range);
+        if (isFiniteLogicalRange(fallbackLogicalRange)) {
+          chart.timeScale().setVisibleLogicalRange(fallbackLogicalRange);
+          chipPaneManager?.syncRange?.(fallbackLogicalRange);
+        }
+      });
     } finally {
       releaseTimeScaleSyncAfterFrame();
     }
@@ -5404,6 +5506,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function handleMainVisibleLogicalRangeChange(range) {
     if (!isPanelActive() || isSyncingTimeScale) return;
+    if (!viewportCoordinator?.acceptCallback?.("main", range)) return;
     scheduleOverlayRender();
     scheduleAlignmentMeasurement();
     scheduleHistoryLoadForRange(range);
@@ -5417,6 +5520,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function handleIndicatorVisibleLogicalRangeChange(range) {
     if (!isPanelActive() || isSyncingTimeScale) return;
+    if (!viewportCoordinator?.acceptCallback?.("technical", range)) return;
     scheduleOverlayRender();
     scheduleAlignmentMeasurement();
     const timeRange = indicatorChart?.timeScale().getVisibleRange?.();
@@ -5427,8 +5531,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   function syncVisibleLogicalRange(range, targetChart) {
     if (!isPanelActive() || !isFiniteLogicalRange(range) || !targetChart || isSyncingTimeScale) return;
     isSyncingTimeScale = true;
-    targetChart.timeScale().setVisibleLogicalRange(range);
-    isSyncingTimeScale = false;
+    try {
+      runViewportProgrammatic(() => targetChart.timeScale().setVisibleLogicalRange(range));
+    } finally {
+      releaseTimeScaleSyncAfterFrame();
+    }
     if (sharedHoverTime !== undefined) syncCrosshairForTime(sharedHoverTime);
   }
 
@@ -5469,7 +5576,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     alignmentFrame = panelLifecycle.requestFrame(() => {
       alignmentFrame = panelLifecycle.requestFrame(() => {
         alignmentFrame = 0;
-        if (isPanelActive()) publishQuoteChartDebugReport();
+        if (isPanelActive()) {
+          ensureInitialViewportInvariant();
+          publishQuoteChartDebugReport();
+        }
       });
     });
   }
@@ -5574,6 +5684,33 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     };
   }
 
+  function currentViewportInvariant(candles = lastPayload?.candles || []) {
+    const first = candles[0];
+    const latest = candles[candles.length - 1];
+    const rect = surface.getBoundingClientRect();
+    const range = chart?.timeScale().getVisibleLogicalRange?.();
+    const rightGap = measureRightGapForLatestCandle(candles);
+    return window.QuoteChartInteractions.measureInitialViewportInvariant({
+      range,
+      candleCount: candles.length,
+      firstCoordinate: first?.time ? chart?.timeScale().timeToCoordinate(first.time) : null,
+      latestCoordinate: latest?.time ? chart?.timeScale().timeToCoordinate(latest.time) : null,
+      plotWidth: Math.max(0, rect.width - getAxisSafeWidth()),
+      rightGapPass: rightGap.pass,
+      userInteracted: viewportCoordinator?.hasUserInteracted?.(),
+    });
+  }
+
+  function ensureInitialViewportInvariant(candles = lastPayload?.candles || []) {
+    if (!chart || candles.length < 2 || viewportCoordinator?.hasUserInteracted?.()) return false;
+    const invariant = currentViewportInvariant(candles);
+    if (invariant.pass) return false;
+    const canonicalRange = visibleLogicalRangeForCandles(candles, RIGHT_OFFSET_BARS);
+    if (!isFiniteLogicalRange(canonicalRange) || !viewportCoordinator?.recordRepair?.(canonicalRange)) return false;
+    setSynchronizedVisibleLogicalRange(canonicalRange, { commit: false });
+    return true;
+  }
+
   function alignmentReport() {
     const candles = lastPayload?.candles || [];
     const dataWindow = lastPayload?.dataWindow || {};
@@ -5584,6 +5721,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (!candles.length) errors.push("no candles");
     const lastMeasurement = measurements.find((measurement) => measurement.label === "last") || measurements[measurements.length - 1];
     const rightGap = measureRightGapForLatestCandle(candles);
+    const viewportInvariant = currentViewportInvariant(candles);
+    const viewportState = viewportCoordinator?.report?.() || null;
     const fixedProfile = fixedProfileDebugReport();
     return {
       panelIndex: panelPosition,
@@ -5622,11 +5761,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       alignment: lastMeasurement,
       delta: lastMeasurement?.delta ?? null,
       rightGap,
+      viewportInvariant,
+      viewportState,
       axisSafeWidth: getAxisSafeWidth(),
       rightGapBars: rightGap?.rightGapBars ?? null,
       rightGapPass: rightGap?.pass ?? false,
       fixedRangeVolumeProfile: fixedProfile,
-      pass: Boolean(measurements.length) && measurements.every((measurement) => measurement.pass) && rightGap?.pass && fixedProfile.pass,
+      pass: Boolean(measurements.length) && measurements.every((measurement) => measurement.pass) && rightGap?.pass && viewportInvariant.pass && fixedProfile.pass,
       errors,
     };
   }
@@ -5653,6 +5794,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       barSpacing: Number(chart?.timeScale().options?.().barSpacing ?? NaN),
       firstCoordinate: first?.time ? chart?.timeScale().timeToCoordinate(first.time) : null,
       latestCoordinate: latest?.time ? chart?.timeScale().timeToCoordinate(latest.time) : null,
+      viewportInvariant: currentViewportInvariant(candles),
+      viewportState: viewportCoordinator?.report?.() || null,
       chipPanes: chipPaneManager?.report?.(),
     };
   }
@@ -6756,29 +6899,43 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         .map((level, levelIndex) => ({ ...level, levelIndex, y: candleSeries.priceToCoordinate(level.price) }))
         .filter((entry) => Number.isFinite(entry.y) && entry.y >= -16 && entry.y <= height + 16)
         .sort((a, b) => a.y - b.y);
+      const visualFor = (entry) => {
+        const ratioKey = window.QuoteChartAnnotations?.fibonacciLevelKey?.(entry.ratio) || String(entry.levelIndex);
+        const color = window.QuoteChartAnnotations?.fibonacciLevelColor?.(kind, entry.ratio) || "#cbd5e1";
+        return {
+          className: `chart-annotation-fibonacci-level-${entry.levelIndex} chart-annotation-fibonacci-ratio-${ratioKey}`,
+          style: `--fibonacci-level-color: ${color}`,
+          ratioKey,
+        };
+      };
       if (!monochrome) {
         for (let index = 0; index < entries.length - 1; index += 1) {
           const current = entries[index];
           const next = entries[index + 1];
           const bandTop = Math.max(0, Math.min(current.y, next.y));
           const bandBottom = Math.min(height, Math.max(current.y, next.y));
-          if (bandBottom - bandTop < 0.5) continue;
+          const visual = visualFor(current);
           svg.appendChild(make("rect", {
             x: lineStartX,
             y: bandTop,
             width: lineEndX - lineStartX,
             height: bandBottom - bandTop,
-            class: `chart-annotation-fibonacci-band chart-annotation-fibonacci-band--${modifier} chart-annotation-fibonacci-level-${current.levelIndex}${stateClass}`,
+            class: `chart-annotation-fibonacci-band chart-annotation-fibonacci-band--${modifier} ${visual.className}${stateClass}`,
+            style: visual.style,
+            "data-fibonacci-ratio": visual.ratioKey,
           }));
         }
       }
       entries.forEach((entry) => {
+        const visual = visualFor(entry);
         svg.appendChild(make("line", {
           x1: lineStartX,
           y1: entry.y,
           x2: lineEndX,
           y2: entry.y,
-          class: `chart-annotation-fibonacci-line chart-annotation-fibonacci-line--${modifier} chart-annotation-fibonacci-level-${entry.levelIndex}${stateClass}`,
+          class: `chart-annotation-fibonacci-line chart-annotation-fibonacci-line--${modifier} ${visual.className}${stateClass}`,
+          style: visual.style,
+          "data-fibonacci-ratio": visual.ratioKey,
         }));
         const labelText = `${entry.ratioText ?? window.QuoteChartAnnotations?.ratioText?.(entry.ratio)} (${formatQuotePrice(entry.price, symbolSelect.value, "derived-price")})`;
         const estimatedLabelWidth = labelText.length * 7;
@@ -6786,7 +6943,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         const label = make("text", {
           x: hasLeftSpace ? lineStartX - 7 : lineStartX + 7,
           y: Math.max(12, Math.min(height - 4, entry.y + 4)),
-          class: `chart-annotation-fibonacci-label chart-annotation-fibonacci-label--${modifier} chart-annotation-fibonacci-level-${entry.levelIndex}${stateClass}`,
+          class: `chart-annotation-fibonacci-label chart-annotation-fibonacci-label--${modifier} ${visual.className}${stateClass}`,
+          style: visual.style,
+          "data-fibonacci-ratio": visual.ratioKey,
           "text-anchor": hasLeftSpace ? "end" : "start",
         });
         label.textContent = labelText;
@@ -8123,6 +8282,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       detachOverlayRerenderHooks();
       chipPaneManager?.destroy();
       peRiverController?.destroy();
+      unsubscribeFibonacciProductClear();
       chartAnnotationController?.cancel();
       chartAnnotationLayer?.replaceChildren();
       resetCharts();

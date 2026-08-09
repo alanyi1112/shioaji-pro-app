@@ -32,7 +32,7 @@ describe('FibonacciOverlay', () => {
         );
         expect(html).toContain('data-fibonacci-overlay="true"');
         expect(html).toContain('candle-chart_fibonacciOverlay');
-        expect(html.match(/data-fibonacci-band="true"/g)).toHaveLength(6);
+        expect(html.match(/data-fibonacci-band="true"/g)).toHaveLength(9);
         expect(html.match(/data-fibonacci-anchor="fixed"/g)).toHaveLength(2);
         expect(html).toContain('0.5 (150.00)');
     });

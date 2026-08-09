@@ -1212,14 +1212,13 @@
     let chart;
     let anchor;
     let wheelRoutingCleanup;
+    let viewportIntentCleanup;
     let series = [];
     let lastPayload;
     let lastCandles = [];
     let resizeObserver;
     let intersectionObserver;
     let destroyed = false;
-    let rangeInputEnabled = false;
-    let rangeInputEnableFrame = 0;
     let readoutReservationFrame = 0;
     let readoutReservationSignature = "";
     let localReadoutReservation = 0;
@@ -1231,23 +1230,15 @@
     readoutMeasurer.setAttribute("data-export-exclude", "true");
     readoutMeasurer.inert = true;
 
-    function deferRangeInputUntilLayoutSettles() {
-      const requestFrame = global.requestAnimationFrame || ((callback) => global.setTimeout(callback, 0));
-      const cancelFrame = global.cancelAnimationFrame || global.clearTimeout;
-      rangeInputEnabled = false;
-      if (rangeInputEnableFrame) cancelFrame?.(rangeInputEnableFrame);
-      rangeInputEnableFrame = requestFrame(() => {
-        rangeInputEnableFrame = requestFrame(() => {
-          rangeInputEnableFrame = 0;
-          rangeInputEnabled = Boolean(chart && !destroyed);
-        });
-      });
-    }
-
     function mountChart() {
       if (chart || destroyed) return;
-      rangeInputEnabled = false;
       wheelRoutingCleanup = global.QuoteChartInteractions.bindWheelRouting(surface, () => interactionMode);
+      viewportIntentCleanup = global.QuoteChartInteractions.bindViewportIntent(surface, {
+        source: `chip:${definition.id}`,
+        getMode: () => interactionMode,
+        onStart: ({ kind }) => options.onViewportIntent?.({ paneId: definition.id, phase: "start", kind }),
+        onEnd: ({ kind }) => options.onViewportIntent?.({ paneId: definition.id, phase: "end", kind }),
+      });
       chart = global.LightweightCharts.createChart(surface, chartOptions(interactionMode, options.axisSafeWidth));
       anchor = chart.addSeries(global.LightweightCharts.LineSeries, { color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "chip-time-anchor", priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       chart.priceScale("chip-time-anchor").applyOptions({ visible: false });
@@ -1260,27 +1251,30 @@
         }, definition.id);
       });
       chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
-        if (rangeInputEnabled) options.onRange?.(range, definition.id, chart?.timeScale().getVisibleRange?.());
+        options.onRange?.(range, definition.id, chart?.timeScale().getVisibleRange?.());
       });
       if ("ResizeObserver" in global) {
-        resizeObserver = new ResizeObserver(() => chart?.resize(surface.clientWidth, surface.clientHeight));
+        resizeObserver = new ResizeObserver(() => {
+          chart?.resize(surface.clientWidth, surface.clientHeight);
+          const mainRange = options.getMainRange?.();
+          if (mainRange && chart) chart.timeScale().setVisibleLogicalRange(mainRange);
+        });
         resizeObserver.observe(surface);
       }
       surface.dataset.chartMounted = "true";
       if (lastPayload !== undefined) render(lastPayload, lastCandles);
-      deferRangeInputUntilLayoutSettles();
+      const mainRange = options.getMainRange?.();
+      if (mainRange) chart.timeScale().setVisibleLogicalRange(mainRange);
     }
 
     function unmountChart() {
       if (!chart) return;
-      const cancelFrame = global.cancelAnimationFrame || global.clearTimeout;
-      if (rangeInputEnableFrame) cancelFrame?.(rangeInputEnableFrame);
-      rangeInputEnableFrame = 0;
-      rangeInputEnabled = false;
       resizeObserver?.disconnect();
       resizeObserver = undefined;
       wheelRoutingCleanup?.();
       wheelRoutingCleanup = undefined;
+      viewportIntentCleanup?.();
+      viewportIntentCleanup = undefined;
       try { chart.remove(); } catch {}
       chart = undefined;
       anchor = undefined;
@@ -2188,9 +2182,6 @@
       destroy() {
         destroyed = true;
         const cancelFrame = global.cancelAnimationFrame || global.clearTimeout;
-        if (rangeInputEnableFrame) cancelFrame?.(rangeInputEnableFrame);
-        rangeInputEnableFrame = 0;
-        rangeInputEnabled = false;
         if (readoutReservationFrame) {
           cancelFrame?.(readoutReservationFrame);
           readoutReservationFrame = 0;
@@ -2760,6 +2751,7 @@
           onLayoutChange: options.onLayoutChange,
           onReadoutReservationChange: scheduleChipReadoutCohorts,
           onRange(range, paneId, timeRange) { if (!syncing) options.onRange?.(range, paneId, timeRange); },
+          onViewportIntent(intent) { options.onViewportIntent?.(intent); },
           onCrosshair(pointer, paneId) { if (!syncing) options.onCrosshair?.(pointer, paneId); },
         });
         controllers.set(definition.id, controller);

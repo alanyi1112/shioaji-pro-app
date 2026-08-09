@@ -2,8 +2,15 @@
   "use strict";
 
   const STORAGE_PREFIX = "quoteChart.annotations.v1";
-  const RETRACEMENT_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-  const EXTENSION_LEVELS = [0.618, 0.786, 1, 1.272, 1.414, 1.618, 2];
+  const RETRACEMENT_LEVELS = [-0.62, -0.27, 0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1];
+  const EXTENSION_LEVELS = [0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2];
+  const LEGACY_LEVEL_COLORS = ["#fb7185", "#fb923c", "#facc15", "#84cc16", "#2dd4bf", "#22d3ee", "#818cf8"];
+  const ADDED_LEVEL_COLORS = new Map([[-0.62, "#a78bfa"], [-0.27, "#e879f9"], [0.705, "#f472b6"]]);
+  const LEGACY_LEVELS_BY_KIND = {
+    retracement: [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1],
+    extension: [0.618, 0.786, 1, 1.272, 1.414, 1.618, 2],
+  };
+  const productClearListeners = new Set();
 
   function finitePoint(point) {
     return point && Number.isFinite(Number(point.time)) && Number.isFinite(Number(point.price));
@@ -22,6 +29,49 @@
     const value = Number(level);
     if (!Number.isFinite(value)) return "";
     return String(Number(value.toFixed(3)));
+  }
+
+  function fibonacciLevelKey(level) {
+    const text = ratioText(level);
+    return text ? text.replace("-", "negative-").replaceAll(".", "-") : "unknown";
+  }
+
+  function fibonacciLevelColor(kind, level) {
+    if ((kind === "retracement" || Number(level) === 0.705) && ADDED_LEVEL_COLORS.has(Number(level))) return ADDED_LEVEL_COLORS.get(Number(level));
+    const index = LEGACY_LEVELS_BY_KIND[kind]?.indexOf(Number(level)) ?? -1;
+    return LEGACY_LEVEL_COLORS[index] || "#cbd5e1";
+  }
+
+  function identityParts(identity) {
+    const normalized = String(identity || "").trim();
+    const separator = normalized.lastIndexOf("|");
+    if (separator <= 0 || separator === normalized.length - 1) return null;
+    return { symbol: normalized.slice(0, separator).toUpperCase(), interval: normalized.slice(separator + 1) };
+  }
+
+  function identityFromStorageKey(key) {
+    const prefix = `${STORAGE_PREFIX}.`;
+    return String(key || "").startsWith(prefix) ? String(key).slice(prefix.length) : "";
+  }
+
+  function storageKeys(storage) {
+    if (!storage || typeof storage.key !== "function" || !Number.isFinite(Number(storage.length))) return [];
+    const keys = [];
+    for (let index = 0; index < Number(storage.length); index += 1) {
+      const key = storage.key(index);
+      if (typeof key === "string") keys.push(key);
+    }
+    return keys;
+  }
+
+  function subscribeProductClear(listener) {
+    if (typeof listener !== "function") return () => {};
+    productClearListeners.add(listener);
+    return () => { productClearListeners.delete(listener); };
+  }
+
+  function publishProductClear(symbol) {
+    productClearListeners.forEach((listener) => listener(symbol));
   }
 
   function fibonacciLevels(kind, anchors) {
@@ -214,11 +264,60 @@
     }
 
     function clear(kind) {
-      if (kind === "fibonacci" || kind === "all") completed.fibonacci = [];
-      if (kind === "priceRange" || kind === "distance" || kind === "all") completed.priceRange = null;
-      pending = null;
+      if (["retracement", "extension"].includes(kind)) {
+        completed.fibonacci = completed.fibonacci.filter((entry) => entry.kind !== kind);
+        if (pending?.type === "fibonacci" && pending.kind === kind) pending = null;
+      }
+      if (kind === "fibonacci" || kind === "all") {
+        completed.fibonacci = [];
+        if (pending?.type === "fibonacci") pending = null;
+      }
+      if (kind === "priceRange" || kind === "distance" || kind === "all") {
+        completed.priceRange = null;
+        if (pending?.type === "priceRange") pending = null;
+      }
       if (completed.fibonacci.length || completed.priceRange) save(); else clearStorage();
       notify();
+    }
+
+    function applyProductClear(symbol) {
+      const currentSymbol = identityParts(getIdentity())?.symbol;
+      const targetSymbol = String(symbol || "").trim().toUpperCase();
+      if (!currentSymbol || currentSymbol !== targetSymbol) return false;
+      const changed = completed.fibonacci.length > 0 || pending?.type === "fibonacci";
+      completed.fibonacci = [];
+      if (pending?.type === "fibonacci") pending = null;
+      if (changed) notify();
+      return changed;
+    }
+
+    function clearAllFibonacciIntervals() {
+      const currentIdentity = String(getIdentity() || "").trim();
+      const symbol = identityParts(currentIdentity)?.symbol;
+      if (!symbol) {
+        clear("fibonacci");
+        return;
+      }
+      const currentKey = storageKey();
+      const keys = storageKeys(storage).filter((key) => identityParts(identityFromStorageKey(key))?.symbol === symbol);
+      if (!keys.length && currentKey) keys.push(currentKey);
+      keys.forEach((key) => {
+        try {
+          const parsed = JSON.parse(storage.getItem(key) || "null");
+          const normalized = parsed && [1, 2, 3].includes(parsed.version)
+            ? validCompleted(parsed.completed)
+            : { fibonacci: [], priceRange: null };
+          normalized.fibonacci = [];
+          if (normalized.priceRange) storage.setItem(key, JSON.stringify({ version: 3, completed: normalized }));
+          else storage.removeItem(key);
+        } catch {
+          try { storage.removeItem(key); } catch {}
+        }
+      });
+      completed.fibonacci = [];
+      if (pending?.type === "fibonacci") pending = null;
+      notify();
+      publishProductClear(symbol);
     }
 
     function getState() {
@@ -242,14 +341,29 @@
       };
     }
 
-    return { restore, armFibonacci, armPriceRange, addPoint, previewPoint, cancel, clear, getState, hasPending: () => Boolean(pending) };
+    return {
+      restore,
+      armFibonacci,
+      armPriceRange,
+      addPoint,
+      previewPoint,
+      cancel,
+      clear,
+      clearAllFibonacciIntervals,
+      applyProductClear,
+      getState,
+      hasPending: () => Boolean(pending),
+    };
   }
 
   global.QuoteChartAnnotations = {
     createController,
     fibonacciAnchorPriceGuide,
     fibonacciLevels,
+    fibonacciLevelColor,
+    fibonacciLevelKey,
     resolveFibonacciAnchorPoint,
+    subscribeProductClear,
     ratioText,
     priceRange,
     RETRACEMENT_LEVELS,
