@@ -25,7 +25,7 @@
 ## 同步規則
 
 - 開工：先讀本檔、Obsidian 專案駕駛艙、`git status --short --branch` 與 OpenSpec 狀態，再開始修改。
-- 收工：整理本輪完成事項、下一步、踩坑與驗證結果到 Obsidian；沒有明確要求時不主動 commit、push 或部署。
+- 收工：整理本輪完成事項、下一步、踩坑與驗證結果到 Obsidian；沒有明確要求時不主動 commit、push 或部署。RealTimeStock 的「收工」只同步紀錄與 Git，必須保持既有 simulation API、business-session watchdog、5173 Web、5174 MultiView、盤後 pipeline 與行情連線運作；只有使用者另外明確要求停止服務或關閉行情連線時才可停止。
 - 專案初始化：只補缺口，不覆蓋既有規則、README、Git 歷史或 Obsidian 筆記。
 - OpenSpec：proposal、design、spec、tasks 與說明文件使用繁體中文（台灣）；技術名詞、程式碼、API 名稱、路徑、指令與錯誤訊息可保留英文。
 - 股票資料：正式來源必須確認實際欄位、資料日期、授權、自動化限制與市場覆蓋；不得以猜測或假資料冒充正式行情。
