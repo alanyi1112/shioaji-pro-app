@@ -176,6 +176,13 @@ pnpm local-runtime simulation
 完整的安裝、回復與安全邊界請見
 [macOS 本機常駐與安全模式切換](docs/local-runtime-macos.md)。
 
+Mac 關機後登入通常會自動恢復 simulation；也可在終端機執行下列安全啟動檔。服務已正常時不會重啟或中斷既有行情連線：
+
+```sh
+cd /Users/alanyi/Documents/RealTimeStock
+./start-realtimestock.command
+```
+
 watchdog 只會在已曾成功的 simulation generation 連續偵測到 `SessionNotEstablished` 時，以有限次數與退避策略重啟 8080 simulation API；不會操作 production、5173、5174、D1、盤後 pipeline、CA 或交易 API。5173 會保持可操作的 `OFFLINE` 工作區並自動重載自選清單。
 
 ### 6. MultiView 多圖看盤（本機）

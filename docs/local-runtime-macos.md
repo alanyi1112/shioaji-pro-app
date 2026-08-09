@@ -20,6 +20,51 @@ pnpm local-runtime status
 
 安裝或切回 simulation 時，runtime 會先確認 8080 的模式與 health endpoint，再以 2330 snapshot 等待行情業務 session；完成判定後才啟動 MultiView。若盤後維護或上游 session 暫時無法建立，5173 仍可啟動，但介面會維持 `OFFLINE`，MultiView 改用延遲備援，不會把「HTTP 程序正在監聽」誤報成即時行情可用。
 
+## 關機後自行啟動
+
+LaunchAgent 安裝完成後，Mac 重開機並登入帳號時會自動以 simulation 啟動。若登入後尚未就緒，或想自行確認並補啟動，開啟「終端機」後執行：
+
+```sh
+cd /Users/alanyi/Documents/RealTimeStock
+./start-realtimestock.command
+```
+
+也可以在 Finder 開啟 `/Users/alanyi/Documents/RealTimeStock`，直接雙擊 `start-realtimestock.command`。
+
+這個啟動檔只使用 simulation。若所有必要服務與 business session 已正常，它只顯示狀態，不會重啟或中斷既有行情連線；缺少服務或 session 不可用時，才會重新建立 8080 API、watchdog、5173 Web、5174 MultiView 與兩條盤後 pipeline。它不會啟動 production 或真實交易模式。
+
+若想完全手動操作，可使用同等命令：
+
+```sh
+cd /Users/alanyi/Documents/RealTimeStock
+pnpm local-runtime simulation
+pnpm local-runtime status
+```
+
+成功時至少應看到：
+
+```text
+runtime_mode=simulation
+business_watchdog_state=healthy
+api_health=healthy
+api_business_session=available
+market_snapshot_2330=available
+web_listener=up
+multiview_listener=up
+```
+
+啟動後可開啟：
+
+- 交易終端：`http://127.0.0.1:5173`
+- MultiView：`http://127.0.0.1:5174`
+
+只有 LaunchAgent 尚未安裝或曾執行 `pnpm local-runtime uninstall` 時，才需要重新執行一次：
+
+```sh
+cd /Users/alanyi/Documents/RealTimeStock
+pnpm local-runtime install
+```
+
 ## Business-session 自動恢復
 
 watchdog 每 30 秒以固定 2330 Snapshot 檢查 simulation business session。只有同一個已曾成功的 simulation API generation 連續三次回報 `SessionNotEstablished`，才會只對 8080 simulation API job 執行有限重啟；5173、5174、D1 與盤後 pipeline 都不會被 watchdog 重啟。
