@@ -158,7 +158,7 @@ describe('Fibonacci 錨點 resolver', () => {
         ).toEqual({ time: 10, price: 95 });
     });
 
-    it('A/B 空白區無效，C 與 Option/Alt 可使用正規化自由價位', () => {
+    it('回撤 Option/Alt 改為 A high、B low，且空白區仍無效', () => {
         const normalizePrice = (price: number) =>
             Number((Math.round(price * 2) / 2).toFixed(2));
         expect(
@@ -171,13 +171,46 @@ describe('Fibonacci 錨點 resolver', () => {
         ).toBeNull();
         expect(
             resolveFibonacciAnchorPoint(
+                { kind: 'retracement', anchors: [] },
+                raw,
+                candle,
+                { alternateModifier: true, normalizePrice },
+            ),
+        ).toEqual({ time: 10, price: 125 });
+        expect(
+            resolveFibonacciAnchorPoint(
                 {
-                    kind: 'extension',
-                    anchors: [
-                        { time: 8, price: 90 },
-                        { time: 9, price: 120 },
-                    ],
+                    kind: 'retracement',
+                    anchors: [{ time: 8, price: 130 }],
                 },
+                raw,
+                candle,
+                { alternateModifier: true, normalizePrice },
+            ),
+        ).toEqual({ time: 10, price: 95 });
+        expect(
+            resolveFibonacciAnchorPoint(
+                { kind: 'retracement', anchors: [] },
+                { time: 12, price: 108.26 },
+                undefined,
+                { alternateModifier: true, normalizePrice },
+            ),
+        ).toBeNull();
+    });
+
+    it('拓展 Option/Alt 保留正規化自由價位，未按修飾鍵時 C 可落在空白區', () => {
+        const normalizePrice = (price: number) =>
+            Number((Math.round(price * 2) / 2).toFixed(2));
+        const pending = {
+            kind: 'extension' as const,
+            anchors: [
+                { time: 8, price: 90 },
+                { time: 9, price: 120 },
+            ],
+        };
+        expect(
+            resolveFibonacciAnchorPoint(
+                pending,
                 { time: 12, price: 108.23 },
                 undefined,
                 { normalizePrice },
@@ -185,10 +218,10 @@ describe('Fibonacci 錨點 resolver', () => {
         ).toEqual({ time: 12, price: 108 });
         expect(
             resolveFibonacciAnchorPoint(
-                { kind: 'retracement', anchors: [] },
+                pending,
                 { time: 12, price: 108.26 },
                 undefined,
-                { freePrice: true, normalizePrice },
+                { alternateModifier: true, normalizePrice },
             ),
         ).toEqual({ time: 12, price: 108.5 });
     });

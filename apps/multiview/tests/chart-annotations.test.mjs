@@ -79,7 +79,7 @@ test("費波那契價格導引只從 pending preview 依序產生待選 A B C", 
   }), null);
 });
 
-test("費波那契錨點依 K 棒 low high 吸附且 Option Alt 可自由選價", () => {
+test("費波那契回撤 Option Alt 改為 high low，拓展仍可自由選價", () => {
   const { api } = runtime();
   const candle = { time: 10, low: 95, high: 125 };
   const raw = { time: 10, price: 111.25 };
@@ -90,8 +90,10 @@ test("費波那契錨點依 K 棒 low high 吸附且 Option Alt 可自由選價"
   assert.equal(api.resolveFibonacciAnchorPoint(pending("retracement", [{ time: 8, price: 90 }]), { time: 12, price: 110 }, undefined), null);
   assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("extension", [{ time: 8, price: 90 }, { time: 9, price: 120 }]), raw, candle))), { time: 10, price: 95 });
   assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("extension", [{ time: 8, price: 90 }, { time: 9, price: 120 }]), { time: 12, price: 108.5 }, undefined))), { time: 12, price: 108.5 });
-  assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("retracement", []), raw, candle, true))), { time: 10, price: 111.25 });
-  assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("retracement", []), { time: 12, price: 108.5 }, undefined, true))), { time: 12, price: 108.5 });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("retracement", []), raw, candle, true))), { time: 10, price: 125 });
+  assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("retracement", [{ time: 8, price: 130 }]), raw, candle, true))), { time: 10, price: 95 });
+  assert.equal(api.resolveFibonacciAnchorPoint(pending("retracement", []), { time: 12, price: 108.5 }, undefined, true), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(api.resolveFibonacciAnchorPoint(pending("extension", [{ time: 8, price: 90 }, { time: 9, price: 120 }]), { time: 12, price: 108.5 }, undefined, true))), { time: 12, price: 108.5 });
 });
 
 test("價格範圍保留正負價差與以起點為分母的百分比", () => {

@@ -10,13 +10,14 @@ const [app, html, styles, config, vite] = await Promise.all([
   readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
 ]);
 
-test("UI contract 只提供日／週／月 K，台股與加權指數可接即時 overlay", () => {
+test("UI contract 本機提供分鐘與日週月 K 且遠端由 capability fail closed", () => {
   assert.match(app, /const DEFAULT_INTERVAL = "1d"/);
   assert.match(app, /isTaiwanRealtimeSymbol/);
   assert.match(app, /realtimeEligible[\s\S]{0,180}isTaiwanRealtimeSymbol/);
-  assert.match(app, /availableIntervals\([\s\S]{0,120}state\.intervals,[\s\S]{0,80}state\.appConfig\.capabilities\?\.taiwanIntradayTrend/);
+  assert.match(app, /availableIntervals\([\s\S]{0,120}state\.intervals,[\s\S]{0,80}state\.appConfig\.capabilities\?\.taiwanMinuteKline/);
   assert.doesNotMatch(app, /\bisTaiwanSymbol\(/);
-  assert.doesNotMatch(app, /REALTIME_INTERVALS[^\n]*1m/);
+  assert.match(app, /createMinuteKlineAccumulator/);
+  assert.match(app, /\["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"\]/);
 });
 
 test("分時模式停用不相容 K 線工具但不修改使用者偏好", () => {

@@ -138,7 +138,7 @@ MACD MUST 使用 SMA seed 的 EMA fast／slow，並以來源 repo 的零值時�
 - **AND** 系統 MUST NOT 宣稱兩者的 POC、價量分布或內外盤數值相同
 
 ### Requirement: Traditional Pivot 第一階段只能用於 STK／IND／WRT
-系統 MUST 提供預設關閉的 Traditional Pivot Point，並使用所選 completed reference 交易日的 `H`、`L`、`C` 計算下一交易日 `P=(H+L+C)/3`、`R1=2P-L`、`S1=2P-H`、`R2=P+(H-L)`、`S2=P-(H-L)`、`R3=R1+(H-L)`、`S3=S1-(H-L)`。本 change 只允許 security type STK、IND、WRT；FUT 與 OPT MUST 保持不支援。
+系統 MUST 提供預設關閉、由 1D 唯一管理的 Traditional Pivot Point，並使用所選 completed 或明確 provisional reference 交易日的 `H`、`L`、`C` 計算下一交易日 `P=(H+L+C)/3`、`R1=2P-L`、`S1=2P-H`、`R2=P+(H-L)`、`S2=P-(H-L)`、`R3=R1+(H-L)`、`S3=S1-(H-L)`。projection MUST 保留與 MultiView `selected-next-period-v1` 等價的 reference period、reference status、applies-to、applicable period、target mapping 與七個 levels，且兩個 app MUST 以同一版本化 fixture 通過精度一致性測試。本 change 只允許 security type STK、IND、WRT；FUT 與 OPT MUST 保持不支援。
 
 #### Scenario: 股票類商品建立 completed reference
 - **WHEN** STK、IND 或 WRT 的 canonical raw 1m rows 依 `Asia/Taipei` 日期分組，且某日期之後已有下一個實際交易日期資料
@@ -155,18 +155,40 @@ MACD MUST 使用 SMA seed 的 EMA fast／slow，並以來源 repo 的零值時�
 - **THEN** Pivot picker MUST 停用或顯示「第一階段尚未支援」
 - **AND** 系統 MUST NOT 以午夜切割、猜測 session 或輸出 provisional Pivot
 
-#### Scenario: 以完整交易日投影七線
-- **WHEN** 使用者在 1m、5m、15m、60m 或 1D 圖啟用 Pivot，且最後 completed reference 具有合法 H／L／C
-- **THEN** 主圖 MUST 顯示 P、R1、R2、R3、S1、S2、S3 的下一交易日右向投影
-- **AND** readout MUST 顯示 reference 日期、適用下一交易日、completed 狀態與七個格式化價格
+#### Scenario: 由 1D 建立並鏡像同一組七線
+- **WHEN** 使用者在 STK、IND 或 WRT 的 1D 圖啟用 Pivot，且最後 completed reference 具有合法 H／L／C
+- **THEN** 1D、1m、5m、15m 與 60m MUST 顯示 reference key、status、applies-to 與數值完全相同的 P、R1、R2、R3、S1、S2、S3 下一交易日右向投影
+- **AND** readout MUST 顯示 reference 日期、適用下一交易日、已完成狀態與七個格式化價格
+- **AND** 分鐘圖 MUST NOT 以自己的 history window 重選 reference 或重算成另一組水準
+
+#### Scenario: 分鐘圖沒有 reference candle
+- **WHEN** 目前分鐘圖資料窗不含 1D 所選 reference candle，但 canonical projection 仍合法
+- **THEN** 分鐘圖 MUST 保留相同 reference 與七個水準，並將線段起點夾到 plot 左側安全邊界
+- **AND** 系統 MUST NOT 隱藏 Pivot、建立假 candle 或改用畫面內最早交易日
 
 ### Requirement: Pivot overlay 與互動必須維持圖表及交易安全
-Pivot MUST 只呈現目前預設或使用者固定 reference 的七條右向水平投影，不得建立未來 timestamp、假 candle 或完整歷史 step lines。使用者只有在游標觀察模式才可點選歷史 K 棒固定 reference；交易相關模式 MUST 優先。Pivot 的計算、選取、primitive、readout、autoscale helper 與 cleanup MUST 依 chart、商品、時框及 generation 隔離。
+Pivot MUST 只呈現目前預設或使用者在 1D 固定 reference 的七條右向水平投影，不得建立未來 timestamp、假 candle 或完整歷史 step lines。七線 MUST 對齊 MultiView 的 P／R1～R3／S1～S3 色彩、強調、實線／虛線／點線、價格軸安全邊界、標籤避碰、短導引線、autoscale helper 與中文 readout。使用者只有在 1D 游標觀察模式才可點選歷史 K 棒固定 reference、回到最新或移除 Pivot；1m、5m、15m 與 60m MUST 為同商品 projection 的唯讀鏡像。交易相關模式 MUST 優先。Pivot 的計算、選取與 cleanup MUST 依 indicator、商品及 generation 隔離，並以 product-scoped state 同步支援時框。
 
-#### Scenario: 點選歷史 K 棒固定 reference
-- **WHEN** Pivot 已啟用、目前為游標觀察模式且使用者點選 STK／IND／WRT 的合法歷史 K 棒
+#### Scenario: 在 1D 點選歷史 K 棒固定 reference
+- **WHEN** Pivot 已啟用、目前為 1D 游標觀察模式且使用者點選 STK／IND／WRT 的合法歷史 K 棒
 - **THEN** 系統 MUST 固定該 K 棒所屬日期的 projection，後續 hover 不得改變 reference
+- **AND** 目前商品的 1m、5m、15m 與 60m MUST 同步顯示該 projection
 - **AND** 使用者 MUST 可透過鍵盤可操作的「回到最新」恢復最後 completed projection
+
+#### Scenario: 分鐘圖只能檢視 Pivot
+- **WHEN** 使用者在 1m、5m、15m 或 60m 查看已由 1D 啟用的 Pivot
+- **THEN** UI MUST 顯示「由 1D 管理」或同等明確文字
+- **AND** 固定歷史、回到最新、移除及時框可見性控制 MUST 停用或不呈現
+
+#### Scenario: 只從 1D 刪除並同步清理
+- **WHEN** 使用者在 1D 移除 Pivot
+- **THEN** 同商品所有已掛載支援時框 MUST 同步移除 overlay、readout、autoscale helper 與 product-scoped selection
+- **AND** 其他商品、Fibonacci、Volume Profile、技術指標、委託線與交易狀態 MUST 維持不變
+
+#### Scenario: 價格標籤過近時維持真實價位
+- **WHEN** 兩個以上 Pivot 水準的價格標籤在目前尺度下重疊
+- **THEN** 標籤 MUST 依固定順序垂直避碰並在需要時顯示短導引線
+- **AND** 實際七條水平線 MUST 維持各自真實價格 Y 座標
 
 #### Scenario: 交易模式優先於 Pivot
 - **WHEN** 使用者已選擇點價買、點價賣、停損、停利或警示模式後點擊圖表

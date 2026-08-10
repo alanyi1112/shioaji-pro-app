@@ -1336,7 +1336,7 @@ select {
 .chart-grid.grid-6 .panel-toolbar,
 .chart-grid.grid-8 .panel-toolbar {
   --toolbar-gap: 3px;
-  --interval-width: 46px;
+  --interval-width: 64px;
   --menu-width: 38px;
   --price-width: 120px;
   min-height: 44px;
@@ -1375,8 +1375,9 @@ select {
 .chart-grid.grid-6 .interval-select,
 .chart-grid.grid-8 .interval-select {
   width: var(--interval-width);
+  min-width: var(--interval-width);
   height: 30px;
-  padding: 0 16px 0 7px;
+  padding: 0 18px 0 8px;
   font-size: 12px;
 }
 

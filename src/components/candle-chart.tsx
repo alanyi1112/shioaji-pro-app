@@ -114,9 +114,17 @@ import {
     completedPivotForTime,
     latestCompletedPivot,
     pivotSupportReason,
-    type PivotReferenceDay,
 } from '../lib/traditional-pivot';
 import { PivotPrimitive } from '../lib/pivot-primitive';
+import {
+    clearPivotProductState,
+    clearPivotStatesForIndicator,
+    getPivotProductState,
+    getPivotProductStateVersion,
+    pivotProductKey,
+    setPivotProductState,
+    subscribePivotProductStates,
+} from '../lib/pivot-projection-state';
 import { cancelOrder, fetchKbars, updateOrderPrice } from '../lib/shioaji';
 import {
     isLatestGeneration,
@@ -315,6 +323,11 @@ export function CandleChart({
         getIndicatorPersistenceStatus,
         getIndicatorPersistenceStatus,
     );
+    const pivotStateVersion = useSyncExternalStore(
+        subscribePivotProductStates,
+        getPivotProductStateVersion,
+        getPivotProductStateVersion,
+    );
     const [pickerOpen, setPickerOpen] = useState(false);
     const [settingsFor, setSettingsFor] = useState<string | null>(null);
     const [settingsDraft, setSettingsDraft] =
@@ -374,10 +387,6 @@ export function CandleChart({
         null,
     );
     const pivotPrimitiveRef = useRef<PivotPrimitive | null>(null);
-    const pivotPinnedDateRef = useRef(new Map<string, string>());
-    const pivotReferenceRef = useRef(
-        new Map<string, PivotReferenceDay | null>(),
-    );
     const pivotSelectionRef = useRef<string | null>(null);
     const fixedRangeAnchorsRef = useRef(
         new Map<string, FixedRangeAnchors>(),
@@ -434,7 +443,7 @@ export function CandleChart({
             { time, price: Number(rawPrice) },
             candleTimeIndexRef.current.get(time),
             {
-                freePrice: param.sourceEvent?.altKey === true,
+                alternateModifier: param.sourceEvent?.altKey === true,
                 normalizePrice: (price) =>
                     roundToTick(contractRef.current, price),
             },
@@ -830,14 +839,23 @@ export function CandleChart({
                     return;
                 }
                 const pivotInstanceId = pivotSelectionRef.current;
-                if (pivotInstanceId && typeof param.time === 'number') {
+                if (
+                    pivotInstanceId &&
+                    tfMinutesRef.current === 1440 &&
+                    typeof param.time === 'number'
+                ) {
                     const selected = completedPivotForTime(
                         buildPivotReferenceDays(rawRef.current),
                         Number(param.time),
                     );
                     if (selected) {
-                        const key = `${pivotInstanceId}|${c.code}|${tfMinutesRef.current}`;
-                        pivotPinnedDateRef.current.set(key, selected.date);
+                        const key = pivotProductKey(pivotInstanceId, c);
+                        setPivotProductState({
+                            key,
+                            indicatorId: pivotInstanceId,
+                            reference: selected,
+                            pinned: true,
+                        });
                         pivotSelectionRef.current = null;
                         setOverlayRuntimeVersion((version) => version + 1);
                     }
@@ -1511,17 +1529,38 @@ export function CandleChart({
             primitive.setData(null);
             return;
         }
-        const days = buildPivotReferenceDays(rawRef.current);
-        const key = `${instance.id}|${contract.code}|${tf.minutes}`;
-        const pinnedDate = pivotPinnedDateRef.current.get(key);
-        const reference = pinnedDate
-            ? (days.find(
-                  (day) =>
-                      day.date === pinnedDate && day.status === 'completed',
-              ) ?? null)
-            : latestCompletedPivot(days);
-        pivotReferenceRef.current.set(key, reference);
-        primitive.setData(reference, '#e0a43c', colors.text);
+        const key = pivotProductKey(instance.id, contract);
+        if (tf.minutes === 1440) {
+            const days = buildPivotReferenceDays(rawRef.current);
+            const current = getPivotProductState(key);
+            const reference = current?.pinned
+                ? (days.find(
+                      (day) =>
+                          day.date === current.reference.date &&
+                          day.status === 'completed',
+                  ) ?? null)
+                : latestCompletedPivot(days);
+            if (!reference) {
+                clearPivotProductState(key);
+                primitive.setData(null);
+                return;
+            }
+            setPivotProductState({
+                key,
+                indicatorId: instance.id,
+                reference,
+                pinned: Boolean(current?.pinned),
+            });
+            primitive.setData(reference, '#e0a43c', colors.text, fmtPrice);
+            return;
+        }
+        const shared = getPivotProductState(key);
+        primitive.setData(
+            shared?.reference ?? null,
+            '#e0a43c',
+            colors.text,
+            fmtPrice,
+        );
     };
     pivotRefreshRef.current = refreshPivot;
 
@@ -1960,7 +1999,12 @@ export function CandleChart({
         indicatorDataRefreshRef.current();
         marketOverlayRefreshRef.current();
         pivotRefreshRef.current();
-    }, [dataVersion, indicatorParamsKey, overlayRuntimeVersion]);
+    }, [
+        dataVersion,
+        indicatorParamsKey,
+        overlayRuntimeVersion,
+        pivotStateVersion,
+    ]);
 
     const closeSettings = () => {
         setSettingsFor(null);
@@ -1972,6 +2016,15 @@ export function CandleChart({
     const addIndicator = (type: string) => {
         const def = DEF_BY_TYPE.get(type);
         if (!def) return;
+        if (type === 'traditional-pivot' && tf.minutes !== 1440) {
+            setPickerOpen(false);
+            notify({
+                kind: 'info',
+                title: 'Pivot 由 1D 管理',
+                body: '請切換至 1D 建立、固定、隱藏或移除 Pivot；分鐘圖會同步顯示同一組七線。',
+            });
+            return;
+        }
         if (def.kind !== 'series' && def.singleton) {
             const existing = instances.find((item) => item.type === type);
             if (existing) {
@@ -1998,12 +2051,7 @@ export function CandleChart({
                 fixedRangeAnchorsRef.current.delete(key);
             }
         }
-        for (const key of pivotPinnedDateRef.current.keys()) {
-            if (key.startsWith(`${id}|`)) pivotPinnedDateRef.current.delete(key);
-        }
-        for (const key of pivotReferenceRef.current.keys()) {
-            if (key.startsWith(`${id}|`)) pivotReferenceRef.current.delete(key);
-        }
+        clearPivotStatesForIndicator(id);
         if (rangeSelectionRef.current?.instanceId === id) {
             rangeSelectionRef.current = null;
         }
@@ -2352,9 +2400,11 @@ export function CandleChart({
             const anchors = fixedRangeAnchorsRef.current.get(anchorKey);
             const selection = rangeSelectionRef.current;
             const selecting = selection?.instanceId === inst.id;
-            const pivotKey = `${inst.id}|${contract.code}|${tf.minutes}`;
-            const pivotReference = pivotReferenceRef.current.get(pivotKey);
-            const pivotPinned = pivotPinnedDateRef.current.has(pivotKey);
+            const pivotKey = pivotProductKey(inst.id, contract);
+            const pivotState = getPivotProductState(pivotKey);
+            const pivotReference = pivotState?.reference;
+            const pivotPinned = Boolean(pivotState?.pinned);
+            const pivotManagedHere = tf.minutes === 1440;
             return (
                 <div
                     key={inst.id}
@@ -2362,7 +2412,16 @@ export function CandleChart({
                 >
                     <button
                         className={styles.legendLabel}
-                        title='開啟指標設定'
+                        title={
+                            inst.type === 'traditional-pivot' &&
+                            !pivotManagedHere
+                                ? 'Pivot 由 1D 管理'
+                                : '開啟指標設定'
+                        }
+                        disabled={
+                            inst.type === 'traditional-pivot' &&
+                            !pivotManagedHere
+                        }
                         onClick={() => openSettings(inst.id)}
                     >
                         {instanceLabel(inst)}
@@ -2402,8 +2461,11 @@ export function CandleChart({
                                 <span className={styles.legendVals}>
                                     <span className={styles.legendVal}>
                                         {pivotReference.date} →{' '}
-                                        {pivotReference.applicationDate}{' '}
-                                        completed
+                                        {pivotReference.applicationDate ??
+                                            '下一交易日'}{' '}
+                                        {pivotReference.status === 'completed'
+                                            ? '已完成'
+                                            : '暫估'}
                                     </span>
                                     {Object.entries(pivotReference.levels).map(
                                         ([key, value]) => (
@@ -2419,52 +2481,74 @@ export function CandleChart({
                                 </span>
                             ) : (
                                 <span className={styles.legendNote}>
-                                    尚無 completed reference
+                                    {pivotManagedHere
+                                        ? '尚無已完成 reference'
+                                        : '尚無 1D Pivot projection'}
                                 </span>
                             )}
-                            <button
-                                className={styles.legendCtrlBtn}
-                                disabled={
-                                    mode !== 'observe' ||
-                                    Boolean(
-                                        pivotSupportReason(
-                                            contract.security_type,
-                                            tf.minutes,
-                                        ),
-                                    )
-                                }
-                                title='游標觀察模式下點選歷史 K 棒固定 reference'
-                                onClick={() => {
-                                    cancelFibonacciPending();
-                                    rangeSelectionRef.current = null;
-                                    pivotSelectionRef.current = inst.id;
-                                    setOverlayRuntimeVersion(
-                                        (version) => version + 1,
-                                    );
-                                }}
-                            >
-                                {pivotSelectionRef.current === inst.id
-                                    ? '請點歷史 K 棒'
-                                    : '固定歷史'}
-                            </button>
-                            {pivotPinned && (
-                                <button
+                            {pivotManagedHere ? (
+                                <>
+                                    <button
                                     className={styles.legendCtrlBtn}
+                                    disabled={
+                                        mode !== 'observe' ||
+                                        Boolean(
+                                            pivotSupportReason(
+                                                contract.security_type,
+                                                tf.minutes,
+                                            ),
+                                        )
+                                    }
+                                    title='游標觀察模式下點選歷史 K 棒固定 reference'
                                     onClick={() => {
-                                        pivotPinnedDateRef.current.delete(
-                                            pivotKey,
-                                        );
+                                        cancelFibonacciPending();
+                                        rangeSelectionRef.current = null;
+                                        pivotSelectionRef.current = inst.id;
                                         setOverlayRuntimeVersion(
                                             (version) => version + 1,
                                         );
                                     }}
                                 >
-                                    回到最新
-                                </button>
+                                        {pivotSelectionRef.current === inst.id
+                                            ? '請點歷史 K 棒'
+                                            : '固定歷史'}
+                                    </button>
+                                    {pivotPinned && (
+                                        <button
+                                            className={styles.legendCtrlBtn}
+                                            onClick={() => {
+                                                const latest = latestCompletedPivot(
+                                                    buildPivotReferenceDays(
+                                                        rawRef.current,
+                                                    ),
+                                                );
+                                                if (latest) {
+                                                    setPivotProductState({
+                                                        key: pivotKey,
+                                                        indicatorId: inst.id,
+                                                        reference: latest,
+                                                        pinned: false,
+                                                    });
+                                                }
+                                                setOverlayRuntimeVersion(
+                                                    (version) => version + 1,
+                                                );
+                                            }}
+                                        >
+                                            回到最新
+                                        </button>
+                                    )}
+                                </>
+                            ) : (
+                                <span className={styles.legendNote}>
+                                    由 1D 管理
+                                </span>
                             )}
                         </>
                     )}
-                    <span className={styles.legendCtrls}>
+                    {(inst.type !== 'traditional-pivot' ||
+                        pivotManagedHere) && (
+                        <span className={styles.legendCtrls}>
                         <button
                             className={styles.legendCtrlBtn}
                             title={inst.hidden ? '顯示' : '隱藏'}
@@ -2494,7 +2578,8 @@ export function CandleChart({
                         >
                             <X size={11} />
                         </button>
-                    </span>
+                        </span>
+                    )}
                 </div>
             );
         }
@@ -2869,7 +2954,7 @@ export function CandleChart({
                         ]
                     }
                     onClick={() => armFibonacci('retracement')}
-                    title='費波那契回撤：A/B 預設吸附 K 棒低點/高點；按住 Option 可自由選價'
+                    title='費波那契回撤：A/B 預設吸附 K 棒低點/高點；按住 Option 改為高點/低點'
                 >
                     回撤
                 </button>
@@ -3023,7 +3108,11 @@ export function CandleChart({
                                 fibonacciSnapshot.pending.anchors.length
                             ]
                         }
-                        {` · 尚需 ${fibonacciSnapshot.pending.remaining} 點 · Option 自由價位 · Esc 取消`}
+                        {` · 尚需 ${fibonacciSnapshot.pending.remaining} 點 · ${
+                            fibonacciSnapshot.pending.kind === 'retracement'
+                                ? 'Option 高點/低點'
+                                : 'Option 自由價位'
+                        } · Esc 取消`}
                     </div>
                 )}
                 {fibonacciNotice && !fibonacciSnapshot.pending && (

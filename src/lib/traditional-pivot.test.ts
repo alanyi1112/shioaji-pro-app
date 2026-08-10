@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     buildPivotReferenceDays,
+    buildTraditionalPivotProjection,
     completedPivotForTime,
     latestCompletedPivot,
     pivotSupportReason,
@@ -8,6 +9,7 @@ import {
     traditionalPivot,
 } from './traditional-pivot';
 import type { Candle } from './types/market';
+import fixture from '../../fixtures/traditional-pivot-selected-next-period-v1.json';
 
 const row = (
     iso: string,
@@ -24,6 +26,28 @@ const row = (
 });
 
 describe('Traditional Pivot', () => {
+    it('通過版本化 selected-next-period-v1 公式 fixture', () => {
+        expect(fixture.contractVersion).toBe('selected-next-period-v1');
+        for (const testCase of fixture.formulaCases) {
+            if (testCase.expected === null) {
+                expect(() =>
+                    traditionalPivot(
+                        testCase.input.high,
+                        testCase.input.low,
+                        testCase.input.close,
+                    ),
+                ).toThrow(RangeError);
+            } else {
+                expect(
+                    traditionalPivot(
+                        testCase.input.high,
+                        testCase.input.low,
+                        testCase.input.close,
+                    ),
+                ).toEqual(testCase.expected);
+            }
+        }
+    });
     it('輸出 P、R1～R3、S1～S3 六位小數契約', () => {
         expect(traditionalPivot(110, 90, 100)).toEqual({
             p: 100,
@@ -82,6 +106,35 @@ describe('Traditional Pivot', () => {
                 Date.parse('2026-08-06T03:00:00Z') / 1000,
             ),
         ).toBeNull();
+    });
+
+    it('輸出 selected-next-period-v1 projection、target mapping 與狀態', () => {
+        const rows = fixture.projectionRows.map((item) => ({
+            ...item,
+            time: Date.parse(item.time) / 1000,
+        }));
+        const result = buildTraditionalPivotProjection(rows, rows);
+        expect(result).toMatchObject({
+            type: 'traditional',
+            contractVersion: 'selected-next-period-v1',
+            referenceInterval: '1d',
+            status: 'available',
+        });
+        expect(result.projections).toHaveLength(3);
+        expect(result.projections[0]).toMatchObject({
+            referencePeriodKey: '2026-07-02',
+            referenceStatus: 'completed',
+            appliesTo: 'next-trading-day',
+            applicablePeriodKey: '2026-07-06',
+            p: 100,
+            r1: 110,
+            s1: 90,
+        });
+        expect(result.projections[2]?.referenceStatus).toBe('provisional');
+        expect(result.targets.at(-1)?.referencePeriodKey).toBe('2026-07-08');
+        expect(buildTraditionalPivotProjection([], []).status).toBe(
+            'unavailable',
+        );
     });
 
     it('FUT／OPT 明確停用，STK／IND／WRT 僅限既定時框', () => {

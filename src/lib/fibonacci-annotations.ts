@@ -294,7 +294,7 @@ export function resolveFibonacciAnchorPoint(
     rawPoint: FibonacciPoint,
     candle: Pick<Candle, 'time' | 'low' | 'high'> | undefined,
     options: {
-        freePrice?: boolean;
+        alternateModifier?: boolean;
         normalizePrice?: (price: number) => number;
     } = {},
 ): FibonacciPoint | null {
@@ -307,12 +307,20 @@ export function resolveFibonacciAnchorPoint(
     const hasCandle = Number.isFinite(candleTime);
     const time = hasCandle ? candleTime : rawPoint.time;
     const normalizePrice = options.normalizePrice ?? ((price: number) => price);
-    if (options.freePrice) {
+    if (options.alternateModifier && pending.kind === 'extension') {
         const price = normalizePrice(rawPoint.price);
         return Number.isFinite(price) ? { time, price } : null;
     }
     if (anchorIndex === 0 || anchorIndex === 1) {
-        const price = anchorIndex === 0 ? Number(candle?.low) : Number(candle?.high);
+        const alternateRetracement =
+            options.alternateModifier && pending.kind === 'retracement';
+        const price = alternateRetracement
+            ? anchorIndex === 0
+                ? Number(candle?.high)
+                : Number(candle?.low)
+            : anchorIndex === 0
+              ? Number(candle?.low)
+              : Number(candle?.high);
         return hasCandle && Number.isFinite(price) ? { time, price } : null;
     }
     const low = Number(candle?.low);

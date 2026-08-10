@@ -439,12 +439,12 @@ test("相同 D1 binding 共用 schema initialization，失敗後可重試", asyn
   assert.equal(flaky.schemaAttempts, 2);
 });
 
-test("商品設定保留四個市場且只開放日／週／月 K", async () => {
+test("本機商品設定保留四個市場並開放 1／5／15／60 分與日週月 K", async () => {
   const response = await (await worker()).fetch(new Request("http://localhost/api/instruments"), environment(), context);
   const payload = await response.json();
   assert.ok(payload.instruments.length >= 70);
   assert.deepEqual(payload.marketTabs.map((tab) => tab.label), ["台股", "美股", "匯率債券", "期貨期指"]);
-  assert.deepEqual(payload.intervals, ["1d", "1wk", "1mo"]);
+  assert.deepEqual(payload.intervals, ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
 });
 
 test("刪除系統頁籤商品後不會從預設清單復活，且不影響其他頁籤", async () => {
@@ -903,7 +903,7 @@ test("Pivot Point 預設 lazy，合法模式回傳 selected projection contract 
   assert.equal(cacheKeys.some((key) => key.endsWith("|pivot:traditional")), true);
 });
 
-test("分 K 與日內 Pivot 明確停用，且不發出上游請求", async () => {
+test("本機分 K 啟用，Pivot 另取日線 reference 且失敗時不混接", async () => {
   const originalFetch = globalThis.fetch;
   let intradayCalls = 0;
   let dailyCalls = 0;
@@ -934,16 +934,17 @@ test("分 K 與日內 Pivot 明確停用，且不發出上游請求", async () =
     const service = await worker();
     const offResponse = await service.fetch(new Request("http://localhost/api/candles?symbol=PIVOTFAIL&interval=1m&display_count=20"), environment(), context);
     const off = await offResponse.json();
-    assert.equal(offResponse.status, 400, JSON.stringify({ off, intradayCalls, dailyCalls }));
-    assert.equal(off.reasonCode, "unsupported_interval");
+    assert.equal(offResponse.status, 200, JSON.stringify({ off, intradayCalls, dailyCalls }));
+    assert.equal(off.interval, "1m");
+    assert.equal(off.candles.length, 20);
     assert.equal(dailyCalls, 0);
 
     const onResponse = await service.fetch(new Request("http://localhost/api/candles?symbol=PIVOTFAIL&interval=1m&display_count=20&pivot=traditional"), environment(), context);
     const on = await onResponse.json();
-    assert.equal(onResponse.status, 400);
-    assert.equal(on.reasonCode, "unsupported_interval");
-    assert.equal(dailyCalls, 0);
-    assert.equal(intradayCalls, 0);
+    assert.equal(onResponse.status, 200);
+    assert.equal(on.indicators.pivot_points.status, "unavailable");
+    assert.equal(dailyCalls, 1);
+    assert.equal(intradayCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1681,7 +1682,8 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(styles, /\.chart-grid\.grid-3\s*\{[^}]*repeat\(3, minmax\(0, 1fr\)\)/s);
   assert.match(styles, /\.chart-grid\.grid-4\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)[^}]*repeat\(2, minmax\(0, 1fr\)\)/s);
   assert.match(styles, /\.chart-grid\.grid-4\.is-mode-b-page-scroll\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\);[^}]*grid-template-rows:\s*auto;/s);
-  assert.match(styles, /\.chart-grid\.grid-3 \.panel-toolbar,[\s\S]*?--interval-width: 46px;[\s\S]*?--menu-width: 38px;[\s\S]*?--price-width: 120px;/);
+  assert.match(styles, /\.chart-grid\.grid-3 \.panel-toolbar,[\s\S]*?--interval-width: 64px;[\s\S]*?--menu-width: 38px;[\s\S]*?--price-width: 120px;/);
+  assert.match(styles, /\.chart-grid\.grid-3 \.interval-select,[\s\S]*?\.chart-grid\.grid-8 \.interval-select\s*\{[^}]*width: var\(--interval-width\);[^}]*min-width: var\(--interval-width\);[^}]*padding: 0 18px 0 8px;/s);
   assert.match(styles, /\.chart-grid\.grid-3 \.price-strip,[\s\S]*?grid-column: 5;[\s\S]*?width: var\(--price-width\);/);
   assert.match(styles, /@media \(max-width: 1100px\)[\s\S]*\.chart-grid\.grid-3/);
   assert.match(styles, /\.subchart-slot\.is-mode-a-technical \.indicator-wrap,[\s\S]*\.subchart-slot\.is-mode-a-chip \.chip-pane-region/);
@@ -1890,7 +1892,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(chipScript, /pinToBottomMenuItem\.removeEventListener\("click", pinToBottomFromContextMenu\)/);
   assert.match(chipScript, /function startPaneDrag\(id, event\)/);
   assert.match(styles, /\.chart-panel\.has-no-subchart \.subchart-slot\s*\{[^}]*display: none;/s);
-  assert.match(indexHtml, /styles\.css\?v=20260807-toolbar-spacing-v2/);
+  assert.match(indexHtml, /styles\.css\?v=20260810-interval-label-v1/);
   assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
   assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
   assert.match(indexHtml, /panel-image-export\.js\?v=20260721-panel-frame-v4/);

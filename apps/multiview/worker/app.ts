@@ -198,6 +198,9 @@ function jsonObject(value: unknown): JsonObject {
 }
 
 export const INTERVALS = ["1d", "1wk", "1mo"];
+export const LOCAL_INTERVALS = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"];
+const intervalsForRequest = (request: Request) =>
+  deploymentTargetForRequest(request) === "local" ? LOCAL_INTERVALS : INTERVALS;
 const TAB_IDS: Record<string, string> = { "台股": "taiwan-stocks", "美股": "us-stocks", "匯率債券": "fx-bonds", "期貨期指": "index-futures" };
 const TAB_MARKETS: Record<string, string> = { "台股": "台灣股市", "美股": "美股", "匯率債券": "匯率債券", "期貨期指": "美國指數期貨", "其他": "其他" };
 const CANDLE_CACHE_CONTRACT_VERSION = "quote-state-v15-valid-ohlc";
@@ -471,7 +474,7 @@ async function instrumentPayload(request: Request, env: Env) {
     personalTabs: compatiblePersonalTabs(tabRows),
     tabDiagnostics: model.diagnostics.map((item) => ({ code: item.code, tabKey: item.tabKey })),
     setupErrors: [],
-    intervals: INTERVALS,
+    intervals: intervalsForRequest(request),
     personalSync: { configured: Boolean(env.DB), authenticated: true },
   };
 }
@@ -2210,7 +2213,7 @@ async function reorderInstruments(request: Request, env: Env) {
 async function streamResponse(request: Request, env: Env) {
   const url = new URL(request.url);
   const symbol = url.searchParams.get("symbol") || "SAMPLE"; const interval = url.searchParams.get("interval") || "1d";
-  if (!INTERVALS.includes(interval)) return json({ ok: false, reasonCode: "unsupported_interval" }, 400);
+  if (!intervalsForRequest(request).includes(interval)) return json({ ok: false, reasonCode: "unsupported_interval" }, 400);
   const indicatorParameters = indicatorParametersFromSearchParams(url.searchParams);
   const pivotMode = normalizePivotMode(url.searchParams.get("pivot"));
   const encoder = new TextEncoder(); let cancelled = false; let timer: ReturnType<typeof setTimeout> | null = null; let wake: (() => void) | null = null;
@@ -2334,7 +2337,8 @@ async function batchCandleResponse(request: Request, env: Env) {
     const symbol = normalizeSymbol(item.symbol);
     const interval = String(item.interval || "").trim();
     const indicatorQuery = String(item.indicatorQuery || "");
-    if (!id || ids.has(id) || !symbol || !INTERVALS.includes(interval) || indicatorQuery.length > 512) return json({ ok: false, reasonCode: "invalid_payload" }, 400);
+    if (!intervalsForRequest(request).includes(interval)) return json({ ok: false, reasonCode: "unsupported_interval" }, 400);
+    if (!id || ids.has(id) || !symbol || indicatorQuery.length > 512) return json({ ok: false, reasonCode: "invalid_payload" }, 400);
     ids.add(id);
     normalizedRequests.push({ id, symbol, interval, indicatorQuery, pivot: normalizePivotMode(item.pivot) });
   }
@@ -2458,7 +2462,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
     const deploymentTarget = deploymentTargetForRequest(request);
     const principal = requestPrincipal(request);
     const realtimeEnabled = realtimeViewerCapability(request, env);
-    return json({ sitesRuntime: deploymentTarget !== "cloudflare", deploymentTarget, userEmail: principal.kind === "user" ? principal.userId : null, accessRole: principal.accessRole || null, canManageAccess: principal.accessRole === "owner", capabilities: { taiwanRealtime: deploymentTarget === "local" ? true : realtimeEnabled, taiwanIntradayTrend: false }, sourceModes: deploymentTarget === "local" ? ["auto", "shioaji", "yahoo"] : ["yahoo"], defaultSourceMode: deploymentTarget === "local" ? "auto" : "yahoo", supabaseConfigured: false, supabaseUrl: "", supabaseAnonKey: "", supabaseAuthAvailable: false, supabaseDiagnostic: { available: false, status: deploymentTarget === "cloudflare" ? "replaced_by_cloudflare_access" : deploymentTarget === "local" ? "local_runtime" : "replaced_by_sites_identity", host: "" } });
+    return json({ sitesRuntime: deploymentTarget !== "cloudflare", deploymentTarget, userEmail: principal.kind === "user" ? principal.userId : null, accessRole: principal.accessRole || null, canManageAccess: principal.accessRole === "owner", capabilities: { taiwanRealtime: deploymentTarget === "local" ? true : realtimeEnabled, taiwanIntradayTrend: false, taiwanMinuteKline: deploymentTarget === "local" }, sourceModes: deploymentTarget === "local" ? ["auto", "shioaji", "yahoo"] : ["yahoo"], defaultSourceMode: deploymentTarget === "local" ? "auto" : "yahoo", supabaseConfigured: false, supabaseUrl: "", supabaseAnonKey: "", supabaseAuthAvailable: false, supabaseDiagnostic: { available: false, status: deploymentTarget === "cloudflare" ? "replaced_by_cloudflare_access" : deploymentTarget === "local" ? "local_runtime" : "replaced_by_sites_identity", host: "" } });
   }
   if (path === "/api/instruments" && request.method === "GET") {
     const payload = await instrumentPayload(request, env);
@@ -2485,7 +2489,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   if (path === "/api/candles/batch" && request.method === "POST") return batchCandleResponse(request, env);
   if (path === "/api/candles" && request.method === "GET") {
     const interval = url.searchParams.get("interval") || "1d";
-    if (!INTERVALS.includes(interval)) return json({ ok: false, reasonCode: "unsupported_interval" }, 400);
+    if (!intervalsForRequest(request).includes(interval)) return json({ ok: false, reasonCode: "unsupported_interval" }, 400);
     try { return json(await cachedCandlePayload(env, url.searchParams.get("symbol") || "SAMPLE", interval, Number(url.searchParams.get("display_count") || 160), indicatorParametersFromSearchParams(url.searchParams), normalizePivotMode(url.searchParams.get("pivot")), realtimeViewerCapability(request, env))); }
     catch { return json({ symbol: url.searchParams.get("symbol") || "", interval: url.searchParams.get("interval") || "", error: "資料暫時不可用。", candles: [], indicators: {} }, 502); }
   }

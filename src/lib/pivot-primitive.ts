@@ -12,49 +12,83 @@ import type { PivotReferenceDay } from './traditional-pivot';
 
 type RenderTarget = Parameters<IPrimitivePaneRenderer['draw']>[0];
 const LEVEL_ORDER = ['r3', 'r2', 'r1', 'p', 's1', 's2', 's3'] as const;
+const LEVEL_STYLES = {
+    p: { color: '#e2e8f0', dash: [] as number[], emphasis: false },
+    r1: { color: '#fca5a5', dash: [] as number[], emphasis: true },
+    r2: { color: '#f87171', dash: [6, 4], emphasis: false },
+    r3: { color: '#ef4444', dash: [2, 4], emphasis: false },
+    s1: { color: '#86efac', dash: [] as number[], emphasis: true },
+    s2: { color: '#4ade80', dash: [6, 4], emphasis: false },
+    s3: { color: '#22c55e', dash: [2, 4], emphasis: false },
+} as const;
 
 class PivotRenderer implements IPrimitivePaneRenderer {
     constructor(private readonly owner: PivotPrimitive) {}
 
     draw(target: RenderTarget): void {
         const { chart, priceSeries, reference } = this.owner;
-        if (!chart || !priceSeries || !reference?.applicationStartTime) return;
+        if (!chart || !priceSeries || !reference) return;
         target.useBitmapCoordinateSpace((scope) => {
-            const start = chart
+            const anchor = chart
                 .timeScale()
-                .timeToCoordinate(
-                    reference.applicationStartTime as UTCTimestamp,
-                );
-            if (start === null) return;
+                .timeToCoordinate(reference.firstTime as UTCTimestamp);
             const context = scope.context;
             const xRatio = scope.horizontalPixelRatio;
             const yRatio = scope.verticalPixelRatio;
-            const startX = Math.round(Number(start) * xRatio);
+            const startX = Math.max(
+                0,
+                Math.round(Number(anchor ?? 0) * xRatio),
+            );
             const endX = scope.bitmapSize.width;
+            const rightEdge = Math.max(startX, endX - 82 * xRatio);
+            const labelX = rightEdge + 4 * xRatio;
             context.save();
             context.font = `${Math.max(10, Math.round(10 * yRatio))}px monospace`;
-            context.textBaseline = 'bottom';
-            let previousLabelY = -Infinity;
-            for (const key of LEVEL_ORDER) {
+            context.textBaseline = 'middle';
+            const levels = LEVEL_ORDER.flatMap((key) => {
                 const value = reference.levels[key];
                 const coordinate = priceSeries.priceToCoordinate(value);
-                if (coordinate === null) continue;
-                const y = Math.round(Number(coordinate) * yRatio);
-                context.fillStyle =
-                    key === 'p' ? this.owner.pivotColor : this.owner.levelColor;
-                context.fillRect(startX, y, Math.max(1, endX - startX), Math.max(1, Math.round(yRatio)));
-                const labelY = Math.min(
-                    scope.bitmapSize.height,
-                    Math.max(
-                        0,
-                        y - 2 * yRatio,
-                        previousLabelY + 12 * yRatio,
-                    ),
+                return coordinate === null
+                    ? []
+                    : [{ key, value, y: Math.round(Number(coordinate) * yRatio), labelY: 0 }];
+            }).sort((left, right) => left.y - right.y);
+            const labelGap = 12 * yRatio;
+            levels.forEach((level, index) => {
+                level.labelY = Math.max(6 * yRatio, level.y);
+                if (index > 0) {
+                    level.labelY = Math.max(
+                        level.labelY,
+                        levels[index - 1]!.labelY + labelGap,
+                    );
+                }
+            });
+            for (let index = levels.length - 2; index >= 0; index -= 1) {
+                levels[index]!.labelY = Math.min(
+                    levels[index]!.labelY,
+                    levels[index + 1]!.labelY - labelGap,
                 );
-                previousLabelY = labelY;
+            }
+            for (const { key, value, y, labelY } of levels) {
+                const style = LEVEL_STYLES[key];
+                context.beginPath();
+                context.setLineDash(style.dash.map((length) => length * xRatio));
+                context.lineWidth = (style.emphasis ? 1.5 : 1) * yRatio;
+                context.strokeStyle = style.color;
+                context.moveTo(startX, y);
+                context.lineTo(rightEdge, y);
+                context.stroke();
+                if (Math.abs(labelY - y) > yRatio) {
+                    context.beginPath();
+                    context.setLineDash([]);
+                    context.lineWidth = yRatio;
+                    context.moveTo(rightEdge - 10 * xRatio, y);
+                    context.lineTo(rightEdge - 2 * xRatio, labelY);
+                    context.stroke();
+                }
+                context.fillStyle = style.color;
                 context.fillText(
-                    `${key.toUpperCase()} ${value}`,
-                    Math.min(endX - 76 * xRatio, startX + 4 * xRatio),
+                    `${key.toUpperCase()} ${this.owner.priceFormatter(value)}`,
+                    labelX,
                     labelY,
                 );
             }
@@ -84,6 +118,7 @@ export class PivotPrimitive implements IPanePrimitive<Time> {
     reference: PivotReferenceDay | null = null;
     pivotColor = '#e0a43c';
     levelColor = '#8b94a7';
+    priceFormatter: (value: number) => string = (value) => String(value);
     private requestUpdate: (() => void) | null = null;
     private readonly view = new PivotPaneView(this);
 
@@ -109,10 +144,12 @@ export class PivotPrimitive implements IPanePrimitive<Time> {
         reference: PivotReferenceDay | null,
         pivotColor = '#e0a43c',
         levelColor = '#8b94a7',
+        priceFormatter: (value: number) => string = (value) => String(value),
     ) {
         this.reference = reference;
         this.pivotColor = pivotColor;
         this.levelColor = levelColor;
+        this.priceFormatter = priceFormatter;
         this.requestUpdate?.();
     }
 

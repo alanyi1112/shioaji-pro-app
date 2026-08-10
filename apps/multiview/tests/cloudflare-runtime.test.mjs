@@ -35,7 +35,7 @@ test("Sites 與 Cloudflare visible panels 共用頁面級 batch coordinator，pr
 
 test("batch candles 限制八圖並逐項回傳，不因單一商品失敗清除其他結果", async () => {
   const service = await builtWorker();
-  const response = await service.fetch(new Request("http://localhost/api/candles/batch", {
+  const response = await service.fetch(new Request("https://multiview.example/api/candles/batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ requests: [
@@ -49,7 +49,7 @@ test("batch candles 限制八圖並逐項回傳，不因單一商品失敗清除
   assert.deepEqual(payload.items.map((item) => item.id), ["panel-0", "panel-1"]);
   assert.equal(payload.items.every((item) => item.ok && item.payload.candles.length > 0), true);
 
-  const tooMany = await service.fetch(new Request("http://localhost/api/candles/batch", {
+  const tooMany = await service.fetch(new Request("https://multiview.example/api/candles/batch", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ requests: Array.from({ length: 9 }, (_, index) => ({ id: `p-${index}`, symbol: "SAMPLE", interval: "1d" })) }),

@@ -17,11 +17,56 @@ const snapshot = (values = {}) => ({
   ...values,
 });
 
-test("所有商品與 capability 都只保留日／週／月 K", () => {
-  const base = ["1m", "1d", "1wk", "1mo"];
-  assert.deepEqual(Array.from(api.availableIntervals(base, "2330.TW", true)), ["1d", "1wk", "1mo"]);
+test("本機 capability 開啟分鐘 K，遠端仍只保留日／週／月", () => {
+  const base = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"];
+  assert.deepEqual(Array.from(api.availableIntervals(base, "2330.TW", true)), base);
   assert.deepEqual(Array.from(api.availableIntervals(base, "2330.TW", false)), ["1d", "1wk", "1mo"]);
-  assert.deepEqual(Array.from(api.availableIntervals(base, "AAPL", true)), ["1d", "1wk", "1mo"]);
+});
+
+test("舊週月設定維持原值，只有分時與非法 interval 遷移為 1d", () => {
+  for (const legacy of ["intraday", "3m", "60m", ""]) {
+    assert.equal(api.normalizeLocalInterval(legacy), "1d");
+  }
+  for (const interval of ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]) {
+    assert.equal(api.normalizeLocalInterval(interval), interval);
+  }
+});
+
+test("1 分 canonical 依台北交易日聚合 5／15／60 分且不補造缺口", () => {
+  const point = (iso, values = {}) => ({
+    time: Date.parse(iso) / 1000, sourceTime: Date.parse(iso),
+    open: 100, high: 102, low: 99, close: 101, volume: 5, continuity: "complete", ...values,
+  });
+  const rows = [
+    point("2026-08-07T09:00:00+08:00"),
+    point("2026-08-07T09:01:00+08:00", { open: 101, high: 104, low: 100, close: 103, volume: 7 }),
+    point("2026-08-07T09:07:00+08:00", { open: 103, high: 105, low: 102, close: 104, volume: 3 }),
+    point("2026-08-10T09:00:00+08:00", { open: 110, high: 111, low: 109, close: 110, volume: 9 }),
+  ];
+  const five = api.aggregateMinuteCandles(rows, "5m");
+  assert.equal(five.length, 3);
+  assert.deepEqual({ open: five[0].open, high: five[0].high, low: five[0].low, close: five[0].close, volume: five[0].volume }, { open: 100, high: 104, low: 99, close: 103, volume: 12 });
+  assert.equal(five[1].continuity, "partial");
+  assert.equal(five[2].time, rows[3].time);
+  assert.equal(api.aggregateMinuteCandles(rows, "1h").length, 2);
+  assert.equal(api.aggregateMinuteCandles(rows, "1wk").length, 0);
+});
+
+test("分鐘 accumulator 先排隊 Tick，bootstrap 後拒絕倒序重送並避免重複量", () => {
+  const accumulator = api.createMinuteKlineAccumulator({ interval: "5m" });
+  const firstTick = snapshot({ sourceTime: "2026-07-31T09:01:30+08:00", sequence: 3, close: 102, totalVolume: 15, tickVolume: 3 });
+  assert.equal(accumulator.append(firstTick), true);
+  accumulator.bootstrap([
+    { time: Date.parse("2026-07-31T09:00:00+08:00") / 1000, sourceTime: Date.parse("2026-07-31T09:00:59+08:00"), open: 100, high: 101, low: 99, close: 101, volume: 12, totalVolume: 12, continuity: "complete" },
+  ]);
+  assert.equal(accumulator.append(firstTick), false);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-07-30", sourceTime: "2026-07-30T13:30:00+08:00", sequence: 99, close: 99, totalVolume: 999 })), false);
+  assert.equal(accumulator.append(snapshot({ sourceTime: "2026-07-31T09:01:40+08:00", sequence: 4, close: 99, totalVolume: -1 })), false);
+  assert.equal(accumulator.append(snapshot({ sourceTime: "2026-07-31T09:02:01+08:00", sequence: 4, close: 99, totalVolume: 20, tickVolume: 5 })), true);
+  const model = accumulator.snapshot();
+  assert.equal(model.oneMinute.length, 3);
+  assert.deepEqual({ open: model.candles[0].open, high: model.candles[0].high, low: model.candles[0].low, close: model.candles[0].close, volume: model.candles[0].volume }, { open: 100, high: 102, low: 99, close: 99, volume: 20 });
+  assert.equal(Object.isFrozen(model.candles), true);
 });
 
 test("日 K 原子取代 Yahoo 同日 provisional，不重複成交量", () => {

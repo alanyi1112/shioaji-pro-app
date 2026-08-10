@@ -95,16 +95,19 @@
     return { anchorLabel, point: normalizedPoint(pending.preview) };
   }
 
-  function resolveFibonacciAnchorPoint(pending, rawPoint, candle, freePrice = false) {
+  function resolveFibonacciAnchorPoint(pending, rawPoint, candle, alternateModifier = false) {
     if (pending?.type !== "fibonacci" || !finitePoint(rawPoint)) return null;
     const anchorIndex = Array.isArray(pending.anchors) ? pending.anchors.length : 0;
     if (anchorIndex < 0 || anchorIndex > 2) return null;
     const candleTime = Number(candle?.time);
     const hasCandle = Number.isFinite(candleTime);
     const time = hasCandle ? candleTime : Number(rawPoint.time);
-    if (freePrice) return { time, price: Number(rawPoint.price) };
+    if (alternateModifier && pending.kind === "extension") return { time, price: Number(rawPoint.price) };
     if (anchorIndex === 0 || anchorIndex === 1) {
-      const price = Number(anchorIndex === 0 ? candle?.low : candle?.high);
+      const alternateRetracement = alternateModifier && pending.kind === "retracement";
+      const price = Number(alternateRetracement
+        ? (anchorIndex === 0 ? candle?.high : candle?.low)
+        : (anchorIndex === 0 ? candle?.low : candle?.high));
       return hasCandle && Number.isFinite(price) ? { time, price } : null;
     }
     const low = Number(candle?.low);

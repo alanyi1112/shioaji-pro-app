@@ -1,5 +1,12 @@
 (function initRealtimeCharts(globalScope) {
-  const REALTIME_INTERVALS = new Set(["1d", "1wk", "1mo"]);
+  const REALTIME_INTERVALS = new Set(["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
+  const MINUTE_INTERVAL_SECONDS = Object.freeze({ "1m": 60, "5m": 300, "15m": 900, "1h": 3600 });
+  const LOCAL_INTERVALS = new Set(["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
+
+  function normalizeLocalInterval(value) {
+    const interval = String(value || "").trim();
+    return LOCAL_INTERVALS.has(interval) ? interval : "1d";
+  }
 
   function taipeiMidnight(sessionDate) {
     return Math.floor(Date.parse(`${sessionDate}T00:00:00+08:00`) / 1000);
@@ -7,8 +14,130 @@
 
   function availableIntervals(baseIntervals, symbol, capabilityEnabled) {
     void symbol;
-    void capabilityEnabled;
-    return [...new Set(baseIntervals || [])].filter((interval) => REALTIME_INTERVALS.has(interval));
+    return [...new Set(baseIntervals || [])].filter((interval) => {
+      if (!REALTIME_INTERVALS.has(interval)) return false;
+      if (interval in MINUTE_INTERVAL_SECONDS) return capabilityEnabled === true;
+      return true;
+    });
+  }
+
+  function validMinutePoint(point) {
+    const open = Number(point?.open); const high = Number(point?.high); const low = Number(point?.low); const close = Number(point?.close);
+    return Number.isFinite(Number(point?.time))
+      && [open, high, low, close].every(Number.isFinite)
+      && low <= open && open <= high && low <= close && close <= high
+      && Number.isFinite(Number(point?.volume)) && Number(point.volume) >= 0;
+  }
+
+  function aggregateMinuteCandles(points, interval = "1m") {
+    const bucketSeconds = MINUTE_INTERVAL_SECONDS[interval];
+    if (!bucketSeconds) return [];
+    const canonical = new Map();
+    for (const point of points || []) {
+      if (!validMinutePoint(point)) continue;
+      canonical.set(Number(point.time), { ...point, time: Number(point.time) });
+    }
+    const buckets = new Map();
+    let priorTime;
+    for (const point of [...canonical.values()].sort((left, right) => left.time - right.time)) {
+      const date = sessionDateForTime(point.time);
+      const bucketStart = Math.floor(point.time / bucketSeconds) * bucketSeconds;
+      const key = `${date}|${bucketStart}`;
+      const existing = buckets.get(key);
+      const hasGap = priorTime !== undefined && (point.time - priorTime > 60 || sessionDateForTime(priorTime) !== date);
+      if (!existing) {
+        buckets.set(key, {
+          time: point.time,
+          open: Number(point.open), high: Number(point.high), low: Number(point.low), close: Number(point.close),
+          volume: Math.max(0, Number(point.volume)),
+          continuity: point.continuity === "partial" || (hasGap && sessionDateForTime(priorTime) === date) ? "partial" : "complete",
+          provider: point.provider || "shioaji",
+          sourceTime: Number(point.sourceTime) || Number(point.time) * 1000,
+        });
+      } else {
+        existing.high = Math.max(existing.high, Number(point.high));
+        existing.low = Math.min(existing.low, Number(point.low));
+        existing.close = Number(point.close);
+        existing.volume += Math.max(0, Number(point.volume));
+        existing.sourceTime = Math.max(existing.sourceTime, Number(point.sourceTime) || Number(point.time) * 1000);
+        if (point.continuity === "partial" || hasGap) existing.continuity = "partial";
+      }
+      priorTime = point.time;
+    }
+    return [...buckets.values()].map((row) => Object.freeze({ ...row }));
+  }
+
+  function createMinuteKlineAccumulator(options = {}) {
+    const interval = String(options.interval || "1m");
+    const canonical = new Map();
+    const pending = [];
+    let bootstrapped = false;
+    let sessionDate = "";
+    let lastSourceTime = 0;
+    let lastSequence = 0;
+    let lastTotalVolume = 0;
+
+    function appendSnapshot(snapshot) {
+      if (!validSnapshot(snapshot) || Number(snapshot.totalVolume) < 0 || Number(snapshot.close) <= 0) return false;
+      if (!bootstrapped) { pending.push({ ...snapshot }); return true; }
+      if (sessionDate && snapshot.sessionDate < sessionDate) return false;
+      const sourceTime = Date.parse(snapshot.sourceTime);
+      const sequence = Number(snapshot.sequence);
+      if (!Number.isFinite(sourceTime) || sourceTime < lastSourceTime || (sourceTime === lastSourceTime && sequence <= lastSequence)) return false;
+      const sameSession = snapshot.sessionDate === sessionDate;
+      if (!sameSession) {
+        sessionDate = snapshot.sessionDate;
+        lastTotalVolume = 0;
+      }
+      const time = Math.floor(sourceTime / 60_000) * 60;
+      const existing = canonical.get(time);
+      const close = Number(snapshot.close);
+      const totalVolume = Number(snapshot.totalVolume);
+      const volume = lastSourceTime && sameSession
+        ? Math.max(0, totalVolume - lastTotalVolume)
+        : Math.max(0, Number(snapshot.tickVolume) || 0);
+      canonical.set(time, existing ? {
+        ...existing,
+        high: Math.max(Number(existing.high), close),
+        low: Math.min(Number(existing.low), close),
+        close,
+        volume: Math.max(0, Number(existing.volume)) + volume,
+        totalVolume,
+        sourceTime,
+        continuity: existing.continuity === "partial" || snapshot.continuity === "partial" ? "partial" : "complete",
+      } : {
+        time, open: close, high: close, low: close, close, volume, totalVolume, sourceTime,
+        continuity: snapshot.continuity === "partial" ? "partial" : "complete", provider: "shioaji",
+      });
+      lastSourceTime = sourceTime;
+      lastSequence = sequence;
+      lastTotalVolume = Math.max(lastTotalVolume, totalVolume);
+      return true;
+    }
+
+    function bootstrap(points) {
+      canonical.clear();
+      for (const point of points || []) {
+        if (validMinutePoint(point)) canonical.set(Number(point.time), { ...point, time: Number(point.time) });
+      }
+      const latest = [...canonical.values()].sort((left, right) => left.time - right.time).at(-1);
+      sessionDate = latest ? sessionDateForTime(latest.time) : "";
+      lastSourceTime = Number(latest?.sourceTime) || Number(latest?.time || 0) * 1000;
+      lastTotalVolume = Math.max(0, Number(latest?.totalVolume) || 0);
+      bootstrapped = true;
+      const queued = pending.splice(0).sort((left, right) => Date.parse(left.sourceTime) - Date.parse(right.sourceTime) || Number(left.sequence) - Number(right.sequence));
+      queued.forEach(appendSnapshot);
+      return canonical.size;
+    }
+
+    return {
+      append: appendSnapshot,
+      bootstrap,
+      snapshot() {
+        const oneMinute = [...canonical.values()].sort((left, right) => left.time - right.time).map((row) => Object.freeze({ ...row }));
+        return Object.freeze({ interval, oneMinute: Object.freeze(oneMinute), candles: Object.freeze(aggregateMinuteCandles(oneMinute, interval)) });
+      },
+    };
   }
 
   function sessionDateForTime(value) {
@@ -212,9 +341,12 @@
   globalScope.QuoteChartRealtimeCharts = {
     availableIntervals,
     aggregateCompletedDaily,
+    aggregateMinuteCandles,
     canonicalHandoffReady,
     createIntradayAccumulator,
+    createMinuteKlineAccumulator,
     mergeRealtimeOverlay,
+    normalizeLocalInterval,
     periodKey,
     sessionDateForTime,
   };

@@ -244,6 +244,22 @@ test("本機 coordinator 共用一條 SSE，先送 Snapshot 再交付當日 Kbar
   ]);
 });
 
+test("分鐘歷史依最長 interval 共用 range request，相同商品多 panel 不重複查詢", async () => {
+  const h = localHarness();
+  const sessions = [];
+  h.coordinator.subscribe("panel-1m", { symbol: "2330.TW", interval: "1m" }, () => {}, () => {}, (items) => sessions.push(items));
+  h.coordinator.subscribe("panel-60m", { symbol: "2330.TW", interval: "1h" }, () => {}, () => {}, (items) => sessions.push(items));
+  await settle();
+  h.sources[0].open();
+  await settle();
+  const requests = h.requests.filter((item) => item.path.endsWith("/data/kbars"));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.start, "2026-06-08");
+  assert.equal(requests[0].body.end, "2026-08-06");
+  assert.equal(sessions.length, 2);
+  assert.equal(Object.isFrozen(sessions[0][0]), true);
+});
+
 test("本機 coordinator 相同商品採 ref-count，最後面板離開後才 unsubscribe", async () => {
   const h = localHarness();
   const stopA = h.coordinator.subscribe("panel-a", { symbol: "2330.TW" }, () => {});

@@ -1109,7 +1109,9 @@ export function normalizeIndicatorInstances(
         const styles = migrateStyles(type, raw.styles, source);
         if (styles) normalized.styles = styles;
         if (typeof raw.hidden === 'boolean') normalized.hidden = raw.hidden;
-        if (Array.isArray(raw.visibleTf)) {
+        if (type === 'traditional-pivot') {
+            normalized.visibleTf = [1, 5, 15, 60, 1440];
+        } else if (Array.isArray(raw.visibleTf)) {
             normalized.visibleTf = raw.visibleTf.filter(
                 (item): item is number =>
                     typeof item === 'number' && Number.isFinite(item),

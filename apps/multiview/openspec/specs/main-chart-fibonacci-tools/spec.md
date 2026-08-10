@@ -49,7 +49,7 @@
 
 ### Requirement: 費波那契錨點必須依 K 棒與組合鍵吸附
 
-系統 MUST 讓費波那契 preview 與完成點選共用同一錨點解析規則。未按 macOS Option 或 Windows Alt 時，A MUST 吸附所點 K 棒的 `low`，B MUST 吸附所點 K 棒的 `high`；拓展 C 在所點位置有 K 棒時 MUST 吸附該 K 棒的 `low`，在尚無 K 棒的未來區域 MUST 使用游標自由價位。按住 Option／Alt 時，A／B／C MUST 略過價格吸附並使用游標自由價位。這裡的最低價與最高價只指所點單根 K 棒，不得自動搜尋整段區間極值。
+系統 MUST 讓費波那契 preview 與完成點選共用同一錨點解析規則。未按 macOS Option 或 Windows Alt 時，A MUST 吸附所點 K 棒的 `low`，B MUST 吸附所點 K 棒的 `high`；拓展 C 在所點位置有 K 棒時 MUST 吸附該 K 棒的 `low`，在尚無 K 棒的未來區域 MUST 使用游標自由價位。回撤按住 Option／Alt 時，A MUST 改吸附所點 K 棒的 `high`，B MUST 改吸附所點 K 棒的 `low`，且兩點仍必須位於合法 K 棒；拓展按住 Option／Alt 時 MUST 維持既有自由價位。這裡的最低價與最高價只指所點單根 K 棒，不得自動搜尋整段區間極值。
 
 #### Scenario: 一般操作依序吸附 A 與 B
 - **WHEN** 使用者未按 Option／Alt，並在有 K 棒的位置選取 A 與 B
@@ -66,10 +66,15 @@
 - **THEN** 有 K 棒的位置 MUST 使用該 K 棒 `low`
 - **AND** 沒有 K 棒的未來區域 MUST 保留游標換算的時間與自由價位
 
-#### Scenario: Option 或 Alt 解除所有錨點價格吸附
-- **WHEN** 使用者按住 macOS Option 或 Windows Alt 選取 A、B 或 C
-- **THEN** 系統 MUST 使用游標換算的自由價位，不得改寫為 K 棒 `low` 或 `high`
-- **AND** A／B 位於無 K 棒區域時亦 MUST 允許建立有效錨點
+#### Scenario: 回撤 Option 或 Alt 反轉 A／B 吸附方向
+- **WHEN** 使用者按住 macOS Option 或 Windows Alt 選取回撤 A 與 B
+- **THEN** A MUST 使用所點 K 棒的 `high`，B MUST 使用所點 K 棒的 `low`
+- **AND** A／B 位於無 K 棒區域時 MUST 視為無效，不得建立自由價位錨點
+
+#### Scenario: 拓展 Option 或 Alt 保留自由價位
+- **WHEN** 使用者按住 macOS Option 或 Windows Alt 選取拓展 A、B 或 C
+- **THEN** 系統 MUST 維持既有游標自由價位行為
+- **AND** 本變更 MUST NOT 改變拓展公式、保存或清除契約
 
 ### Requirement: 回撤與拓展必須各保留一張並依完成順序分色
 

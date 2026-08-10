@@ -264,6 +264,27 @@ describe('indicator definition union', () => {
         });
     });
 
+    it('只將 Traditional Pivot 的 visibleTf 正規化為所有支援時框', () => {
+        const normalized = normalizeIndicatorInstances([
+            {
+                id: 'pivot-1',
+                type: 'traditional-pivot',
+                params: {},
+                colors: {},
+                visibleTf: [1440],
+            },
+            {
+                id: 'rsi-1',
+                type: 'rsi',
+                params: {},
+                colors: {},
+                visibleTf: [5],
+            },
+        ]);
+        expect(normalized[0]?.visibleTf).toEqual([1, 5, 15, 60, 1440]);
+        expect(normalized[1]?.visibleTf).toEqual([5]);
+    });
+
     it('損壞 v3 回復 v2，defaults 各自遷移且不刪舊 key', () => {
         const storage = new Map<string, string>();
         vi.stubGlobal('localStorage', {

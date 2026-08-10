@@ -36,22 +36,33 @@ TBD - created by archiving change integrate-multichart-fibonacci-tools. Update P
 - **AND** 系統 MUST NOT 因水準數量升級刪除合法完成圖
 
 ### Requirement: preview 與完成點選必須共用錨點吸附規則
-未按 Option／Alt 時，A MUST 吸附所點 K 棒 low、B MUST 吸附 high；拓展 C 在 K 棒區域 MUST 吸附 low，在未來空白區 MUST 使用游標自由價位。A／B 位於空白區時 MUST 視為無效。按住 macOS Option 或 Windows Alt 時，A／B／C MUST 使用經 tick-size 正規化的游標自由價位，並 MAY 位於空白區。preview 與 click commit MUST 使用同一 resolver 與相同 time／price。
+主交易畫面與 MultiView MUST 以 kind-aware modifier policy 解析費波那契錨點，且 preview 與 click commit MUST 使用同一 resolver 與相同 time／price。回撤未按 Option／Alt 時，A MUST 吸附所點單根 K 棒 low、B MUST 吸附 high；按住 macOS Option 或 Windows Alt 時，A MUST 改吸附 high、B MUST 改吸附 low，且 A／B 仍須位於合法 K 棒。拓展未按 Option／Alt 時，A MUST 吸附 low、B MUST 吸附 high、C 在 K 棒區域 MUST 吸附 low，在未來空白區 MUST 使用游標自由價位；拓展按住 Option／Alt 時，A／B／C MUST 維持使用經 tick-size 正規化的游標自由價位並 MAY 位於空白區。吸附的 high／low 只指所點單根 K 棒，不得搜尋整段區間極值。
 
-#### Scenario: 一般 K 棒吸附
-- **WHEN** 使用者未按 Option／Alt，並在合法 K 棒位置依序選取 A、B 及拓展 C
-- **THEN** A MUST 使用該 K 棒 low、B MUST 使用 high、C MUST 使用 low
+#### Scenario: 回撤一般 K 棒吸附
+- **WHEN** 使用者未按 Option／Alt，並在合法 K 棒位置依序選取回撤 A 與 B
+- **THEN** A MUST 使用第一根所點 K 棒 low，B MUST 使用第二根所點 K 棒 high
 - **AND** preview 顯示價格 MUST 與完成保存價格相同
 
-#### Scenario: 自由價位與未來空白區
-- **WHEN** 使用者按住 Option／Alt 選取任一錨點，或在拓展 C 階段選取未來空白區
-- **THEN** 系統 MUST 使用可換算的 time 與經商品 tick-size 正規化的游標價位
-- **AND** 系統 MUST NOT 建立假 candle、寫入 candle series 或觸發 history loader
+#### Scenario: 回撤 Option／Alt 反向吸附
+- **WHEN** 使用者按住 macOS Option 或 Windows Alt，並在合法 K 棒位置依序選取回撤 A 與 B
+- **THEN** A MUST 使用第一根所點 K 棒 high，B MUST 使用第二根所點 K 棒 low
+- **AND** 系統 MUST NOT 使用游標自由價位、搜尋區間極值或改寫 K 棒資料
 
-#### Scenario: 無效空白區點選
-- **WHEN** 使用者未按 Option／Alt，且 A 或 B 點在沒有 K 棒的位置
+#### Scenario: 回撤 Option／Alt 不接受空白區
+- **WHEN** 使用者按住 Option／Alt，並嘗試在沒有 K 棒的未來空白區選取回撤 A 或 B
 - **THEN** 系統 MUST 保留目前 pending 錨點數並顯示該點無效
 - **AND** 既有完成圖與 storage MUST 維持不變
+
+#### Scenario: 拓展維持既有吸附與自由價位
+- **WHEN** 使用者建立拓展，未按 Option／Alt 選取 A／B／C，或按住 Option／Alt 選取任一錨點
+- **THEN** 未按 modifier 時 A／B／C MUST 分別使用 low／high／low，未來 C MUST 可使用游標自由價位
+- **AND** 按住 Option／Alt 時 A／B／C MUST 使用經商品 tick-size 正規化的游標自由價位
+- **AND** 系統 MUST NOT 建立假 candle、寫入 candle series 或觸發 history loader
+
+#### Scenario: 兩個畫面使用相同 modifier fixture
+- **WHEN** 主交易畫面與 MultiView 對相同 K 棒、raw pointer、kind、anchor index 與 `altKey` 執行 resolver fixture
+- **THEN** 兩邊 MUST 產生相同 time／price 或相同無效結果
+- **AND** tooltip 與 pending notice MUST 正確區分回撤反向吸附及拓展自由價位
 
 ### Requirement: pending 預覽必須即時、可取消且不污染價格尺度
 pending 狀態 MUST 顯示下一錨點 A／B／C、暫態波段導引線及目前可計算的水準。合法 `pending.preview` MUST 同時驅動從 plot 左緣延伸至價格軸安全邊界的獨立待選價位實線，右端內側 MUST 顯示 `待選 A／B／C｜格式化價格`；該時間／價格 MUST 與 click commit 共用同一 resolver 結果。滑鼠離開有效 plot、按 Escape、換商品／時框、啟動其他工具或切換交易模式時 MUST 清除 preview 或取消 pending。pending 資料 MUST NOT 寫入 localStorage、完成註記或 autoscale helper，也不得改寫原生十字線或其他 pane 的同步讀值。

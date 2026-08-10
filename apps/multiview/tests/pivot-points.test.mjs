@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fixture from "../../../fixtures/traditional-pivot-selected-next-period-v1.json" with { type: "json" };
 import {
   buildTraditionalPivotIndicator,
   computeTraditionalPivot,
@@ -12,6 +13,43 @@ const unix = (iso) => Math.floor(Date.parse(iso) / 1000);
 function candle(iso, { open = 100, high = 110, low = 90, close = 105, volume = 1000 } = {}) {
   return { time: unix(iso), open, high, low, close, volume };
 }
+
+test("通過共用版本化 selected-next-period-v1 公式 fixture", () => {
+  assert.equal(fixture.contractVersion, "selected-next-period-v1");
+  fixture.formulaCases.forEach((testCase) => {
+    assert.deepEqual(computeTraditionalPivot(testCase.input), testCase.expected, testCase.name);
+  });
+});
+
+test("共用 fixture 涵蓋 completed provisional applies-to 七線與 target mapping", () => {
+  const rows = fixture.projectionRows.map((row) => ({
+    ...row,
+    time: unix(row.time),
+  }));
+  const result = buildTraditionalPivotIndicator(
+    rows,
+    rows,
+    "1d",
+    fixture.timeZone,
+    { provisionalReferencePeriodKey: fixture.provisionalReferencePeriodKey },
+  );
+  assert.deepEqual(result.targets.map((target) => target.referencePeriodKey), [
+    "2026-07-02",
+    "2026-07-06",
+    "2026-07-08",
+  ]);
+  assert.deepEqual(result.projections.map((projection) => ({
+    referencePeriodKey: projection.referencePeriodKey,
+    referenceStatus: projection.referenceStatus,
+    applicablePeriodKey: projection.applicablePeriodKey,
+    appliesTo: projection.appliesTo,
+    levels: [projection.p, projection.r1, projection.r2, projection.r3, projection.s1, projection.s2, projection.s3],
+  })), [
+    { referencePeriodKey: "2026-07-02", referenceStatus: "completed", applicablePeriodKey: "2026-07-06", appliesTo: "next-trading-day", levels: [100, 110, 120, 130, 90, 80, 70] },
+    { referencePeriodKey: "2026-07-06", referenceStatus: "completed", applicablePeriodKey: "2026-07-08", appliesTo: "next-trading-day", levels: [116.666667, 133.333333, 146.666667, 163.333333, 103.333333, 86.666667, 73.333333] },
+    { referencePeriodKey: "2026-07-08", referenceStatus: "provisional", applicablePeriodKey: undefined, appliesTo: "next-trading-day", levels: [136.666667, 153.333333, 166.666667, 183.333333, 123.333333, 106.666667, 93.333333] },
+  ]);
+});
 
 test("Traditional Pivot Point 精確計算七個水準", () => {
   assert.deepEqual(computeTraditionalPivot({ high: 110, low: 90, close: 100 }), {
@@ -39,6 +77,7 @@ test("Traditional Pivot Point 拒絕缺值、非有限數值與 high 小於 low"
   assert.equal(computeTraditionalPivot({ high: Number.NaN, low: 90, close: 100 }), null);
   assert.equal(computeTraditionalPivot({ high: 110, low: Number.POSITIVE_INFINITY, close: 100 }), null);
   assert.equal(computeTraditionalPivot({ high: 80, low: 90, close: 85 }), null);
+  assert.equal(computeTraditionalPivot({ high: 110, low: 90, close: 120 }), null);
 });
 
 test("Pivot mode 與圖表週期映射只接受已確認契約", () => {
@@ -73,8 +112,8 @@ test("日內 Pivot 依市場時區對應同一交易日的 daily-based OHLC", ()
   assert.equal(result.status, "available");
   assert.deepEqual(result.targets.map((target) => target.referencePeriodKey), ["2026-07-06", "2026-07-06", "2026-07-08"]);
   assert.deepEqual(result.projections.map((projection) => projection.referencePeriodKey), ["2026-07-06", "2026-07-08"]);
-  assert.ok(Math.abs(result.projections[0].p - 350 / 3) < 1e-12);
-  assert.ok(Math.abs(result.projections[0].r1 - 400 / 3) < 1e-12);
+  assert.equal(result.projections[0].p, 116.666667);
+  assert.equal(result.projections[0].r1, 133.333333);
   assert.equal(result.projections[0].appliesTo, "next-trading-day");
 });
 
@@ -85,7 +124,7 @@ test("日線每根參考 K 以自身 OHLC 產生下一交易日投影", () => {
     candle("2026-07-08T05:30:00Z", { high: 150, low: 120, close: 140 }),
   ];
   const result = buildTraditionalPivotIndicator(rows, rows, "1d", "Asia/Taipei");
-  assert.deepEqual(result.projections.map((projection) => projection.p), [100, 350 / 3, 410 / 3]);
+  assert.deepEqual(result.projections.map((projection) => projection.p), [100, 116.666667, 136.666667]);
   assert.deepEqual(result.projections.map((projection) => projection.applicablePeriodKey), ["2026-07-06", "2026-07-08", undefined]);
 });
 
@@ -103,10 +142,10 @@ test("週線與月線以自身 OHLC 投影下一同類交易期且不製造未�
 
   assert.deepEqual(
     buildTraditionalPivotIndicator(weekly, weekly, "1wk", "Asia/Taipei").projections.map((point) => point.p),
-    [100, 370 / 3, 430 / 3],
+    [100, 123.333333, 143.333333],
   );
   const monthProjection = buildTraditionalPivotIndicator(monthly, monthly, "1mo", "Asia/Taipei");
-  assert.deepEqual(monthProjection.projections.map((point) => point.p), [105, 130, 460 / 3]);
+  assert.deepEqual(monthProjection.projections.map((point) => point.p), [105, 130, 153.333333]);
   assert.equal(monthProjection.projections.at(-1).appliesTo, "next-trading-month");
   assert.equal("applicablePeriodKey" in monthProjection.projections.at(-1), false);
 });

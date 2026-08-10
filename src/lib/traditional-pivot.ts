@@ -3,6 +3,8 @@ import type { Candle } from './types/market';
 import type { SecurityType } from './types/contract';
 
 export const TRADITIONAL_PIVOT_VERSION = 'traditional-pivot-tw-v1';
+export const PIVOT_PROJECTION_CONTRACT_VERSION =
+    'selected-next-period-v1' as const;
 export const PIVOT_SECURITY_TYPES = new Set<SecurityType>([
     'STK',
     'IND',
@@ -78,6 +80,61 @@ export interface PivotReferenceDay {
     applicationDate?: string;
     applicationStartTime?: number;
     levels: TraditionalPivotLevels;
+}
+
+export interface TraditionalPivotProjection extends TraditionalPivotLevels {
+    referenceTime: number;
+    referencePeriodKey: string;
+    referenceStatus: 'completed' | 'provisional';
+    appliesTo: 'next-trading-day';
+    applicablePeriodKey?: string;
+}
+
+export interface TraditionalPivotIndicatorProjection {
+    type: 'traditional';
+    contractVersion: typeof PIVOT_PROJECTION_CONTRACT_VERSION;
+    referenceInterval: '1d';
+    status: 'available' | 'unavailable';
+    targets: { time: number; referencePeriodKey: string }[];
+    projections: TraditionalPivotProjection[];
+}
+
+export function pivotProjectionFromReference(
+    reference: PivotReferenceDay,
+): TraditionalPivotProjection {
+    return {
+        ...reference.levels,
+        referenceTime: reference.lastTime,
+        referencePeriodKey: reference.date,
+        referenceStatus: reference.status,
+        appliesTo: 'next-trading-day',
+        ...(reference.applicationDate
+            ? { applicablePeriodKey: reference.applicationDate }
+            : {}),
+    };
+}
+
+export function buildTraditionalPivotProjection(
+    targetRows: Candle[],
+    rawOneMinuteRows: Candle[],
+): TraditionalPivotIndicatorProjection {
+    const references = buildPivotReferenceDays(rawOneMinuteRows);
+    const targets = chronologicalCandles(targetRows).map((row) => {
+        const period = taipeiTradingDate(row.time);
+        return {
+            time: row.time,
+            referencePeriodKey: period,
+        };
+    });
+    const projections = references.map(pivotProjectionFromReference);
+    return {
+        type: 'traditional',
+        contractVersion: PIVOT_PROJECTION_CONTRACT_VERSION,
+        referenceInterval: '1d',
+        status: projections.length ? 'available' : 'unavailable',
+        targets,
+        projections,
+    };
 }
 
 export function buildPivotReferenceDays(

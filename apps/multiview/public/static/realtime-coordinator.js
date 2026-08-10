@@ -249,6 +249,10 @@
     const demandInflight = new Map();
     const demandRetryAttempts = new Map();
     const demandRetryTimers = new Map();
+    const kbarRangeCache = new Map();
+    const kbarInflight = new Map();
+    const HISTORY_DAYS = Object.freeze({ "1m": 3, "5m": 7, "15m": 30, "1h": 60, "1d": 1 });
+    const MAX_KBAR_CACHE_ENTRIES = 16;
     let source;
     let sourceOpen = false;
     let enabled = options.enabled !== false;
@@ -258,6 +262,18 @@
 
     function desiredSymbols() {
       return [...new Set([...subscriptions.values()].map((item) => item.symbol))];
+    }
+
+    function historyDaysForSymbol(symbol) {
+      return Math.max(1, ...[...subscriptions.values()]
+        .filter((item) => item.symbol === symbol)
+        .map((item) => Number(HISTORY_DAYS[item.interval]) || 1));
+    }
+
+    function dateDaysAgo(sessionDateValue, days) {
+      const date = new Date(`${sessionDateValue}T00:00:00Z`);
+      date.setUTCDate(date.getUTCDate() - Math.max(0, Number(days) - 1));
+      return date.toISOString().slice(0, 10);
     }
 
     function updateDemandMetric() {
@@ -363,12 +379,19 @@
       if (![opens, highs, lows, closes, volumes].every((values) => values.length === datetimes.length)) return [];
       let totalVolume = 0;
       let weightedAmount = 0;
+      let currentDate = "";
       return datetimes.flatMap((datetime, index) => {
         const sourceTimeIso = normalizeDateTime(datetime);
         const sourceTime = Date.parse(sourceTimeIso);
         const open = numeric(opens[index]); const high = numeric(highs[index]); const low = numeric(lows[index]); const close = numeric(closes[index]);
         const volume = Math.max(0, numeric(volumes[index]));
         if (!Number.isFinite(sourceTime) || !validOhlc(open, high, low, close) || !Number.isFinite(volume)) return [];
+        const nextDate = sessionDate(sourceTimeIso);
+        if (nextDate !== currentDate) {
+          currentDate = nextDate;
+          totalVolume = 0;
+          weightedAmount = 0;
+        }
         totalVolume += volume;
         weightedAmount += close * volume;
         return [{
@@ -377,7 +400,7 @@
           averagePrice: totalVolume > 0 ? weightedAmount / totalVolume : close,
           volume, totalVolume, continuity: "complete",
         }];
-      }).slice(-128);
+      });
     }
 
     function rawField(row, name) {
@@ -436,6 +459,43 @@
       return normalized;
     }
 
+    function clonePoints(points) {
+      return points.map((point) => Object.freeze({ ...point }));
+    }
+
+    async function loadKbarRange(symbol, contract, start, end) {
+      const entries = kbarRangeCache.get(symbol) || [];
+      const covering = entries.find((entry) => entry.start <= start && entry.end >= end);
+      if (covering) return clonePoints(covering.points.filter((point) => {
+        const date = sessionDate(new Date(Number(point.sourceTime)).toISOString());
+        return date >= start && date <= end;
+      }));
+      const key = `${symbol}|${start}|${end}`;
+      if (kbarInflight.has(key)) return clonePoints(await kbarInflight.get(key));
+      const task = api("/api/v1/data/kbars", {
+        method: "POST",
+        body: JSON.stringify({ contract, start, end }),
+      }).then((payload) => {
+        const size = Array.isArray(payload?.datetime) ? payload.datetime.length : 0;
+        if (size > 100_000) throw new Error("shioaji_kbars_response_too_large");
+        const points = clonePoints(sessionFromKbars(payload));
+        const nextEntries = [...entries, { start, end, points, usedAt: Date.now() }]
+          .sort((left, right) => right.usedAt - left.usedAt)
+          .slice(0, MAX_KBAR_CACHE_ENTRIES);
+        kbarRangeCache.set(symbol, nextEntries);
+        return points;
+      }).finally(() => kbarInflight.delete(key));
+      kbarInflight.set(key, task);
+      return clonePoints(await task);
+    }
+
+    async function loadAndDispatchHistory(symbol, contract, end) {
+      const start = dateDaysAgo(end, historyDaysForSymbol(symbol));
+      const points = await loadKbarRange(symbol, contract, start, end);
+      dispatchSession(symbol, points);
+      return points;
+    }
+
     async function subscribeUpstream(symbol, currentGeneration) {
       const contract = await resolveContract(symbol);
       if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
@@ -447,13 +507,10 @@
       const snapshot = Array.isArray(rows) ? snapshotFromRest(symbol, contract, rows[0] || {}) : null;
       if (!snapshot) throw new Error("shioaji_snapshot_invalid");
       if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
-      const kbars = await api("/api/v1/data/kbars", {
-        method: "POST",
-        body: JSON.stringify({ contract, start: snapshot.sessionDate, end: snapshot.sessionDate }),
-      });
+      const points = await loadAndDispatchHistory(symbol, contract, snapshot.sessionDate);
       if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
       dispatch(snapshot);
-      dispatchSession(symbol, sessionFromKbars(kbars));
+      if (!points.length) notifyState(symbol, "degraded", "shioaji_kbars_partial");
       activeSymbols.add(symbol);
       return true;
     }
@@ -613,13 +670,18 @@
         prospective.add(symbol);
         if (prospective.size > MAX_SYMBOLS) throw new Error("realtime_subscription_capacity");
         const token = Symbol(key);
-        subscriptions.set(key, { symbol, onSnapshot, onState, onSession, token });
+        const interval = String(request?.interval || "1d");
+        subscriptions.set(key, { symbol, interval, onSnapshot, onState, onSession, token });
         updateDemandMetric();
         const timer = cooldowns.get(symbol);
         if (timer) { clearTimeoutImpl(timer); cooldowns.delete(symbol); }
         const cached = latest.get(symbol);
         if (cached) onSnapshot(cached);
         void checkMode();
+        if (activeSymbols.has(symbol) && cached && contracts.has(symbol)) {
+          void loadAndDispatchHistory(symbol, contracts.get(symbol), cached.sessionDate)
+            .catch(() => notifyState(symbol, "degraded", "shioaji_kbars_unavailable"));
+        }
         return () => {
           if (subscriptions.get(key)?.token !== token) return;
           subscriptions.delete(key);
@@ -647,6 +709,9 @@
       },
       connectionCount() { return source ? 1 : 0; },
       subscriptionCount() { return activeSymbols.size; },
+      kbarCacheEntryCount() {
+        return [...kbarRangeCache.values()].reduce((sum, entries) => sum + entries.length, 0);
+      },
       destroy() {
         subscriptions.clear();
         updateDemandMetric();

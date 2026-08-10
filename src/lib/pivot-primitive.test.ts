@@ -18,7 +18,10 @@ const reference: PivotReferenceDay = {
 
 describe('PivotPrimitive', () => {
     it('從適用交易日第一根 K 棒向右畫七線與標籤，不建立假未來時間', () => {
-        const fillRect = vi.fn();
+        const moveTo = vi.fn();
+        const lineTo = vi.fn();
+        const stroke = vi.fn();
+        const setLineDash = vi.fn();
         const fillText = vi.fn();
         const primitive = new PivotPrimitive({
             priceToCoordinate: (price: number) => 200 - price,
@@ -27,7 +30,7 @@ describe('PivotPrimitive', () => {
             chart: {
                 timeScale: () => ({
                     timeToCoordinate: (time: number) =>
-                        time === reference.applicationStartTime ? 20 : null,
+                        time === reference.firstTime ? 20 : null,
                 }),
             },
             requestUpdate: vi.fn(),
@@ -42,9 +45,15 @@ describe('PivotPrimitive', () => {
                     context: {
                         save: vi.fn(),
                         restore: vi.fn(),
-                        fillRect,
+                        beginPath: vi.fn(),
+                        moveTo,
+                        lineTo,
+                        stroke,
+                        setLineDash,
                         fillText,
                         fillStyle: '',
+                        strokeStyle: '',
+                        lineWidth: 1,
                         font: '',
                         textBaseline: '',
                     },
@@ -53,9 +62,52 @@ describe('PivotPrimitive', () => {
                     verticalPixelRatio: 2,
                 }),
         });
-        expect(fillRect).toHaveBeenCalledTimes(7);
+        expect(stroke.mock.calls.length).toBeGreaterThanOrEqual(7);
         expect(fillText).toHaveBeenCalledTimes(7);
-        expect(fillRect.mock.calls.every((call) => call[0] === 40)).toBe(true);
+        expect(moveTo.mock.calls.filter((call) => call[0] === 40)).toHaveLength(7);
+        expect(setLineDash).toHaveBeenCalledWith([12, 8]);
+        expect(setLineDash).toHaveBeenCalledWith([4, 8]);
+    });
+
+    it('reference candle 不在分鐘資料窗時從 plot 左側開始', () => {
+        const moveTo = vi.fn();
+        const primitive = new PivotPrimitive({
+            priceToCoordinate: (price: number) => 200 - price,
+        } as never);
+        primitive.attached({
+            chart: {
+                timeScale: () => ({ timeToCoordinate: () => null }),
+            },
+            requestUpdate: vi.fn(),
+        } as unknown as PaneAttachedParameter<Time>);
+        primitive.setData(reference, undefined, undefined, (value) => value.toFixed(2));
+        const renderer = primitive.paneViews()[0]!.renderer() as {
+            draw: (target: unknown) => void;
+        };
+        renderer.draw({
+            useBitmapCoordinateSpace: (callback: (scope: unknown) => void) =>
+                callback({
+                    context: {
+                        save: vi.fn(),
+                        restore: vi.fn(),
+                        beginPath: vi.fn(),
+                        moveTo,
+                        lineTo: vi.fn(),
+                        stroke: vi.fn(),
+                        setLineDash: vi.fn(),
+                        fillText: vi.fn(),
+                        fillStyle: '',
+                        strokeStyle: '',
+                        lineWidth: 1,
+                        font: '',
+                        textBaseline: '',
+                    },
+                    bitmapSize: { width: 500, height: 300 },
+                    horizontalPixelRatio: 1,
+                    verticalPixelRatio: 1,
+                }),
+        });
+        expect(moveTo.mock.calls.filter((call) => call[0] === 0)).toHaveLength(7);
     });
 
     it('autoscale helper 包含七線完整範圍並可安全清空', () => {

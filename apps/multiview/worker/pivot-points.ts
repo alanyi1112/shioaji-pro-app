@@ -48,21 +48,32 @@ function finiteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+function roundPivot(value: number) {
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
+}
+
 export function computeTraditionalPivot(input: Partial<Pick<Candle, "high" | "low" | "close">>): TraditionalPivotLevels | null {
   const { high, low, close } = input;
-  if (!finiteNumber(high) || !finiteNumber(low) || !finiteNumber(close) || high < low) return null;
+  if (
+    !finiteNumber(high)
+    || !finiteNumber(low)
+    || !finiteNumber(close)
+    || high < low
+    || close < low
+    || close > high
+  ) return null;
   const p = (high + low + close) / 3;
   const range = high - low;
   const r1 = 2 * p - low;
   const s1 = 2 * p - high;
   return {
-    p,
-    r1,
-    r2: p + range,
-    r3: r1 + range,
-    s1,
-    s2: p - range,
-    s3: s1 - range,
+    p: roundPivot(p),
+    r1: roundPivot(r1),
+    r2: roundPivot(p + range),
+    r3: roundPivot(r1 + range),
+    s1: roundPivot(s1),
+    s2: roundPivot(p - range),
+    s3: roundPivot(s1 - range),
   };
 }
 

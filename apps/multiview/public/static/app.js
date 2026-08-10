@@ -19,12 +19,12 @@ const SOURCE_MODE_KEY = "quoteChart.taiwanSourceMode.v1";
 const SOURCE_MODES = new Set(["auto", "shioaji", "yahoo"]);
 const INTERVAL_LABELS = {
   intraday: "分時",
-  "1m": "1分",
+  "1m": "1m",
   "3m": "3分",
-  "5m": "5分",
-  "15m": "15分",
+  "5m": "5m",
+  "15m": "15m",
   "30m": "30分",
-  "1h": "1小時",
+  "1h": "60m",
   "4h": "4小時",
   "1d": "日",
   "1wk": "週",
@@ -210,7 +210,7 @@ const state = {
     supabaseAnonKey: "",
     supabaseAuthAvailable: false,
     supabaseDiagnostic: { status: "not_configured", host: "" },
-    capabilities: { taiwanRealtime: false, taiwanIntradayTrend: false },
+    capabilities: { taiwanRealtime: false, taiwanIntradayTrend: false, taiwanMinuteKline: false },
   },
   supabaseClient: undefined,
   authSession: undefined,
@@ -615,7 +615,7 @@ async function loadAppConfig() {
       supabaseAnonKey: "",
       supabaseAuthAvailable: false,
       supabaseDiagnostic: { status: "config_unavailable", host: "" },
-      capabilities: { taiwanRealtime: false, taiwanIntradayTrend: false },
+      capabilities: { taiwanRealtime: false, taiwanIntradayTrend: false, taiwanMinuteKline: false },
     };
   }
 }
@@ -807,7 +807,10 @@ async function loadInstruments() {
   state.managedTabs = payload.managedTabs || payload.marketTabs || [];
   state.personalTabs = payload.personalTabs || [];
   state.setupErrors = payload.setupErrors || [];
-  state.intervals = (payload.intervals || ["1d", "1wk", "1mo"]).filter((interval) => ["1d", "1wk", "1mo"].includes(interval));
+  const allowedIntervals = state.appConfig.deploymentTarget === "local"
+    ? ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]
+    : ["1d", "1wk", "1mo"];
+  state.intervals = (payload.intervals || ["1d"]).filter((interval) => allowedIntervals.includes(interval));
   state.personalSync = payload.personalSync || { configured: false, authenticated: false };
   reconcileActiveMarketTab();
   updateConnectionStatus();
@@ -3171,6 +3174,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let intradayAverageSeries;
   let intradayPreviousCloseSeries;
   let intradayAccumulator;
+  let minuteKlineAccumulator;
   let pendingIntradaySession = [];
   let volumeMovingAverageSeries = [];
   let bollingerSeries = [];
@@ -3911,6 +3915,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     intradayAverageSeries = undefined;
     intradayPreviousCloseSeries = undefined;
     intradayAccumulator = undefined;
+    minuteKlineAccumulator = undefined;
     pendingIntradaySession = [];
     volumeMovingAverageSeries = [];
     bollingerSeries = [];
@@ -4955,7 +4960,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (!point) {
         const anchorLabel = pendingType === "fibonacci" ? ["A", "B", "C"][pendingState.anchors.length] : "";
         status.textContent = ["A", "B"].includes(anchorLabel)
-          ? `費波那契：${anchorLabel} 點必須選在 K 棒上；按住 Option／Alt 可自由選價`
+          ? `費波那契：${anchorLabel} 點必須選在 K 棒上；回撤按住 Option／Alt 會改吸附高點／低點`
           : "主圖繪圖：請點選主 K 線的有效價格位置";
         return;
       }
@@ -7710,7 +7715,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     return Boolean(state.appConfig.capabilities?.taiwanRealtime)
       && state.sourceMode !== "yahoo"
       && isTaiwanRealtimeSymbol(symbol)
-      && ["1d", "1wk", "1mo"].includes(interval);
+      && ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"].includes(interval);
+  }
+
+  function isMinuteKlineInterval(interval) {
+    return ["1m", "5m", "15m", "1h"].includes(interval);
   }
 
   function realtimeQuote(snapshot, displayState) {
@@ -7771,6 +7780,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function applyRealtimeSnapshot(snapshot) {
     if (!canonicalPayload || !candleSeries || !realtimeEligible(symbolSelect.value, intervalSelect.value)) return;
+    if (isMinuteKlineInterval(intervalSelect.value) && minuteKlineAccumulator) {
+      if (minuteKlineAccumulator.append(snapshot)) renderMinuteKlines(snapshot);
+      return;
+    }
     const previousLatestTime = normalizeChartTime(lastPayload?.candles?.at(-1)?.time);
     const previousVisibleTimeRange = chart.timeScale().getVisibleRange?.();
     const result = window.QuoteChartRealtimeCharts.mergeRealtimeOverlay({
@@ -7814,6 +7827,50 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     updateLatestPriceState(candle.close, previous?.close, lastPayload);
     updateLatestPriceLabel(lastPayload);
     renderVisibleRangeExtrema();
+  }
+
+  function renderMinuteKlines(snapshot = latestRealtimeSnapshot) {
+    if (!minuteKlineAccumulator || !candleSeries) return;
+    const model = minuteKlineAccumulator.snapshot();
+    const candles = Array.from(model.candles || [], (row) => ({ ...row }));
+    if (!candles.length) return;
+    const previousVisibleTimeRange = chart?.timeScale?.().getVisibleRange?.();
+    const previousLatestTime = normalizeChartTime(lastPayload?.candles?.at(-1)?.time);
+    const selectedMain = getSelectedMainIndicators();
+    lastPayload = {
+      ...(canonicalPayload || lastPayload || {}),
+      candles,
+      quote: snapshot ? realtimeQuote(snapshot, realtimeDisplayState) : canonicalPayload?.quote,
+      quoteTime: snapshot ? Math.floor(Date.parse(snapshot.sourceTime) / 1000) : candles.at(-1).time,
+      marketSession: snapshot ? "open" : canonicalPayload?.marketSession,
+      realtimeProvider: "shioaji",
+    };
+    candleSeries.setData(candles);
+    volumeSeries?.setData(selectedMain.has("volume") ? candles.map((candle) => ({
+      time: candle.time,
+      value: Math.max(0, Number(candle.volume) || 0),
+      color: candle.close >= candle.open ? "rgba(220, 38, 38, 0.72)" : "rgba(22, 163, 74, 0.72)",
+    })) : []);
+    chipPaneManager?.updateCandles?.(candles);
+    syncIndicatorTimeAnchor(candles);
+    if (previousVisibleTimeRange?.from && previousVisibleTimeRange?.to) {
+      const latest = candles.at(-1);
+      const wasLatestVisible = previousLatestTime && normalizeChartTime(previousVisibleTimeRange.to) >= previousLatestTime;
+      setSynchronizedVisibleTimeRange({
+        from: previousVisibleTimeRange.from,
+        to: wasLatestVisible ? latest.time : previousVisibleTimeRange.to,
+      });
+    }
+    if (snapshot) scheduleRealtimeIndicatorRefresh(snapshot);
+    updateQuoteDataTime(lastPayload.quote, lastPayload.quoteTime);
+    const latest = candles.at(-1);
+    const previous = candles.at(-2);
+    updateLatestPriceState(latest.close, previous?.close, lastPayload);
+    updateLatestPriceLabel(lastPayload);
+    if (state.mainReadoutMode === MAIN_READOUT_MODES.fixed) restoreLatestMainReadout();
+    renderVisibleRangeExtrema();
+    renderChartAnnotations();
+    renderPivotPointOverlay();
   }
 
   function previousCloseForSession(sessionDate) {
@@ -7989,6 +8046,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (state.sourceMode === "shioaji" && ["fallback", "stale", "unavailable"].includes(realtimeDisplayState)) {
       status.textContent = "Shioaji 即時行情目前不可用；可切換為自動或 Yahoo 延遲";
       status.classList.add("is-visible");
+      if (isMinuteKlineInterval(intervalSelect.value)) {
+        candleSeries?.setData([]);
+        volumeSeries?.setData([]);
+      }
       if (lastPayload?.quote) {
         lastPayload.quote = { ...lastPayload.quote, realtimeState: "unavailable", freshness: "unavailable" };
         updateQuoteDataTime(lastPayload.quote, lastPayload.quoteTime);
@@ -8019,6 +8080,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     liveUpdateCleanup = undefined;
     realtimeUpdateCleanup?.();
     realtimeUpdateCleanup = undefined;
+    minuteKlineAccumulator = isMinuteKlineInterval(interval)
+      ? window.QuoteChartRealtimeCharts.createMinuteKlineAccumulator({ interval })
+      : undefined;
     state.panelStreamSubscriptionCount += 1;
     liveUpdateCleanup = liveBatchCoordinator.subscribe(panelSubscriptionId, {
       symbol,
@@ -8039,13 +8103,18 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (realtimeEligible(symbol, interval)) {
       realtimeDisplayState = "degraded";
       state.panelStreamSubscriptionCount += 1;
-      realtimeUpdateCleanup = realtimeCoordinator.subscribe(panelSubscriptionId, { symbol }, (snapshot) => {
+      realtimeUpdateCleanup = realtimeCoordinator.subscribe(panelSubscriptionId, { symbol, interval }, (snapshot) => {
         if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
         latestRealtimeSnapshot = snapshot;
         if (["live", "degraded"].includes(realtimeDisplayState)) applyRealtimeSnapshot(snapshot);
       }, (next) => {
         if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
         applyRealtimeState(next);
+      }, (points) => {
+        if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value || !minuteKlineAccumulator) return;
+        minuteKlineAccumulator.bootstrap(points);
+        if (latestRealtimeSnapshot) minuteKlineAccumulator.append(latestRealtimeSnapshot);
+        renderMinuteKlines(latestRealtimeSnapshot);
       });
     } else {
       latestRealtimeSnapshot = null;
@@ -8761,7 +8830,7 @@ function fillIntervalOptions(select, selected, symbol = "") {
   const intervals = window.QuoteChartRealtimeCharts.availableIntervals(
     state.intervals,
     symbol,
-    state.appConfig.capabilities?.taiwanIntradayTrend,
+    state.appConfig.capabilities?.taiwanMinuteKline,
   );
   const nextSelected = intervals.includes(selected)
     ? selected
