@@ -4,6 +4,7 @@ import { useQuote } from '../hooks/use-stream';
 import type { ContractInfo } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
 import { priceDirection } from '../lib/price-direction';
+import { quoteLimitState } from '../lib/limit-state';
 import { buildQuoteSummaryMetrics } from '../lib/quote-summary';
 import { fmtPct, fmtPrice, fmtSigned } from '../lib/utils/format';
 import * as panel from './panel.css';
@@ -63,14 +64,12 @@ export function QuoteBoard({
     const ask1 = bidask ? Number(bidask.ask_price[0]) : undefined;
 
     const dir = priceDirection(close, ref);
-    const atLimit =
-        !isIndex && close !== undefined && contract.limit_up > 0
-            ? close >= contract.limit_up
-                ? 'up'
-                : contract.limit_down > 0 && close <= contract.limit_down
-                  ? 'down'
-                  : null
-            : null;
+    const atLimit = quoteLimitState({
+        price: close,
+        limitUp: contract.limit_up,
+        limitDown: contract.limit_down,
+        isIndex,
+    });
     const metrics = buildQuoteSummaryMetrics({
         isIndex,
         reference: validPrice(ref),
@@ -108,17 +107,41 @@ export function QuoteBoard({
                     </span>
 
                     <div
-                        className={styles.priceBlock}
-                        data-quote-field='price'
+                        className={styles.quoteGroup[atLimit ?? 'neutral']}
+                        data-limit-state={atLimit ?? undefined}
+                        data-quote-group='current'
+                        aria-label={
+                            atLimit
+                                ? `${atLimit === 'up' ? '漲停' : '跌停'}，最新價 ${fmtPrice(close)}，漲跌 ${fmtSigned(chg)}，${fmtPct(pct)}`
+                                : undefined
+                        }
                     >
-                        <span className={styles.bigPrice[dir]}>
-                            {fmtPrice(close)}
-                        </span>
-                        {atLimit && (
-                            <span className={styles.limitBadge[atLimit]}>
-                                {atLimit === 'up' ? '漲停' : '跌停'}
+                        <div
+                            className={styles.priceBlock}
+                            data-quote-field='price'
+                        >
+                            <span
+                                className={
+                                    atLimit
+                                        ? styles.limitBigPrice
+                                        : styles.bigPrice[dir]
+                                }
+                            >
+                                {fmtPrice(close)}
                             </span>
-                        )}
+                        </div>
+
+                        <div
+                            className={
+                                atLimit
+                                    ? styles.limitChangeBlock
+                                    : `${styles.changeBlock} ${panel.dirText[dir]}`
+                            }
+                            data-quote-field='change'
+                        >
+                            <span>{fmtSigned(chg)}</span>
+                            <span>{fmtPct(pct)}</span>
+                        </div>
                     </div>
 
                     <span
@@ -128,13 +151,6 @@ export function QuoteBoard({
                         {contract.name}
                     </span>
 
-                    <div
-                        className={`${styles.changeBlock} ${panel.dirText[dir]}`}
-                        data-quote-field='change'
-                    >
-                        <span>{fmtSigned(chg)}</span>
-                        <span>{fmtPct(pct)}</span>
-                    </div>
                 </div>
 
                 <div

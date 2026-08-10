@@ -17,6 +17,7 @@ import { useQuote } from '../hooks/use-stream';
 import type { WatchItem } from '../hooks/use-watchlist';
 import type { ServerWatchlist } from '../lib/shioaji';
 import { getQuote } from '../lib/stream';
+import { quoteLimitState } from '../lib/limit-state';
 import type { ContractInfo } from '../lib/types/contract';
 import type { SecurityType } from '../lib/types/contract';
 import {
@@ -47,7 +48,7 @@ function pctOf(item: WatchItem): number {
     return item.snapshot?.change_rate ?? 0;
 }
 
-const WatchRow = memo(function WatchRow({
+export const WatchRow = memo(function WatchRow({
     item,
     selected,
     dropTarget,
@@ -93,6 +94,13 @@ const WatchRow = memo(function WatchRow({
             : item.snapshot?.change_rate;
 
     const dir = chg === undefined || chg === 0 ? 'flat' : chg > 0 ? 'up' : 'down';
+    const atLimit = quoteLimitState({
+        price: close,
+        limitUp: item.contract.limit_up,
+        limitDown: item.contract.limit_down,
+        isIndex: item.contract.security_type === 'IND',
+    });
+    const limitLabel = atLimit === 'up' ? '漲停' : atLimit === 'down' ? '跌停' : null;
     // the flash overlay is re-keyed by flashSeq so the animation replays on
     // every real deal — the row itself stays mounted (hover state survives)
     const flashDir = !quote?.flashSeq
@@ -125,6 +133,7 @@ const WatchRow = memo(function WatchRow({
                 <span
                     key={quote?.flashSeq}
                     className={styles.flashOverlay[flashDir]}
+                    data-quote-flash={flashDir}
                 />
             )}
             <span className={styles.code}>{item.contract.code}</span>
@@ -139,13 +148,34 @@ const WatchRow = memo(function WatchRow({
                     />
                 </span>
             )}
-            <span className={`${styles.price} ${panel.dirText[dir]}`}>
-                {fmtPrice(close)}
+            <span
+                className={`${styles.quoteGroup[atLimit ?? 'neutral']} ${
+                    spark ? styles.quoteGroupSpark : ''
+                }`}
+                data-limit-state={atLimit ?? undefined}
+                data-quote-group='current'
+                aria-label={
+                    limitLabel
+                        ? `${limitLabel}，最新價 ${fmtPrice(close)}，${fmtSigned(chg)} ${fmtPct(pct)}`
+                        : undefined
+                }
+            >
+                <span
+                    className={`${styles.price} ${
+                        atLimit ? styles.limitText : panel.dirText[dir]
+                    }`}
+                >
+                    {fmtPrice(close)}
+                </span>
+                <span
+                    className={`${styles.change} ${
+                        atLimit ? styles.limitText : panel.dirText[dir]
+                    }`}
+                >
+                    {fmtSigned(chg)} {fmtPct(pct)}
+                </span>
             </span>
             <span className={styles.name}>{item.contract.name}</span>
-            <span className={`${styles.change} ${panel.dirText[dir]}`}>
-                {fmtSigned(chg)} {fmtPct(pct)}
-            </span>
             <button
                 className={styles.rowRemove}
                 title='從清單移除'

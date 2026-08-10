@@ -118,6 +118,10 @@ import {
 } from '../lib/traditional-pivot';
 import { PivotPrimitive } from '../lib/pivot-primitive';
 import { cancelOrder, fetchKbars, updateOrderPrice } from '../lib/shioaji';
+import {
+    isLatestGeneration,
+    nextGeneration,
+} from '../lib/latest-generation';
 import { setPickedPrice } from '../lib/price-sync';
 import { notify, placeQuickOrder } from '../lib/trade';
 import {
@@ -205,6 +209,7 @@ export function CandleChart({
     // with a bucket older than its last point makes lightweight-charts
     // throw inside the effect, which unmounts the whole app (issue #1)
     const loadedKeyRef = useRef('');
+    const chartLoadGenerationRef = useRef(0);
     const quote = useQuote(contract.code);
     const liveQuote = quote?.tick ?? quote?.index;
     const rawReference = quote?.index
@@ -1190,6 +1195,10 @@ export function CandleChart({
     // pulled on demand by the visible-range subscription (loadMoreRef)
     useEffect(() => {
         let cancelled = false;
+        const generation = nextGeneration(chartLoadGenerationRef);
+        const isCurrent = () =>
+            !cancelled &&
+            isLatestGeneration(chartLoadGenerationRef, generation);
         const loadKey = `${contract.code}|${tf.minutes}`;
         invalidateIndicatorRefreshRef.current();
         readoutGenerationRef.current += 1;
@@ -1207,7 +1216,7 @@ export function CandleChart({
         loadMoreRef.current = null;
         setEmpty(false);
         setLoading(true);
-        const clearSeries = () => {
+        const clearSeries = (allowLive = true) => {
             // the series must never keep a stale timeframe's data — a later
             // tick bucketed for the new timeframe would be "older" than the
             // stale tail and crash the chart library
@@ -1220,7 +1229,7 @@ export function CandleChart({
             invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars([]);
             setDataVersion((v) => v + 1);
-            loadedKeyRef.current = loadKey; // live bars may build from here
+            loadedKeyRef.current = allowLive ? loadKey : '';
         };
         const applyBars = (bars: Candle[]) => {
             candleSeriesRef.current?.setData(
@@ -1246,13 +1255,16 @@ export function CandleChart({
             setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
         };
+        // Never label the previous symbol's drawing/readout as the new code
+        // while its history request is still in flight.
+        clearSeries(false);
 
         // ---- older-history paging (TradingView-style infinite scroll) ----
         let oldestDay: number = tf.days; // days-ago covered so far
         let fetching = false;
         let dryPages = 0; // consecutive empty pages → assume exhausted
         const loadMore = () => {
-            if (fetching || cancelled) return;
+            if (fetching || !isCurrent()) return;
             if (loadedKeyRef.current !== loadKey) return;
             if (dryPages >= 3 || oldestDay >= MAX_HISTORY_DAYS) return;
             fetching = true;
@@ -1263,7 +1275,7 @@ export function CandleChart({
                 dateStrOffset(oldestDay + 1),
             )
                 .then((k) => {
-                    if (cancelled || loadedKeyRef.current !== loadKey) return;
+                    if (!isCurrent() || loadedKeyRef.current !== loadKey) return;
                     oldestDay = from;
                     const boundary = rawRef.current[0]?.time ?? Infinity;
                     const older = kbarsToCandles(k).filter(
@@ -1299,7 +1311,7 @@ export function CandleChart({
 
         fetchKbars(contract, dateStrOffset(tf.days), dateStrOffset(0))
             .then((k) => {
-                if (cancelled || !candleSeriesRef.current) return;
+                if (!isCurrent() || !candleSeriesRef.current) return;
                 const raw = kbarsToCandles(k);
                 const bars = aggregate(raw, tf.minutes);
                 if (bars.length === 0) {
@@ -1327,12 +1339,12 @@ export function CandleChart({
                     .applyOptions({ autoScale: true });
             })
             .catch(() => {
-                if (cancelled) return;
+                if (!isCurrent()) return;
                 clearSeries();
                 setEmpty(true);
             })
             .finally(() => {
-                if (!cancelled) setLoading(false);
+                if (isCurrent()) setLoading(false);
             });
         return () => {
             cancelled = true;

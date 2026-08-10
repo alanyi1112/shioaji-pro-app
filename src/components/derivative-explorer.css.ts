@@ -188,6 +188,21 @@ export const td = style({
 
 export const tdLeft = style([td, { textAlign: 'left' }]);
 
+export const quoteCell = styleVariants({
+    up: { background: vars.color.up, color: '#fff' },
+    down: { background: vars.color.down, color: '#fff' },
+});
+
+const summaryQuoteBase = style({
+    padding: '2px 5px',
+    borderRadius: vars.radius.sm,
+});
+
+export const summaryQuote = styleVariants({
+    up: [summaryQuoteBase, { background: vars.color.up, color: '#fff' }],
+    down: [summaryQuoteBase, { background: vars.color.down, color: '#fff' }],
+});
+
 export const contractName = style({
     display: 'block',
     overflow: 'hidden',
@@ -237,4 +252,3 @@ export const empty = style({
 });
 
 export const error = style([empty, { color: vars.color.danger }]);
-

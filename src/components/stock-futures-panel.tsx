@@ -1,6 +1,8 @@
 import { Star } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { primeContract } from '../lib/contracts-cache';
+import { quoteLimitState } from '../lib/limit-state';
+import type { QuotePickHandler } from '../lib/quote-selection';
 import {
     fetchFutures,
     fetchSnapshots,
@@ -26,7 +28,7 @@ export function StockFuturesPanel({
     onPick,
     onAdd,
 }: {
-    onPick: (code: string) => void;
+    onPick: QuotePickHandler;
     onAdd: (contract: ContractInfo) => Promise<unknown>;
 }) {
     const [underlying, setUnderlying] = useState<StockMeta | null>(null);
@@ -166,6 +168,17 @@ export function StockFuturesPanel({
                                           ? 'down'
                                           : 'flat'
                                     : 'flat';
+                                const atLimit = quoteLimitState({
+                                    price: quote?.close,
+                                    limitUp: contract.limit_up,
+                                    limitDown: contract.limit_down,
+                                });
+                                const limitLabel =
+                                    atLimit === 'up'
+                                        ? '漲停'
+                                        : atLimit === 'down'
+                                          ? '跌停'
+                                          : null;
                                 return (
                                     <tr
                                         key={contract.code}
@@ -173,7 +186,7 @@ export function StockFuturesPanel({
                                         title='連動此合約'
                                         onClick={() => {
                                             primeContract(contract);
-                                            onPick(contract.code);
+                                            onPick(contract.code, quote);
                                         }}
                                     >
                                         <td className={styles.tdLeft}>
@@ -191,10 +204,22 @@ export function StockFuturesPanel({
                                         <td className={styles.td}>
                                             {contract.delivery_month ?? '—'}
                                         </td>
-                                        <td className={`${styles.td} ${panel.dirText[direction]}`}>
+                                        <td
+                                            className={`${styles.td} ${atLimit ? styles.quoteCell[atLimit] : panel.dirText[direction]}`}
+                                            data-limit-state={atLimit ?? undefined}
+                                            data-quote-group='current'
+                                            aria-label={
+                                                limitLabel
+                                                    ? `${limitLabel}，成交 ${fmtPrice(quote?.close)}`
+                                                    : undefined
+                                            }
+                                        >
                                             {quote ? fmtPrice(quote.close) : '—'}
                                         </td>
-                                        <td className={`${styles.td} ${panel.dirText[direction]}`}>
+                                        <td
+                                            className={`${styles.td} ${atLimit ? styles.quoteCell[atLimit] : panel.dirText[direction]}`}
+                                            data-limit-state={atLimit ?? undefined}
+                                        >
                                             {quote ? fmtSigned(quote.change_price) : '—'}
                                         </td>
                                         <td className={styles.td}>

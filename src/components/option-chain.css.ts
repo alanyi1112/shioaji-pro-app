@@ -79,6 +79,11 @@ export const td = style({
     borderBottom: `1px solid rgba(127, 127, 127, 0.08)`,
 });
 
+export const quoteCell = styleVariants({
+    up: { background: vars.color.up, color: '#fff' },
+    down: { background: vars.color.down, color: '#fff' },
+});
+
 export const strike = style({
     textAlign: 'center',
     padding: `2px 8px`,

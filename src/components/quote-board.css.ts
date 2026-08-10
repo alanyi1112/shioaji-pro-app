@@ -88,21 +88,39 @@ export const symbolName = style({
     },
 });
 
-export const priceBlock = style({
+const quoteGroupBase = style({
     gridColumn: '2',
-    gridRow: '1',
-    display: 'inline-flex',
-    alignItems: 'baseline',
+    gridRow: '1 / span 2',
+    display: 'grid',
+    gridTemplateRows: 'auto auto',
+    justifyItems: 'end',
+    alignSelf: 'center',
     justifySelf: 'end',
-    gap: `clamp(0.25rem, 0.7cqi, ${vars.space.sm})`,
+    rowGap: '2px',
     minWidth: 0,
-    whiteSpace: 'nowrap',
+    padding: '4px 7px',
+    borderRadius: vars.radius.md,
+    transition: 'background 0.12s ease-out',
     '@container': {
         '(max-width: 330px)': {
             gridColumn: '1',
             gridRow: '2',
         },
     },
+});
+
+export const quoteGroup = styleVariants({
+    neutral: [quoteGroupBase, { background: 'transparent' }],
+    up: [quoteGroupBase, { background: vars.color.up }],
+    down: [quoteGroupBase, { background: vars.color.down }],
+});
+
+export const priceBlock = style({
+    display: 'inline-flex',
+    alignItems: 'baseline',
+    gap: `clamp(0.25rem, 0.7cqi, ${vars.space.sm})`,
+    minWidth: 0,
+    whiteSpace: 'nowrap',
 });
 
 const bigPriceBase = style({
@@ -121,25 +139,20 @@ export const bigPrice = styleVariants({
     flat: [bigPriceBase, { color: vars.color.flat }],
 });
 
+export const limitBigPrice = style([bigPriceBase, { color: '#fff' }]);
+
 export const changeBlock = style({
-    gridColumn: '2',
-    gridRow: '2',
     display: 'flex',
     flexDirection: 'row',
     alignItems: 'baseline',
-    justifySelf: 'end',
     gap: vars.space.xs,
     fontFamily: vars.font.mono,
     fontSize: 'clamp(0.68rem, 2cqi, 0.82rem)',
     fontVariantNumeric: 'tabular-nums',
     whiteSpace: 'nowrap',
-    '@container': {
-        '(max-width: 330px)': {
-            gridColumn: '1',
-            gridRow: '4',
-        },
-    },
 });
+
+export const limitChangeBlock = style([changeBlock, { color: '#fff' }]);
 
 export const statGrid = style({
     display: 'grid',
@@ -200,20 +213,4 @@ export const statValue = styleVariants({
     up: [statValueBase, { color: vars.color.up }],
     down: [statValueBase, { color: vars.color.down }],
     flat: [statValueBase, { color: vars.color.flat }],
-});
-
-const limitBadgeBase = style({
-    flex: '0 0 auto',
-    fontFamily: vars.font.display,
-    fontSize: '0.6rem',
-    fontWeight: 700,
-    letterSpacing: '0.06em',
-    color: '#fff',
-    borderRadius: vars.radius.sm,
-    padding: '2px 6px',
-});
-
-export const limitBadge = styleVariants({
-    up: [limitBadgeBase, { background: vars.color.up }],
-    down: [limitBadgeBase, { background: vars.color.down }],
 });

@@ -14,6 +14,9 @@ export interface StockMeta {
     category: string;
     exchange: string;
     day_trade?: string;
+    reference?: number;
+    limit_up?: number;
+    limit_down?: number;
 }
 
 let catalogCache: StockMeta[] | null = null;
@@ -68,6 +71,9 @@ export async function loadStockDetails(codes: string[]): Promise<StockMeta[]> {
                     category: info.category,
                     exchange: info.exchange ?? '',
                     day_trade: info.day_trade,
+                    reference: info.reference,
+                    limit_up: info.limit_up,
+                    limit_down: info.limit_down,
                 };
                 detailByCode.set(code, detail);
                 return detail;

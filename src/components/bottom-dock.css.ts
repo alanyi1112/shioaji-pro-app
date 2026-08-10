@@ -99,6 +99,11 @@ export const td = style({
     },
 });
 
+export const quoteCell = styleVariants({
+    up: { background: vars.color.up, color: '#fff' },
+    down: { background: vars.color.down, color: '#fff' },
+});
+
 // quantity cells render mixed-unit stock amounts ("5張+10股") — CJK glyphs
 // are line-break opportunities, so pin the whole quantity to one line
 export const qtyCell = style({

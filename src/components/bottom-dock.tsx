@@ -10,6 +10,7 @@ import {
     useAccounts,
 } from '../lib/account-store';
 import { ensureContract } from '../lib/contracts-cache';
+import { quoteLimitState } from '../lib/limit-state';
 import {
     maskAccountId,
     maskMoney,
@@ -29,6 +30,7 @@ import {
     placeStockExitByShares,
 } from '../lib/trade';
 import type { Trade } from '../lib/types/order';
+import type { ContractInfo } from '../lib/types/contract';
 import type {
     AccountBalance,
     Margin,
@@ -77,6 +79,7 @@ function PositionsTable({
     const live = useTradingLive();
     // 股名 joined from the contract cache (issue #1: 只看 code 不友善)
     const [names, setNames] = useState<Record<string, string>>({});
+    const [contracts, setContracts] = useState<Record<string, ContractInfo>>({});
     const codesKey = positions.map((p) => p.code).join(',');
     useEffect(() => {
         let alive = true;
@@ -85,12 +88,15 @@ function PositionsTable({
         ).then((rs) => {
             if (!alive) return;
             const next: Record<string, string> = {};
+            const nextContracts: Record<string, ContractInfo> = {};
             for (const r of rs) {
                 if (r.status === 'fulfilled' && r.value.name) {
                     next[r.value.code] = r.value.name;
+                    nextContracts[r.value.code] = r.value;
                 }
             }
             setNames(next);
+            setContracts(nextContracts);
         });
         return () => {
             alive = false;
@@ -180,6 +186,13 @@ function PositionsTable({
                         p.price > 0
                             ? ((p.last_price - p.price) / p.price) * 100 * sign
                             : 0;
+                    const contract = contracts[p.code];
+                    const atLimit = quoteLimitState({
+                        price: p.last_price,
+                        limitUp: contract?.limit_up,
+                        limitDown: contract?.limit_down,
+                        isIndex: contract?.security_type === 'IND',
+                    });
                     return (
                         <tr
                             key={`${p.code}-${p.id}`}
@@ -205,7 +218,16 @@ function PositionsTable({
                                 )}
                             </td>
                             <td className={styles.td}>{fmtPrice(p.price)}</td>
-                            <td className={styles.td}>
+                            <td
+                                className={`${styles.td} ${atLimit ? styles.quoteCell[atLimit] : ''}`}
+                                data-limit-state={atLimit ?? undefined}
+                                data-quote-group='current'
+                                aria-label={
+                                    atLimit
+                                        ? `${atLimit === 'up' ? '漲停' : '跌停'}，現價 ${fmtPrice(p.last_price)}`
+                                        : undefined
+                                }
+                            >
                                 {fmtPrice(p.last_price)}
                             </td>
                             <td

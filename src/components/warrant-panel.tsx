@@ -1,6 +1,8 @@
 import { Star } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { primeContract } from '../lib/contracts-cache';
+import { quoteLimitState } from '../lib/limit-state';
+import type { QuotePickHandler } from '../lib/quote-selection';
 import {
     fetchSnapshots,
     fetchWarrants,
@@ -37,11 +39,13 @@ export function WarrantPanel({
     onPick,
     onAdd,
 }: {
-    onPick: (code: string) => void;
+    onPick: QuotePickHandler;
     onAdd: (contract: ContractInfo) => Promise<unknown>;
 }) {
     const [underlying, setUnderlying] = useState<StockMeta | null>(null);
     const [contracts, setContracts] = useState<ContractInfo[]>([]);
+    const [underlyingContract, setUnderlyingContract] =
+        useState<ContractInfo | null>(null);
     const [underlyingQuote, setUnderlyingQuote] = useState<Snapshot | null>(null);
     const [snapshots, setSnapshots] = useState<Map<string, Snapshot>>(new Map());
     const [right, setRight] = useState<'all' | 'C' | 'P'>('all');
@@ -70,16 +74,19 @@ export function WarrantPanel({
         setError(false);
         Promise.all([
             fetchWarrants(underlying.code, { expiryFrom: todayStr() }),
-            resolveContract(underlying.code, 'STK')
-                .then((contract) => fetchSnapshots([contract]))
-                .then((rows) => rows[0] ?? null),
+            resolveContract(underlying.code, 'STK').then(async (contract) => ({
+                contract,
+                quote: (await fetchSnapshots([contract]))[0] ?? null,
+            })),
         ])
-            .then(([rows, quote]) => {
+            .then(([rows, underlyingData]) => {
                 setContracts(rows);
-                setUnderlyingQuote(quote);
+                setUnderlyingContract(underlyingData.contract);
+                setUnderlyingQuote(underlyingData.quote);
             })
             .catch(() => {
                 setContracts([]);
+                setUnderlyingContract(null);
                 setUnderlyingQuote(null);
                 setError(true);
             })
@@ -130,6 +137,12 @@ export function WarrantPanel({
         return () => clearInterval(timer);
     }, [refresh]);
 
+    const underlyingAtLimit = quoteLimitState({
+        price: underlyingQuote?.close,
+        limitUp: underlyingContract?.limit_up,
+        limitDown: underlyingContract?.limit_down,
+    });
+
     return (
         <div className={styles.wrap}>
             <div className={styles.toolbar}>
@@ -176,7 +189,20 @@ export function WarrantPanel({
                 <span className={styles.summaryStrong}>
                     {underlying ? `${underlying.code} ${underlying.name}` : '—'}
                 </span>
-                <span>
+                <span
+                    className={
+                        underlyingAtLimit
+                            ? styles.summaryQuote[underlyingAtLimit]
+                            : undefined
+                    }
+                    data-limit-state={underlyingAtLimit ?? undefined}
+                    data-quote-group='current'
+                    aria-label={
+                        underlyingAtLimit
+                            ? `${underlyingAtLimit === 'up' ? '漲停' : '跌停'}，現貨 ${fmtPrice(underlyingQuote?.close)}`
+                            : undefined
+                    }
+                >
                     現貨 {underlyingQuote ? fmtPrice(underlyingQuote.close) : '—'}
                 </span>
                 <span>{contracts.length.toLocaleString()} 檔發行中</span>
@@ -225,6 +251,11 @@ export function WarrantPanel({
                                           ? 'down'
                                           : 'flat'
                                     : 'flat';
+                                const atLimit = quoteLimitState({
+                                    price: quote?.close,
+                                    limitUp: contract.limit_up,
+                                    limitDown: contract.limit_down,
+                                });
                                 return (
                                     <tr
                                         key={contract.code}
@@ -232,7 +263,7 @@ export function WarrantPanel({
                                         title='連動此權證'
                                         onClick={() => {
                                             primeContract(contract);
-                                            onPick(contract.code);
+                                            onPick(contract.code, quote);
                                         }}
                                     >
                                         <td className={styles.tdLeft}>
@@ -246,7 +277,16 @@ export function WarrantPanel({
                                                 {contract.call_put === 'P' ? '認售' : '認購'}
                                             </span>
                                         </td>
-                                        <td className={`${styles.td} ${panel.dirText[direction]}`}>
+                                        <td
+                                            className={`${styles.td} ${atLimit ? styles.quoteCell[atLimit] : panel.dirText[direction]}`}
+                                            data-limit-state={atLimit ?? undefined}
+                                            data-quote-group='current'
+                                            aria-label={
+                                                atLimit
+                                                    ? `${atLimit === 'up' ? '漲停' : '跌停'}，成交 ${fmtPrice(quote?.close)}`
+                                                    : undefined
+                                            }
+                                        >
                                             {quote ? fmtPrice(quote.close) : '—'}
                                         </td>
                                         <td className={styles.td}>

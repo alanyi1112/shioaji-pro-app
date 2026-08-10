@@ -40,7 +40,7 @@ export const sw = styleVariants({
 // volume stacked on the right — no dead space between code and name
 export const row = style({
     display: 'grid',
-    gridTemplateColumns: '1.2rem minmax(0, 1fr) auto auto',
+    gridTemplateColumns: '1.2rem minmax(0, 1fr) auto auto auto',
     alignItems: 'center',
     columnGap: vars.space.xs,
     padding: `3px ${vars.space.sm}`,
@@ -63,12 +63,21 @@ export const scCode = style({
     color: vars.color.foreground,
 });
 
-export const valueBlock = style({
+const quoteGroupBase = style({
     display: 'flex',
-    flexDirection: 'column',
     alignItems: 'flex-end',
     whiteSpace: 'nowrap',
+    padding: '3px 6px',
+    borderRadius: vars.radius.sm,
 });
+
+export const quoteGroup = styleVariants({
+    neutral: [quoteGroupBase, { background: 'transparent' }],
+    up: [quoteGroupBase, { background: vars.color.up }],
+    down: [quoteGroupBase, { background: vars.color.down }],
+});
+
+export const limitText = style({ color: '#fff' });
 
 export const rowPicked = style({
     background: vars.color.accentDim,

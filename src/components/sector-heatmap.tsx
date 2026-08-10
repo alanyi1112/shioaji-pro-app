@@ -12,6 +12,11 @@ import {
 } from 'react';
 import { usePoll } from '../hooks/use-poll';
 import { ensureContract } from '../lib/contracts-cache';
+import {
+    quoteLimitState,
+    type QuoteLimitState,
+} from '../lib/limit-state';
+import type { QuotePickHandler } from '../lib/quote-selection';
 import { fetchSnapshots } from '../lib/shioaji';
 import { useFocusedSector } from '../lib/sector-sync';
 import {
@@ -50,7 +55,7 @@ const catLabel = sectorLabel;
 export function SectorHeatmap({
     onPick,
 }: {
-    onPick?: (code: string) => void;
+    onPick?: QuotePickHandler;
 }) {
     const [index, setIndex] = useState<StockMeta[] | null>(null);
     const [cat, setCat] = useState(
@@ -175,13 +180,20 @@ export function SectorHeatmap({
                     close: s?.close ?? 0,
                     amount: s?.total_amount ?? 0,
                     pct,
+                    snapshot: s,
+                    atLimit: quoteLimitState({
+                        price: s?.close,
+                        limitUp: m.limit_up,
+                        limitDown: m.limit_down,
+                    }),
                 };
             })
             .sort((a, b) => b.amount - a.amount);
     }, [members, snapsPoll.data]);
 
     // color intensity: ±5% saturates
-    const tileColor = (pct: number): string => {
+    const tileColor = (pct: number, atLimit?: QuoteLimitState | null): string => {
+        if (atLimit) return atLimit === 'up' ? colors.up : colors.down;
         const base = pct >= 0 ? colors.up : colors.down;
         const alpha = Math.min(1, Math.abs(pct) / 5) * 0.75 + 0.08;
         // base is '#rrggbb' — build rgba
@@ -266,9 +278,16 @@ export function SectorHeatmap({
                     <button
                         key={t.code}
                         className={styles.tile}
-                        style={{ background: tileColor(t.pct) }}
+                        style={{ background: tileColor(t.pct, t.atLimit) }}
+                        data-limit-state={t.atLimit ?? undefined}
+                        data-quote-group='current'
+                        aria-label={
+                            t.atLimit
+                                ? `${t.atLimit === 'up' ? '漲停' : '跌停'}，${t.code} ${t.name}，最新價 ${fmtPrice(t.close)}`
+                                : undefined
+                        }
                         title={`${t.name} ${fmtPrice(t.close)}（${t.pct >= 0 ? '+' : ''}${t.pct.toFixed(2)}%）`}
-                        onClick={() => onPick?.(t.code)}
+                        onClick={() => onPick?.(t.code, t.snapshot)}
                     >
                         <span className={styles.tileCode}>{t.code}</span>
                         <span className={styles.tileName}>{t.name}</span>

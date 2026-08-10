@@ -157,6 +157,32 @@ export const numSm = style({
     fontSize: '0.66rem',
 });
 
+const quoteGroupBase = style({
+    display: 'grid',
+    gridTemplateColumns: 'auto auto',
+    alignItems: 'baseline',
+    justifyItems: 'end',
+    columnGap: vars.space.sm,
+    minWidth: 0,
+    padding: '2px 5px',
+    borderRadius: vars.radius.sm,
+    transition: 'background 0.12s ease-out',
+});
+
+export const quoteGroup = styleVariants({
+    neutral: [quoteGroupBase, { background: 'transparent' }],
+    up: [quoteGroupBase, { background: vars.color.up }],
+    down: [quoteGroupBase, { background: vars.color.down }],
+});
+
+export const limitText = style({
+    color: '#fff',
+});
+
+export const moverQuoteGroup = style({
+    gridColumn: '3 / span 2',
+});
+
 export const empty = style({
     display: 'block',
     padding: `4px ${vars.space.md}`,

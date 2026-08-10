@@ -36,6 +36,8 @@ export const row = styleVariants({
 });
 
 export const code = style({
+    gridColumn: '1',
+    gridRow: '1',
     fontFamily: vars.font.mono,
     fontSize: '0.8rem',
     fontWeight: 600,
@@ -43,6 +45,8 @@ export const code = style({
 });
 
 export const name = style({
+    gridColumn: '1',
+    gridRow: '2',
     fontSize: '0.68rem',
     color: vars.color.mutedForeground,
     overflow: 'hidden',
@@ -63,6 +67,33 @@ export const change = style({
     fontSize: '0.68rem',
     textAlign: 'right',
     fontVariantNumeric: 'tabular-nums',
+});
+
+const quoteGroupBase = style({
+    gridColumn: '2',
+    gridRow: '1 / span 2',
+    display: 'grid',
+    gridTemplateRows: 'auto auto',
+    justifyItems: 'end',
+    alignSelf: 'center',
+    minWidth: 0,
+    padding: '2px 6px',
+    borderRadius: vars.radius.sm,
+    transition: 'background 0.12s ease-out',
+});
+
+export const quoteGroup = styleVariants({
+    neutral: [quoteGroupBase, { background: 'transparent' }],
+    up: [quoteGroupBase, { background: vars.color.up }],
+    down: [quoteGroupBase, { background: vars.color.down }],
+});
+
+export const quoteGroupSpark = style({
+    gridColumn: '3',
+});
+
+export const limitText = style({
+    color: '#fff',
 });
 
 // flash plays on a keyed overlay so the row itself never remounts

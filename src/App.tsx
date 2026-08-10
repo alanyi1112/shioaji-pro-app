@@ -56,16 +56,23 @@ import { trackActivity } from './lib/activity';
 import { agentModule, backtestModule } from './lib/features';
 import { ensureContract, useContract } from './lib/contracts-cache';
 import { reportDailyPnl } from './lib/risk';
+import {
+    isLatestGeneration,
+    nextGeneration,
+} from './lib/latest-generation';
 import { isTauri, openPopout } from './lib/tauri';
 import {
     fetchAccountBalance,
     fetchMargin,
     fetchPositions,
+    fetchSnapshots,
     fetchTrades,
 } from './lib/shioaji';
 import { onOrderEvent } from './lib/stream';
 import { notify } from './lib/trade';
 import type { ContractInfo } from './lib/types/contract';
+import type { Snapshot } from './lib/types/market';
+import type { QuotePickHandler } from './lib/quote-selection';
 import type { Trade } from './lib/types/order';
 import type { Position } from './lib/types/portfolio';
 import {
@@ -143,10 +150,10 @@ function BlockBody({
 }: {
     block: Block;
     contract: ContractInfo | null;
-    snapshot?: import('./lib/types/market').Snapshot;
+    snapshot?: Snapshot;
     watchlistProps: React.ComponentProps<typeof Watchlist>;
     dockProps: React.ComponentProps<typeof BottomDock>;
-    onSelectCode: (code: string) => void;
+    onSelectCode: QuotePickHandler;
     onPulseConfigChange: (
         id: string,
         sections: PulseSection[],
@@ -348,10 +355,10 @@ interface BlockViewProps {
     selected: ContractInfo | null;
     onPinChange: (id: string, pin: string | null) => void;
     onRemove: (id: string) => void;
-    snapshot?: import('./lib/types/market').Snapshot;
+    snapshot?: Snapshot;
     watchlistProps: React.ComponentProps<typeof Watchlist>;
     dockProps: React.ComponentProps<typeof BottomDock>;
-    onSelectCode: (code: string) => void;
+    onSelectCode: QuotePickHandler;
     onPulseConfigChange: (
         id: string,
         sections: PulseSection[],
@@ -540,6 +547,11 @@ function TradingApp() {
         deleteCurrentList,
     } = useWatchlist();
     const [selected, setSelected] = useState<ContractInfo | null>(null);
+    const [externalSnapshot, setExternalSnapshot] = useState<{
+        code: string;
+        snapshot: Snapshot;
+    } | null>(null);
+    const selectionGenerationRef = useRef(0);
     const cachedSelected = useContract(selected?.code ?? null);
     const [workspace, setWorkspace] = useState<Workspace>(loadWorkspace);
     const [profiles, setProfiles] = useState<Profile[]>(loadProfiles);
@@ -638,17 +650,65 @@ function TradingApp() {
     }, [positionsPoll.data, marginPoll.data]);
 
     // select & link a symbol WITHOUT adding it to the watchlist
-    const selectByCode = useCallback(
-        async (code: string) => {
+    const selectByCode = useCallback<QuotePickHandler>(
+        async (code, sourceSnapshot) => {
+            const generation = nextGeneration(selectionGenerationRef);
+            if (sourceSnapshot?.code === code) {
+                setExternalSnapshot({ code, snapshot: sourceSnapshot });
+            } else {
+                setExternalSnapshot(null);
+            }
             const existing = items.find((i) => i.contract.code === code);
             if (existing) {
+                if (!isLatestGeneration(selectionGenerationRef, generation))
+                    return;
                 setSelected(existing.contract);
+                if (!sourceSnapshot && !existing.snapshot) {
+                    void fetchSnapshots([existing.contract])
+                        .then((rows) => {
+                            if (
+                                !isLatestGeneration(
+                                    selectionGenerationRef,
+                                    generation,
+                                )
+                            )
+                                return;
+                            const snapshot = rows.find(
+                                (row) => row.code === code,
+                            );
+                            if (snapshot)
+                                setExternalSnapshot({ code, snapshot });
+                        })
+                        .catch(() => undefined);
+                }
                 return;
             }
             try {
                 const c = await ensureContract(code);
+                if (!isLatestGeneration(selectionGenerationRef, generation))
+                    return;
                 setSelected(c);
+                if (!sourceSnapshot) {
+                    void fetchSnapshots([c])
+                        .then((rows) => {
+                            if (
+                                !isLatestGeneration(
+                                    selectionGenerationRef,
+                                    generation,
+                                )
+                            )
+                                return;
+                            const snapshot = rows.find(
+                                (row) => row.code === code,
+                            );
+                            if (snapshot)
+                                setExternalSnapshot({ code, snapshot });
+                        })
+                        .catch(() => undefined);
+                }
             } catch {
+                if (!isLatestGeneration(selectionGenerationRef, generation))
+                    return;
                 notify({
                     kind: 'err',
                     title: '找不到商品',
@@ -684,8 +744,12 @@ function TradingApp() {
     );
 
     const selectedSnapshot = useMemo(
-        () => items.find((i) => i.contract.code === selected?.code)?.snapshot,
-        [items, selected],
+        () =>
+            items.find((i) => i.contract.code === selected?.code)?.snapshot ??
+            (externalSnapshot && externalSnapshot.code === selected?.code
+                ? externalSnapshot.snapshot
+                : undefined),
+        [externalSnapshot, items, selected],
     );
 
     // ambient observation: one effect catches every selection path
@@ -854,16 +918,8 @@ function TradingApp() {
     });
 
     const jumpToCode = useCallback(
-        async (code: string) => {
-            const existing = items.find((i) => i.contract.code === code);
-            if (existing) {
-                setSelected(existing.contract);
-                return;
-            }
-            const c = await ensureContract(code);
-            setSelected(c);
-        },
-        [items],
+        async (code: string) => selectByCode(code),
+        [selectByCode],
     );
 
     const addableTypes = useMemo(
@@ -900,7 +956,11 @@ function TradingApp() {
     const watchlistProps = {
         items,
         selectedCode: selected?.code ?? null,
-        onSelect: setSelected,
+        onSelect: (contract: ContractInfo) => {
+            nextGeneration(selectionGenerationRef);
+            setExternalSnapshot(null);
+            setSelected(contract);
+        },
         onAdd: addSymbol,
         onRemove: removeSymbol,
         onReorder: reorderSymbol,

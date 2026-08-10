@@ -14,6 +14,8 @@ import {
     fetchScanner,
 } from '../lib/shioaji';
 import { getAliasFor } from '../lib/stream';
+import { quoteLimitState } from '../lib/limit-state';
+import { loadStockDetails, type StockMeta } from '../lib/stock-index';
 import type { WatchItem } from '../hooks/use-watchlist';
 import type { ScannerItem } from '../lib/types/market';
 import type { Position } from '../lib/types/portfolio';
@@ -67,7 +69,7 @@ async function pickCode(code: string) {
     }
 }
 
-function WatchMini({ item, spark }: { item: WatchItem; spark: boolean }) {
+export function WatchMini({ item, spark }: { item: WatchItem; spark: boolean }) {
     const quote = useQuote(item.contract.code);
     const tick = quote?.tick;
     const index = quote?.index;
@@ -82,6 +84,13 @@ function WatchMini({ item, spark }: { item: WatchItem; spark: boolean }) {
             ? ((close - ref) / ref) * 100
             : (item.snapshot?.change_rate ?? 0);
     const dir = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+    const atLimit = quoteLimitState({
+        price: close,
+        limitUp: item.contract.limit_up,
+        limitDown: item.contract.limit_down,
+        isIndex: item.contract.security_type === 'IND',
+    });
+    const limitLabel = atLimit === 'up' ? '漲停' : atLimit === 'down' ? '跌停' : null;
     return (
         <button
             className={spark ? styles.rowSpark : styles.row}
@@ -98,11 +107,30 @@ function WatchMini({ item, spark }: { item: WatchItem; spark: boolean }) {
                     stretch
                 />
             )}
-            <span className={`${styles.num} ${panel.dirText[dir]}`}>
-                {fmtPrice(close)}
-            </span>
-            <span className={`${styles.numSm} ${panel.dirText[dir]}`}>
-                {fmtPct(pct)}
+            <span
+                className={styles.quoteGroup[atLimit ?? 'neutral']}
+                data-limit-state={atLimit ?? undefined}
+                data-quote-group='current'
+                aria-label={
+                    limitLabel
+                        ? `${limitLabel}，最新價 ${fmtPrice(close)}，${fmtPct(pct)}`
+                        : undefined
+                }
+            >
+                <span
+                    className={`${styles.num} ${
+                        atLimit ? styles.limitText : panel.dirText[dir]
+                    }`}
+                >
+                    {fmtPrice(close)}
+                </span>
+                <span
+                    className={`${styles.numSm} ${
+                        atLimit ? styles.limitText : panel.dirText[dir]
+                    }`}
+                >
+                    {fmtPct(pct)}
+                </span>
             </span>
         </button>
     );
@@ -139,6 +167,25 @@ export function TrayPanel() {
             [sections],
         ),
         30000,
+    );
+    const [moverDetails, setMoverDetails] = useState<StockMeta[]>([]);
+    const moverCodes = (moversPoll.data ?? []).map((item) => item.code).join(',');
+    useEffect(() => {
+        let alive = true;
+        if (!moverCodes) {
+            setMoverDetails([]);
+            return;
+        }
+        void loadStockDetails(moverCodes.split(',')).then((details) => {
+            if (alive) setMoverDetails(details);
+        });
+        return () => {
+            alive = false;
+        };
+    }, [moverCodes]);
+    const moverMeta = useMemo(
+        () => new Map(moverDetails.map((detail) => [detail.code, detail])),
+        [moverDetails],
     );
 
     const positions = positionsPoll.data ?? [];
@@ -308,6 +355,18 @@ export function TrayPanel() {
                                     : it.change_price < 0
                                       ? 'down'
                                       : 'flat';
+                            const meta = moverMeta.get(it.code);
+                            const atLimit = quoteLimitState({
+                                price: it.close,
+                                limitUp: meta?.limit_up,
+                                limitDown: meta?.limit_down,
+                            });
+                            const limitLabel =
+                                atLimit === 'up'
+                                    ? '漲停'
+                                    : atLimit === 'down'
+                                      ? '跌停'
+                                      : null;
                             return (
                                 <button
                                     key={it.code}
@@ -321,14 +380,25 @@ export function TrayPanel() {
                                         {it.name}
                                     </span>
                                     <span
-                                        className={`${styles.num} ${panel.dirText[dir]}`}
+                                        className={`${styles.quoteGroup[atLimit ?? 'neutral']} ${styles.moverQuoteGroup}`}
+                                        data-limit-state={atLimit ?? undefined}
+                                        data-quote-group='current'
+                                        aria-label={
+                                            limitLabel
+                                                ? `${limitLabel}，最新價 ${fmtPrice(it.close)}，${fmtPct(pct)}`
+                                                : undefined
+                                        }
                                     >
-                                        {fmtPrice(it.close)}
-                                    </span>
-                                    <span
-                                        className={`${styles.numSm} ${panel.dirText[dir]}`}
-                                    >
-                                        {fmtPct(pct)}
+                                        <span
+                                            className={`${styles.num} ${atLimit ? styles.limitText : panel.dirText[dir]}`}
+                                        >
+                                            {fmtPrice(it.close)}
+                                        </span>
+                                        <span
+                                            className={`${styles.numSm} ${atLimit ? styles.limitText : panel.dirText[dir]}`}
+                                        >
+                                            {fmtPct(pct)}
+                                        </span>
                                     </span>
                                 </button>
                             );

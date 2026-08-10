@@ -3,6 +3,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { focusSector } from '../lib/sector-sync';
 import { fetchScanner } from '../lib/shioaji';
+import { quoteLimitState } from '../lib/limit-state';
+import {
+    scannerItemToSnapshot,
+    type QuotePickHandler,
+} from '../lib/quote-selection';
 import {
     categoryOf,
     loadStockDetails,
@@ -78,7 +83,7 @@ function fmtAmount(amount: number): string {
 export function ScannerPanel({
     onPick,
 }: {
-    onPick: (code: string) => void;
+    onPick: QuotePickHandler;
 }) {
     const [modeKey, setModeKey] = useState(
         () => localStorage.getItem(MODE_KEY) ?? 'gain',
@@ -123,6 +128,10 @@ export function ScannerPanel({
         }
         return m;
     }, [items, index]);
+    const metaByCode = useMemo(
+        () => new Map((index ?? []).map((detail) => [detail.code, detail])),
+        [index],
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -249,6 +258,18 @@ export function ScannerPanel({
                             : it.total_volume > 0
                               ? fmtInt(it.total_volume)
                               : '';
+                    const meta = metaByCode.get(it.code);
+                    const atLimit = quoteLimitState({
+                        price: it.close,
+                        limitUp: meta?.limit_up,
+                        limitDown: meta?.limit_down,
+                    });
+                    const limitLabel =
+                        atLimit === 'up'
+                            ? '漲停'
+                            : atLimit === 'down'
+                              ? '跌停'
+                              : null;
                     return (
                         <div
                             key={it.code}
@@ -257,7 +278,13 @@ export function ScannerPanel({
                             }`}
                             onClick={() => {
                                 setPicked(it.code);
-                                onPick(it.code);
+                                onPick(
+                                    it.code,
+                                    scannerItemToSnapshot(
+                                        it,
+                                        meta?.exchange || 'TSE',
+                                    ),
+                                );
                             }}
                         >
                             <span className={styles.rank}>
@@ -285,14 +312,27 @@ export function ScannerPanel({
                             ) : (
                                 <span />
                             )}
-                            <span className={styles.valueBlock}>
+                            <span
+                                className={styles.quoteGroup[atLimit ?? 'neutral']}
+                                data-limit-state={atLimit ?? undefined}
+                                data-quote-group='current'
+                                aria-label={
+                                    limitLabel
+                                        ? `${limitLabel}，最新價 ${fmtPrice(it.close)}，${fmtPct(pct)}`
+                                        : undefined
+                                }
+                            >
                                 <span
-                                    className={`${styles.scValue} ${panel.dirText[dir]}`}
+                                    className={`${styles.scValue} ${
+                                        atLimit
+                                            ? styles.limitText
+                                            : panel.dirText[dir]
+                                    }`}
                                 >
                                     {fmtPrice(it.close)} {fmtPct(pct)}
                                 </span>
-                                <span className={styles.scSub}>{sub}</span>
                             </span>
+                            <span className={styles.scSub}>{sub}</span>
                         </div>
                     );
                 })}

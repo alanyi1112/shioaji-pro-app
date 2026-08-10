@@ -5,6 +5,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuote } from '../hooks/use-stream';
 import { pickOptionLeg } from '../lib/option-pick';
+import { quoteLimitState } from '../lib/limit-state';
+import type { QuotePickHandler } from '../lib/quote-selection';
 import { fetchOptions, fetchSnapshots } from '../lib/shioaji';
 import type { ContractInfo } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
@@ -52,7 +54,7 @@ const MONTH_KEY = 'sj-pro-optchain-month';
 export function OptionChain({
     onPick,
 }: {
-    onPick?: (code: string) => void;
+    onPick?: QuotePickHandler;
 }) {
     const [contracts, setContracts] = useState<OptContract[]>([]);
     const [month, setMonth] = useState(
@@ -174,8 +176,8 @@ export function OptionChain({
         return <div className={dock.emptyState}>無可用合約</div>;
     }
 
-    const Cell = ({ code }: { code?: string }) => {
-        const s = code ? snaps.get(code) : undefined;
+    const Cell = ({ contract }: { contract?: OptContract }) => {
+        const s = contract ? snaps.get(contract.code) : undefined;
         if (!s) {
             return (
                 <>
@@ -187,9 +189,23 @@ export function OptionChain({
         }
         const dir =
             s.change_price > 0 ? 'up' : s.change_price < 0 ? 'down' : 'flat';
+        const atLimit = quoteLimitState({
+            price: s.close,
+            limitUp: contract?.limit_up,
+            limitDown: contract?.limit_down,
+        });
         return (
             <>
-                <td className={`${styles.td} ${panel.dirText[dir]}`}>
+                <td
+                    className={`${styles.td} ${atLimit ? styles.quoteCell[atLimit] : panel.dirText[dir]}`}
+                    data-limit-state={atLimit ?? undefined}
+                    data-quote-group='current'
+                    aria-label={
+                        atLimit
+                            ? `${atLimit === 'up' ? '漲停' : '跌停'}，成交 ${fmtPrice(s.close, 0)}`
+                            : undefined
+                    }
+                >
                     {s.close ? fmtPrice(s.close, 0) : '—'}
                 </td>
                 <td className={styles.td}>
@@ -272,14 +288,14 @@ export function OptionChain({
                                         ? r.call?.code
                                         : r.put?.code;
                                     if (code) {
-                                        onPick(code);
+                                        onPick(code, snaps.get(code));
                                         // also offer it to a combo panel in
                                         // 連動 mode (issue #1)
                                         pickOptionLeg(code);
                                     }
                                 }}
                             >
-                                <Cell code={r.call?.code} />
+                                <Cell contract={r.call} />
                                 <td
                                     className={`${styles.strike} ${
                                         r.strike === nearestStrike
@@ -289,7 +305,7 @@ export function OptionChain({
                                 >
                                     {fmtPrice(r.strike, 0)}
                                 </td>
-                                <Cell code={r.put?.code} />
+                                <Cell contract={r.put} />
                             </tr>
                         ))}
                     </tbody>
