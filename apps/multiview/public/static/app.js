@@ -131,6 +131,52 @@ const PIVOT_POINT_STYLES = {
   s2: { color: "#4ade80", title: "S2", lineStyle: LightweightCharts.LineStyle.Dashed },
   s3: { color: "#22c55e", title: "S3", lineStyle: LightweightCharts.LineStyle.Dotted },
 };
+const SUPPORT_RESISTANCE_FORMULA_STYLES = {
+  pivotPoint: { prefix: "PP", levels: PIVOT_POINT_STYLES },
+  threeLevelPrice: {
+    prefix: "三關",
+    levels: {
+      up: { color: "#fb923c", title: "上", lineStyle: LightweightCharts.LineStyle.Dashed },
+      mid: { color: "#fbbf24", title: "中", lineStyle: LightweightCharts.LineStyle.Dashed },
+      down: { color: "#a3e635", title: "下", lineStyle: LightweightCharts.LineStyle.Dashed },
+    },
+  },
+  cdp: {
+    prefix: "CDP",
+    levels: {
+      ah: { color: "#c084fc", title: "AH", lineStyle: LightweightCharts.LineStyle.Dotted },
+      nh: { color: "#c084fc", title: "NH", lineStyle: LightweightCharts.LineStyle.Dotted },
+      cdp: { color: "#60a5fa", title: "CDP", lineStyle: LightweightCharts.LineStyle.Dotted },
+      nl: { color: "#22d3ee", title: "NL", lineStyle: LightweightCharts.LineStyle.Dotted },
+      al: { color: "#22d3ee", title: "AL", lineStyle: LightweightCharts.LineStyle.Dotted },
+    },
+  },
+};
+const SUPPORT_RESISTANCE_FORMULA_IDS = new Set(Object.keys(SUPPORT_RESISTANCE_FORMULA_STYLES));
+const SUPPORT_RESISTANCE_INTERVAL_RANK = Object.freeze({
+  "1m": 0,
+  "5m": 1,
+  "15m": 2,
+  "1h": 3,
+  "1d": 4,
+  "1wk": 5,
+  "1mo": 6,
+});
+const SUPPORT_RESISTANCE_INTERVAL_PREFIX = Object.freeze({
+  "1m": "1m",
+  "5m": "5m",
+  "15m": "15m",
+  "1h": "60m",
+  "1d": "日",
+  "1wk": "週",
+  "1mo": "月",
+});
+
+function supportResistanceSourceApplies(sourceInterval, targetInterval) {
+  const sourceRank = SUPPORT_RESISTANCE_INTERVAL_RANK[sourceInterval];
+  const targetRank = SUPPORT_RESISTANCE_INTERVAL_RANK[targetInterval];
+  return Number.isFinite(sourceRank) && Number.isFinite(targetRank) && sourceRank >= targetRank;
+}
 const VOLUME_AVERAGE_STYLES = {
   ma5: { color: "#fb7185", title: "量 MA5" },
   ma10: { color: "#38bdf8", title: "量 MA10" },
@@ -2578,6 +2624,9 @@ function exposeQuoteChartDebug() {
     panelViewState() {
       return state.panels.map((panel) => panel.viewStateReport?.()).filter(Boolean);
     },
+    supportResistanceState() {
+      return state.panels.map((panel) => panel.supportResistanceReport?.()).filter(Boolean);
+    },
     chipReadoutGeometry() {
       return {
         matrix: quoteChartDebugMatrix(),
@@ -3184,6 +3233,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let pivotSelectedReferenceKey;
   let pivotSelectedAnchorTime;
   let pivotSelectionPinned = false;
+  const supportResistanceSourcesBySymbol = new Map();
+  let activeSupportResistanceSymbol = "";
+  let activeSupportResistanceInterval = "";
   let estimatedMarginCostSeries;
   let estimatedMarginRowsByDate = new Map();
   let estimatedMarginAbortController;
@@ -3337,6 +3389,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   chartAnnotationController?.restore();
   restoreIndicatorDefaults(mainIndicatorInputs, MAIN_INDICATOR_DEFAULTS);
   restoreIndicatorDefaults(subIndicatorInputs, SUB_INDICATOR_DEFAULTS);
+  activeSupportResistanceSymbol = canonicalSymbol(symbolSelect.value);
+  activeSupportResistanceInterval = intervalSelect.value;
+  restoreSupportResistanceInputsForContext(symbolSelect.value, intervalSelect.value);
   const cleanupIndicatorMenus = wireIndicatorMenus(indicatorMenus);
   refreshMainReadoutMode();
 
@@ -3608,14 +3663,18 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   window.addEventListener("blur", closePanelContextMenu);
 
   symbolSelect.addEventListener("change", () => {
+    persistSupportResistanceInputState(activeSupportResistanceSymbol, activeSupportResistanceInterval);
     const selectedInterval = intervalSelect.value;
     fillIntervalOptions(intervalSelect, selectedInterval, symbolSelect.value);
+    restoreSupportResistanceInputsForContext(symbolSelect.value, intervalSelect.value);
     updatePanelReorderLabel();
     chipPaneManager?.setMode(effectivePanelSubchartMode());
     chartAnnotationController?.restore();
     load();
   });
   intervalSelect.addEventListener("change", () => {
+    persistSupportResistanceInputState(activeSupportResistanceSymbol, activeSupportResistanceInterval);
+    restoreSupportResistanceInputsForContext(symbolSelect.value, intervalSelect.value);
     chartAnnotationController?.restore();
     load();
   });
@@ -3679,7 +3738,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (input.value === "estimatedMarginCost") {
         localStorage.setItem(estimatedMarginCostStorageKey(symbolSelect.value), String(input.checked));
       }
-      if (input.value === "pivotPoint") {
+      if (SUPPORT_RESISTANCE_FORMULA_IDS.has(input.value)) {
+        persistSupportResistanceInputState(activeSupportResistanceSymbol, activeSupportResistanceInterval);
         refreshPivotPointSelection();
         return;
       }
@@ -3778,19 +3838,23 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   }
 
   function refreshSymbolOptions(preferredSymbol = symbolSelect.value) {
+    persistSupportResistanceInputState(activeSupportResistanceSymbol, activeSupportResistanceInterval);
     const fallback = defaultSymbolForPanel(panelPosition);
     const options = visibleSymbolsForActiveCategory();
     const nextSymbol = options.some((item) => item.symbol === preferredSymbol) ? preferredSymbol : fallback;
     fillSymbolOptions(symbolSelect, nextSymbol);
     fillIntervalOptions(intervalSelect, intervalSelect.value, nextSymbol);
+    restoreSupportResistanceInputsForContext(symbolSelect.value, intervalSelect.value);
     updateLatestPriceInstrumentLabel(nextSymbol, priceLabel.dataset.sessionLabel || "");
     return nextSymbol !== preferredSymbol;
   }
 
   function applyOrderedSymbol(nextSymbol = defaultSymbolForPanel(panelPosition)) {
+    persistSupportResistanceInputState(activeSupportResistanceSymbol, activeSupportResistanceInterval);
     const previousSymbol = symbolSelect.value;
     fillSymbolOptions(symbolSelect, nextSymbol);
     fillIntervalOptions(intervalSelect, intervalSelect.value, symbolSelect.value);
+    restoreSupportResistanceInputsForContext(symbolSelect.value, intervalSelect.value);
     updateLatestPriceInstrumentLabel(symbolSelect.value, priceLabel.dataset.sessionLabel || "");
     return symbolSelect.value !== previousSymbol;
   }
@@ -4275,10 +4339,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       eventSource?.close();
       eventSource = undefined;
       if (lastPayload.indicators) delete lastPayload.indicators.pivot_points;
-      clearPivotPoints();
+      clearCurrentPivotCarrier();
+      updatePivotAutoScale();
+      updatePivotReadout();
+      renderPivotPointOverlay();
       setReadoutSelection(getSelectedMainIndicators(), getSelectedSubIndicators());
       connectStream(symbol, interval);
-      status.textContent = "Pivot Point 已移除";
+      status.textContent = applicableSupportResistanceSources().length ? "已移除目前週期壓撐；保留較長週期投影" : "壓撐價位已移除";
       status.classList.remove("is-visible");
       return;
     }
@@ -4288,7 +4355,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     try {
       const cachedCandidate = readPanelPayloadCache(symbol, interval, pivotMode);
       const cachedPayload = (cachedCandidate?.candles || []).length >= oldCandleCount
-        && cachedCandidate?.indicators?.pivot_points?.contractVersion === "selected-next-period-v1"
+        && pivotPayloadSupportsSelectedFormulas(cachedCandidate)
         ? cachedCandidate
         : undefined;
       let payload = cachedPayload;
@@ -4307,8 +4374,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         || interval !== intervalSelect.value
         || pivotMode !== selectedPivotMode()
       ) return;
-      if (payload?.indicators?.pivot_points?.contractVersion !== "selected-next-period-v1") {
-        throw new Error("Pivot Point 資料版本不相容");
+      if (!pivotPayloadSupportsSelectedFormulas(payload)) {
+        throw new Error("壓撐價位資料版本不相容");
       }
       if ((payload.candles || []).length < oldCandleCount) {
         lastPayload.indicators = {
@@ -4322,11 +4389,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         applyPayload(preparedPayload, { prepared: true, viewportSnapshot, oldCandleCount });
         writePanelPayloadCache(symbol, interval, preparedPayload, pivotMode);
       }
-      status.textContent = "Pivot Point 已載入";
+      status.textContent = "壓撐價位已載入";
       status.classList.remove("is-visible");
     } catch (error) {
       if (destroyed || currentLoadToken !== loadToken) return;
-      status.textContent = `Pivot Point 更新失敗：${formatLoadErrorMessage(error)}`;
+      status.textContent = `壓撐價位更新失敗：${formatLoadErrorMessage(error)}`;
       status.classList.add("is-visible");
     } finally {
       resumePanelStreamsAfterForegroundRequest();
@@ -4389,8 +4456,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (selectedMain.has("bollinger")) drawBollinger(indicators.bollinger || {});
       else clearBollinger();
     });
-    if (selectedMain.has("pivotPoint")) drawPivotPoints(indicators.pivot_points);
-    else clearPivotPoints();
+    if (selectedSupportResistanceFormulas(selectedMain).size) drawPivotPoints(indicators.pivot_points);
+    else {
+      clearCurrentPivotCarrier();
+      updatePivotAutoScale();
+      updatePivotReadout();
+      renderPivotPointOverlay();
+    }
     if (selectedMain.has("fvg")) {
       drawFvg(indicators.fvg || []);
     } else {
@@ -5805,6 +5877,28 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     };
   }
 
+  function supportResistanceReport() {
+    const sources = supportResistanceSourcesForSymbol(symbolSelect.value, false);
+    return {
+      panelIndex: panelPosition,
+      symbol: symbolSelect.value,
+      interval: intervalSelect.value,
+      checked: Object.fromEntries(supportResistanceInputs().map((input) => [input.value, input.checked])),
+      sources: [...(sources?.values() || [])].map((source) => ({
+        interval: source.sourceInterval,
+        enabled: [...source.enabled],
+        referencePeriodKey: source.selectedReferenceKey || null,
+        pinned: Boolean(source.pinned),
+        visible: supportResistanceSourceApplies(source.sourceInterval, intervalSelect.value),
+      })),
+      labels: [...pivotPointLayer.querySelectorAll(".pivot-point-label")].map((label) => ({
+        sourceInterval: label.dataset.sourceInterval || "",
+        referencePeriod: label.dataset.referencePeriod || "",
+        text: label.textContent || "",
+      })),
+    };
+  }
+
   function assertPaneCoordinateAlignment(time = sharedHoverTime || latestCandleTime()) {
     return measurePaneCoordinateForTime(time, "assert");
   }
@@ -5813,8 +5907,94 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     return new Set(mainIndicatorInputs.filter((input) => input.checked).map((input) => input.value));
   }
 
+  function supportResistanceInputs() {
+    return mainIndicatorInputs.filter((input) => SUPPORT_RESISTANCE_FORMULA_IDS.has(input.value));
+  }
+
+  function supportResistanceSourcesForSymbol(symbol = symbolSelect.value, create = false) {
+    const key = canonicalSymbol(symbol);
+    let sources = supportResistanceSourcesBySymbol.get(key);
+    if (!sources && create) {
+      sources = new Map();
+      supportResistanceSourcesBySymbol.set(key, sources);
+    }
+    return sources;
+  }
+
+  function supportResistanceSourceState(symbol = symbolSelect.value, interval = intervalSelect.value, create = false) {
+    const sources = supportResistanceSourcesForSymbol(symbol, create);
+    if (!sources) return undefined;
+    let source = sources.get(interval);
+    if (!source && create) {
+      source = {
+        sourceInterval: interval,
+        enabled: new Set(),
+        projectionByPeriod: new Map(),
+        targetPeriodByTime: new Map(),
+        selectedReferenceKey: undefined,
+        selectedAnchorTime: undefined,
+        pinned: false,
+      };
+      sources.set(interval, source);
+    }
+    return source;
+  }
+
+  function persistSupportResistanceInputState(
+    symbol = activeSupportResistanceSymbol || symbolSelect.value,
+    interval = activeSupportResistanceInterval || intervalSelect.value,
+  ) {
+    if (!symbol || !interval || !Object.prototype.hasOwnProperty.call(SUPPORT_RESISTANCE_INTERVAL_RANK, interval)) return;
+    const enabled = new Set(supportResistanceInputs().filter((input) => input.checked).map((input) => input.value));
+    const source = supportResistanceSourceState(symbol, interval, enabled.size > 0);
+    if (!source) return;
+    source.enabled = enabled;
+    if (!enabled.size) {
+      supportResistanceSourcesForSymbol(symbol)?.delete(interval);
+      if (!supportResistanceSourcesForSymbol(symbol)?.size) supportResistanceSourcesBySymbol.delete(canonicalSymbol(symbol));
+    }
+  }
+
+  function restoreSupportResistanceInputsForContext(symbol, interval) {
+    activeSupportResistanceSymbol = canonicalSymbol(symbol);
+    activeSupportResistanceInterval = interval;
+    const source = supportResistanceSourceState(symbol, interval, false);
+    supportResistanceInputs().forEach((input) => {
+      input.checked = Boolean(source?.enabled?.has(input.value));
+      input.disabled = !Object.prototype.hasOwnProperty.call(SUPPORT_RESISTANCE_INTERVAL_RANK, interval);
+      input.title = input.disabled ? "分時模式不提供壓撐來源設定" : "";
+    });
+  }
+
+  function currentSupportResistanceSource(create = false) {
+    return supportResistanceSourceState(symbolSelect.value, intervalSelect.value, create);
+  }
+
+  function applicableSupportResistanceSources() {
+    const targetInterval = intervalSelect.value;
+    const sources = supportResistanceSourcesForSymbol(symbolSelect.value, false);
+    if (!sources) return [];
+    return [...sources.values()]
+      .filter((source) => source.enabled?.size && supportResistanceSourceApplies(source.sourceInterval, targetInterval))
+      .sort((left, right) => SUPPORT_RESISTANCE_INTERVAL_RANK[right.sourceInterval] - SUPPORT_RESISTANCE_INTERVAL_RANK[left.sourceInterval]);
+  }
+
+  function selectedSupportResistanceFormulas(selectedMain = getSelectedMainIndicators()) {
+    return new Set([...selectedMain].filter((formulaId) => SUPPORT_RESISTANCE_FORMULA_IDS.has(formulaId)));
+  }
+
   function selectedPivotMode() {
-    return getSelectedMainIndicators().has("pivotPoint") ? "traditional" : null;
+    return selectedSupportResistanceFormulas().size ? "traditional" : null;
+  }
+
+  function pivotPayloadSupportsSelectedFormulas(payload) {
+    const pivotPoints = payload?.indicators?.pivot_points;
+    if (pivotPoints?.contractVersion !== "selected-next-period-v1") return false;
+    const selected = selectedSupportResistanceFormulas();
+    if (![...selected].some((formulaId) => formulaId !== "pivotPoint")) return true;
+    if (pivotPoints.status !== "available") return true;
+    return (pivotPoints.projections || []).length > 0
+      && (pivotPoints.projections || []).every((projection) => projection?.formulaLevels?.threeLevelPrice && projection?.formulaLevels?.cdp);
   }
 
   function withPanelIndicatorParameters(url) {
@@ -5938,33 +6118,52 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       || pivotPoints?.contractVersion !== "selected-next-period-v1"
       || pivotPoints?.status !== "available"
     ) {
-      clearPivotPoints();
+      const source = currentSupportResistanceSource(true);
+      source.projectionByPeriod = new Map();
+      source.targetPeriodByTime = new Map();
+      source.selectedReferenceKey = undefined;
+      source.selectedAnchorTime = undefined;
+      source.pinned = false;
+      clearCurrentPivotCarrier();
+      updatePivotAutoScale();
+      updatePivotReadout();
+      renderPivotPointOverlay();
       return;
     }
     pivotProjectionByPeriod = new Map((pivotPoints.projections || []).map((projection) => [projection.referencePeriodKey, projection]));
     pivotTargetPeriodByTime = new Map((pivotPoints.targets || []).map((target) => [normalizeChartTime(target.time), target.referencePeriodKey]));
+    const source = currentSupportResistanceSource(true);
+    pivotSelectedReferenceKey = source.selectedReferenceKey;
+    pivotSelectedAnchorTime = source.selectedAnchorTime;
+    pivotSelectionPinned = Boolean(source.pinned);
     if (!pivotProjectionByPeriod.has(pivotSelectedReferenceKey)) {
       pivotSelectionPinned = false;
       selectDefaultPivotProjection({ render: false });
     } else if (!Number.isFinite(Number(pivotSelectedAnchorTime))) {
       pivotSelectedAnchorTime = latestPivotAnchorTime(pivotSelectedReferenceKey);
     }
+    persistCurrentPivotCarrier();
     updatePivotAutoScale();
     updatePivotReadout();
     renderPivotPointOverlay();
   }
 
-  function clearPivotPoints() {
+  function clearCurrentPivotCarrier() {
     pivotProjectionByPeriod = new Map();
     pivotTargetPeriodByTime = new Map();
     pivotSelectedReferenceKey = undefined;
     pivotSelectedAnchorTime = undefined;
     pivotSelectionPinned = false;
-    pivotPointLayer.replaceChildren();
-    pivotAutoScaleSignature = "";
-    pivotAutoScaleLowerSeries?.setData([]);
-    pivotAutoScaleUpperSeries?.setData([]);
-    updatePivotReadout();
+  }
+
+  function persistCurrentPivotCarrier() {
+    const source = currentSupportResistanceSource(true);
+    source.enabled = selectedSupportResistanceFormulas();
+    source.projectionByPeriod = new Map(pivotProjectionByPeriod);
+    source.targetPeriodByTime = new Map(pivotTargetPeriodByTime);
+    source.selectedReferenceKey = pivotSelectedReferenceKey;
+    source.selectedAnchorTime = pivotSelectedAnchorTime;
+    source.pinned = pivotSelectionPinned;
   }
 
   function latestPivotAnchorTime(referenceKey) {
@@ -5987,6 +6186,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     pivotSelectionPinned = false;
     pivotSelectedReferenceKey = projection?.referencePeriodKey;
     pivotSelectedAnchorTime = projection ? latestPivotAnchorTime(projection.referencePeriodKey) : undefined;
+    persistCurrentPivotCarrier();
     updatePivotAutoScale();
     updatePivotReadout();
     if (options.render !== false) renderPivotPointOverlay();
@@ -6004,26 +6204,98 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     pivotSelectedReferenceKey = referenceKey;
     pivotSelectedAnchorTime = time;
     pivotSelectionPinned = true;
+    persistCurrentPivotCarrier();
     updatePivotAutoScale();
     updatePivotReadout();
     renderPivotPointOverlay();
-    status.textContent = `Pivot Point 已固定參考 ${referenceKey}`;
+    status.textContent = `壓撐價位已固定參考 ${referenceKey}`;
     return true;
   }
 
   function selectedPivotProjection() {
-    return pivotProjectionByPeriod.get(pivotSelectedReferenceKey);
+    const source = currentSupportResistanceSource(false);
+    return source?.projectionByPeriod?.get(source.selectedReferenceKey);
+  }
+
+  function selectedSupportResistanceLevels(
+    projection = selectedPivotProjection(),
+    selected = currentSupportResistanceSource(false)?.enabled || new Set(),
+    sourceInterval = intervalSelect.value,
+  ) {
+    if (!projection) return [];
+    return [...selected].flatMap((formulaId) => {
+      const formulaStyle = SUPPORT_RESISTANCE_FORMULA_STYLES[formulaId];
+      const values = formulaId === "pivotPoint"
+        ? (projection.formulaLevels?.pivotPoint || projection)
+        : projection.formulaLevels?.[formulaId];
+      if (!formulaStyle || !values) return [];
+      return Object.entries(formulaStyle.levels).flatMap(([key, style]) => {
+        const value = Number(values[key]);
+        return Number.isFinite(value) ? [{ sourceInterval, formulaId, prefix: formulaStyle.prefix, key, style, value }] : [];
+      });
+    });
+  }
+
+  function selectedProjectionForSource(source) {
+    return source?.projectionByPeriod?.get(source.selectedReferenceKey);
+  }
+
+  function supportResistanceSessionDate(time) {
+    const normalized = normalizeChartTime(time);
+    if (!Number.isFinite(normalized)) return "";
+    return window.QuoteChartRealtimeCharts?.sessionDateForTime?.(normalized)
+      || new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Taipei",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date(normalized * 1000));
+  }
+
+  function supportResistanceReferenceKeyForTime(time, sourceInterval) {
+    const normalized = normalizeChartTime(time);
+    if (!Number.isFinite(normalized)) return "";
+    if (["1m", "5m", "15m", "1h"].includes(sourceInterval)) return String(normalized);
+    const sessionDate = supportResistanceSessionDate(normalized);
+    if (sourceInterval === "1d") return sessionDate;
+    if (sourceInterval === "1mo") return sessionDate.slice(0, 7);
+    if (sourceInterval === "1wk") {
+      const monday = new Date(`${sessionDate}T00:00:00Z`);
+      monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
+      return monday.toISOString().slice(0, 10);
+    }
+    return "";
+  }
+
+  function pivotAnchorTimeForTarget(source, projection) {
+    if (!source || !projection) return undefined;
+    if (source.sourceInterval === intervalSelect.value) return Number(source.selectedAnchorTime);
+    const matched = (lastPayload?.candles || []).find((row) => (
+      supportResistanceReferenceKeyForTime(row.time, source.sourceInterval) === projection.referencePeriodKey
+    ));
+    return matched ? normalizeChartTime(matched.time) : Number(source.selectedAnchorTime);
+  }
+
+  function applicableSupportResistanceRenderGroups() {
+    return applicableSupportResistanceSources().flatMap((source) => {
+      const projection = selectedProjectionForSource(source);
+      const anchorTime = pivotAnchorTimeForTarget(source, projection);
+      if (!projection || !Number.isFinite(anchorTime)) return [];
+      return [{
+        source,
+        projection,
+        anchorTime,
+        levels: selectedSupportResistanceLevels(projection, source.enabled, source.sourceInterval),
+      }];
+    }).filter((group) => group.levels.length);
   }
 
   function updatePivotAutoScale() {
     if (!pivotAutoScaleLowerSeries || !pivotAutoScaleUpperSeries) return;
-    const projection = selectedPivotProjection();
-    const anchorTime = Number(pivotSelectedAnchorTime);
-    const values = projection
-      ? Object.keys(PIVOT_POINT_STYLES).map((key) => Number(projection[key])).filter(Number.isFinite)
-      : [];
-    const lower = values.length && Number.isFinite(anchorTime) ? [{ time: anchorTime, value: Math.min(...values) }] : [];
-    const upper = values.length && Number.isFinite(anchorTime) ? [{ time: anchorTime, value: Math.max(...values) }] : [];
+    const values = applicableSupportResistanceRenderGroups().flatMap((group) => group.levels.map((level) => level.value));
+    const scaleTime = normalizeChartTime(lastPayload?.candles?.at(-1)?.time);
+    const lower = values.length && Number.isFinite(scaleTime) ? [{ time: scaleTime, value: Math.min(...values) }] : [];
+    const upper = values.length && Number.isFinite(scaleTime) ? [{ time: scaleTime, value: Math.max(...values) }] : [];
     const signature = JSON.stringify([lower, upper]);
     if (signature === pivotAutoScaleSignature) return;
     pivotAutoScaleSignature = signature;
@@ -6033,13 +6305,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   }
 
   function updatePivotReadout() {
-    const projection = selectedPivotProjection();
-    const derivedPriceFormatter = (value) => formatQuotePrice(value, symbolSelect.value, "derived-price");
-    for (const [key, style] of Object.entries(PIVOT_POINT_STYLES)) {
-      const readoutKey = `pivot${key[0].toUpperCase()}${key.slice(1)}`;
-      setReadoutValue(mainReadout, readoutKey, projection?.[key], derivedPriceFormatter);
-      setReadoutItemColor(mainReadout, readoutKey, style.color);
-    }
+    const source = currentSupportResistanceSource(false);
+    const projection = selectedProjectionForSource(source);
     const referenceNode = mainReadout.querySelector("[data-pivot-reference]");
     const appliesNode = mainReadout.querySelector("[data-pivot-applies]");
     const statusNode = mainReadout.querySelector("[data-pivot-status]");
@@ -6051,25 +6318,37 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     })[projection?.appliesTo] || "--";
     if (statusNode) statusNode.textContent = projection?.referenceStatus === "provisional" ? "暫估" : projection ? "已完成" : "--";
     statusNode?.closest(".pivot-point-status")?.classList.toggle("is-provisional", projection?.referenceStatus === "provisional");
-    if (pivotPointReset) pivotPointReset.disabled = !projection || !pivotSelectionPinned;
+    if (pivotPointReset) pivotPointReset.disabled = !projection || !source?.pinned;
   }
 
   function renderPivotPointOverlay() {
     pivotPointLayer.replaceChildren();
-    const projection = selectedPivotProjection();
-    const anchorTime = Number(pivotSelectedAnchorTime);
-    if (!projection || !chart || !candleSeries || !Number.isFinite(anchorTime)) return;
-    const anchorX = chart.timeScale().timeToCoordinate(anchorTime);
+    const groups = applicableSupportResistanceRenderGroups();
+    if (!groups.length || !chart || !candleSeries) return;
     const rightEdge = Math.max(0, surface.clientWidth - getAxisSafeWidth() - 6);
-    if (!Number.isFinite(anchorX)) return;
-    const visibleAnchorX = Math.max(0, Math.min(anchorX, rightEdge - 8));
-    const labelWidth = Math.max(48, getAxisSafeWidth() - 4);
+    const labelWidth = Math.min(124, Math.max(96, Math.round(surface.clientWidth * 0.11)));
     const labelHeight = 18;
-    const labelLeft = rightEdge + 2;
-    const levels = Object.entries(PIVOT_POINT_STYLES).flatMap(([key, style]) => {
-      const value = Number(projection[key]);
-      const y = candleSeries.priceToCoordinate(value);
-      return Number.isFinite(value) && Number.isFinite(y) ? [{ key, style, value, y, labelY: y }] : [];
+    const labelLeft = Math.max(2, rightEdge - labelWidth - 2);
+    const lineEndX = Math.max(0, labelLeft - 4);
+    const levels = groups.flatMap(({ source, projection, anchorTime, levels: sourceLevels }) => {
+      const anchorX = chart.timeScale().timeToCoordinate(anchorTime);
+      const visibleAnchorX = Number.isFinite(anchorX) ? Math.max(0, Math.min(anchorX, lineEndX)) : 0;
+      return sourceLevels.flatMap(({ sourceInterval, formulaId, prefix, key, style, value }) => {
+        const y = candleSeries.priceToCoordinate(value);
+        return Number.isFinite(y) ? [{
+          source,
+          projection,
+          sourceInterval,
+          formulaId,
+          prefix,
+          key,
+          style,
+          value,
+          y,
+          labelY: y,
+          visibleAnchorX,
+        }] : [];
+      });
     }).sort((left, right) => left.y - right.y);
     const minGap = labelHeight + 2;
     levels.forEach((level, index) => {
@@ -6082,14 +6361,17 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("width", String(surface.clientWidth));
     svg.setAttribute("height", String(surface.clientHeight));
-    levels.forEach(({ key, style, value, y, labelY }) => {
+    levels.forEach(({ projection, sourceInterval, formulaId, prefix, key, style, value, y, labelY, visibleAnchorX }) => {
       const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
       line.setAttribute("x1", String(visibleAnchorX));
-      line.setAttribute("x2", String(rightEdge));
+      line.setAttribute("x2", String(lineEndX));
       line.setAttribute("y1", String(y));
       line.setAttribute("y2", String(y));
       line.setAttribute("stroke", style.color);
-      line.setAttribute("class", `pivot-point-line ${key === "r1" || key === "s1" ? "is-emphasis" : ""} ${["r2", "s2"].includes(key) ? "is-dashed" : ""} ${["r3", "s3"].includes(key) ? "is-dotted" : ""}`);
+      const lineStyleClass = style.lineStyle === LightweightCharts.LineStyle.Dashed
+        ? "is-dashed"
+        : style.lineStyle === LightweightCharts.LineStyle.Dotted ? "is-dotted" : "";
+      line.setAttribute("class", `pivot-point-line support-resistance-line-${formulaId} ${key === "r1" || key === "s1" ? "is-emphasis" : ""} ${lineStyleClass}`);
       svg.appendChild(line);
       if (Math.abs(labelY - y) > 1) {
         const connector = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -6102,12 +6384,14 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         svg.appendChild(connector);
       }
       const label = document.createElement("div");
-      label.className = `pivot-point-label pivot-point-label-${key}`;
+      label.className = `pivot-point-label pivot-point-label-${formulaId}-${key}`;
+      label.dataset.sourceInterval = sourceInterval;
+      label.dataset.referencePeriod = projection.referencePeriodKey;
       label.style.left = `${Math.round(labelLeft)}px`;
       label.style.top = `${Math.round(labelY - labelHeight / 2)}px`;
       label.style.width = `${Math.round(labelWidth)}px`;
       label.style.color = style.color;
-      label.textContent = `${style.title} ${formatQuotePrice(value, symbolSelect.value, "derived-price")}`;
+      label.textContent = `${SUPPORT_RESISTANCE_INTERVAL_PREFIX[sourceInterval] || sourceInterval} ${prefix} ${style.title} ${formatQuotePrice(value, symbolSelect.value, "derived-price")}`;
       pivotPointLayer.appendChild(label);
     });
     pivotPointLayer.prepend(svg);
@@ -7051,7 +7335,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     renderFixedRangeVolumeProfile();
     renderVisibleRangeExtrema();
     renderChartAnnotations();
-    if (selectedMain.has("pivotPoint")) renderPivotPointOverlay();
+    if (applicableSupportResistanceSources().length) renderPivotPointOverlay();
     else pivotPointLayer.replaceChildren();
     if (destroyed || !lastPayload) return;
     if (selectedMain.has("fvg")) renderFvgLayer(indicators.fvg || []);
@@ -7059,7 +7343,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     renderFixedRangeVolumeProfile();
     renderVisibleRangeExtrema();
     renderChartAnnotations();
-    if (selectedMain.has("pivotPoint")) renderPivotPointOverlay();
+    if (applicableSupportResistanceSources().length) renderPivotPointOverlay();
   }
 
   function renderActiveMainOverlays() {
@@ -7238,7 +7522,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     toggleReadoutRow(mainReadout, "ma", selectedMain.has("ma"));
     toggleReadoutRow(mainReadout, "volume", selectedMain.has("volume"));
     toggleReadoutRow(mainReadout, "bollinger", selectedMain.has("bollinger"));
-    toggleReadoutRow(mainReadout, "pivotPoint", selectedMain.has("pivotPoint"));
+    const supportResistanceSelected = selectedSupportResistanceFormulas(selectedMain).size > 0;
+    toggleReadoutRow(mainReadout, "pivotPoint", supportResistanceSelected);
     toggleReadoutRow(mainReadout, "fvg", selectedMain.has("fvg"));
     toggleReadoutRow(mainReadout, "volumeProfile", selectedMain.has("volumeProfile"));
     toggleReadoutRow(mainReadout, "peRiver", selectedMain.has("peRiver"));
@@ -7247,7 +7532,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     toggleReadoutGroup(mainReadout, ["ma5", "ma10", "ma20", "ma60", "ma120"], selectedMain.has("ma"));
     toggleReadoutGroup(mainReadout, ["volume", "volumeMa5", "volumeMa10", "volumeMa20"], selectedMain.has("volume"));
     toggleReadoutGroup(mainReadout, ["bollU", "bollM", "bollL"], selectedMain.has("bollinger"));
-    toggleReadoutGroup(mainReadout, ["pivotReference", "pivotApplies", "pivotStatus", "pivotP", "pivotR1", "pivotR2", "pivotR3", "pivotS1", "pivotS2", "pivotS3"], selectedMain.has("pivotPoint"));
+    toggleReadoutGroup(mainReadout, ["pivotReference", "pivotApplies", "pivotStatus"], supportResistanceSelected);
     toggleReadout(mainReadout, "fvg", selectedMain.has("fvg"));
     toggleReadoutGroup(mainReadout, ["volumeProfile", "poc", "vah", "val"], selectedMain.has("volumeProfile"));
     toggleReadout(mainReadout, "estimatedMarginCost", selectedMain.has("estimatedMarginCost"));
@@ -7693,7 +7978,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         if (point?.value != null) volumeMovingAverageSeries[seriesIndex]?.update(point);
       }
     }
-    if (selectedMain.has("pivotPoint") && event.indicators?.pivot_points) drawPivotPoints(lastPayload.indicators?.pivot_points);
+    if (selectedSupportResistanceFormulas(selectedMain).size && event.indicators?.pivot_points) drawPivotPoints(lastPayload.indicators?.pivot_points);
+    else if (applicableSupportResistanceSources().length) {
+      updatePivotAutoScale();
+      renderPivotPointOverlay();
+    }
     const selectedSub = getSelectedSubIndicators();
     if (event.indicators && selectedSub.size) {
       renderIndicatorChart(lastPayload.indicators || {}, selectedSub);
@@ -8283,6 +8572,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     scheduleAlignmentMeasurement,
     alignmentReport,
     viewStateReport,
+    supportResistanceReport,
     chipReadoutGeometry: () => chipPaneManager?.geometryReport?.() || [],
     cancelFixedProfileDrawing,
     updateFixedProfileToolAvailability,

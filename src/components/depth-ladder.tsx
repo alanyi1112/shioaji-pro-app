@@ -4,11 +4,17 @@
 import { useMemo } from 'react';
 import { useQuote } from '../hooks/use-stream';
 import { setPickedPrice } from '../lib/price-sync';
-import { fmtInt, fmtPrice } from '../lib/utils/format';
+import type { ContractInfo } from '../lib/types/contract';
+import {
+    fmtContractPrice,
+    fmtContractPriceChange,
+    fmtInt,
+} from '../lib/utils/format';
 import * as panel from './panel.css';
 import * as styles from './depth-ladder.css';
 
-export function DepthLadder({ code }: { code: string }) {
+export function DepthLadder({ contract }: { contract: ContractInfo }) {
+    const { code } = contract;
     const onPickPrice = (price: number) => setPickedPrice(code, price);
     const quote = useQuote(code);
     const ba = quote?.bidask;
@@ -71,7 +77,9 @@ export function DepthLadder({ code }: { code: string }) {
                                     }}
                                 />
                                 <span className={styles.priceBid}>
-                                    {bid?.price ? fmtPrice(bid.price) : ''}
+                                    {bid?.price
+                                        ? fmtContractPrice(contract, bid.price)
+                                        : ''}
                                 </span>
                             </div>
                             <div
@@ -87,7 +95,9 @@ export function DepthLadder({ code }: { code: string }) {
                                     }}
                                 />
                                 <span className={styles.priceAsk}>
-                                    {ask?.price ? fmtPrice(ask.price) : ''}
+                                    {ask?.price
+                                        ? fmtContractPrice(contract, ask.price)
+                                        : ''}
                                 </span>
                             </div>
                             <span className={styles.volTextRight}>
@@ -100,7 +110,12 @@ export function DepthLadder({ code }: { code: string }) {
                 <span className={panel.dirText.up}>Σ買 {fmtInt(totalBid)}</span>
                 {spread !== null && (
                     <span className={styles.spread} title='買一賣一價差'>
-                        價差 {fmtPrice(spread)}
+                        價差{' '}
+                        {fmtContractPriceChange(
+                            contract,
+                            spread,
+                            bids[0]?.price ?? contract.reference,
+                        )}
                     </span>
                 )}
                 <span className={panel.dirText.down}>

@@ -37,6 +37,7 @@ import type {
     Position,
 } from '../lib/types/portfolio';
 import {
+    fmtContractPrice,
     fmtInt,
     fmtMoney,
     fmtPrice,
@@ -217,18 +218,24 @@ function PositionsTable({
                                     privMoney,
                                 )}
                             </td>
-                            <td className={styles.td}>{fmtPrice(p.price)}</td>
+                            <td className={styles.td}>
+                                {contract
+                                    ? fmtContractPrice(contract, p.price)
+                                    : fmtPrice(p.price)}
+                            </td>
                             <td
                                 className={`${styles.td} ${atLimit ? styles.quoteCell[atLimit] : ''}`}
                                 data-limit-state={atLimit ?? undefined}
                                 data-quote-group='current'
                                 aria-label={
                                     atLimit
-                                        ? `${atLimit === 'up' ? '漲停' : '跌停'}，現價 ${fmtPrice(p.last_price)}`
+                                        ? `${atLimit === 'up' ? '漲停' : '跌停'}，現價 ${contract ? fmtContractPrice(contract, p.last_price) : fmtPrice(p.last_price)}`
                                         : undefined
                                 }
                             >
-                                {fmtPrice(p.last_price)}
+                                {contract
+                                    ? fmtContractPrice(contract, p.last_price)
+                                    : fmtPrice(p.last_price)}
                             </td>
                             <td
                                 className={`${styles.td} ${panel.dirText[dir]}`}
@@ -469,7 +476,8 @@ function OrdersTable({
                                 {orderDetail(t) || '—'}
                             </td>
                             <td className={styles.td}>
-                                {fmtPrice(
+                                {fmtContractPrice(
+                                    t.contract,
                                     t.status.modified_price || t.order.price,
                                 )}
                             </td>

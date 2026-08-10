@@ -74,6 +74,7 @@ interface IndicatorDefBase {
     aliases: string[]; // extra search keywords（中英文）
     category: 'overlay' | 'pane';
     params: ParamDef[];
+    pickerHidden?: boolean;
 }
 
 export interface SeriesIndicatorDef extends IndicatorDefBase {
@@ -103,7 +104,8 @@ export interface PrimitiveIndicatorDef extends IndicatorDefBase {
     primitive:
         | 'fair-value-gap'
         | 'fixed-volume-profile'
-        | 'traditional-pivot';
+        | 'traditional-pivot'
+        | 'support-resistance';
     iconText: string;
     singleton: true;
 }
@@ -608,8 +610,61 @@ export const BUILTIN_PRIMITIVE_DEFS: PrimitiveIndicatorDef[] = [
         primitive: 'traditional-pivot',
         iconText: 'P',
         singleton: true,
+        pickerHidden: true,
+    },
+    {
+        kind: 'primitive',
+        type: 'support-resistance-pivot',
+        label: 'PivotPoint',
+        short: 'PP',
+        desc: '由主交易畫面「壓撐」管理的 PivotPoint 七線',
+        aliases: ['pivotpoint', 'pivot point', '壓撐'],
+        category: 'overlay',
+        params: [],
+        primitive: 'support-resistance',
+        iconText: 'PP',
+        singleton: true,
+        pickerHidden: true,
+    },
+    {
+        kind: 'primitive',
+        type: 'support-resistance-three-level',
+        label: '三關價',
+        short: '三關',
+        desc: '由主交易畫面「壓撐」管理的上關、中關、下關',
+        aliases: ['three level price', '三關價', '壓撐'],
+        category: 'overlay',
+        params: [],
+        primitive: 'support-resistance',
+        iconText: '三',
+        singleton: true,
+        pickerHidden: true,
+    },
+    {
+        kind: 'primitive',
+        type: 'support-resistance-cdp',
+        label: 'CDP',
+        short: 'CDP',
+        desc: '由主交易畫面「壓撐」管理的 AH、NH、CDP、NL、AL',
+        aliases: ['cdp', 'wilder', '壓撐'],
+        category: 'overlay',
+        params: [],
+        primitive: 'support-resistance',
+        iconText: 'C',
+        singleton: true,
+        pickerHidden: true,
     },
 ];
+
+export const SUPPORT_RESISTANCE_INDICATOR_TYPES = {
+    'pivot-point': 'support-resistance-pivot',
+    'three-level-price': 'support-resistance-three-level',
+    cdp: 'support-resistance-cdp',
+} as const;
+
+export const SUPPORT_RESISTANCE_INSTANCE_TYPES = new Set<string>(
+    Object.values(SUPPORT_RESISTANCE_INDICATOR_TYPES),
+);
 
 export const INDICATOR_DEFS: IndicatorDef[] = [
     KBAR_READOUT_DEF,
@@ -640,6 +695,7 @@ export interface OutputStyle {
     visible?: boolean;
     opacity?: number; // 0–100
     plot?: PlotKind;
+    lineStyle?: 'solid' | 'dashed' | 'dotted';
 }
 
 export interface IndicatorInstance {
@@ -663,7 +719,7 @@ export function outputStyle(
     inst: IndicatorInstance,
     def: SeriesIndicatorDef,
     key: string,
-): Required<Omit<OutputStyle, 'plot'>> & { plot: PlotKind } {
+): Required<Omit<OutputStyle, 'plot' | 'lineStyle'>> & { plot: PlotKind } {
     const out = def.outputs.find((o) => o.key === key);
     const s = inst.styles?.[key] ?? {};
     return {
@@ -1007,6 +1063,13 @@ function outputStyleRecord(value: unknown): Record<string, OutputStyle> | undefi
         if (typeof raw.plot === 'string' && PLOT_KINDS.has(raw.plot as PlotKind)) {
             style.plot = raw.plot as PlotKind;
         }
+        if (
+            raw.lineStyle === 'solid' ||
+            raw.lineStyle === 'dashed' ||
+            raw.lineStyle === 'dotted'
+        ) {
+            style.lineStyle = raw.lineStyle;
+        }
         if (Object.keys(style).length > 0) out[key] = style;
     }
     return Object.keys(out).length > 0 ? out : undefined;
@@ -1089,9 +1152,19 @@ export function normalizeIndicatorInstances(
     if (!Array.isArray(value)) return [];
     const out: IndicatorInstance[] = [];
     const singletonTypes = new Set<string>();
+    const modernPivotExists = value.some(
+        (raw) =>
+            isRecord(raw) &&
+            raw.type === SUPPORT_RESISTANCE_INDICATOR_TYPES['pivot-point'],
+    );
     for (const raw of value) {
         if (!isRecord(raw)) continue;
-        const type = typeof raw.type === 'string' ? raw.type : '';
+        const rawType = typeof raw.type === 'string' ? raw.type : '';
+        if (rawType === 'traditional-pivot' && modernPivotExists) continue;
+        const type =
+            rawType === 'traditional-pivot'
+                ? SUPPORT_RESISTANCE_INDICATOR_TYPES['pivot-point']
+                : rawType;
         const id = typeof raw.id === 'string' ? raw.id : '';
         const def = DEF_BY_TYPE.get(type);
         if (!def || !id) continue;
@@ -1109,7 +1182,7 @@ export function normalizeIndicatorInstances(
         const styles = migrateStyles(type, raw.styles, source);
         if (styles) normalized.styles = styles;
         if (typeof raw.hidden === 'boolean') normalized.hidden = raw.hidden;
-        if (type === 'traditional-pivot') {
+        if (SUPPORT_RESISTANCE_INSTANCE_TYPES.has(type)) {
             normalized.visibleTf = [1, 5, 15, 60, 1440];
         } else if (Array.isArray(raw.visibleTf)) {
             normalized.visibleTf = raw.visibleTf.filter(

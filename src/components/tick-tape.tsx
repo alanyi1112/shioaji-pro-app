@@ -8,7 +8,7 @@ import { fetchLastTicks } from '../lib/shioaji';
 import { onAnyTick } from '../lib/stream';
 import type { ContractBase } from '../lib/types/contract';
 import type { HistoryTicks } from '../lib/types/tick';
-import { fmtInt, fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice, fmtInt } from '../lib/utils/format';
 import { dateStrOffset } from '../lib/utils/kbars';
 import * as panel from './panel.css';
 import * as styles from './tick-tape.css';
@@ -61,12 +61,14 @@ const TapeRowView = memo(function TapeRowView({
     volume,
     tickType,
     big,
+    contract,
 }: {
     time: string;
     close: number | string;
     volume: number;
     tickType: number;
     big: boolean;
+    contract: ContractBase;
 }) {
     const dir = tickType === 1 ? 'up' : tickType === 2 ? 'down' : 'flat';
     return (
@@ -76,7 +78,7 @@ const TapeRowView = memo(function TapeRowView({
                 className={panel.dirText[dir]}
                 style={{ textAlign: 'right' }}
             >
-                {fmtPrice(close)}
+                {fmtContractPrice(contract, close)}
             </span>
             <span className={big ? styles.volBig : styles.vol}>
                 {fmtInt(volume)}
@@ -169,6 +171,7 @@ export function TickTape({ contract }: { contract: ContractBase }) {
                         volume={t.volume}
                         tickType={t.tick_type}
                         big={t.volume >= bigThreshold}
+                        contract={contract}
                     />
                 ))}
             </div>

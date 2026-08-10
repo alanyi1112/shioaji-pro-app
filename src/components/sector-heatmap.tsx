@@ -29,7 +29,7 @@ import {
 import { getQuote, subscribeQuoteStore } from '../lib/stream';
 import { getChartColors, useThemeSettings } from '../lib/theme-store';
 import type { Snapshot } from '../lib/types/market';
-import { fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice } from '../lib/utils/format';
 import * as dock from './bottom-dock.css';
 import * as styles from './sector-heatmap.css';
 
@@ -177,6 +177,8 @@ export function SectorHeatmap({
                 return {
                     code: m.code,
                     name: m.name,
+                    category: m.category,
+                    exchange: m.exchange,
                     close: s?.close ?? 0,
                     amount: s?.total_amount ?? 0,
                     pct,
@@ -283,10 +285,10 @@ export function SectorHeatmap({
                         data-quote-group='current'
                         aria-label={
                             t.atLimit
-                                ? `${t.atLimit === 'up' ? '漲停' : '跌停'}，${t.code} ${t.name}，最新價 ${fmtPrice(t.close)}`
+                                ? `${t.atLimit === 'up' ? '漲停' : '跌停'}，${t.code} ${t.name}，最新價 ${fmtContractPrice({ code: t.code, security_type: 'STK', exchange: t.exchange === 'OTC' ? 'OTC' : 'TSE', target_code: null, category: t.category }, t.close)}`
                                 : undefined
                         }
-                        title={`${t.name} ${fmtPrice(t.close)}（${t.pct >= 0 ? '+' : ''}${t.pct.toFixed(2)}%）`}
+                        title={`${t.name} ${fmtContractPrice({ code: t.code, security_type: 'STK', exchange: t.exchange === 'OTC' ? 'OTC' : 'TSE', target_code: null, category: t.category }, t.close)}（${t.pct >= 0 ? '+' : ''}${t.pct.toFixed(2)}%）`}
                         onClick={() => onPick?.(t.code, t.snapshot)}
                     >
                         <span className={styles.tileCode}>{t.code}</span>

@@ -1,5 +1,8 @@
 // src/lib/utils/format.ts
 
+import type { TickSizeContract } from './ticksize';
+import { taiwanQuoteDigitsFor } from './ticksize';
+
 export function fmtPrice(v: number | string | undefined, digits?: number) {
     if (v === undefined || v === null || v === '') return '—';
     const n = Number(v);
@@ -9,6 +12,55 @@ export function fmtPrice(v: number | string | undefined, digits?: number) {
         minimumFractionDigits: d,
         maximumFractionDigits: Math.max(d, 2),
     });
+}
+
+function finiteNumber(v: number | string | undefined): number | null {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+}
+
+function fmtFixedPrice(n: number, digits: number): string {
+    return n.toLocaleString('en-US', {
+        minimumFractionDigits: digits,
+        maximumFractionDigits: digits,
+    });
+}
+
+export function fmtContractPrice(
+    contract: TickSizeContract,
+    value: number | string | undefined,
+): string {
+    const n = finiteNumber(value);
+    if (n === null) return '—';
+    const digits = taiwanQuoteDigitsFor(contract, Math.abs(n));
+    return digits === null ? fmtPrice(n) : fmtFixedPrice(n, digits);
+}
+
+export function fmtContractPriceChange(
+    contract: TickSizeContract,
+    value: number | string | undefined,
+    reference: number | string | undefined,
+): string {
+    const n = finiteNumber(value);
+    if (n === null) return '—';
+    const anchor = finiteNumber(reference);
+    const digits =
+        anchor === null
+            ? null
+            : taiwanQuoteDigitsFor(contract, Math.abs(anchor));
+    return digits === null ? fmtPrice(n) : fmtFixedPrice(n, digits);
+}
+
+export function fmtContractSigned(
+    contract: TickSizeContract,
+    value: number | string | undefined,
+    reference: number | string | undefined,
+): string {
+    const n = finiteNumber(value);
+    if (n === null) return '—';
+    const formatted = fmtContractPriceChange(contract, n, reference);
+    return n > 0 ? `+${formatted}` : formatted;
 }
 
 export function fmtInt(v: number | undefined) {

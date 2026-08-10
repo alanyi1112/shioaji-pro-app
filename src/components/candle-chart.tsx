@@ -65,6 +65,7 @@ import {
     subscribeIndicatorPersistence,
     updateInstances,
     KBAR_READOUT_TYPE,
+    SUPPORT_RESISTANCE_INSTANCE_TYPES,
     type IndicatorInstance,
 } from '../lib/indicator-defs';
 // side-effect import順序：custom-indicators 在 module 載入時就把已存的
@@ -110,21 +111,32 @@ import {
 } from '../lib/market-overlays';
 import { MarketOverlayPrimitive } from '../lib/market-overlay-primitive';
 import {
-    buildPivotReferenceDays,
-    completedPivotForTime,
-    latestCompletedPivot,
     pivotSupportReason,
 } from '../lib/traditional-pivot';
 import { PivotPrimitive } from '../lib/pivot-primitive';
 import {
-    clearPivotProductState,
-    clearPivotStatesForIndicator,
-    getPivotProductState,
-    getPivotProductStateVersion,
-    pivotProductKey,
-    setPivotProductState,
-    subscribePivotProductStates,
-} from '../lib/pivot-projection-state';
+    buildSupportResistanceProjection,
+    resolveAutomaticSupportResistanceReference,
+    resolveCompletedSupportResistanceReferenceForTime,
+    supportResistanceProjectionStartTime,
+    supportResistanceResolverRuntime,
+    supportResistanceSelectionAllowed,
+    type SupportResistanceFormulaId,
+} from '../lib/support-resistance';
+import {
+    enabledSupportResistanceFormulas,
+    getSupportResistanceFormulaStyle,
+    setSupportResistanceFormulaStyle,
+    updateSupportResistanceFormulaForProduct,
+} from '../lib/support-resistance-indicator-state';
+import {
+    clearSupportResistanceProductState,
+    getSupportResistanceProductState,
+    getSupportResistanceProductStateVersion,
+    setSupportResistanceProductState,
+    subscribeSupportResistanceProductStates,
+    supportResistanceProductKey,
+} from '../lib/support-resistance-state';
 import { cancelOrder, fetchKbars, updateOrderPrice } from '../lib/shioaji';
 import {
     isLatestGeneration,
@@ -140,7 +152,7 @@ import {
 import type { ContractInfo } from '../lib/types/contract';
 import type { Candle } from '../lib/types/market';
 import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
-import { fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
 import { roundToTick } from '../lib/utils/ticksize';
 import { getChartColors, useThemeSettings } from '../lib/theme-store';
 import {
@@ -151,6 +163,10 @@ import {
 } from '../lib/utils/kbars';
 import * as panel from './panel.css';
 import * as styles from './candle-chart.css';
+import {
+    SupportResistanceMenu,
+    SupportResistanceStyleDialog,
+} from './support-resistance-menu';
 
 // NOTE: the kbars API only serves 1-minute bars, so 1D aggregates a huge
 // payload (a year of TXF ≈ 280k bars / 18MB) — keep the range tight enough
@@ -323,12 +339,14 @@ export function CandleChart({
         getIndicatorPersistenceStatus,
         getIndicatorPersistenceStatus,
     );
-    const pivotStateVersion = useSyncExternalStore(
-        subscribePivotProductStates,
-        getPivotProductStateVersion,
-        getPivotProductStateVersion,
+    const supportResistanceStateVersion = useSyncExternalStore(
+        subscribeSupportResistanceProductStates,
+        getSupportResistanceProductStateVersion,
+        getSupportResistanceProductStateVersion,
     );
     const [pickerOpen, setPickerOpen] = useState(false);
+    const [supportStyleFor, setSupportStyleFor] =
+        useState<SupportResistanceFormulaId | null>(null);
     const [settingsFor, setSettingsFor] = useState<string | null>(null);
     const [settingsDraft, setSettingsDraft] =
         useState<IndicatorInstance | null>(null);
@@ -371,7 +389,9 @@ export function CandleChart({
     );
     const legendRafRef = useRef(false);
     const [kbarReadout, setKbarReadout] = useState<KbarReadoutDisplay>(() =>
-        buildKbarReadoutDisplay(null, 5, false, fmtPrice),
+        buildKbarReadoutDisplay(null, 5, false, (value) =>
+            fmtContractPrice(contract, value),
+        ),
     );
     const selectedReadoutTimeRef = useRef<number | null>(null);
     const formingBarTimeRef = useRef<number | null>(null);
@@ -387,7 +407,6 @@ export function CandleChart({
         null,
     );
     const pivotPrimitiveRef = useRef<PivotPrimitive | null>(null);
-    const pivotSelectionRef = useRef<string | null>(null);
     const fixedRangeAnchorsRef = useRef(
         new Map<string, FixedRangeAnchors>(),
     );
@@ -413,6 +432,12 @@ export function CandleChart({
     // raw 1-min candles backing the current view — history pages merge here
     // and re-aggregate so buckets spanning a page seam stay correct
     const rawRef = useRef<Candle[]>([]);
+    const supportResistanceAuthorityRef = useRef<{
+        key: string;
+        rows: Candle[];
+        loadState: 'loading' | 'success' | 'failed';
+        sourceAvailable: boolean;
+    }>({ key: '', rows: [], loadState: 'loading', sourceAvailable: false });
     const historicalReferenceRef = useRef<ReadonlyMap<string, number>>(
         new Map(),
     );
@@ -635,7 +660,7 @@ export function CandleChart({
                     candle,
                     minutes,
                     forming,
-                    fmtPrice,
+                    (value) => fmtContractPrice(contractRef.current, value),
                     readoutReference,
                 ),
             );
@@ -838,26 +863,43 @@ export function CandleChart({
                     setOverlayRuntimeVersion((version) => version + 1);
                     return;
                 }
-                const pivotInstanceId = pivotSelectionRef.current;
                 if (
-                    pivotInstanceId &&
-                    tfMinutesRef.current === 1440 &&
+                    supportResistanceSelectionAllowed(
+                        m,
+                        tfMinutesRef.current,
+                        enabledSupportResistanceFormulas(
+                            getInstancesSnapshot(),
+                        ).length > 0,
+                    ) &&
                     typeof param.time === 'number'
                 ) {
-                    const selected = completedPivotForTime(
-                        buildPivotReferenceDays(rawRef.current),
-                        Number(param.time),
-                    );
+                    const selected =
+                        resolveCompletedSupportResistanceReferenceForTime(
+                            {
+                                rows: rawRef.current,
+                                securityType: c.security_type,
+                                ...supportResistanceResolverRuntime(
+                                    'success',
+                                    true,
+                                ),
+                            },
+                            Number(param.time),
+                        );
                     if (selected) {
-                        const key = pivotProductKey(pivotInstanceId, c);
-                        setPivotProductState({
+                        const key = supportResistanceProductKey(c);
+                        setSupportResistanceProductState({
                             key,
-                            indicatorId: pivotInstanceId,
                             reference: selected,
                             pinned: true,
                         });
-                        pivotSelectionRef.current = null;
+                        setFibonacciNotice(
+                            `壓撐已改用 ${selected.date} K 棒重新計算`,
+                        );
                         setOverlayRuntimeVersion((version) => version + 1);
+                    } else {
+                        setFibonacciNotice(
+                            '此 K 棒尚未完成，壓撐 reference 保持不變',
+                        );
                     }
                     return;
                 }
@@ -1370,6 +1412,47 @@ export function CandleChart({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [contract, tf]);
 
+    // A formula-enabled reload starts on 5m. Bootstrap one product-scoped,
+    // timeframe-independent canonical 1m authority window so minute charts
+    // can mirror the automatic 1D reference without using their viewport.
+    useEffect(() => {
+        let cancelled = false;
+        const key = supportResistanceProductKey(contract);
+        supportResistanceAuthorityRef.current = {
+            key,
+            rows: [],
+            loadState: 'loading',
+            sourceAvailable: false,
+        };
+        fetchKbars(contract, dateStrOffset(45), dateStrOffset(0))
+            .then((kbars) => {
+                if (cancelled) return;
+                supportResistanceAuthorityRef.current = {
+                    key,
+                    rows: kbarsToCandles(kbars),
+                    loadState: 'success',
+                    sourceAvailable: true,
+                };
+            })
+            .catch(() => {
+                if (cancelled) return;
+                supportResistanceAuthorityRef.current = {
+                    key,
+                    rows: [],
+                    loadState: 'failed',
+                    sourceAvailable: false,
+                };
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setOverlayRuntimeVersion((version) => version + 1);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [contract]);
+
     // Live trade/index quote -> update the current bar. Index products use
     // quote_idx rather than the regular tick stream in Shioaji 1.7.
     if (liveQuote && liveQuote.code === contract.code) {
@@ -1515,51 +1598,90 @@ export function CandleChart({
     const refreshPivot = () => {
         const primitive = pivotPrimitiveRef.current;
         if (!primitive) return;
-        const instance = getInstancesSnapshot().find(
-            (item) =>
-                item.type === 'traditional-pivot' &&
-                !item.hidden &&
-                (!item.visibleTf || item.visibleTf.includes(tf.minutes)),
-        );
+        const snapshot = getInstancesSnapshot();
+        const enabled = enabledSupportResistanceFormulas(snapshot);
+        const productKey = supportResistanceProductKey(contract);
         if (
-            !instance ||
+            enabled.length === 0 ||
             pivotSupportReason(contract.security_type, tf.minutes) ||
             rawIdentityRef.current !== `${contract.code}|${tf.minutes}`
         ) {
-            primitive.setData(null);
-            return;
-        }
-        const key = pivotProductKey(instance.id, contract);
-        if (tf.minutes === 1440) {
-            const days = buildPivotReferenceDays(rawRef.current);
-            const current = getPivotProductState(key);
-            const reference = current?.pinned
-                ? (days.find(
-                      (day) =>
-                          day.date === current.reference.date &&
-                          day.status === 'completed',
-                  ) ?? null)
-                : latestCompletedPivot(days);
-            if (!reference) {
-                clearPivotProductState(key);
-                primitive.setData(null);
-                return;
+            primitive.setProjections(null, []);
+            if (enabled.length === 0) {
+                clearSupportResistanceProductState(productKey);
             }
-            setPivotProductState({
-                key,
-                indicatorId: instance.id,
-                reference,
-                pinned: Boolean(current?.pinned),
-            });
-            primitive.setData(reference, '#e0a43c', colors.text, fmtPrice);
             return;
         }
-        const shared = getPivotProductState(key);
-        primitive.setData(
-            shared?.reference ?? null,
-            '#e0a43c',
-            colors.text,
+        let reference = getSupportResistanceProductState(productKey)?.reference ?? null;
+        if (tf.minutes === 1440) {
+            const current = getSupportResistanceProductState(productKey);
+            if (!current?.pinned) {
+                const resolved = resolveAutomaticSupportResistanceReference({
+                    rows: rawRef.current,
+                    securityType: contract.security_type,
+                    ...supportResistanceResolverRuntime(
+                        loading ? 'loading' : 'success',
+                        !empty,
+                    ),
+                });
+                reference =
+                    resolved.status === 'available'
+                        ? resolved.reference
+                        : null;
+            }
+            if (reference) {
+                setSupportResistanceProductState({
+                    key: productKey,
+                    reference,
+                    pinned: reference.mode === 'pinned',
+                });
+            } else {
+                clearSupportResistanceProductState(productKey);
+            }
+        } else if (!reference) {
+            const authority = supportResistanceAuthorityRef.current;
+            if (authority.key === productKey) {
+                const resolved = resolveAutomaticSupportResistanceReference({
+                    rows: authority.rows,
+                    securityType: contract.security_type,
+                    ...supportResistanceResolverRuntime(
+                        authority.loadState,
+                        authority.sourceAvailable,
+                    ),
+                });
+                if (resolved.status === 'available') {
+                    reference = resolved.reference;
+                    setSupportResistanceProductState({
+                        key: productKey,
+                        reference,
+                        pinned: false,
+                    });
+                }
+            }
+        }
+        primitive.setProjections(
+            reference,
+            reference
+                ? enabled.map((formulaId) =>
+                      buildSupportResistanceProjection(formulaId, reference!),
+                  )
+                : [],
             fmtPrice,
+            Object.fromEntries(
+                enabled.flatMap((formulaId) => {
+                    const style = getSupportResistanceFormulaStyle(
+                        snapshot,
+                        formulaId,
+                    );
+                    return style ? [[formulaId, style]] : [];
+                }),
+            ),
+            reference
+                ? supportResistanceProjectionStartTime(
+                      reference.firstTime,
+                      tf.minutes,
+                  )
+                : null,
         );
     };
     pivotRefreshRef.current = refreshPivot;
@@ -2003,7 +2125,7 @@ export function CandleChart({
         dataVersion,
         indicatorParamsKey,
         overlayRuntimeVersion,
-        pivotStateVersion,
+        supportResistanceStateVersion,
     ]);
 
     const closeSettings = () => {
@@ -2051,11 +2173,9 @@ export function CandleChart({
                 fixedRangeAnchorsRef.current.delete(key);
             }
         }
-        clearPivotStatesForIndicator(id);
         if (rangeSelectionRef.current?.instanceId === id) {
             rangeSelectionRef.current = null;
         }
-        if (pivotSelectionRef.current === id) pivotSelectionRef.current = null;
         if (settingsFor === id) closeSettings();
     };
     const patchStoredInstance = (
@@ -2171,7 +2291,6 @@ export function CandleChart({
     const armFibonacci = (kind: FibonacciKind) => {
         setMode('observe');
         rangeSelectionRef.current = null;
-        pivotSelectionRef.current = null;
         if (!fibonacciControllerRef.current?.arm(kind)) {
             setFibonacciNotice('目前商品或時框無法建立費波那契圖形');
             return;
@@ -2186,7 +2305,6 @@ export function CandleChart({
     const changeTradeMode = (nextMode: TradeMode) => {
         cancelFibonacciPending();
         rangeSelectionRef.current = null;
-        pivotSelectionRef.current = null;
         setMode(nextMode);
     };
     const changeTimeframe = (index: number) => {
@@ -2393,6 +2511,7 @@ export function CandleChart({
         const def = DEF_BY_TYPE.get(inst.type);
         if (!def) return null;
         if (def.kind === 'primitive') {
+            if (SUPPORT_RESISTANCE_INSTANCE_TYPES.has(inst.type)) return null;
             const offTf =
                 !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
             const dimmed = !!inst.hidden || offTf;
@@ -2400,11 +2519,6 @@ export function CandleChart({
             const anchors = fixedRangeAnchorsRef.current.get(anchorKey);
             const selection = rangeSelectionRef.current;
             const selecting = selection?.instanceId === inst.id;
-            const pivotKey = pivotProductKey(inst.id, contract);
-            const pivotState = getPivotProductState(pivotKey);
-            const pivotReference = pivotState?.reference;
-            const pivotPinned = Boolean(pivotState?.pinned);
-            const pivotManagedHere = tf.minutes === 1440;
             return (
                 <div
                     key={inst.id}
@@ -2412,16 +2526,7 @@ export function CandleChart({
                 >
                     <button
                         className={styles.legendLabel}
-                        title={
-                            inst.type === 'traditional-pivot' &&
-                            !pivotManagedHere
-                                ? 'Pivot 由 1D 管理'
-                                : '開啟指標設定'
-                        }
-                        disabled={
-                            inst.type === 'traditional-pivot' &&
-                            !pivotManagedHere
-                        }
+                        title='開啟指標設定'
                         onClick={() => openSettings(inst.id)}
                     >
                         {instanceLabel(inst)}
@@ -2440,7 +2545,6 @@ export function CandleChart({
                                     instanceId: inst.id,
                                     firstTime: null,
                                 };
-                                pivotSelectionRef.current = null;
                                 setOverlayRuntimeVersion(
                                     (version) => version + 1,
                                 );
@@ -2455,100 +2559,7 @@ export function CandleChart({
                                   : '請設定固定區間'}
                         </button>
                     )}
-                    {inst.type === 'traditional-pivot' && !offTf && (
-                        <>
-                            {pivotReference ? (
-                                <span className={styles.legendVals}>
-                                    <span className={styles.legendVal}>
-                                        {pivotReference.date} →{' '}
-                                        {pivotReference.applicationDate ??
-                                            '下一交易日'}{' '}
-                                        {pivotReference.status === 'completed'
-                                            ? '已完成'
-                                            : '暫估'}
-                                    </span>
-                                    {Object.entries(pivotReference.levels).map(
-                                        ([key, value]) => (
-                                            <span
-                                                key={key}
-                                                className={styles.legendVal}
-                                            >
-                                                {key.toUpperCase()}{' '}
-                                                {fmtPrice(value)}
-                                            </span>
-                                        ),
-                                    )}
-                                </span>
-                            ) : (
-                                <span className={styles.legendNote}>
-                                    {pivotManagedHere
-                                        ? '尚無已完成 reference'
-                                        : '尚無 1D Pivot projection'}
-                                </span>
-                            )}
-                            {pivotManagedHere ? (
-                                <>
-                                    <button
-                                    className={styles.legendCtrlBtn}
-                                    disabled={
-                                        mode !== 'observe' ||
-                                        Boolean(
-                                            pivotSupportReason(
-                                                contract.security_type,
-                                                tf.minutes,
-                                            ),
-                                        )
-                                    }
-                                    title='游標觀察模式下點選歷史 K 棒固定 reference'
-                                    onClick={() => {
-                                        cancelFibonacciPending();
-                                        rangeSelectionRef.current = null;
-                                        pivotSelectionRef.current = inst.id;
-                                        setOverlayRuntimeVersion(
-                                            (version) => version + 1,
-                                        );
-                                    }}
-                                >
-                                        {pivotSelectionRef.current === inst.id
-                                            ? '請點歷史 K 棒'
-                                            : '固定歷史'}
-                                    </button>
-                                    {pivotPinned && (
-                                        <button
-                                            className={styles.legendCtrlBtn}
-                                            onClick={() => {
-                                                const latest = latestCompletedPivot(
-                                                    buildPivotReferenceDays(
-                                                        rawRef.current,
-                                                    ),
-                                                );
-                                                if (latest) {
-                                                    setPivotProductState({
-                                                        key: pivotKey,
-                                                        indicatorId: inst.id,
-                                                        reference: latest,
-                                                        pinned: false,
-                                                    });
-                                                }
-                                                setOverlayRuntimeVersion(
-                                                    (version) => version + 1,
-                                                );
-                                            }}
-                                        >
-                                            回到最新
-                                        </button>
-                                    )}
-                                </>
-                            ) : (
-                                <span className={styles.legendNote}>
-                                    由 1D 管理
-                                </span>
-                            )}
-                        </>
-                    )}
-                    {(inst.type !== 'traditional-pivot' ||
-                        pivotManagedHere) && (
-                        <span className={styles.legendCtrls}>
+                    <span className={styles.legendCtrls}>
                         <button
                             className={styles.legendCtrlBtn}
                             title={inst.hidden ? '顯示' : '隱藏'}
@@ -2578,8 +2589,7 @@ export function CandleChart({
                         >
                             <X size={11} />
                         </button>
-                        </span>
-                    )}
+                    </span>
                 </div>
             );
         }
@@ -2803,6 +2813,85 @@ export function CandleChart({
     };
     const { readout: kbarReadoutInst, rest: nonReadoutInstances } =
         splitKbarReadoutInstance(instances);
+    const supportResistanceFormulas = enabledSupportResistanceFormulas(instances);
+    const supportResistanceEnabled = new Set(supportResistanceFormulas);
+    const supportResistanceKey = supportResistanceProductKey(contract);
+    const supportResistanceState = getSupportResistanceProductState(
+        supportResistanceKey,
+    );
+    const supportResistanceReference = supportResistanceState?.reference ?? null;
+    const toggleSupportResistance = (
+        formulaId: SupportResistanceFormulaId,
+        enabled: boolean,
+    ) => {
+        if (tf.minutes !== 1440) return;
+        const next = updateSupportResistanceFormulaForProduct(
+            supportResistanceKey,
+            formulaId,
+            enabled,
+        );
+        if (enabledSupportResistanceFormulas(next).length === 0) {
+            clearSupportResistanceProductState(supportResistanceKey);
+        }
+        setOverlayRuntimeVersion((version) => version + 1);
+    };
+    const returnSupportResistanceToLatest = () => {
+        const resolved = resolveAutomaticSupportResistanceReference({
+            rows: rawRef.current,
+            securityType: contract.security_type,
+            ...supportResistanceResolverRuntime(
+                loading ? 'loading' : 'success',
+                !empty,
+            ),
+        });
+        if (resolved.status === 'available') {
+            setSupportResistanceProductState({
+                key: supportResistanceKey,
+                reference: resolved.reference,
+                pinned: false,
+            });
+            setFibonacciNotice(
+                `壓撐已回到最新自動 reference：${resolved.reference.date}`,
+            );
+        } else {
+            setFibonacciNotice('目前沒有可證明完整的壓撐 reference');
+        }
+        setOverlayRuntimeVersion((version) => version + 1);
+    };
+    const renderSupportResistanceReadout = () => (
+        <div className={styles.legendItem.normal} data-support-resistance-readout='true'>
+            <span className={styles.legendLabel}>壓撐</span>
+            {supportResistanceReference ? (
+                <span className={styles.legendVals}>
+                    <span className={styles.legendVal}>
+                        {supportResistanceReference.mode === 'pinned'
+                            ? '固定歷史'
+                            : '自動'}{' '}
+                        {supportResistanceReference.date} 已完成
+                    </span>
+                </span>
+            ) : (
+                <span className={styles.legendNote}>reference unavailable</span>
+            )}
+            {tf.minutes === 1440 ? (
+                <span className={styles.legendCtrls}>
+                    <span className={styles.legendNote}>
+                        點選已完成日 K 即重新計算
+                    </span>
+                    {supportResistanceState?.pinned && (
+                        <button
+                            className={styles.legendCtrlBtn}
+                            onClick={returnSupportResistanceToLatest}
+                        >
+                            回到最新
+                        </button>
+                    )}
+                </span>
+            ) : (
+                <span className={styles.legendNote}>由 1D 管理</span>
+            )}
+        </div>
+    );
     const renderKbarReadoutRow = (inst: IndicatorInstance) => {
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
@@ -2880,7 +2969,9 @@ export function CandleChart({
     const mainLegendInsts = nonReadoutInstances.filter((inst) => {
         const def = DEF_BY_TYPE.get(inst.type);
         if (!def) return false;
-        if (def.kind === 'primitive') return true;
+        if (def.kind === 'primitive') {
+            return !SUPPORT_RESISTANCE_INSTANCE_TYPES.has(inst.type);
+        }
         if (def.kind !== 'series') return false;
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
@@ -2991,13 +3082,55 @@ export function CandleChart({
                 <button
                     className={
                         styles.indicatorBtn[
-                            instances.length > 0 ? 'active' : 'normal'
+                            instances.some(
+                                (instance) =>
+                                    !SUPPORT_RESISTANCE_INSTANCE_TYPES.has(
+                                        instance.type,
+                                    ),
+                            )
+                                ? 'active'
+                                : 'normal'
                         ]
                     }
                     onClick={() => setPickerOpen(true)}
                 >
                     指標
                 </button>
+                <SupportResistanceMenu
+                    enabled={supportResistanceEnabled}
+                    readOnly={tf.minutes !== 1440}
+                    disabledReason={
+                        pivotSupportReason(
+                            contract.security_type,
+                            tf.minutes,
+                        ) ?? undefined
+                    }
+                    persistenceError={
+                        indicatorPersistence.state === 'error'
+                            ? indicatorPersistence.reasonCode
+                            : undefined
+                    }
+                    onToggle={toggleSupportResistance}
+                    onConfigure={setSupportStyleFor}
+                />
+                {supportStyleFor && (
+                    <SupportResistanceStyleDialog
+                        formulaId={supportStyleFor}
+                        current={getSupportResistanceFormulaStyle(
+                            instances,
+                            supportStyleFor,
+                        )}
+                        onCancel={() => setSupportStyleFor(null)}
+                        onCommit={(style) => {
+                            setSupportResistanceFormulaStyle(
+                                supportStyleFor,
+                                style,
+                            );
+                            setSupportStyleFor(null);
+                            setOverlayRuntimeVersion((version) => version + 1);
+                        }}
+                    />
+                )}
                 {indicatorPersistence.state === 'error' && (
                     <span
                         className={styles.legendNote}
@@ -3009,22 +3142,6 @@ export function CandleChart({
                 {pickerOpen && (
                     <IndicatorDialog
                         instances={instances}
-                        disabledTypes={
-                            pivotSupportReason(
-                                contract.security_type,
-                                tf.minutes,
-                            )
-                                ? new Map([
-                                      [
-                                          'traditional-pivot',
-                                          pivotSupportReason(
-                                              contract.security_type,
-                                              tf.minutes,
-                                          )!,
-                                      ],
-                                  ])
-                                : undefined
-                        }
                         onAdd={addIndicator}
                         onClose={() => setPickerOpen(false)}
                     />
@@ -3126,6 +3243,8 @@ export function CandleChart({
                     <div className={styles.triggerList}>
                         {kbarReadoutInst &&
                             renderKbarReadoutRow(kbarReadoutInst)}
+                        {supportResistanceFormulas.length > 0 &&
+                            renderSupportResistanceReadout()}
                         {mainLegendInsts.map((inst) =>
                             renderLegendRow(inst),
                         )}

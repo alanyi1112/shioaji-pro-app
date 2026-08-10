@@ -2,6 +2,8 @@
 
 import type { ContractBase } from '../types/contract';
 
+export type TickSizeContract = ContractBase & { category?: string };
+
 // TWSE/TPEX equities
 function stockTick(price: number): number {
     if (price < 10) return 0.01;
@@ -12,19 +14,48 @@ function stockTick(price: number): number {
     return 5;
 }
 
-// ETFs (codes starting with 00)
+// TWSE/TPEx ETFs and other beneficial certificates
 function etfTick(price: number): number {
     return price < 50 ? 0.01 : 0.05;
 }
 
-export function tickSizeFor(contract: ContractBase, price: number): number {
+export function isTaiwanStock(contract: TickSizeContract): boolean {
+    return (
+        contract.security_type === 'STK' &&
+        (contract.exchange === 'TSE' || contract.exchange === 'OTC')
+    );
+}
+
+export function isTaiwanEtf(contract: TickSizeContract): boolean {
+    const category = contract.category?.trim();
+    if (category) return category === '00';
+    // Contract V2 catalog rows omit category until details load. Keep this
+    // fallback broad enough for suffix ETFs such as 00981A, but never override
+    // a canonical non-ETF category.
+    return /^00[0-9A-Z]+$/i.test(contract.code.trim());
+}
+
+export function tickSizeFor(contract: TickSizeContract, price: number): number {
     if (contract.security_type === 'FUT') return 1; // TXF/MXF/TMF index futures
     if (contract.security_type === 'OPT') return price >= 10 ? 1 : 0.1;
-    if (contract.code.startsWith('00')) return etfTick(price);
+    if (isTaiwanEtf(contract)) return etfTick(price);
     return stockTick(price);
 }
 
-export function roundToTick(contract: ContractBase, price: number): number {
+export function taiwanQuoteDigitsFor(
+    contract: TickSizeContract,
+    price: number,
+): number | null {
+    if (!isTaiwanStock(contract) || !Number.isFinite(price) || price < 0) {
+        return null;
+    }
+    const tick = tickSizeFor(contract, price);
+    if (tick >= 1) return 0;
+    if (tick >= 0.1) return 1;
+    return 2;
+}
+
+export function roundToTick(contract: TickSizeContract, price: number): number {
     const tick = tickSizeFor(contract, price);
     const rounded = Math.round(price / tick) * tick;
     // avoid float dust (0.1 steps)
@@ -32,7 +63,7 @@ export function roundToTick(contract: ContractBase, price: number): number {
 }
 
 export function stepPrice(
-    contract: ContractBase,
+    contract: TickSizeContract,
     price: number,
     steps: number,
 ): number {

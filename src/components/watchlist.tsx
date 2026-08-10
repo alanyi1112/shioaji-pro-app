@@ -24,7 +24,11 @@ import {
     searchProducts,
     type ProductSuggestion,
 } from '../lib/product-search';
-import { fmtPct, fmtPrice, fmtSigned } from '../lib/utils/format';
+import {
+    fmtContractPrice,
+    fmtContractSigned,
+    fmtPct,
+} from '../lib/utils/format';
 import { Sparkline } from './sparkline';
 import * as panel from './panel.css';
 import * as styles from './watchlist.css';
@@ -156,7 +160,7 @@ export const WatchRow = memo(function WatchRow({
                 data-quote-group='current'
                 aria-label={
                     limitLabel
-                        ? `${limitLabel}，最新價 ${fmtPrice(close)}，${fmtSigned(chg)} ${fmtPct(pct)}`
+                        ? `${limitLabel}，最新價 ${fmtContractPrice(item.contract, close)}，${fmtContractSigned(item.contract, chg, ref)} ${fmtPct(pct)}`
                         : undefined
                 }
             >
@@ -165,14 +169,14 @@ export const WatchRow = memo(function WatchRow({
                         atLimit ? styles.limitText : panel.dirText[dir]
                     }`}
                 >
-                    {fmtPrice(close)}
+                    {fmtContractPrice(item.contract, close)}
                 </span>
                 <span
                     className={`${styles.change} ${
                         atLimit ? styles.limitText : panel.dirText[dir]
                     }`}
                 >
-                    {fmtSigned(chg)} {fmtPct(pct)}
+                    {fmtContractSigned(item.contract, chg, ref)} {fmtPct(pct)}
                 </span>
             </span>
             <span className={styles.name}>{item.contract.name}</span>

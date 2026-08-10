@@ -15,7 +15,7 @@ import {
     type StockMeta,
 } from '../lib/stock-index';
 import type { ScannerItem, ScannerType } from '../lib/types/market';
-import { fmtInt, fmtPct, fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice, fmtInt, fmtPct } from '../lib/utils/format';
 import * as panel from './panel.css';
 import * as styles from './scanner-panel.css';
 
@@ -259,6 +259,13 @@ export function ScannerPanel({
                               ? fmtInt(it.total_volume)
                               : '';
                     const meta = metaByCode.get(it.code);
+                    const priceContract = {
+                        code: it.code,
+                        security_type: 'STK' as const,
+                        exchange: meta?.exchange === 'OTC' ? 'OTC' as const : 'TSE' as const,
+                        target_code: null,
+                        category: meta?.category,
+                    };
                     const atLimit = quoteLimitState({
                         price: it.close,
                         limitUp: meta?.limit_up,
@@ -318,7 +325,7 @@ export function ScannerPanel({
                                 data-quote-group='current'
                                 aria-label={
                                     limitLabel
-                                        ? `${limitLabel}，最新價 ${fmtPrice(it.close)}，${fmtPct(pct)}`
+                                        ? `${limitLabel}，最新價 ${fmtContractPrice(priceContract, it.close)}，${fmtPct(pct)}`
                                         : undefined
                                 }
                             >
@@ -329,7 +336,8 @@ export function ScannerPanel({
                                             : panel.dirText[dir]
                                     }`}
                                 >
-                                    {fmtPrice(it.close)} {fmtPct(pct)}
+                                    {fmtContractPrice(priceContract, it.close)}{' '}
+                                    {fmtPct(pct)}
                                 </span>
                             </span>
                             <span className={styles.scSub}>{sub}</span>

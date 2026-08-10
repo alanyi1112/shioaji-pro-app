@@ -154,7 +154,9 @@ export function IndicatorDialog({
             .map((c) => DEF_BY_TYPE.get(customType(c.id)))
             .filter((d): d is IndicatorDef => !!d),
     ];
-    const filtered = allDefs.filter((d) => matches(d) && inCategory(d));
+    const filtered = allDefs.filter(
+        (d) => !d.pickerHidden && matches(d) && inCategory(d),
+    );
     const overlays = filtered.filter((d) => d.category === 'overlay');
     const panes = filtered.filter((d) => d.category === 'pane');
 

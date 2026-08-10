@@ -715,17 +715,33 @@ test("主圖功能表使用 viewport-safe 翻轉與緊湊兩欄布局", () => {
   assert.match(styles, /\.chart-tool-button,\s*\.chart-tool-clear\s*\{[^}]*min-height:\s*26px;/s);
 });
 
-test("主圖 Pivot Point 預設關閉且使用所選參考 K 投影、viewport-safe 與 cleanup 契約", () => {
+test("主圖三套壓撐公式預設關閉且共用所選參考 K、viewport-safe 與 cleanup 契約", () => {
   assert.match(indexHtml, /value="pivotPoint" \/> Pivot Point/);
+  assert.match(indexHtml, /value="threeLevelPrice" \/> 三關價/);
+  assert.match(indexHtml, /value="cdp" \/> CDP/);
   assert.doesNotMatch(indexHtml, /value="pivotPoint" checked/);
+  assert.doesNotMatch(indexHtml, /value="threeLevelPrice" checked/);
+  assert.doesNotMatch(indexHtml, /value="cdp" checked/);
   assert.match(indexHtml, /data-readout-row="pivotPoint"/);
   for (const key of ["pivotP", "pivotR1", "pivotR2", "pivotR3", "pivotS1", "pivotS2", "pivotS3"]) {
-    assert.match(indexHtml, new RegExp(`data-main-indicator="${key}"`));
+    assert.doesNotMatch(indexHtml, new RegExp(`data-main-indicator="${key}"`));
   }
-  assert.match(appSource, /function selectedPivotMode\(\)[\s\S]*?has\("pivotPoint"\) \? "traditional" : null/);
+  assert.match(appSource, /function selectedSupportResistanceFormulas\(selectedMain = getSelectedMainIndicators\(\)\)/);
+  assert.match(appSource, /function selectedPivotMode\(\)[\s\S]*?selectedSupportResistanceFormulas\(\)\.size \? "traditional" : null/);
   assert.match(appSource, /withPanelIndicatorParameters[\s\S]*?&pivot=traditional/);
   assert.match(appSource, /panelPayloadCacheKey\(symbol, interval, pivotMode = null\)[\s\S]*?pivot:\$\{pivotMode === "traditional" \? "traditional" : "off"\}/);
-  assert.match(appSource, /input\.value === "pivotPoint"[\s\S]*?refreshPivotPointSelection\(\)/);
+  assert.match(appSource, /SUPPORT_RESISTANCE_FORMULA_IDS\.has\(input\.value\)[\s\S]*?refreshPivotPointSelection\(\)/);
+  assert.match(appSource, /projection\?\.formulaLevels\?\.threeLevelPrice/);
+  assert.match(appSource, /projection\?\.formulaLevels\?\.cdp/);
+  assert.match(appSource, /label\.textContent = `\$\{SUPPORT_RESISTANCE_INTERVAL_PREFIX\[sourceInterval\] \|\| sourceInterval\} \$\{prefix\} \$\{style\.title\} \$\{formatQuotePrice/);
+  assert.match(appSource, /const SUPPORT_RESISTANCE_INTERVAL_RANK = Object\.freeze\(\{[\s\S]*?"1m": 0,[\s\S]*?"1mo": 6,/);
+  assert.match(appSource, /function supportResistanceSourceApplies\(sourceInterval, targetInterval\)[\s\S]*?sourceRank >= targetRank/);
+  assert.match(appSource, /const supportResistanceSourcesBySymbol = new Map\(\)/);
+  assert.match(appSource, /function persistSupportResistanceInputState\([\s\S]*?source\.enabled = enabled/);
+  assert.match(appSource, /function restoreSupportResistanceInputsForContext\(symbol, interval\)[\s\S]*?source\?\.enabled\?\.has\(input\.value\)/);
+  assert.match(appSource, /function applicableSupportResistanceSources\(\)[\s\S]*?supportResistanceSourceApplies\(source\.sourceInterval, targetInterval\)/);
+  assert.match(appSource, /function pivotAnchorTimeForTarget\(source, projection\)[\s\S]*?supportResistanceReferenceKeyForTime\(row\.time, source\.sourceInterval\)/);
+  assert.match(appSource, /label\.dataset\.sourceInterval = sourceInterval/);
   assert.match(indexHtml, /class="pivot-point-layer"/);
   assert.match(indexHtml, /class="pivot-point-reset"[^>]*>回到最新<\/button>/);
   assert.match(appSource, /contractVersion !== "selected-next-period-v1"/);

@@ -13,7 +13,7 @@ import { notify } from '../lib/trade';
 import type { ContractInfo } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
 import { todayStr } from '../lib/utils/date';
-import { fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
 import * as panel from './panel.css';
 import * as styles from './derivative-explorer.css';
 import { UnderlyingPicker } from './underlying-picker';
@@ -199,11 +199,19 @@ export function WarrantPanel({
                     data-quote-group='current'
                     aria-label={
                         underlyingAtLimit
-                            ? `${underlyingAtLimit === 'up' ? '漲停' : '跌停'}，現貨 ${fmtPrice(underlyingQuote?.close)}`
+                            ? `${underlyingAtLimit === 'up' ? '漲停' : '跌停'}，現貨 ${underlyingContract ? fmtContractPrice(underlyingContract, underlyingQuote?.close) : fmtPrice(underlyingQuote?.close)}`
                             : undefined
                     }
                 >
-                    現貨 {underlyingQuote ? fmtPrice(underlyingQuote.close) : '—'}
+                    現貨{' '}
+                    {underlyingQuote
+                        ? underlyingContract
+                            ? fmtContractPrice(
+                                  underlyingContract,
+                                  underlyingQuote.close,
+                              )
+                            : fmtPrice(underlyingQuote.close)
+                        : '—'}
                 </span>
                 <span>{contracts.length.toLocaleString()} 檔發行中</span>
                 <span>顯示最接近條件的 {filtered.length} 檔</span>

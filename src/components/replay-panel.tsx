@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchHistoryTicks } from '../lib/shioaji';
 import { getChartColors, useThemeSettings } from '../lib/theme-store';
 import type { ContractBase } from '../lib/types/contract';
-import { fmtInt, fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice, fmtInt } from '../lib/utils/format';
 import { dateStrOffset, wallClockToUtc } from '../lib/utils/kbars';
 import * as dock from './bottom-dock.css';
 import * as styles from './replay-panel.css';
@@ -260,7 +260,7 @@ export function ReplayPanel({ contract }: { contract: ContractBase }) {
                 <span className={styles.status}>
                     {loaded
                         ? cur
-                            ? `${fmtPrice(cur.price)} · ${fmtInt(idx)}/${fmtInt(ticks.length)}`
+                            ? `${fmtContractPrice(contract, cur.price)} · ${fmtInt(idx)}/${fmtInt(ticks.length)}`
                             : `${fmtInt(ticks.length)} ticks`
                         : '載入中…'}
                 </span>

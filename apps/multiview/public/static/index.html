@@ -252,7 +252,9 @@
                 <label class="main-indicator-option-wide"><input class="main-indicator" type="checkbox" value="volumeProfile" /> Volume Profile</label>
                 <label><input class="main-indicator pe-river-toggle" type="checkbox" value="peRiver" /> 本益比河流圖</label>
                 <label><input class="main-indicator estimated-margin-cost-toggle" type="checkbox" value="estimatedMarginCost" /> 估算融資成本</label>
-                <label class="main-indicator-option-wide"><input class="main-indicator pivot-point-toggle" type="checkbox" value="pivotPoint" /> Pivot Point</label>
+                <label><input class="main-indicator pivot-point-toggle" type="checkbox" value="pivotPoint" /> Pivot Point</label>
+                <label><input class="main-indicator three-level-price-toggle" type="checkbox" value="threeLevelPrice" /> 三關價</label>
+                <label><input class="main-indicator cdp-toggle" type="checkbox" value="cdp" /> CDP</label>
               </div>
               <label class="main-readout-mode-control">
                 <span>數值顯示</span>
@@ -362,7 +364,7 @@
           <p class="pe-river-status" role="status" aria-live="polite" hidden></p>
           <div class="profile-overlay" aria-label="成交量分佈圖"></div>
           <div class="fixed-profile-overlay" aria-label="固定範圍成交量分佈圖"></div>
-          <div class="pivot-point-layer" aria-label="所選 K 棒下一期 Pivot Point 投影"></div>
+          <div class="pivot-point-layer" aria-label="所選 K 棒下一期壓撐價位投影"></div>
           <div class="chart-annotation-layer" aria-label="主圖繪圖與價格範圍"></div>
           <div class="price-extrema-layer" aria-label="可視範圍最高價與最低價"></div>
           <div class="profile-summary hidden" aria-label="Volume Profile POC VA"></div>
@@ -398,13 +400,6 @@
               <span class="pivot-point-reference" data-main-readout="pivotReference">參考 <b data-pivot-reference>--</b></span>
               <span class="pivot-point-applies" data-main-readout="pivotApplies">適用 <b data-pivot-applies>--</b></span>
               <span class="pivot-point-status" data-main-readout="pivotStatus"><b data-pivot-status>--</b></span>
-              <span data-main-readout="pivotP">P <b data-main-indicator="pivotP">--</b></span>
-              <span data-main-readout="pivotR1">R1 <b data-main-indicator="pivotR1">--</b></span>
-              <span data-main-readout="pivotR2">R2 <b data-main-indicator="pivotR2">--</b></span>
-              <span data-main-readout="pivotR3">R3 <b data-main-indicator="pivotR3">--</b></span>
-              <span data-main-readout="pivotS1">S1 <b data-main-indicator="pivotS1">--</b></span>
-              <span data-main-readout="pivotS2">S2 <b data-main-indicator="pivotS2">--</b></span>
-              <span data-main-readout="pivotS3">S3 <b data-main-indicator="pivotS3">--</b></span>
               <button type="button" class="pivot-point-reset" data-export-exclude="true">回到最新</button>
             </div>
             <div class="readout-row readout-row-fvg" data-readout-row="fvg">

@@ -1,12 +1,18 @@
 ## ADDED Requirements
 
 ### Requirement: 主交易畫面必須提供獨立的壓撐入口
-主交易畫面 K 線工具列 MUST 在「指標」旁提供標題為「壓撐」的鍵盤可操作按鈕。按鈕 MUST 開啟 viewport-safe popover，並依序提供 `PivotPoint`、`三關價`、`CDP` 三個 checkbox；三項預設 MUST 為關閉，且啟用狀態 MUST 使用既有 canonical indicator store 的版本化、原子及同 origin 同步契約。
+主交易畫面 K 線工具列 MUST 在「指標」旁提供標題為「壓撐」的鍵盤可操作按鈕。「壓撐」按鈕 MUST 與「指標」同為 toolbar 的直接 flex child，並沿用相同文字大小、行高、內距、垂直位置及外框寬高；按鈕 MUST 沿用「指標」按鈕的正常／active 色彩與背景語言，並在正常及 active 狀態維持清楚可見的框線。按鈕 MUST 開啟 viewport-safe popover，依序提供 `PivotPoint`、`三關價`、`CDP` 三個 checkbox；三項預設 MUST 為關閉，且啟用狀態 MUST 使用既有 canonical indicator store 的版本化、原子及同 origin 同步契約。
 
 #### Scenario: 開啟壓撐選單
 - **WHEN** 使用者以滑鼠或鍵盤啟動「壓撐」按鈕
 - **THEN** 系統 MUST 顯示三個具有可讀 label 與 checked state 的 checkbox
 - **AND** popover MUST 不得遮蔽價格軸、溢出可視畫面或改變目前交易模式
+
+#### Scenario: 壓撐與指標按鈕對齊
+- **WHEN** 主交易畫面 K 線工具列同時呈現「指標」與「壓撐」按鈕
+- **THEN** 兩個按鈕 MUST 是 toolbar 的相鄰直接 flex child
+- **AND** 兩個雙字按鈕的 rendered width、rendered height、font、line-height 及四向 padding MUST 相同
+- **AND** 「壓撐」框線可使用自身 normal／active 色彩，但不得改變按鈕尺寸或文字位置
 
 #### Scenario: 勾選第一個公式
 - **WHEN** 三項均未啟用且使用者勾選任一 checkbox
@@ -17,6 +23,21 @@
 - **WHEN** checkbox 更新成功進入 canonical in-memory snapshot，但 localStorage 寫入失敗
 - **THEN** 畫面 MUST 繼續使用新的 in-memory enabled state
 - **AND** UI MUST 顯示「設定尚未保存」與安全 reason code，不得清除其他 indicator 設定
+
+#### Scenario: 個別開啟公式線條設定
+- **WHEN** 使用者啟動 PivotPoint、三關價或 CDP 列右側的設定圖示
+- **THEN** UI MUST 顯示該公式整組線條的顏色、粗細及實線／虛線／點線控制，並提供套用與取消
+- **AND** 套用後 MUST 透過 canonical indicator store 保存，立即同步至同商品的 1D 與四個分鐘時框，且不得改變 checkbox、reference 或其他公式設定
+
+#### Scenario: StrictMode 下連續編輯公式樣式
+- **WHEN** 使用者在 React `StrictMode` 下編輯 PivotPoint、三關價或 CDP 的顏色、粗細或線型
+- **THEN** event handler MUST 在進入 functional state updater 前同步擷取並驗證控制值
+- **AND** 預覽、套用、取消、Escape、點擊遮罩及恢復預設 MUST 正常運作，不得拋出 uncaught exception、顯示全頁啟動失敗或遺留半套用設定
+
+#### Scenario: 未勾選公式先保存樣式
+- **WHEN** 使用者尚未勾選某公式但先修改並套用其線條樣式
+- **THEN** 系統 MUST 保存 hidden formula instance 的樣式但保持 checkbox 未勾選
+- **AND** 後續啟用時 MUST 使用已保存樣式，不得先短暫顯示預設樣式
 
 ### Requirement: 壓撐公式必須使用固定版本與合法 OHLC
 系統 MUST 以同一根 reference K 棒的 `H`、`L`、`C` 計算已啟用的 level sets。PivotPoint MUST 使用 `traditional-pivot-tw-v1`；三關價 MUST 使用 `three-level-price-tw-v1` 的 `UP=H+(H-L)×0.382`、`MID=(H+L)/2`、`DOWN=L-(H-L)×0.382`；CDP MUST 使用 `cdp-wilder-tw-v1` 的 `CDP=(2C+H+L)/4`、`PT=H-L`、`AH=CDP+PT`、`NH=2CDP-L`、`NL=2CDP-H`、`AL=CDP-PT`。純函式 MUST 拒絕非有限值、`H<L` 或 `C` 不在 `[L,H]` 的 OHLC。
@@ -67,15 +88,20 @@ STK／IND／WRT 的自動 reference resolver MUST 以 `Asia/Taipei` 現在時間
 ### Requirement: 三套壓撐工具必須共用 1D-authoritative reference
 同商品的 enabled formulas MUST 共用以 `security type + exchange + canonical code` 為 key 且不含 timeframe、formula id 或 instance id 的 reference state。只有 1D 游標觀察模式可以固定歷史 reference、回到最新或清除最後一個 formula；1m、5m、15m、60m MUST 為唯讀鏡像，且不得依自己的 history window 重選 reference。
 
-#### Scenario: 在 1D 固定歷史 K 棒
-- **WHEN** 任一壓撐公式已啟用，使用者在 1D 游標觀察模式啟動「固定歷史」並點選合法的已完成日 K
+#### Scenario: 在 1D 直接點選其他歷史 K 棒
+- **WHEN** 任一壓撐公式已啟用，使用者在 1D 游標觀察模式直接點選合法的已完成日 K
 - **THEN** 所有 enabled formulas MUST 同時改用該 K 棒的 H／L／C
-- **AND** reference MUST 標示為固定歷史，後續 hover、tick 或切換分鐘時框不得改變它
+- **AND** reference MUST 標示為固定歷史，後續 hover、tick 或切換分鐘時框不得改變它，且不得要求先啟動額外選棒控制
 
 #### Scenario: 嘗試選取未完成日 K
 - **WHEN** 使用者在盤中點選今日仍 forming 的 1D K 棒
 - **THEN** 系統 MUST 拒絕固定並保留原 reference
 - **AND** UI MUST 顯示今日 K 棒尚未完成的非阻斷提示
+
+#### Scenario: 投影以計算依據 K 棒為起點
+- **WHEN** 自動 resolver 或使用者直接點選決定一根 reference K 棒
+- **THEN** 每條壓撐價格線 MUST 以該根 reference K 棒在圖表上的位置作為左側起點並向右延伸
+- **AND** 系統 MUST NOT 向該根 K 棒左側回畫歷史線；reference 不在分鐘資料窗時才可夾到 plot 左側安全邊界
 
 #### Scenario: 分鐘圖鏡像同一組投影
 - **WHEN** 1D 已建立自動或固定 reference，使用者切換至 1m、5m、15m 或 60m
@@ -88,7 +114,7 @@ STK／IND／WRT 的自動 reference resolver MUST 以 `Asia/Taipei` 現在時間
 - **AND** 所有支援時框 MUST 原子切換至同一個新 projection
 
 ### Requirement: 壓撐線與價位標籤必須共同配置
-系統 MUST 將所有 enabled level sets 交由單一 renderer 排序與配置，最多同時呈現 PivotPoint 七線、三關價三線及 CDP 五線。每條線 MUST 有 formula prefix、level label、格式化價位、可辨識色彩／線型；所有標籤 MUST 共同避碰，偏離真實價格位置時 MUST 以短 connector 指回價位。autoscale MUST 只納入目前 enabled 且有限的 levels。
+系統 MUST 將所有 enabled level sets 交由單一 renderer 排序與配置，最多同時呈現 PivotPoint 七線、三關價三線及 CDP 五線。每條線 MUST 有 formula prefix、level label、格式化價位、可辨識色彩／線型；使用者為公式設定的整組顏色、粗細與實線／虛線／點線 MUST 覆蓋該公式預設樣式，且標籤與 connector MUST 跟隨自訂顏色。所有標籤 MUST 共同避碰，偏離真實價格位置時 MUST 以短 connector 指回價位。autoscale MUST 只納入目前 enabled 且有限的 levels。
 
 #### Scenario: 三套公式同時啟用
 - **WHEN** PivotPoint、三關價與 CDP 同時具有合法 projection
@@ -105,12 +131,25 @@ STK／IND／WRT 的自動 reference resolver MUST 以 `Asia/Taipei` 現在時間
 - **THEN** renderer MUST 依固定順序調整 label Y 位置並為位移標籤顯示短 connector
 - **AND** connector MUST 指向原始真實價格而非位移後價格
 
+### Requirement: 左上角只保留共用 reference 狀態
+壓撐 readout MUST 在左上角顯示共用 reference 的自動／固定歷史、reference 日期及完成／unavailable 狀態，但 MUST NOT 重複列出 PivotPoint、三關價或 CDP 的 level 名稱與價位。各 level 的 formula prefix、名稱及格式化價位 MUST 只由右側線標籤呈現；固定歷史時左上角 MUST 保留「回到最新」控制。
+
+#### Scenario: 三套公式同時啟用
+- **WHEN** PivotPoint、三關價與 CDP 同時具有合法 projection
+- **THEN** 左上角 MUST 只顯示一組共用 reference 狀態，不得列出十五個 level 值
+- **AND** 右側線標籤 MUST 繼續顯示各公式、level 名稱及格式化價位
+
+#### Scenario: 固定歷史 reference
+- **WHEN** 使用者在 1D 直接點選已完成歷史 K 棒
+- **THEN** 左上角 MUST 顯示固定歷史、reference 日期、已完成及「回到最新」
+- **AND** 移除 level 值不得移除或停用「回到最新」控制
+
 ### Requirement: 個別取消與 lifecycle cleanup 必須原子且隔離
-取消單一 checkbox MUST 只移除該 formula 的線、標籤、readout 與 autoscale contribution，並在其他 formula 仍啟用時保留共用 reference。最後一個 formula 取消時 MUST 清除該商品的 pinned reference 與整組 primitive data；切換商品／時框、快速更新、較新 generation、unmount 或非法資料時 MUST 清理舊投影，不得污染其他圖表。
+取消單一 checkbox MUST 只移除該 formula 的線、右側標籤與 autoscale contribution，並在其他 formula 仍啟用時保留共用 reference readout。最後一個 formula 取消時 MUST 清除該商品的 pinned reference、共用 reference readout 與整組 primitive data；切換商品／時框、快速更新、較新 generation、unmount 或非法資料時 MUST 清理舊投影，不得污染其他圖表。
 
 #### Scenario: 只取消 CDP
 - **WHEN** 三套公式皆啟用且使用者取消 CDP
-- **THEN** 系統 MUST 只移除 AH、NH、CDP、NL、AL 及其 readout／autoscale
+- **THEN** 系統 MUST 只移除 AH、NH、CDP、NL、AL 及其右側標籤／autoscale
 - **AND** PivotPoint、三關價與共用 reference MUST 保持不變
 
 #### Scenario: 取消最後一個公式

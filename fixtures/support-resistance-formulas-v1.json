@@ -1,0 +1,41 @@
+{
+  "fixtureVersion": "support-resistance-formulas-v1",
+  "formulaVersions": {
+    "pivotPoint": "traditional-pivot-tw-v1",
+    "threeLevelPrice": "three-level-price-tw-v1",
+    "cdp": "cdp-wilder-tw-v1"
+  },
+  "cases": [
+    {
+      "name": "normal-six-decimals",
+      "input": { "high": 110.25, "low": 90.1, "close": 100.2 },
+      "pivotPoint": { "p": 100.183333, "r1": 110.266667, "r2": 120.333333, "r3": 130.416667, "s1": 90.116667, "s2": 80.033333, "s3": 69.966667 },
+      "threeLevelPrice": { "up": 117.9473, "mid": 100.175, "down": 82.4027 },
+      "cdp": { "ah": 120.3375, "nh": 110.275, "cdp": 100.1875, "nl": 90.125, "al": 80.0375 }
+    },
+    {
+      "name": "flat",
+      "input": { "high": 10, "low": 10, "close": 10 },
+      "pivotPoint": { "p": 10, "r1": 10, "r2": 10, "r3": 10, "s1": 10, "s2": 10, "s3": 10 },
+      "threeLevelPrice": { "up": 10, "mid": 10, "down": 10 },
+      "cdp": { "ah": 10, "nh": 10, "cdp": 10, "nl": 10, "al": 10 }
+    },
+    {
+      "name": "close-at-high",
+      "input": { "high": 110, "low": 90, "close": 110 },
+      "pivotPoint": { "p": 103.333333, "r1": 116.666667, "r2": 123.333333, "r3": 136.666667, "s1": 96.666667, "s2": 83.333333, "s3": 76.666667 },
+      "threeLevelPrice": { "up": 117.64, "mid": 100, "down": 82.36 },
+      "cdp": { "ah": 125, "nh": 120, "cdp": 105, "nl": 100, "al": 85 }
+    },
+    {
+      "name": "close-at-low",
+      "input": { "high": 110, "low": 90, "close": 90 },
+      "pivotPoint": { "p": 96.666667, "r1": 103.333333, "r2": 116.666667, "r3": 123.333333, "s1": 83.333333, "s2": 76.666667, "s3": 63.333333 },
+      "threeLevelPrice": { "up": 117.64, "mid": 100, "down": 82.36 },
+      "cdp": { "ah": 115, "nh": 100, "cdp": 95, "nl": 80, "al": 75 }
+    },
+    { "name": "high-below-low", "input": { "high": 9, "low": 10, "close": 9.5 }, "invalid": true },
+    { "name": "close-outside-range", "input": { "high": 10, "low": 9, "close": 20 }, "invalid": true },
+    { "name": "non-finite", "input": { "high": "Infinity", "low": 9, "close": 10 }, "invalid": true }
+  ]
+}

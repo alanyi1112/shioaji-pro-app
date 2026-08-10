@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchHistoryTicks } from '../lib/shioaji';
 import { onAnyTick } from '../lib/stream';
 import type { ContractBase } from '../lib/types/contract';
-import { fmtInt, fmtPrice } from '../lib/utils/format';
+import { fmtContractPrice, fmtInt } from '../lib/utils/format';
 import { dateStrOffset } from '../lib/utils/kbars';
 import * as dock from './bottom-dock.css';
 import * as panel from './panel.css';
@@ -145,7 +145,7 @@ export function VolProfile({ contract }: { contract: ContractBase }) {
                     return (
                         <div key={price} className={styles.row}>
                             <span className={styles.price}>
-                                {fmtPrice(price)}
+                                {fmtContractPrice(contract, price)}
                             </span>
                             <div className={styles.barTrack}>
                                 <div

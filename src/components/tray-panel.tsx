@@ -21,6 +21,7 @@ import type { ScannerItem } from '../lib/types/market';
 import type { Position } from '../lib/types/portfolio';
 import {
     fmtInt,
+    fmtContractPrice,
     fmtPct,
     fmtPrice,
     fmtSigned,
@@ -113,7 +114,7 @@ export function WatchMini({ item, spark }: { item: WatchItem; spark: boolean }) 
                 data-quote-group='current'
                 aria-label={
                     limitLabel
-                        ? `${limitLabel}，最新價 ${fmtPrice(close)}，${fmtPct(pct)}`
+                        ? `${limitLabel}，最新價 ${fmtContractPrice(item.contract, close)}，${fmtPct(pct)}`
                         : undefined
                 }
             >
@@ -122,7 +123,7 @@ export function WatchMini({ item, spark }: { item: WatchItem; spark: boolean }) 
                         atLimit ? styles.limitText : panel.dirText[dir]
                     }`}
                 >
-                    {fmtPrice(close)}
+                    {fmtContractPrice(item.contract, close)}
                 </span>
                 <span
                     className={`${styles.numSm} ${
@@ -356,6 +357,16 @@ export function TrayPanel() {
                                       ? 'down'
                                       : 'flat';
                             const meta = moverMeta.get(it.code);
+                            const priceContract = {
+                                code: it.code,
+                                security_type: 'STK' as const,
+                                exchange:
+                                    meta?.exchange === 'OTC'
+                                        ? 'OTC' as const
+                                        : 'TSE' as const,
+                                target_code: null,
+                                category: meta?.category,
+                            };
                             const atLimit = quoteLimitState({
                                 price: it.close,
                                 limitUp: meta?.limit_up,
@@ -385,14 +396,14 @@ export function TrayPanel() {
                                         data-quote-group='current'
                                         aria-label={
                                             limitLabel
-                                                ? `${limitLabel}，最新價 ${fmtPrice(it.close)}，${fmtPct(pct)}`
+                                                ? `${limitLabel}，最新價 ${fmtContractPrice(priceContract, it.close)}，${fmtPct(pct)}`
                                                 : undefined
                                         }
                                     >
                                         <span
                                             className={`${styles.num} ${atLimit ? styles.limitText : panel.dirText[dir]}`}
                                         >
-                                            {fmtPrice(it.close)}
+                                            {fmtContractPrice(priceContract, it.close)}
                                         </span>
                                         <span
                                             className={`${styles.numSm} ${atLimit ? styles.limitText : panel.dirText[dir]}`}

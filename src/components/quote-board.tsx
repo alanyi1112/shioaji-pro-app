@@ -6,7 +6,11 @@ import type { Snapshot } from '../lib/types/market';
 import { priceDirection } from '../lib/price-direction';
 import { quoteLimitState } from '../lib/limit-state';
 import { buildQuoteSummaryMetrics } from '../lib/quote-summary';
-import { fmtPct, fmtPrice, fmtSigned } from '../lib/utils/format';
+import {
+    fmtContractPrice,
+    fmtContractSigned,
+    fmtPct,
+} from '../lib/utils/format';
 import * as panel from './panel.css';
 import * as styles from './quote-board.css';
 
@@ -70,27 +74,30 @@ export function QuoteBoard({
         limitDown: contract.limit_down,
         isIndex,
     });
-    const metrics = buildQuoteSummaryMetrics({
-        isIndex,
-        reference: validPrice(ref),
-        open: validPrice(open),
-        high: validPrice(high),
-        low: validPrice(low),
-        volume: validNumber(vol),
-        limitUp: validPrice(contract.limit_up),
-        limitDown: validPrice(contract.limit_down),
-        time: (isIndex ? index?.time : tick?.time)?.slice(0, 8),
-        bid: validPrice(bid1),
-        bidVolume: bidask ? validNumber(bidask.bid_volume[0]) : undefined,
-        ask: validPrice(ask1),
-        askVolume: bidask ? validNumber(bidask.ask_volume[0]) : undefined,
-        raiseCount: validNumber(index?.raise_count),
-        flatCount: validNumber(index?.flat_count),
-        fallCount: validNumber(index?.fall_count),
-        limitUpCount: validNumber(index?.limit_up_count),
-        noTradeCount: validNumber(index?.no_trade),
-        limitDownCount: validNumber(index?.limit_down_count),
-    });
+    const metrics = buildQuoteSummaryMetrics(
+        {
+            isIndex,
+            reference: validPrice(ref),
+            open: validPrice(open),
+            high: validPrice(high),
+            low: validPrice(low),
+            volume: validNumber(vol),
+            limitUp: validPrice(contract.limit_up),
+            limitDown: validPrice(contract.limit_down),
+            time: (isIndex ? index?.time : tick?.time)?.slice(0, 8),
+            bid: validPrice(bid1),
+            bidVolume: bidask ? validNumber(bidask.bid_volume[0]) : undefined,
+            ask: validPrice(ask1),
+            askVolume: bidask ? validNumber(bidask.ask_volume[0]) : undefined,
+            raiseCount: validNumber(index?.raise_count),
+            flatCount: validNumber(index?.flat_count),
+            fallCount: validNumber(index?.fall_count),
+            limitUpCount: validNumber(index?.limit_up_count),
+            noTradeCount: validNumber(index?.no_trade),
+            limitDownCount: validNumber(index?.limit_down_count),
+        },
+        (value) => fmtContractPrice(contract, value),
+    );
 
     return (
         <div className={`${styles.board} drag-handle`}>
@@ -112,7 +119,7 @@ export function QuoteBoard({
                         data-quote-group='current'
                         aria-label={
                             atLimit
-                                ? `${atLimit === 'up' ? '漲停' : '跌停'}，最新價 ${fmtPrice(close)}，漲跌 ${fmtSigned(chg)}，${fmtPct(pct)}`
+                                ? `${atLimit === 'up' ? '漲停' : '跌停'}，最新價 ${fmtContractPrice(contract, close)}，漲跌 ${fmtContractSigned(contract, chg, ref)}，${fmtPct(pct)}`
                                 : undefined
                         }
                     >
@@ -127,7 +134,7 @@ export function QuoteBoard({
                                         : styles.bigPrice[dir]
                                 }
                             >
-                                {fmtPrice(close)}
+                                {fmtContractPrice(contract, close)}
                             </span>
                         </div>
 
@@ -139,7 +146,7 @@ export function QuoteBoard({
                             }
                             data-quote-field='change'
                         >
-                            <span>{fmtSigned(chg)}</span>
+                            <span>{fmtContractSigned(contract, chg, ref)}</span>
                             <span>{fmtPct(pct)}</span>
                         </div>
                     </div>

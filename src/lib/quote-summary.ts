@@ -47,17 +47,19 @@ function priceMetric(
     label: string,
     value: number | undefined,
     reference: number | undefined,
+    formatPrice: (value: number | undefined) => string,
 ): QuoteSummaryMetric {
     return metric(
         key,
         label,
-        fmtPrice(value),
+        formatPrice(value),
         priceDirection(value, reference),
     );
 }
 
 export function buildQuoteSummaryMetrics(
     values: QuoteSummaryValues,
+    formatPrice: (value: number | undefined) => string = fmtPrice,
 ): QuoteSummaryMetric[] {
     const {
         reference,
@@ -71,16 +73,16 @@ export function buildQuoteSummaryMetrics(
     } = values;
 
     const firstRow = [
-        priceMetric('open', '開', open, reference),
-        priceMetric('high', '高', high, reference),
-        priceMetric('low', '低', low, reference),
+        priceMetric('open', '開', open, reference, formatPrice),
+        priceMetric('high', '高', high, reference, formatPrice),
+        priceMetric('low', '低', low, reference, formatPrice),
         metric('volume', '量', fmtInt(volume)),
     ];
 
     if (values.isIndex) {
         return [
             ...firstRow,
-            metric('reference', '參考', fmtPrice(reference), 'flat'),
+            metric('reference', '參考', formatPrice(reference), 'flat'),
             metric('raise-count', '上漲', fmtInt(values.raiseCount), 'up'),
             metric('flat-count', '平盤', fmtInt(values.flatCount), 'flat'),
             metric('fall-count', '下跌', fmtInt(values.fallCount), 'down'),
@@ -103,13 +105,13 @@ export function buildQuoteSummaryMetrics(
 
     return [
         ...firstRow,
-        metric('reference', '參考', fmtPrice(reference), 'flat'),
-        priceMetric('limit-up', '漲停', limitUp, reference),
-        priceMetric('limit-down', '跌停', limitDown, reference),
+        metric('reference', '參考', formatPrice(reference), 'flat'),
+        priceMetric('limit-up', '漲停', limitUp, reference, formatPrice),
+        priceMetric('limit-down', '跌停', limitDown, reference, formatPrice),
         metric('time', '時間', time ?? '—'),
-        priceMetric('bid', '委買', values.bid, reference),
+        priceMetric('bid', '委買', values.bid, reference, formatPrice),
         metric('bid-volume', '買量', fmtInt(values.bidVolume)),
-        priceMetric('ask', '委賣', values.ask, reference),
+        priceMetric('ask', '委賣', values.ask, reference, formatPrice),
         metric('ask-volume', '賣量', fmtInt(values.askVolume)),
     ];
 }

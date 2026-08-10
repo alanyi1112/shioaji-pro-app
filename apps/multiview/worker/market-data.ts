@@ -271,10 +271,12 @@ export function candlePayloadFromRows(
       ? referencePeriodKey(latestReference.time, referenceInterval, sourceTimeZone)
       : undefined;
     const currentReferenceKey = referencePeriodKey(Math.floor(now.getTime() / 1000), referenceInterval, sourceTimeZone);
-    const provisionalReferencePeriodKey = latestReferenceKey === currentReferenceKey
-      && (referenceInterval !== "1d" || !["closing", "closed"].includes(marketPhase))
+    const provisionalReferencePeriodKey = ["1m", "5m", "15m", "1h"].includes(referenceInterval)
       ? latestReferenceKey
-      : undefined;
+      : latestReferenceKey === currentReferenceKey
+        && (referenceInterval === "1d" ? !["closing", "closed"].includes(marketPhase) : true)
+        ? latestReferenceKey
+        : undefined;
     fullIndicators.pivot_points = buildTraditionalPivotIndicator(
       displayRows,
       pivotReferenceRows,

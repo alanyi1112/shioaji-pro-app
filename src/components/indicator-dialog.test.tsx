@@ -23,10 +23,11 @@ describe('K 棒價量 picker 與設定', () => {
         expect(html).toContain('>K</span>');
         expect(html).toContain('一般指標同型可加多個；K 棒價量限一個');
         expect(html).toContain('K 線固定區間 Volume Profile');
-        expect(html).toContain('Traditional Pivot Point');
+        expect(html).not.toContain('Traditional Pivot Point');
+        expect(html).not.toContain('PivotPoint');
     });
 
-    it('FUT／OPT 的 Pivot 在 picker 明確停用', () => {
+    it('Traditional Pivot 即使有 disabled reason 也不再出現在 picker', () => {
         const html = renderToStaticMarkup(
             <IndicatorDialog
                 instances={[]}
@@ -42,8 +43,8 @@ describe('K 棒價量 picker 與設定', () => {
                 onClose={vi.fn()}
             />,
         );
-        expect(html).toContain('第一階段尚未支援 FUT／OPT');
-        expect(html).toContain('disabled=""');
+        expect(html).not.toContain('第一階段尚未支援 FUT／OPT');
+        expect(html).not.toContain('Traditional Pivot Point');
     });
 
     it('readout 設定只提供時框顯示與移除', () => {

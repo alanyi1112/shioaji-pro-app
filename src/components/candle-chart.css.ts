@@ -11,6 +11,7 @@ export const wrap = style({
 });
 
 export const toolbar = style({
+    position: 'relative',
     display: 'flex',
     gap: '2px',
     padding: `4px ${vars.space.sm}`,
@@ -170,6 +171,186 @@ export const indicatorBtn = styleVariants({
             color: vars.color.foreground,
             background: vars.color.muted,
         },
+    ],
+});
+
+export const supportResistanceBtn = styleVariants({
+    normal: [modeBase, { borderColor: vars.color.borderBright }],
+    active: [
+        modeBase,
+        {
+            color: vars.color.foreground,
+            background: vars.color.muted,
+            borderColor: vars.color.accent,
+        },
+    ],
+});
+
+export const supportResistancePopover = style({
+    position: 'absolute',
+    zIndex: 50,
+    top: 'calc(100% + 4px)',
+    right: vars.space.sm,
+    width: 'min(15rem, calc(100% - 16px))',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '6px',
+    padding: '9px',
+    color: vars.color.foreground,
+    background: vars.color.panelRaised,
+    border: `1px solid ${vars.color.borderBright}`,
+    borderRadius: vars.radius.md,
+    boxShadow: '0 10px 28px rgba(0, 0, 0, 0.45)',
+});
+
+export const supportResistanceOption = style({
+    display: 'flex',
+    alignItems: 'center',
+    gap: '7px',
+    fontFamily: vars.font.body,
+    fontSize: '0.7rem',
+    cursor: 'pointer',
+    selectors: { '&:has(input:disabled)': { opacity: 0.55, cursor: 'default' } },
+});
+
+export const supportResistanceRow = style({
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+});
+
+export const supportResistanceRowLabel = style([
+    supportResistanceOption,
+    { flex: 1, minWidth: 0 },
+]);
+
+export const supportResistanceSettingsBtn = style({
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: '24px',
+    height: '24px',
+    flexShrink: 0,
+    padding: 0,
+    cursor: 'pointer',
+    color: vars.color.mutedForeground,
+    background: 'transparent',
+    border: '1px solid transparent',
+    borderRadius: vars.radius.sm,
+    ':hover': {
+        color: vars.color.foreground,
+        background: vars.color.muted,
+        borderColor: vars.color.border,
+    },
+    ':disabled': { opacity: 0.45, cursor: 'default' },
+});
+
+export const supportResistanceHelp = style({
+    fontFamily: vars.font.body,
+    fontSize: '0.6rem',
+    color: vars.color.mutedForeground,
+    lineHeight: 1.4,
+});
+
+export const supportResistanceStyleOverlay = style({
+    position: 'fixed',
+    inset: 0,
+    zIndex: 2100,
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    paddingTop: '16vh',
+    background: 'rgba(0, 0, 0, 0.45)',
+});
+
+export const supportResistanceStyleDialog = style({
+    width: 'min(22rem, 92vw)',
+    padding: vars.space.lg,
+    color: vars.color.foreground,
+    background: vars.color.panelRaised,
+    border: `1px solid ${vars.color.borderBright}`,
+    borderRadius: vars.radius.lg,
+    boxShadow: '0 24px 64px rgba(0, 0, 0, 0.5)',
+});
+
+export const supportResistanceStyleHeader = style({
+    marginBottom: vars.space.lg,
+    fontFamily: vars.font.display,
+    fontSize: '0.9rem',
+    fontWeight: 600,
+});
+
+export const supportResistanceStyleField = style({
+    display: 'grid',
+    gridTemplateColumns: '5.5rem 1fr',
+    alignItems: 'center',
+    gap: vars.space.md,
+    marginBottom: vars.space.md,
+    fontFamily: vars.font.body,
+    fontSize: '0.72rem',
+});
+
+export const supportResistanceColorControl = style({
+    display: 'flex',
+    alignItems: 'center',
+    gap: vars.space.sm,
+});
+
+export const supportResistanceColorInput = style({
+    width: '36px',
+    height: '26px',
+    padding: '2px',
+    cursor: 'pointer',
+    background: vars.color.inset,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+});
+
+export const supportResistanceColorValue = style({
+    fontFamily: vars.font.mono,
+    fontSize: '0.7rem',
+    color: vars.color.mutedForeground,
+});
+
+export const supportResistanceStyleSelect = style({
+    width: '100%',
+    padding: '5px 7px',
+    fontFamily: vars.font.body,
+    fontSize: '0.72rem',
+    color: vars.color.foreground,
+    background: vars.color.inset,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+});
+
+export const supportResistanceStylePreview = style({
+    height: '18px',
+    margin: `${vars.space.lg} 0`,
+    borderTop: 'var(--support-preview-width) var(--support-preview-style) var(--support-preview-color)',
+});
+
+export const supportResistanceStyleActions = style({
+    display: 'flex',
+    justifyContent: 'flex-end',
+    gap: vars.space.sm,
+});
+
+const supportResistanceActionBase = style({
+    padding: '5px 10px',
+    cursor: 'pointer',
+    fontFamily: vars.font.body,
+    fontSize: '0.7rem',
+    color: vars.color.foreground,
+    background: vars.color.muted,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+});
+
+export const supportResistanceStyleAction = styleVariants({
+    secondary: [supportResistanceActionBase],
+    primary: [
+        supportResistanceActionBase,
+        { color: '#fff', background: vars.color.accent, borderColor: vars.color.accent },
     ],
 });
 

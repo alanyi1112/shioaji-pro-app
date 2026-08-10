@@ -186,7 +186,7 @@ function BlockBody({
             );
         case 'depth':
             return contract ? (
-                <DepthLadder code={contract.code} />
+                <DepthLadder contract={contract} />
             ) : (
                 <BlockPlaceholder />
             );
@@ -472,7 +472,7 @@ function PopoutView({
                 );
                 break;
             case 'depth':
-                body = <DepthLadder code={contract.code} />;
+                body = <DepthLadder contract={contract} />;
                 break;
             case 'ticket':
                 body = (

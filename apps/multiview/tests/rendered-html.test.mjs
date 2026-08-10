@@ -895,6 +895,9 @@ test("Pivot Point 預設 lazy，合法模式回傳 selected projection contract 
   assert.equal(on.indicators.pivot_points.projections.length, on.candles.length);
   for (const projection of on.indicators.pivot_points.projections) {
     for (const key of ["p", "r1", "r2", "r3", "s1", "s2", "s3"]) assert.equal(Number.isFinite(projection[key]), true, key);
+    assert.deepEqual(projection.formulaLevels.pivotPoint, Object.fromEntries(["p", "r1", "r2", "r3", "s1", "s2", "s3"].map((key) => [key, projection[key]])));
+    for (const key of ["up", "mid", "down"]) assert.equal(Number.isFinite(projection.formulaLevels.threeLevelPrice[key]), true, `threeLevelPrice.${key}`);
+    for (const key of ["ah", "nh", "cdp", "nl", "al"]) assert.equal(Number.isFinite(projection.formulaLevels.cdp[key]), true, `cdp.${key}`);
     assert.equal(["completed", "provisional"].includes(projection.referenceStatus), true);
     assert.equal(projection.appliesTo, "next-trading-day");
   }
@@ -903,17 +906,14 @@ test("Pivot Point 預設 lazy，合法模式回傳 selected projection contract 
   assert.equal(cacheKeys.some((key) => key.endsWith("|pivot:traditional")), true);
 });
 
-test("本機分 K 啟用，Pivot 另取日線 reference 且失敗時不混接", async () => {
+test("本機分 K 啟用，Pivot 直接使用來源週期 K 棒且不另取日線", async () => {
   const originalFetch = globalThis.fetch;
   let intradayCalls = 0;
   let dailyCalls = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
     if (!url.pathname.includes("/v8/finance/chart/PIVOTFAIL")) throw new Error(`unexpected ${url}`);
-    if (url.searchParams.get("interval") === "1d") {
-      dailyCalls += 1;
-      throw new Error("daily unavailable");
-    }
+    if (url.searchParams.get("interval") === "1d") dailyCalls += 1;
     intradayCalls += 1;
     const start = Math.floor(Date.parse("2026-07-01T01:00:00Z") / 1000);
     const timestamp = Array.from({ length: 300 }, (_, index) => start + index * 60);
@@ -942,8 +942,11 @@ test("本機分 K 啟用，Pivot 另取日線 reference 且失敗時不混接", 
     const onResponse = await service.fetch(new Request("http://localhost/api/candles?symbol=PIVOTFAIL&interval=1m&display_count=20&pivot=traditional"), environment(), context);
     const on = await onResponse.json();
     assert.equal(onResponse.status, 200);
-    assert.equal(on.indicators.pivot_points.status, "unavailable");
-    assert.equal(dailyCalls, 1);
+    assert.equal(on.indicators.pivot_points.status, "available");
+    assert.equal(on.indicators.pivot_points.referenceInterval, "1m");
+    assert.equal(on.indicators.pivot_points.projections.length, on.candles.length);
+    assert.equal(on.indicators.pivot_points.projections.at(-1).appliesTo, "next-source-candle");
+    assert.equal(dailyCalls, 0);
     assert.equal(intradayCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
@@ -1238,7 +1241,7 @@ test("台股盤中 stale cache 保留來源時間並以 freshness 優先", async
     dataQuality: { ignoredSessionDates: [] }, indicators: {},
     dataWindow: { cache: { store: "d1", state: "hit", source: "yfinance" } },
   };
-  db.candles.set("quote-state-v15-valid-ohlc|2330.TW|1d|20|r5.10-k9.3.3-m12.26.9-a14|pivot:off", { payload: JSON.stringify(cached), expires_at: 0 });
+  db.candles.set("quote-state-v17-support-resistance-source-interval|2330.TW|1d|20|r5.10-k9.3.3-m12.26.9-a14|pivot:off", { payload: JSON.stringify(cached), expires_at: 0 });
   globalThis.fetch = async () => { throw new Error("primary unavailable"); };
   try {
     const response = await (await worker()).fetch(new Request("http://localhost/api/candles?symbol=2330.TW&interval=1d&display_count=20"), { ...environment(), DB: db }, context);

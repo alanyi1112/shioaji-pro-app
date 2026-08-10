@@ -38,15 +38,15 @@ function contract(
     };
 }
 
-function snapshot(code: string, close: number): Snapshot {
-    const change = close - 247;
+function snapshot(code: string, close: number, reference = 247): Snapshot {
+    const change = close - reference;
     return {
         code,
         exchange: 'TSE',
         datetime: '2026-08-10T12:00:00+08:00',
-        open: 247,
-        high: Math.max(247, close),
-        low: Math.min(247, close),
+        open: reference,
+        high: Math.max(reference, close),
+        low: Math.min(reference, close),
         close,
         average_price: 250,
         buy_price: close,
@@ -58,7 +58,7 @@ function snapshot(code: string, close: number): Snapshot {
         amount: close,
         total_amount: close * 100,
         change_price: change,
-        change_rate: (change / 247) * 100,
+        change_rate: (change / reference) * 100,
         change_type: change > 0 ? 'Up' : change < 0 ? 'Down' : 'Unchanged',
         tick_type: 'Common',
         volume_ratio: 1,
@@ -91,8 +91,8 @@ describe('漲跌停即時報價群組', () => {
 
         expect(html).toContain('data-quote-group="current"');
         expect(html).toContain('data-limit-state="up"');
-        expect(html).toContain('>271.50</span>');
-        expect(html).toContain('aria-label="漲停，最新價 271.50');
+        expect(html).toContain('>271.5</span>');
+        expect(html).toContain('aria-label="漲停，最新價 271.5');
         expect(html).not.toContain('data-limit-badge=');
         expect(html).toContain('data-quote-summary="market"');
     });
@@ -105,7 +105,7 @@ describe('漲跌停即時報價群組', () => {
         );
 
         expect(html).toContain('data-limit-state="down"');
-        expect(html).toContain('aria-label="跌停，最新價 222.00');
+        expect(html).toContain('aria-label="跌停，最新價 222.0');
         expect(html).toContain(`>${c.code}</span>`);
         expect(html).toContain(`>${c.name}</span>`);
     });
@@ -120,7 +120,7 @@ describe('漲跌停即時報價群組', () => {
         );
 
         expect(html).toContain('data-limit-state="up"');
-        expect(html).toContain('aria-label="漲停，最新價 271.50');
+        expect(html).toContain('aria-label="漲停，最新價 271.5');
         expect(html).toContain(`>${c.code}</span>`);
         expect(html).toContain(`>${c.name}</span>`);
     });
@@ -146,7 +146,7 @@ describe('漲跌停即時報價群組', () => {
         expect(html).toContain('data-quote-group="current"');
         expect(html).not.toContain('data-limit-state=');
         expect(html).not.toContain('data-limit-badge=');
-        expect(html).toContain('>270.00</span>');
+        expect(html).toContain('>270.0</span>');
     });
 
     it('成交 flash 與選取狀態不取代持續漲停狀態', () => {
@@ -190,5 +190,35 @@ describe('漲跌停即時報價群組', () => {
         expect(normalHtml).not.toContain('aria-label="漲停');
         expect(indexHtml).not.toContain('data-limit-state=');
         expect(indexHtml).not.toContain('aria-label="漲停');
+    });
+
+    it('ETF 報價保留兩位小數而普通股票同級距只顯示一位', () => {
+        const ordinary = contract('3481', {
+            category: '24',
+            reference: 47.55,
+            limit_up: 52.3,
+        });
+        const etf = contract('0050', {
+            category: '00',
+            reference: 47.55,
+            limit_up: 52.3,
+        });
+
+        const ordinaryHtml = renderToStaticMarkup(
+            <QuoteBoard
+                contract={ordinary}
+                snapshot={snapshot(ordinary.code, 52.3, 47.55)}
+            />,
+        );
+        const etfHtml = renderToStaticMarkup(
+            <QuoteBoard
+                contract={etf}
+                snapshot={snapshot(etf.code, 52.3, 47.55)}
+            />,
+        );
+
+        expect(ordinaryHtml).toContain('>52.3</span>');
+        expect(etfHtml).toContain('>52.30</span>');
+        expect(etfHtml).toContain('aria-label="漲停，最新價 52.30');
     });
 });
