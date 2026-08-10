@@ -52,6 +52,16 @@
 - **THEN** Worker MUST 立即啟動該 symbol 的日籌碼預熱
 - **AND** MUST 同時註冊並排入 TDCC 回補，兩條路徑可獨立成功或重試
 
+#### Scenario: 新增台股 API 快速完成
+- **WHEN** 使用者新增一檔合格台股而免費來源、target 註冊或 D1 background work 回應較慢
+- **THEN** 儲存清單 API MUST 在單筆清單持久化與 canonical response 完成後先成功回應
+- **AND** 單一 target 註冊與籌碼下載 MUST 在 `waitUntil` 背景工作執行
+
+#### Scenario: Foreground 工作邊界
+- **WHEN** `POST /api/instruments` 保存一個商品
+- **THEN** response 前 MUST NOT 呼叫完整 TDCC target reconciliation
+- **AND** MUST NOT 因 active target、官方 catalog 或其他使用者清單數量增加而線性增加 foreground target queries
+
 #### Scenario: 任一立即回補來源失敗
 - **WHEN** 日籌碼來源、TDCC queue 或 workflow dispatch 任一暫時失敗
 - **THEN** 商品儲存 MUST 維持成功且不得刪除既有資料

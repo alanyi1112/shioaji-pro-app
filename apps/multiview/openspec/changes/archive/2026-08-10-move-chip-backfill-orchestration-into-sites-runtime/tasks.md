@@ -33,7 +33,7 @@
 - [x] 5.4 執行 build、lint、完整 tests、OpenSpec strict、`git diff --check`，並更新 verification
 - [x] 5.5 提交並推送修正版至 GitHub／Sites source，保存 owner-only version 並部署相同完整 HEAD
 - [x] 5.6 部署後因未能取得新的已授權 D1 health，決定不執行 `workflow_dispatch`，不得冒充 schedule
-- [ ] 5.7 等待下一次真實 `event=schedule`，核對安全摘要、D1 failed／retry 或完成終態與 history adapter 邊界
+- [x] 5.7 等待下一次真實 `event=schedule`，核對安全摘要、D1 failed／retry 或完成終態與 history adapter 邊界
 
 ## 6. 每日／每週拆分與新增商品立即回補
 

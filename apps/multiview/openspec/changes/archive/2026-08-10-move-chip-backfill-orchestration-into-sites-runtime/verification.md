@@ -2,6 +2,13 @@
 
 本 change 將台股籌碼 latest／daily 回補編排部署到 Sites Worker，GitHub Actions 只提供受保護 HTTP tick；需要 TDCC 可見表單 session 的歷史來源則以 `--history-only` adapter 保留在外部 runtime。
 
+## 2026-08-10 真實 TDCC schedule 終驗
+
+- 以 GitHub Actions 現場紀錄重新核對 run `31319918169`：workflow 為 `TDCC continuous backfill`、event 為真實 `schedule`、conclusion 為 `success`，執行 commit 為 `7e91236c3a668e6e631fecfb922292c57464625d`。
+- allowlist 摘要為 `chip-orchestrator tick=start scope=tdcc-weekly status=completed phase=completed processed=0 remaining=0 pending=0 reason=none recovery=none`；D1 orchestrator 已進入完成終態，沒有停留在 `running`、`failed` 或 `retry_waiting`。
+- Orchestrator 成功後才執行 `--history-only --trigger=schedule --run-id=gha-31319918169-1`；既有終驗確認本輪為 0 symbol／0 week 的成功 no-op，未重新執行 TDCC latest 或日籌碼編排。
+- 此證據已涵蓋 task 5.7 原始契約要求的真實排程、安全摘要、D1 終態與 history adapter 邊界，因此 task 5.7 完成。先前瀏覽器無法直接開啟私有 `/api/health`，不再被誤當成排程契約本身未完成。
+
 ## 2026-07-30 每日／每週拆分與新增商品立即回補（本機）
 
 - orchestrator run 新增 `scope` D1 欄位與安全摘要：`daily` 只做日籌碼 discovery／預熱，`tdcc-weekly` 只做 TDCC 最新週快照與歷史 adapter；既有 `combined` 僅保留相容性，新排程不再使用。

@@ -38,6 +38,8 @@
 - **THEN** 系統 MUST 保留 D1 既有資料並設定有限重試或下一次排程
 - **AND** MUST NOT 阻塞歷史資料讀取或清除 coverage
 
+## ADDED Requirements
+
 ### Requirement: 新增商品必須立即進入 TDCC 回補路徑
 
 啟用新的台股商品後，系統 MUST 立即註冊 continuous target、建立或更新耐久 history queue，並依部署目標嘗試觸發對應 TDCC workflow；MUST NOT 要求商品等待下一次每週 cron 才進入回補路徑。
