@@ -203,7 +203,7 @@ const intervalsForRequest = (request: Request) =>
   deploymentTargetForRequest(request) === "local" ? LOCAL_INTERVALS : INTERVALS;
 const TAB_IDS: Record<string, string> = { "台股": "taiwan-stocks", "美股": "us-stocks", "匯率債券": "fx-bonds", "期貨期指": "index-futures" };
 const TAB_MARKETS: Record<string, string> = { "台股": "台灣股市", "美股": "美股", "匯率債券": "匯率債券", "期貨期指": "美國指數期貨", "其他": "其他" };
-const CANDLE_CACHE_CONTRACT_VERSION = "quote-state-v17-support-resistance-source-interval";
+const CANDLE_CACHE_CONTRACT_VERSION = "quote-state-v19-taiwan-overnight-close-v1";
 const databaseReady = new WeakMap<object, Promise<void>>();
 const migrationManagedDatabases = new WeakSet<object>();
 const MANUAL_CHIP_BACKFILL_DATASETS = ["institutional-flow", "foreign-holding", "margin-short", "securities-lending", "shareholder-distribution"] as const;
@@ -829,11 +829,11 @@ async function cachedCandlePayload(
       coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
       now: requestNow,
       });
-      payload.realtimeDailyHistory = dailyHistory.rows.slice(-45);
       const dailyPayload = candlePayloadFromRows(
         symbol, "1d", dailyHistory.rows, dailyHistory.provider, 45, dailyHistory.cache, dailyHistory.freshness,
         new Date(), indicatorParameters, null, [],
       );
+      payload.realtimeDailyHistory = dailyPayload.candles;
       const verifiedDailyQuote = await verifyMarketQuote(env, symbol, "1d", dailyPayload.candles, dailyPayload.quote);
       payload.realtimeCanonicalHandoff = {
         sessionDate: verifiedDailyQuote.sessionDate || null,

@@ -20,6 +20,19 @@
 - `.codex/skills/openspec-*`：本機 OpenSpec 指令入口；預設不提交。
 - Obsidian 駕駛艙：`MultiChartOnCodexSite/專案工作流程.md`。
 
+## 本機圖表時框與台股成交量
+
+本機 `127.0.0.1:5174` MultiView 提供 1／5／15／60 分 K 與日／週／月 K；
+「分 K」是分鐘 K 線。分鐘 K 在相鄰 `Asia/Taipei` 日期之間顯示 1.2 CSS px
+亮黃色分日線，日／週／月 K 與同日缺口不顯示。
+
+台股整股 `STK` 的 canonical 圖表成交量為 `common_lot`（張）。Shioaji lot
+不換算，Yahoo／TWSE shares 除以 1,000 並保留小數張。只有同一批 Shioaji
+Kbars 才要求與 RealTimeStock 主交易畫面的 daily OHLCV 完全相同；Yahoo／TWSE
+fallback 保留 provider 與 source unit，只保證單位與完整 payload 內部一致。
+這項本機能力不會替 Sites／Cloudflare 啟用 Shioaji，也不會寫入 D1 verified
+canonical history。詳細安全與驗收矩陣見 `docs/local-runtime.md`。
+
 ## 台股個股籌碼副圖
 
 - 適用範圍：商品目錄中 `quoteType=EQUITY` 且 exchange／canonical symbol 相符的 `.TW`、`.TWO` 普通股；目前只支援日 K。

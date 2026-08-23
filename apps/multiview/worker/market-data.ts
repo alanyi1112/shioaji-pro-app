@@ -2,6 +2,7 @@ import { computeIndicators, type Candle, type IndicatorParameters } from "./indi
 import { inferTaiwanMarketPhase, inferUnitedStatesMarketPhase, type MarketPhase } from "./market-phase";
 import { isStructurallyValidCandle, type CandleHistoryCacheMetadata, type HistoryCandle } from "./candle-history";
 import { buildTraditionalPivotIndicator, pivotReferenceInterval, referencePeriodKey, type PivotMode } from "./pivot-points";
+import { isTaiwanRegularStockSymbol, normalizeTaiwanStockCandleRows } from "./taiwan-stock-volume";
 
 const INTERVAL_SECONDS: Record<string, number> = { "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400, "1wk": 604800, "1mo": 2592000 };
 const YAHOO_RANGE: Record<string, string> = { "1m": "1d", "3m": "5d", "5m": "5d", "15m": "5d", "30m": "1mo", "1h": "3mo", "4h": "1y", "1d": "2y", "1wk": "10y", "1mo": "25y" };
@@ -201,6 +202,10 @@ export function candlePayloadFromRows(
   pivotMode: PivotMode | null = null,
   pivotReferenceRows: Candle[] = [],
 ) {
+  const taiwanStockVolume = isTaiwanRegularStockSymbol(symbol)
+    ? normalizeTaiwanStockCandleRows(rows, provider)
+    : undefined;
+  rows = taiwanStockVolume?.rows ?? rows;
   const rawLatest = rows[rows.length - 1];
   const ignoredSessionDates: string[] = [];
   const invalidCandleSessionDates: string[] = [];
@@ -320,6 +325,7 @@ export function candlePayloadFromRows(
   const volumeAvailability = dataQuality.volumeAvailability;
   return {
     symbol, interval, candles: displayRows, quoteTime,
+    ...(taiwanStockVolume ? { volumeContract: taiwanStockVolume.contract } : {}),
     quote: {
       kind: quoteKind,
       sessionDate,
@@ -335,6 +341,6 @@ export function candlePayloadFromRows(
     },
     dataQuality,
     marketSession, indicators,
-    dataWindow: { rawCandles: normalizedRows.length, displayCandles: displayRows.length, requestedDisplayCandles: requested, hasMoreBefore: normalizedRows.length > displayRows.length, warmupCandles: 120, availableWarmupCandles: Math.max(0, normalizedRows.length - displayRows.length), insufficientWarmup: normalizedRows.length - displayRows.length < 120, warmupStatus: normalizedRows.length - displayRows.length < 120 ? "insufficient" : "sufficient", displayFrom: displayRows[0]?.time ?? null, displayTo: latest?.time ?? null, cache: cache ?? { store: "worker-memory", state: "miss", source: provider, historyStore: "worker-memory", persistent: false, rows: normalizedRows.length } },
+    dataWindow: { rawCandles: normalizedRows.length, displayCandles: displayRows.length, requestedDisplayCandles: requested, hasMoreBefore: normalizedRows.length > displayRows.length, warmupCandles: 120, availableWarmupCandles: Math.max(0, normalizedRows.length - displayRows.length), insufficientWarmup: normalizedRows.length - displayRows.length < 120, warmupStatus: normalizedRows.length - displayRows.length < 120 ? "insufficient" : "sufficient", displayFrom: displayRows[0]?.time ?? null, displayTo: latest?.time ?? null, sourceFingerprint: taiwanStockVolume?.contract.sourceFingerprint ?? provider, cache: cache ?? { store: "worker-memory", state: "miss", source: provider, historyStore: "worker-memory", persistent: false, rows: normalizedRows.length } },
   };
 }

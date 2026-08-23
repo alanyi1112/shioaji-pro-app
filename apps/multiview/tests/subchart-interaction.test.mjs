@@ -189,13 +189,13 @@ test("crosshair 讀值熱路徑只更新內容，不量測或協調版面", () =
   assert.match(appSource, /chipReadoutGeometry\(\)/);
 });
 
-test("即時日 K 新增日期會同步技術與籌碼時間錨點且不重新抓籌碼資料", () => {
+test("即時日 K 新增日期會同步技術、分日線與籌碼時間錨點且不重新抓籌碼資料", () => {
   const realtimeBlock = appSource.slice(
     appSource.indexOf("  function applyRealtimeSnapshot(snapshot) {"),
     appSource.indexOf("\n  function previousCloseForSession"),
   );
   assert.match(realtimeBlock, /const previousVisibleTimeRange = chart\.timeScale\(\)\.getVisibleRange\?\.\(\)/);
-  assert.match(realtimeBlock, /candleSeries\.update\(candle\);\s*updateIndicatorTimeAnchor\(candle\);\s*chipPaneManager\?\.updateCandles\?\.\(result\.candles\);/s);
+  assert.match(realtimeBlock, /candleSeries\.update\(candle\);\s*updateIndicatorTimeAnchor\(candle\);\s*refreshDayBoundaries\(result\.candles\);\s*chipPaneManager\?\.updateCandles\?\.\(result\.candles\);/s);
   assert.match(realtimeBlock, /setSynchronizedVisibleTimeRange\(\{[\s\S]*?from: previousVisibleTimeRange\.from,[\s\S]*?to: wasLatestVisible \? candle\.time : previousVisibleTimeRange\.to/);
   assert.doesNotMatch(realtimeBlock, /chipPaneManager\?\.setContext/);
   const updateCandlesBlock = chipSource.slice(

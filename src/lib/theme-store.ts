@@ -108,6 +108,7 @@ export interface ChartColors {
     downVol: string;
     text: string;
     grid: string;
+    dayBoundary: string;
     crosshair: string;
     border: string;
     labelBg: string;
@@ -115,11 +116,15 @@ export interface ChartColors {
 
 const CHROME: Record<
     ThemeMode,
-    Pick<ChartColors, 'text' | 'grid' | 'crosshair' | 'border' | 'labelBg'>
+    Pick<
+        ChartColors,
+        'text' | 'grid' | 'dayBoundary' | 'crosshair' | 'border' | 'labelBg'
+    >
 > = {
     dark: {
         text: '#8b94a7',
         grid: 'rgba(34, 43, 55, 0.6)',
+        dayBoundary: '#facc15',
         crosshair: '#3d8bff',
         border: '#222b37',
         labelBg: '#181f2a',
@@ -127,6 +132,7 @@ const CHROME: Record<
     midnight: {
         text: '#7e8798',
         grid: 'rgba(26, 31, 41, 0.7)',
+        dayBoundary: '#facc15',
         crosshair: '#3d8bff',
         border: '#1a1f29',
         labelBg: '#10131a',
@@ -134,6 +140,7 @@ const CHROME: Record<
     light: {
         text: '#5f6b80',
         grid: 'rgba(221, 226, 233, 0.9)',
+        dayBoundary: '#ca8a04',
         crosshair: '#2962ff',
         border: '#dde2e9',
         labelBg: '#f7f8fa',

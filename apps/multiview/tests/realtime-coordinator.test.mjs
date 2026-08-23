@@ -75,6 +75,7 @@ function localHarness({
   infoFailures = 0,
   snapshotFailures = 0,
   snapshotAlwaysFails = false,
+  now = "2026-08-06T02:00:00.000Z",
 } = {}) {
   const sources = [];
   const requests = [];
@@ -88,6 +89,7 @@ function localHarness({
   let currentSimulation = simulation;
   let remainingInfoFailures = infoFailures;
   let remainingSnapshotFailures = snapshotFailures;
+  let clock = Date.parse(now);
   class FakeEventSource {
     constructor(url) {
       this.url = url;
@@ -137,10 +139,12 @@ function localHarness({
     clearTimeoutImpl(id) { timers.delete(id); },
     setIntervalImpl(callback, delay) { const id = ++intervalId; intervals.set(id, { callback, delay }); return id; },
     clearIntervalImpl(id) { intervals.delete(id); },
+    now: () => clock,
   });
   return {
     coordinator, sources, requests, windowTarget, documentTarget,
     setSimulation(value) { currentSimulation = value; },
+    setClock(value) { clock = Date.parse(value); },
     runTimer(delay) {
       const [id, timer] = [...timers].find(([, item]) => item.delay === delay) || [];
       assert.ok(timer, `找不到 ${delay}ms timer`);
@@ -244,6 +248,17 @@ test("本機 coordinator 共用一條 SSE，先送 Snapshot 再交付當日 Kbar
   ]);
 });
 
+test("本機 simulation coordinator 收盤後交付 closed 狀態，不把舊 snapshot 誤標 live", async () => {
+  const h = localHarness({ now: "2026-08-06T08:00:00.000Z" });
+  const states = [];
+  h.coordinator.subscribe("panel-0", { symbol: "2330.TW", interval: "1d" }, () => {}, (item) => states.push(item));
+  await settle();
+  h.sources[0].open();
+  await settle();
+  assert.equal(states.at(-1)?.state, "closed");
+  assert.equal(states.at(-1)?.reasonCode, "market_closed");
+});
+
 test("分鐘歷史依最長 interval 共用 range request，相同商品多 panel 不重複查詢", async () => {
   const h = localHarness();
   const sessions = [];
@@ -258,6 +273,18 @@ test("分鐘歷史依最長 interval 共用 range request，相同商品多 pane
   assert.equal(requests[0].body.end, "2026-08-06");
   assert.equal(sessions.length, 2);
   assert.equal(Object.isFrozen(sessions[0][0]), true);
+});
+
+test("日 K 本機來源以有界 365 日視窗載入 1 分 Kbars，保留 100,000 rows guard 前的單次 range request", async () => {
+  const h = localHarness();
+  h.coordinator.subscribe("panel-daily", { symbol: "2330.TW", interval: "1d" }, () => {}, () => {}, () => {});
+  await settle();
+  h.sources[0].open();
+  await settle();
+  const requests = h.requests.filter((item) => item.path.endsWith("/data/kbars"));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].body.start, "2025-08-07");
+  assert.equal(requests[0].body.end, "2026-08-06");
 });
 
 test("本機 coordinator 相同商品採 ref-count，最後面板離開後才 unsubscribe", async () => {

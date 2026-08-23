@@ -289,9 +289,13 @@ export interface DayBoundary {
 
 export function selectDayBoundaries(
     bars: readonly Candle[],
-    minutes: number,
+    interval: number | string,
 ): DayBoundary[] {
-    if (minutes >= 1440) return [];
+    const supported =
+        typeof interval === 'number'
+            ? [1, 5, 15, 60].includes(interval)
+            : ['1m', '5m', '15m', '1h'].includes(interval);
+    if (!supported) return [];
     const out: DayBoundary[] = [];
     for (let i = 1; i < bars.length; i++) {
         const previous = bars[i - 1]!;

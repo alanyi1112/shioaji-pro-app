@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/realtime-charts.js", import.meta.url), "utf8");
+const fixture = JSON.parse(await readFile(new URL("../../../test-fixtures/chart-day-volume-parity.json", import.meta.url), "utf8"));
 const sandbox = { globalThis: undefined, Intl, Date, Set, Map };
 sandbox.globalThis = sandbox;
 vm.runInNewContext(source, sandbox);
@@ -12,6 +13,7 @@ const api = sandbox.QuoteChartRealtimeCharts;
 const candle = (date, values = {}) => ({ time: Date.parse(`${date}T00:00:00+08:00`) / 1000, open: 10, high: 12, low: 9, close: 11, volume: 100, ...values });
 const snapshot = (values = {}) => ({
   canonicalSymbol: "2330.TW", sessionDate: "2026-07-31", sourceTime: "2026-07-31T10:00:01+08:00", receivedTime: "2026-07-31T10:00:01.1+08:00",
+  securityType: "STK",
   open: 20, high: 23, low: 19, close: 22, averagePrice: 21, tickVolume: 2, totalVolume: 50, sequence: 2,
   provider: "shioaji", continuity: "complete",
   ...values,
@@ -50,6 +52,37 @@ test("1 分 canonical 依台北交易日聚合 5／15／60 分且不補造缺口
   assert.equal(five[2].time, rows[3].time);
   assert.equal(api.aggregateMinuteCandles(rows, "1h").length, 2);
   assert.equal(api.aggregateMinuteCandles(rows, "1wk").length, 0);
+});
+
+test("Shioaji 1 分 Kbars 依台北日期聚合完整日 K，volume 維持 common_lot identity", () => {
+  const rows = fixture.shioajiDailyAggregation.candles.map((row) => ({
+    ...row,
+    time: Date.parse(`${row.datetime}+08:00`) / 1000,
+    sourceTime: Date.parse(`${row.datetime}+08:00`),
+    continuity: "complete",
+  }));
+  const daily = api.aggregateDailyCandles(rows);
+  assert.deepEqual(Array.from(daily, (row) => ({
+    date: row.sessionDate, open: row.open, high: row.high, low: row.low, close: row.close, volume: row.volume,
+  })), fixture.shioajiDailyAggregation.expectedDaily);
+  assert.ok(daily.every((row) => row.provider === "shioaji-kbars"));
+});
+
+test("日 K accumulator 由 Kbars total seed，同 session 只收前進 delta，新 session 以整日 Snapshot 原子 bootstrap", () => {
+  const points = [
+    { time: Date.parse("2026-08-21T09:00:00+08:00") / 1000, sourceTime: Date.parse("2026-08-21T09:00:59+08:00"), open: 100, high: 101, low: 99, close: 100, volume: 40, continuity: "complete" },
+    { time: Date.parse("2026-08-21T09:01:00+08:00") / 1000, sourceTime: Date.parse("2026-08-21T09:01:59+08:00"), open: 100, high: 102, low: 100, close: 101, volume: 60, continuity: "complete" },
+  ];
+  const accumulator = api.createDailyKlineAccumulator({ identity: "2330.TW|1d|7" });
+  accumulator.bootstrap(points);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-21", sourceTime: "2026-08-21T09:02:01+08:00", sequence: 11, totalVolume: 103, open: 100, high: 103, low: 99, close: 102 })), true);
+  assert.equal(accumulator.snapshot().candles.at(-1).volume, 103);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-21", sourceTime: "2026-08-21T09:02:01+08:00", sequence: 11, totalVolume: 103 })), false);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-21", sourceTime: "2026-08-21T09:03:01+08:00", sequence: 12, totalVolume: 102 })), false);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-20", sourceTime: "2026-08-20T13:29:00+08:00", sequence: 99, totalVolume: 999 })), false);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-24", sourceTime: "2026-08-24T09:00:01+08:00", sequence: 1, totalVolume: 1 })), true);
+  assert.equal(accumulator.snapshot().candles.at(-1).volume, 1);
+  assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-21", sourceTime: "2026-08-21T13:29:00+08:00", sequence: 99, totalVolume: 999 })), false);
 });
 
 test("分鐘 accumulator 先排隊 Tick，bootstrap 後拒絕倒序重送並避免重複量", () => {

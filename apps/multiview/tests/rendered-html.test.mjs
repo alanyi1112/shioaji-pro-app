@@ -1025,6 +1025,13 @@ test("台股市場階段會綜合上游狀態、交易時段與來源時間保�
   assert.equal(inferTaiwanMarketPhase({ ...base, marketState: "mystery", sourceQuoteTime: null }), "unknown");
   assert.equal(inferTaiwanMarketPhase({ ...base, marketState: "mystery", sourceQuoteTime: currentQuoteTime - 61 * 60 }), "unknown");
   assert.equal(inferTaiwanMarketPhase({ ...base, marketState: "mystery", now: new Date("2026-07-12T02:05:00.000Z") }), "closed");
+  assert.equal(inferTaiwanMarketPhase({
+    ...base,
+    marketState: "unknown",
+    sessionDate: "2026-08-21",
+    sourceQuoteTime: Date.parse("2026-08-21T05:30:00.000Z") / 1000,
+    now: new Date("2026-08-23T16:30:00.000Z"),
+  }), "closed");
 });
 
 test("美股市場階段會以紐約交易時段、交易日與來源新鮮度保守判定", () => {
@@ -1196,6 +1203,13 @@ test("台股盤中 quote contract 不呼叫任何官方收盤來源且 candles �
     assert.equal(payload.quote.kind, "intraday");
     assert.equal(payload.quote.sourceQuoteTime, sourceQuoteTime);
     assert.equal(payload.quote.sourceTimeZone, "Asia/Taipei");
+    assert.deepEqual(payload.candles.map((row) => row.volume), [1.2, 0.8]);
+    assert.deepEqual(payload.indicators.volume.map((row) => row.value), [1.2, 0.8]);
+    assert.equal(payload.volumeContract.provider, "yahoo-chart");
+    assert.equal(payload.volumeContract.sourceVolumeUnit, "share");
+    assert.equal(payload.volumeContract.canonicalVolumeUnit, "common_lot");
+    assert.equal(payload.volumeContract.normalizationRevision, "taiwan-stock-common-lot/1");
+    assert.equal(payload.dataWindow.sourceFingerprint, payload.volumeContract.sourceFingerprint);
     assert.deepEqual(payload.quote.verification, { status: "not_applicable", provider: null, reason: "market_open" });
     assert.ok(["preopen", "open", "closing", "closed", "unknown"].includes(payload.quote.marketPhase));
     assert.ok(["intraday", "session-close"].includes(payload.quote.kind));
@@ -1224,7 +1238,7 @@ test("台股盤中 quote contract 不呼叫任何官方收盤來源且 candles �
   }
 });
 
-test("台股盤中 stale cache 保留來源時間並以 freshness 優先", async () => {
+test("舊 normalization schema 的台股 stale cache 不得沿用，重抓失敗時 fail closed", async () => {
   const originalFetch = globalThis.fetch;
   const db = new FakeD1();
   const sourceQuoteTime = Date.parse("2026-07-13T02:00:00.000Z") / 1000;
@@ -1245,12 +1259,10 @@ test("台股盤中 stale cache 保留來源時間並以 freshness 優先", async
   globalThis.fetch = async () => { throw new Error("primary unavailable"); };
   try {
     const response = await (await worker()).fetch(new Request("http://localhost/api/candles?symbol=2330.TW&interval=1d&display_count=20"), { ...environment(), DB: db }, context);
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 502);
     const payload = await response.json();
-    assert.equal(payload.quote.freshness, "stale");
-    assert.equal(payload.quote.sourceQuoteTime, sourceQuoteTime);
-    assert.equal(payload.quote.verification.status, "not_applicable");
-    assert.equal(payload.dataWindow.cache.state, "stale");
+    assert.equal(payload.error, "資料暫時不可用。");
+    assert.deepEqual(payload.candles, []);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -2255,6 +2267,8 @@ test("共用垂直線、標題列逐日讀值、TDCC 缺值與 1px 對齊 contra
   assert.match(indexHtml, /class="main-readout-mode-select" aria-label="K 線數值顯示方式">[\s\S]*?<option value="fixed" selected>圖區左上角<\/option>[\s\S]*?<option value="floating">浮動視窗<\/option>/);
   assert.match(indexHtml, /data-main-readout="date"><b data-main-date>--<\/b>/);
   assert.doesNotMatch(indexHtml, /data-main-readout="date">日期/);
+  assert.match(indexHtml, /data-main-readout="open">開[\s\S]*?data-main-readout="high">高[\s\S]*?data-main-readout="low">低[\s\S]*?data-main-readout="close">收[\s\S]*?data-main-readout="ohlcVolume">成交量 <b data-ohlc="ohlcVolume">--<\/b>[\s\S]*?data-main-readout="change">漲跌/);
+  assert.doesNotMatch(indexHtml, /data-main-readout="changePercent"|data-ohlc="changePercent"/);
   assert.match(indexHtml, /class="technical-pane-header">[\s\S]*?<strong>技術指標<\/strong>[\s\S]*?sub-readout indicator-readout technical-pane-inline-readout hidden/);
   assert.match(indexHtml, /data-sub-readout="date"><b data-sub-date>--<\/b>/);
   assert.doesNotMatch(indexHtml, /data-sub-readout="date">日期/);
@@ -2285,6 +2299,9 @@ test("共用垂直線、標題列逐日讀值、TDCC 缺值與 1px 對齊 contra
   assert.match(appScript, /if \(state\.mainReadoutMode === MAIN_READOUT_MODES\.fixed\) restoreLatestMainReadout\(\)/);
   assert.match(appScript, /if \(state\.mainReadoutMode === MAIN_READOUT_MODES\.floating\) \{\s*positionCursorTooltip\(mainReadout, surface, screenX\)/s);
   assert.match(appScript, /setReadoutDate\(mainReadout, candle\?\.time \?\? time\)/);
+  assert.match(appScript, /toggleReadoutGroup\(mainReadout, \["open", "high", "low", "close", "ohlcVolume", "change"\], true\)/);
+  assert.match(appScript, /setReadoutValue\(mainReadout, "ohlcVolume", candle\?\.volume, volumeFormatter\)/);
+  assert.doesNotMatch(appScript, /setReadoutValue\(mainReadout, "changePercent"|setTrend\("changePercent"|function formatSignedPercent/);
   assert.match(appScript, /function restoreLatestTechnicalReadout\(\)/);
   assert.match(appScript, /updateTechnicalReadoutForTime\(time, \{ latest: true \}\)/);
   assert.match(appScript, /function yyyyMmDd\(value\)/);

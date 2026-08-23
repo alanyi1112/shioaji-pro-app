@@ -74,6 +74,10 @@ import { subscribeCustoms } from '../lib/custom-indicators';
 import type { IndicatorPoint } from '../lib/indicators';
 import { DayBoundaryPaneManager } from '../lib/day-boundary-primitive';
 import {
+    CommonLotVolumeCursor,
+    normalizeTaiwanStockVolume,
+} from '../lib/chart-volume-contract';
+import {
     buildCandleTimeIndex,
     buildKbarReadoutDisplay,
     buildPreviousSessionCloseIndex,
@@ -83,6 +87,7 @@ import {
     resolveReadoutCandle,
     selectDayBoundaries,
     taipeiWallClockNowSeconds,
+    wallClockDateKey,
     type KbarReadoutDisplay,
 } from '../lib/kbar-readout';
 import { priceDirection } from '../lib/price-direction';
@@ -159,6 +164,7 @@ import {
     aggregate,
     dateStrOffset,
     kbarsToCandles,
+    kbarsToTaiwanStockCandles,
     wallClockToUtc,
 } from '../lib/utils/kbars';
 import * as panel from './panel.css';
@@ -179,7 +185,30 @@ const TIMEFRAMES = [
     { label: '1D', minutes: 1440, days: 240 },
 ] as const;
 
-type TradeMode = 'observe' | 'buy' | 'sell' | 'stop' | 'take' | 'alert';
+function usesTaiwanStockCommonLots(contract: ContractInfo): boolean {
+    return (
+        contract.security_type === 'STK' &&
+        (contract.region === 'TW' ||
+            ['TSE', 'OTC', 'OES'].includes(contract.exchange ?? ''))
+    );
+}
+
+function canonicalKbarsForContract(
+    contract: ContractInfo,
+    kbars: Parameters<typeof kbarsToCandles>[0],
+): Candle[] {
+    return usesTaiwanStockCommonLots(contract)
+        ? kbarsToTaiwanStockCandles(kbars)
+        : kbarsToCandles(kbars);
+}
+
+type TradeMode =
+    | 'observe'
+    | 'buy'
+    | 'sell'
+    | 'alert'
+    | 'stop'
+    | 'take';
 
 const TRADE_MODES: { key: TradeMode; label: string }[] = [
     { key: 'observe', label: '游標' },
@@ -432,6 +461,8 @@ export function CandleChart({
     // raw 1-min candles backing the current view — history pages merge here
     // and re-aggregate so buckets spanning a page seam stay correct
     const rawRef = useRef<Candle[]>([]);
+    const liveVolumeCursorRef = useRef(new CommonLotVolumeCursor());
+    const liveVolumeIdentityRef = useRef('');
     const supportResistanceAuthorityRef = useRef<{
         key: string;
         rows: Candle[];
@@ -675,7 +706,7 @@ export function CandleChart({
     const updateDayPrimitives = () => {
         dayPrimitiveManagerRef.current.update(
             dayBoundariesRef.current,
-            colors.grid,
+            colors.dayBoundary,
         );
     };
     const updateDayPrimitivesRef = useRef(updateDayPrimitives);
@@ -687,7 +718,7 @@ export function CandleChart({
         dayPrimitiveManagerRef.current.reconcile(
             chart.panes(),
             dayBoundariesRef.current,
-            colors.grid,
+            colors.dayBoundary,
         );
     };
     const reconcileDayPrimitivesRef = useRef(reconcileDayPrimitives);
@@ -1260,6 +1291,9 @@ export function CandleChart({
             !cancelled &&
             isLatestGeneration(chartLoadGenerationRef, generation);
         const loadKey = `${contract.code}|${tf.minutes}`;
+        const liveVolumeIdentity = `${loadKey}|${generation}`;
+        liveVolumeIdentityRef.current = liveVolumeIdentity;
+        liveVolumeCursorRef.current.clear();
         invalidateIndicatorRefreshRef.current();
         readoutGenerationRef.current += 1;
         selectedReadoutTimeRef.current = null;
@@ -1338,7 +1372,7 @@ export function CandleChart({
                     if (!isCurrent() || loadedKeyRef.current !== loadKey) return;
                     oldestDay = from;
                     const boundary = rawRef.current[0]?.time ?? Infinity;
-                    const older = kbarsToCandles(k).filter(
+                    const older = canonicalKbarsForContract(contract, k).filter(
                         (b) => b.time < boundary,
                     );
                     if (older.length === 0) {
@@ -1372,7 +1406,7 @@ export function CandleChart({
         fetchKbars(contract, dateStrOffset(tf.days), dateStrOffset(0))
             .then((k) => {
                 if (!isCurrent() || !candleSeriesRef.current) return;
-                const raw = kbarsToCandles(k);
+                const raw = canonicalKbarsForContract(contract, k);
                 const bars = aggregate(raw, tf.minutes);
                 if (bars.length === 0) {
                     clearSeries();
@@ -1382,6 +1416,24 @@ export function CandleChart({
                 }
                 rawRef.current = raw;
                 rawIdentityRef.current = loadKey;
+                if (usesTaiwanStockCommonLots(contract)) {
+                    const latestRaw = raw[raw.length - 1]!;
+                    const sessionDate = wallClockDateKey(latestRaw.time);
+                    const totalVolume = raw.reduce(
+                        (total, bar) =>
+                            wallClockDateKey(bar.time) === sessionDate
+                                ? total + bar.volume
+                                : total,
+                        0,
+                    );
+                    liveVolumeCursorRef.current.reset({
+                        identity: liveVolumeIdentity,
+                        sessionDate,
+                        sourceTime: latestRaw.time,
+                        sequence: 0,
+                        totalVolume,
+                    });
+                }
                 applyBars(bars);
                 lastBarRef.current = bars[bars.length - 1] ?? null;
                 if (lastBarRef.current) {
@@ -1429,7 +1481,7 @@ export function CandleChart({
                 if (cancelled) return;
                 supportResistanceAuthorityRef.current = {
                     key,
-                    rows: kbarsToCandles(kbars),
+                    rows: canonicalKbarsForContract(contract, kbars),
                     loadState: 'success',
                     sourceAvailable: true,
                 };
@@ -1474,6 +1526,30 @@ export function CandleChart({
             `${liveQuote.date}T${liveQuote.time}`,
         );
         const rawMinuteTime = Math.floor(tickTime / 60) * 60;
+        let volumeDelta = quote?.tick?.volume ?? 0;
+        if (usesTaiwanStockCommonLots(contract)) {
+            const tick = quote?.tick;
+            const identity = liveVolumeIdentityRef.current;
+            if (!tick || !identity) return;
+            const canonicalTotal = normalizeTaiwanStockVolume({
+                market: 'TW',
+                securityType: 'STK',
+                provider: 'shioaji-realtime',
+                sourceUnit: 'common_lot',
+                value: tick.total_volume,
+            });
+            if (canonicalTotal.status !== 'available') return;
+            const cursor = liveVolumeCursorRef.current.consume({
+                identity,
+                sessionDate: wallClockDateKey(tickTime),
+                sourceTime: tickTime,
+                sequence: quote?.seq ?? 0,
+                totalVolume: canonicalTotal.value,
+            });
+            if (!cursor.accepted) return;
+            volumeDelta = cursor.delta;
+        }
+        if (!Number.isFinite(volumeDelta) || volumeDelta < 0) return;
         const rawTail = rawRef.current[rawRef.current.length - 1];
         if (!rawTail || rawMinuteTime > rawTail.time) {
             rawRef.current.push({
@@ -1482,13 +1558,13 @@ export function CandleChart({
                 high: price,
                 low: price,
                 close: price,
-                volume: quote?.tick?.volume ?? 0,
+                volume: volumeDelta,
             });
         } else if (rawMinuteTime === rawTail.time) {
             rawTail.high = Math.max(rawTail.high, price);
             rawTail.low = Math.min(rawTail.low, price);
             rawTail.close = price;
-            rawTail.volume += quote?.tick?.volume ?? 0;
+            rawTail.volume += volumeDelta;
         }
         const bucketSec = tf.minutes * 60;
         const bucket =
@@ -1505,7 +1581,7 @@ export function CandleChart({
                 high: price,
                 low: price,
                 close: price,
-                volume: quote?.tick?.volume ?? 0,
+                volume: volumeDelta,
             };
             // a fresh bucket = the previous bar closed — keep barsRef in
             // sync (history paging re-attaches this tail) and recompute
@@ -1517,7 +1593,7 @@ export function CandleChart({
             bar.high = Math.max(bar.high, price);
             bar.low = Math.min(bar.low, price);
             bar.close = price;
-            bar.volume += quote?.tick?.volume ?? 0;
+            bar.volume += volumeDelta;
         }
         lastBarRef.current = bar;
         markFormingBar(bar.time);

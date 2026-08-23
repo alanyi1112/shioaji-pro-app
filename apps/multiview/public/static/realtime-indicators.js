@@ -34,6 +34,31 @@
     const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
     return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
   };
+  const volumeProfile = (rows, bins = 24) => {
+    if (!rows.length) return { volume_profile: [], poc: null, vah: null, val: null };
+    const low = Math.min(...rows.map((row) => Number(row.low)));
+    const high = Math.max(...rows.map((row) => Number(row.high)));
+    if (high === low) return { volume_profile: [{ low, high, volume: rows.reduce((sum, row) => sum + Number(row.volume), 0) }], poc: low, vah: low, val: low };
+    const step = (high - low) / bins;
+    const volumes = Array.from({ length: bins }, () => 0);
+    for (const row of rows) {
+      const typical = (Number(row.high) + Number(row.low) + Number(row.close)) / 3;
+      const index = Math.min(bins - 1, Math.max(0, Math.floor((typical - low) / step)));
+      volumes[index] += Number(row.volume) || 0;
+    }
+    const profile = volumes.map((volume, index) => ({ low: rounded(low + index * step), high: rounded(low + (index + 1) * step), volume: rounded(volume) }));
+    let pocIndex = 0;
+    volumes.forEach((volume, index) => { if (volume > volumes[pocIndex]) pocIndex = index; });
+    const target = volumes.reduce((sum, value) => sum + value, 0) * 0.7;
+    let lower = pocIndex; let upper = pocIndex; let covered = volumes[pocIndex];
+    while (covered < target && (lower > 0 || upper < bins - 1)) {
+      const nextLower = lower > 0 ? volumes[lower - 1] : -1;
+      const nextUpper = upper < bins - 1 ? volumes[upper + 1] : -1;
+      if (nextUpper >= nextLower) { upper += 1; covered += Math.max(0, nextUpper); }
+      else { lower -= 1; covered += Math.max(0, nextLower); }
+    }
+    return { volume_profile: profile, poc: rounded((profile[pocIndex].low + profile[pocIndex].high) / 2), vah: profile[upper].high, val: profile[lower].low };
+  };
 
   function compute(rows, input = {}, { volumeAvailable = true } = {}) {
     acceptance?.increment("indicatorFullRecomputeCount");
@@ -86,7 +111,13 @@
     });
     const volume = volumeAvailable ? rows.map((row) => ({ time: row.time, value: rounded(row.volume), color: row.close >= row.open ? "#dc2626" : "#16a34a" })) : [];
     const volume_moving_average = volumeAvailable ? Object.fromEntries([5, 10, 20].map((period) => [`ma${period}`, sma(volumes, period).map((value, index) => point(rows[index].time, value))])) : { ma5: [], ma10: [], ma20: [] };
-    return { parameters, moving_average, rsi, kd, macd, bollinger, atr, volume, volume_moving_average };
+    const fvg = [];
+    for (let index = 2; index < rows.length; index += 1) {
+      const first = rows[index - 2]; const third = rows[index];
+      if (third.low > first.high) fvg.push({ type: "bullish", from: rounded(first.high), to: rounded(third.low), time: third.time });
+      if (third.high < first.low) fvg.push({ type: "bearish", from: rounded(third.high), to: rounded(first.low), time: third.time });
+    }
+    return { parameters, moving_average, rsi, kd, macd, bollinger, atr, volume, volume_moving_average, fvg, ...volumeProfile(rows) };
   }
 
   function createLatestWinsScheduler(options = {}) {

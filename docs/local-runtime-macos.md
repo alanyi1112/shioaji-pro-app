@@ -140,6 +140,12 @@ pnpm local-runtime status
 
 市場收盤只代表即時 SSE 不再出現新的成交，不應讓 5173 或 8080 listener 消失。Shioaji HTTP server 與外部行情 session 是兩層生命週期：8080 可能先完成監聽，Solace／paper session 才在背景登入。盤後維護、上游暫時不可用或登入尚在進行時可能回傳 `SessionNotEstablished`；此時不能只用 listener 或 health 取代業務判斷。
 
+5174 MultiView 的「分 K」是 1／5／15／60 分鐘 K 線，跨 `Asia/Taipei`
+日期時以亮黃色分日線區隔；日／週／月 K 不套用。台股整股成交量在主交易畫面與
+MultiView 都以 `common_lot`（張）呈現：Shioaji lot 不換算，Yahoo／TWSE
+shares 除以 1,000。只有同一批 Shioaji Kbars 要求跨畫面 daily OHLCV 完全一致；
+fallback 不冒充跨 provider 數值 parity，且 Shioaji 本機 display 不取代收盤核定。
+
 ## MultiView 盤後資料 seed
 
 盤後資料只可從既有合法 Cloudflare OAuth session 唯讀匯入。工具從來源端限制為 12 個市場資料 table；不得先匯出整個 D1，也不得讀 browser cookie 或建立授權 bypass。

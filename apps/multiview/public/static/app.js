@@ -3224,6 +3224,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let intradayPreviousCloseSeries;
   let intradayAccumulator;
   let minuteKlineAccumulator;
+  let dailyKlineAccumulator;
   let pendingIntradaySession = [];
   let volumeMovingAverageSeries = [];
   let bollingerSeries = [];
@@ -3249,6 +3250,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let indicatorRenderToken = 0;
   let indicatorRecoveryCount = 0;
   let indicatorTimeAnchorSeries;
+  let dayBoundaryManager;
   let chipPaneManager;
   let subchartPresentation = { mode: CHART_PRESENTATION_MODES.single, modeASlotKind: "technical", paneIds: [] };
   let eventSource;
@@ -3957,6 +3959,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     indicatorViewportIntentCleanup = undefined;
     viewportCoordinator?.destroy?.();
     viewportCoordinator = undefined;
+    dayBoundaryManager?.destroy?.();
+    dayBoundaryManager = undefined;
     const chartToRemove = chart;
     const indicatorChartToRemove = indicatorChart;
     chart = undefined;
@@ -3980,6 +3984,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     intradayPreviousCloseSeries = undefined;
     intradayAccumulator = undefined;
     minuteKlineAccumulator = undefined;
+    dailyKlineAccumulator = undefined;
     pendingIntradaySession = [];
     volumeMovingAverageSeries = [];
     bollingerSeries = [];
@@ -4098,6 +4103,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       wickDownColor: "#16a34a",
       priceFormat: { type: "custom", formatter: (price) => formatQuotePrice(price, symbolSelect.value) },
     });
+    dayBoundaryManager = new window.QuoteChartDayBoundaries.DayBoundarySeriesManager();
+    dayBoundaryManager.reconcile([candleSeries], [], window.QuoteChartDayBoundaries.DEFAULT_COLOR);
     chart.subscribeCrosshairMove(handleCrosshairMove);
     candleSeries.priceScale().applyOptions({ scaleMargins: { top: 0.08, bottom: 0.28 } });
     const fibonacciAutoScaleOptions = {
@@ -4243,12 +4250,15 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       return;
     }
     restoreEstimatedMarginCostSelection(symbol, interval);
+    const shioajiOnlyDisplay = state.sourceMode === "shioaji"
+      && realtimeEligible(symbol, interval)
+      && (isMinuteKlineInterval(interval) || interval === "1d");
     updateChipIndicatorOptionsAvailability();
     chipPaneManager?.setContext({ symbol, interval, tabId: state.activeMarketTabId, candles: [] });
     const pivotMode = selectedPivotMode();
     const cachedPayload = readPanelPayloadCache(symbol, interval, pivotMode);
     let hasCachedPayload = false;
-    if (cachedPayload) {
+    if (cachedPayload && !shioajiOnlyDisplay) {
       try {
         applyCachedPayload(cachedPayload);
         hasCachedPayload = true;
@@ -4282,10 +4292,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (destroyed || currentLoadToken !== loadToken) return;
       const preparedPayload = applyPayloadStep("prepare", () => preparePanelPayload(payload));
       const nextRenderSignature = window.QuoteChartPayload.renderSignature(preparedPayload);
-      if (nextRenderSignature !== lastPayloadRenderSignature) {
+      if (!shioajiOnlyDisplay && nextRenderSignature !== lastPayloadRenderSignature) {
         restoreFixedProfileState(preparedPayload.candles || []);
         applyPayload(preparedPayload, { prepared: true });
-      } else {
+      } else if (!shioajiOnlyDisplay) {
         lastPayload = preparedPayload;
         lastPayloadRenderSignature = nextRenderSignature;
       }
@@ -4293,9 +4303,14 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       canonicalPayload = preparedPayload;
       writePanelPayloadCache(symbol, interval, preparedPayload, pivotMode);
       connectStream(symbol, interval);
-      status.textContent = `${symbol} / ${formatIntervalLabel(interval)} 已載入`;
+      status.textContent = shioajiOnlyDisplay
+        ? `${symbol} / ${formatIntervalLabel(interval)} 等待 Shioaji Kbars`
+        : `${symbol} / ${formatIntervalLabel(interval)} 已載入`;
       delete status.dataset.chartApplyStage;
-      status.classList.remove("is-visible");
+      status.classList.toggle("is-visible", shioajiOnlyDisplay);
+      if (shioajiOnlyDisplay && latestRealtimeSnapshot) {
+        applyRealtimeState({ state: realtimeDisplayState });
+      }
       scheduleAdjacentPagePrefetch();
     } catch (error) {
       if (destroyed || currentLoadToken !== loadToken) return;
@@ -4481,6 +4496,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         }
       });
     }
+    applyPayloadStep("day-boundaries", () => refreshDayBoundaries(candles));
     updateReadout(indicators, selectedMain, selectedSub);
     if (candles.length > 0) {
       const latestCandle = candles[candles.length - 1];
@@ -6461,6 +6477,16 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     indicatorTimeAnchorSeries.setData(candles.map((row) => ({ time: row.time, value: 0 })));
   }
 
+  function refreshDayBoundaries(candles = lastPayload?.candles || []) {
+    if (!dayBoundaryManager || !candleSeries) return;
+    const boundaries = window.QuoteChartDayBoundaries.selectDayBoundaries(candles, intervalSelect.value);
+    dayBoundaryManager.reconcile(
+      [candleSeries, indicatorTimeAnchorSeries].filter(Boolean),
+      boundaries,
+      window.QuoteChartDayBoundaries.DEFAULT_COLOR,
+    );
+  }
+
   function updateIndicatorTimeAnchor(candle) {
     if (!indicatorTimeAnchorSeries || !candle?.time) return;
     indicatorTimeAnchorSeries.update({ time: candle.time, value: 0 });
@@ -6495,6 +6521,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     indicatorSeriesPointCounts = {};
     if (!selectedSub.size) {
       if (indicatorChart) {
+        dayBoundaryManager?.reconcile(
+          [candleSeries].filter(Boolean),
+          window.QuoteChartDayBoundaries.selectDayBoundaries(lastPayload?.candles || [], intervalSelect.value),
+          window.QuoteChartDayBoundaries.DEFAULT_COLOR,
+        );
         indicatorChart.remove();
         indicatorChart = undefined;
         indicatorTimeAnchorSeries = undefined;
@@ -6570,6 +6601,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         indicatorRecoveryCount += 1;
         isSyncingTimeScale = true;
         try {
+          dayBoundaryManager?.reconcile(
+            [candleSeries].filter(Boolean),
+            window.QuoteChartDayBoundaries.selectDayBoundaries(lastPayload?.candles || [], intervalSelect.value),
+            window.QuoteChartDayBoundaries.DEFAULT_COLOR,
+          );
           indicatorChart.remove();
           indicatorChart = undefined;
           indicatorTimeAnchorSeries = undefined;
@@ -6578,6 +6614,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
           indicatorSelectionSignature = "";
           renderIndicatorChart(lastPayload?.indicators || indicators, getSelectedSubIndicators(), { allowRecovery: false });
           syncIndicatorTimeAnchor(lastPayload?.candles || []);
+          refreshDayBoundaries(lastPayload?.candles || []);
           syncIndicatorVisibleRangeToMain();
         } finally {
           releaseTimeScaleSyncAfterFrame();
@@ -7528,7 +7565,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     toggleReadoutRow(mainReadout, "volumeProfile", selectedMain.has("volumeProfile"));
     toggleReadoutRow(mainReadout, "peRiver", selectedMain.has("peRiver"));
     toggleReadoutRow(mainReadout, "estimatedMarginCost", selectedMain.has("estimatedMarginCost"));
-    toggleReadoutGroup(mainReadout, ["open", "high", "low", "close", "change", "changePercent"], true);
+    toggleReadoutGroup(mainReadout, ["open", "high", "low", "close", "ohlcVolume", "change"], true);
     toggleReadoutGroup(mainReadout, ["ma5", "ma10", "ma20", "ma60", "ma120"], selectedMain.has("ma"));
     toggleReadoutGroup(mainReadout, ["volume", "volumeMa5", "volumeMa10", "volumeMa20"], selectedMain.has("volume"));
     toggleReadoutGroup(mainReadout, ["bollU", "bollM", "bollL"], selectedMain.has("bollinger"));
@@ -7585,10 +7622,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const volumeMa5 = indicators.volume_moving_average?.ma5 || [];
     const volumeMa10 = indicators.volume_moving_average?.ma10 || [];
     const volumeMa20 = indicators.volume_moving_average?.ma20 || [];
-    setReadoutValue(mainReadout, "volume", candle?.volume, formatInteger);
-    setReadoutValue(mainReadout, "volumeMa5", valueAt(volumeMa5, time), formatInteger);
-    setReadoutValue(mainReadout, "volumeMa10", valueAt(volumeMa10, time), formatInteger);
-    setReadoutValue(mainReadout, "volumeMa20", valueAt(volumeMa20, time), formatInteger);
+    const volumeFormatter = (value) => formatChartVolume(value, lastPayload?.volumeContract);
+    setReadoutValue(mainReadout, "volume", candle?.volume, volumeFormatter);
+    setReadoutValue(mainReadout, "volumeMa5", valueAt(volumeMa5, time), volumeFormatter);
+    setReadoutValue(mainReadout, "volumeMa10", valueAt(volumeMa10, time), volumeFormatter);
+    setReadoutValue(mainReadout, "volumeMa20", valueAt(volumeMa20, time), volumeFormatter);
     setTrend("volume", trendClass((candle?.volume ?? 0) - (previous?.volume ?? candle?.volume ?? 0)), true);
     setTrend("volumeMa5", seriesTrendAt(volumeMa5, time), true);
     setTrend("volumeMa10", seriesTrendAt(volumeMa10, time), true);
@@ -7658,14 +7696,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     setReadoutValue(mainReadout, "high", candle?.high, tradePriceFormatter);
     setReadoutValue(mainReadout, "low", candle?.low, tradePriceFormatter);
     setReadoutValue(mainReadout, "close", close, tradePriceFormatter);
+    const volumeFormatter = (value) => formatChartVolume(value, lastPayload?.volumeContract);
+    setReadoutValue(mainReadout, "ohlcVolume", candle?.volume, volumeFormatter);
     const change = candle && previous ? close - previous.close : 0;
-    const changePercent = candle && previous?.close ? (change / previous.close) * 100 : 0;
     setReadoutValue(mainReadout, "change", change, (value) => formatSignedQuotePrice(value, symbolSelect.value, close));
-    setReadoutValue(mainReadout, "changePercent", changePercent, formatSignedPercent);
     const trend = trendClass(change);
     setTrend("close", trend);
     setTrend("change", trend);
-    setTrend("changePercent", trend);
   }
 
   function setMovingAverageReadoutColors(root) {
@@ -7988,6 +8025,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       renderIndicatorChart(lastPayload.indicators || {}, selectedSub);
       updateTechnicalReadoutForTime(latest.time, { indicators: lastPayload.indicators || {}, selectedSub, latest: true });
     }
+    syncIndicatorTimeAnchor(lastPayload?.candles || []);
+    refreshDayBoundaries(lastPayload?.candles || []);
     chipPaneManager?.updateCandles?.(lastPayload?.candles || []);
     const liveVisibleTimeRange = chart.timeScale().getVisibleRange?.();
     if (liveVisibleTimeRange?.from && liveVisibleTimeRange?.to) setSynchronizedVisibleTimeRange(liveVisibleTimeRange);
@@ -8059,6 +8098,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         if (effectivePanelSubchartMode() !== CHART_PRESENTATION_MODES.main && selectedSub.size) {
           renderIndicatorChart(lastPayload.indicators, selectedSub);
           syncIndicatorTimeAnchor(lastPayload.candles);
+          refreshDayBoundaries(lastPayload.candles);
         }
         updateVolumeAvailability(lastPayload, selectedMain.has("volume"));
         updateReadout(lastPayload.indicators, selectedMain, selectedSub);
@@ -8067,10 +8107,60 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     );
   }
 
+  function renderDailyKlines(snapshot = latestRealtimeSnapshot) {
+    if (!dailyKlineAccumulator || !snapshot || !candleSeries) return;
+    const model = dailyKlineAccumulator.snapshot();
+    const candles = Array.from(model.candles || [], (row) => ({ ...row })).slice(-MAX_HISTORY_DISPLAY_CANDLES);
+    if (!candles.length) return;
+    const contract = window.QuoteChartVolumeContract.contractForProvider("shioaji");
+    const indicators = window.QuoteChartRealtimeIndicators.compute(candles, state.indicatorParameters, { volumeAvailable: true });
+    const oldCandleCount = Number(lastPayload?.candles?.length) || candles.length;
+    const preserveVisibleLogicalRange = chart?.timeScale?.().getVisibleLogicalRange?.();
+    const payload = {
+      ...(canonicalPayload || {}),
+      symbol: symbolSelect.value,
+      interval: "1d",
+      candles,
+      indicators,
+      volumeContract: contract,
+      realtimeDailyHistory: candles,
+      quote: realtimeQuote(snapshot, realtimeDisplayState),
+      quoteTime: Math.floor(Date.parse(snapshot.sourceTime) / 1000),
+      marketSession: "open",
+      dataWindow: {
+        ...(canonicalPayload?.dataWindow || {}),
+        rawCandles: model.candles.length,
+        displayCandles: candles.length,
+        hasMoreBefore: model.candles.length > candles.length,
+        sourceFingerprint: contract.sourceFingerprint,
+        cache: {
+          store: "worker-memory",
+          state: "refreshed",
+          source: "shioaji",
+          historyStore: "worker-memory",
+          persistent: false,
+          rows: model.candles.length,
+        },
+      },
+    };
+    applyPayload(payload, { preserveVisibleLogicalRange, oldCandleCount });
+    if (realtimeDisplayState === "live") {
+      status.textContent = `${symbolSelect.value} / 日 已載入 Shioaji`;
+      status.classList.remove("is-visible");
+    } else if (realtimeDisplayState === "degraded") {
+      status.textContent = "即時連線不穩，顯示最後可用行情";
+      status.classList.add("is-visible");
+    }
+  }
+
   function applyRealtimeSnapshot(snapshot) {
     if (!canonicalPayload || !candleSeries || !realtimeEligible(symbolSelect.value, intervalSelect.value)) return;
     if (isMinuteKlineInterval(intervalSelect.value) && minuteKlineAccumulator) {
       if (minuteKlineAccumulator.append(snapshot)) renderMinuteKlines(snapshot);
+      return;
+    }
+    if (intervalSelect.value === "1d" && dailyKlineAccumulator) {
+      if (dailyKlineAccumulator.append(snapshot)) renderDailyKlines(snapshot);
       return;
     }
     const previousLatestTime = normalizeChartTime(lastPayload?.candles?.at(-1)?.time);
@@ -8093,6 +8183,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     };
     candleSeries.update(candle);
     updateIndicatorTimeAnchor(candle);
+    refreshDayBoundaries(result.candles);
     chipPaneManager?.updateCandles?.(result.candles);
     if (previousVisibleTimeRange?.from && previousVisibleTimeRange?.to) {
       const wasLatestVisible = previousLatestTime && normalizeChartTime(previousVisibleTimeRange.to) >= previousLatestTime;
@@ -8126,6 +8217,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const previousVisibleTimeRange = chart?.timeScale?.().getVisibleRange?.();
     const previousLatestTime = normalizeChartTime(lastPayload?.candles?.at(-1)?.time);
     const selectedMain = getSelectedMainIndicators();
+    const volumeContract = window.QuoteChartVolumeContract.contractForProvider("shioaji");
     lastPayload = {
       ...(canonicalPayload || lastPayload || {}),
       candles,
@@ -8133,6 +8225,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       quoteTime: snapshot ? Math.floor(Date.parse(snapshot.sourceTime) / 1000) : candles.at(-1).time,
       marketSession: snapshot ? "open" : canonicalPayload?.marketSession,
       realtimeProvider: "shioaji",
+      volumeContract,
+      dataWindow: {
+        ...(canonicalPayload?.dataWindow || {}),
+        sourceFingerprint: volumeContract.sourceFingerprint,
+        cache: { store: "worker-memory", state: "refreshed", source: "shioaji", historyStore: "worker-memory", persistent: false, rows: candles.length },
+      },
     };
     candleSeries.setData(candles);
     volumeSeries?.setData(selectedMain.has("volume") ? candles.map((candle) => ({
@@ -8142,6 +8240,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     })) : []);
     chipPaneManager?.updateCandles?.(candles);
     syncIndicatorTimeAnchor(candles);
+    refreshDayBoundaries(candles);
     if (previousVisibleTimeRange?.from && previousVisibleTimeRange?.to) {
       const latest = candles.at(-1);
       const wasLatestVisible = previousLatestTime && normalizeChartTime(previousVisibleTimeRange.to) >= previousLatestTime;
@@ -8196,8 +8295,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
     const dateNode = mainReadout.querySelector("[data-main-date]");
     if (dateNode) dateNode.textContent = `${model.summary.sessionDate} 分時`;
+    const volumeContract = window.QuoteChartVolumeContract.contractForProvider("shioaji-realtime");
+    const ohlcVolumeNode = mainReadout.querySelector('[data-ohlc="ohlcVolume"]');
+    if (ohlcVolumeNode) ohlcVolumeNode.textContent = formatChartVolume(model.summary.totalVolume, volumeContract);
     const volumeNode = mainReadout.querySelector('[data-main-indicator="volume"]');
-    if (volumeNode) volumeNode.textContent = formatInteger(model.summary.totalVolume);
+    if (volumeNode) volumeNode.textContent = formatChartVolume(model.summary.totalVolume, volumeContract);
     mainReadout.classList.remove("hidden");
     mainReadout.querySelectorAll(".readout-row").forEach((row) => row.classList.toggle("hidden", !row.matches('[data-readout-row="ohlc"], [data-readout-row="volume"]')));
     updateQuoteDataTime(lastPayload.quote, lastPayload.quoteTime);
@@ -8314,6 +8416,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       return;
     }
     if (["closing", "closed"].includes(realtimeDisplayState)) {
+      if (!latestRealtimeSnapshot && lastPayload?.quote?.realtimeState === "closed") {
+        status.classList.remove("is-visible");
+        return;
+      }
       if (canonicalHandoffReady()) {
         applyPayload({
           ...canonicalPayload,
@@ -8335,9 +8441,16 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (state.sourceMode === "shioaji" && ["fallback", "stale", "unavailable"].includes(realtimeDisplayState)) {
       status.textContent = "Shioaji 即時行情目前不可用；可切換為自動或 Yahoo 延遲";
       status.classList.add("is-visible");
-      if (isMinuteKlineInterval(intervalSelect.value)) {
+      if (isMinuteKlineInterval(intervalSelect.value) || intervalSelect.value === "1d") {
         candleSeries?.setData([]);
         volumeSeries?.setData([]);
+        volumeMovingAverageSeries.forEach((series) => series?.setData([]));
+        clearMovingAverage();
+        clearBollinger();
+        drawFvg([]);
+        clearLevels();
+        syncIndicatorTimeAnchor([]);
+        refreshDayBoundaries([]);
       }
       if (lastPayload?.quote) {
         lastPayload.quote = { ...lastPayload.quote, realtimeState: "unavailable", freshness: "unavailable" };
@@ -8372,6 +8485,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     minuteKlineAccumulator = isMinuteKlineInterval(interval)
       ? window.QuoteChartRealtimeCharts.createMinuteKlineAccumulator({ interval })
       : undefined;
+    dailyKlineAccumulator = interval === "1d"
+      ? window.QuoteChartRealtimeCharts.createDailyKlineAccumulator({ identity: `${symbol}|1d|${streamLoadToken}` })
+      : undefined;
     state.panelStreamSubscriptionCount += 1;
     liveUpdateCleanup = liveBatchCoordinator.subscribe(panelSubscriptionId, {
       symbol,
@@ -8400,10 +8516,18 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
         applyRealtimeState(next);
       }, (points) => {
-        if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value || !minuteKlineAccumulator) return;
-        minuteKlineAccumulator.bootstrap(points);
-        if (latestRealtimeSnapshot) minuteKlineAccumulator.append(latestRealtimeSnapshot);
-        renderMinuteKlines(latestRealtimeSnapshot);
+        if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
+        if (minuteKlineAccumulator) {
+          minuteKlineAccumulator.bootstrap(points);
+          if (latestRealtimeSnapshot) minuteKlineAccumulator.append(latestRealtimeSnapshot);
+          renderMinuteKlines(latestRealtimeSnapshot);
+          return;
+        }
+        if (dailyKlineAccumulator) {
+          dailyKlineAccumulator.bootstrap(points);
+          if (latestRealtimeSnapshot) dailyKlineAccumulator.append(latestRealtimeSnapshot);
+          renderDailyKlines(latestRealtimeSnapshot);
+        }
       });
     } else {
       latestRealtimeSnapshot = null;
@@ -8608,6 +8732,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         const selectedSub = getSelectedSubIndicators();
         renderIndicatorChart(lastPayload.indicators || {}, selectedSub);
         syncIndicatorTimeAnchor(lastPayload.candles || []);
+        refreshDayBoundaries(lastPayload.candles || []);
         updateReadout(lastPayload.indicators || {}, getSelectedMainIndicators(), selectedSub);
       }
     },
@@ -9500,6 +9625,12 @@ function formatInteger(value) {
   return Math.round(value).toLocaleString("zh-TW");
 }
 
+function formatChartVolume(value, contract) {
+  if (!Number.isFinite(value)) return "--";
+  if (contract?.canonicalVolumeUnit !== "common_lot") return formatInteger(value);
+  return `${value.toLocaleString("zh-TW", { minimumFractionDigits: 0, maximumFractionDigits: 3 })} 張`;
+}
+
 function formatOscillatorValue(value) {
   if (!Number.isFinite(value)) return "--";
   return value.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -9516,12 +9647,6 @@ function formatSignedQuotePrice(value, symbol, referencePrice) {
   if (!Number.isFinite(value)) return "--";
   const prefix = value > 0 ? "+" : "";
   return `${prefix}${formatQuotePrice(value, symbol, "change", referencePrice)}`;
-}
-
-function formatSignedPercent(value) {
-  if (!Number.isFinite(value)) return "--";
-  const prefix = value > 0 ? "+" : "";
-  return `${prefix}${value.toLocaleString("zh-TW", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`;
 }
 
 function formatLatestPriceChange(value, symbol, referencePrice) {

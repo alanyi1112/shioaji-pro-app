@@ -189,8 +189,13 @@ watchdog 只會在已曾成功的 simulation generation 連續偵測到 `Session
 
 「版面」選單的 `MultiView（開新分頁）` 會開啟
 [http://localhost:5174](http://localhost:5174)。MultiView 支援 1／2／3／4／6／8
-圖，只提供日、週、月 K；台股預設優先使用本機 Shioaji 即時行情，無可用
-business session 時會在畫面標示並切換 Yahoo 延遲備援。國外商品與 MultiView
+圖，提供 1／5／15／60 分 K 與日、週、月 K。這裡的「分 K」是分鐘 K 線；
+1／5／15／60 分 K 會在相鄰台北日期之間繪製 1.2 CSS px 亮黃色分日線，日／週／月
+K 不套用。台股預設優先使用本機 Shioaji 即時行情，無可用 business session 時
+會在畫面標示並原子切換 Yahoo 延遲備援。台股整股圖表的 canonical 成交量單位為
+`common_lot`（張）：Shioaji lot 不換算，Yahoo／TWSE shares 除以 1,000 並保留
+小數張。同一批 Shioaji Kbars 可與主交易畫面精確比對；fallback 只保證單位與
+payload 內部一致，不保證不同 provider 的來源值完全相同。國外商品與 MultiView
 自己的「我的清單」仍沿用原有資料來源與獨立設定，不會與交易終端自選清單同步。
 
 第一次使用前先建立 repo 外的本機 D1，再啟動兩個前端：

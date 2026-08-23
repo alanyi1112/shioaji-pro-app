@@ -1,6 +1,7 @@
 // src/lib/utils/kbars.ts — KBars column arrays -> candles, aggregation
 
 import type { Candle, KBars } from '../types/market';
+import { normalizeTaiwanStockVolume } from '../chart-volume-contract';
 
 // kbar datetimes are Taiwan local; encode wall-clock as UTC so the chart
 // axis shows Taiwan session times regardless of viewer timezone.
@@ -30,6 +31,22 @@ export function kbarsToCandles(k: KBars): Candle[] {
     }
     out.sort((a, b) => a.time - b.time);
     return out;
+}
+
+export function kbarsToTaiwanStockCandles(k: KBars): Candle[] {
+    return kbarsToCandles(k).map((bar) => {
+        const canonical = normalizeTaiwanStockVolume({
+            market: 'TW',
+            securityType: 'STK',
+            provider: 'shioaji-kbars',
+            sourceUnit: 'common_lot',
+            value: bar.volume,
+        });
+        if (canonical.status !== 'available') {
+            throw new Error(`invalid_shioaji_stock_volume:${canonical.reason}`);
+        }
+        return { ...bar, volume: canonical.value };
+    });
 }
 
 // Aggregate 1-minute candles into N-minute or daily bars.

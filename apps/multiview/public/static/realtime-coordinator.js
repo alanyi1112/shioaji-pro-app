@@ -239,6 +239,7 @@
     const clearTimeoutImpl = options.clearTimeoutImpl || globalScope.clearTimeout?.bind(globalScope);
     const setIntervalImpl = options.setIntervalImpl || globalScope.setInterval?.bind(globalScope);
     const clearIntervalImpl = options.clearIntervalImpl || globalScope.clearInterval?.bind(globalScope);
+    const now = options.now || (() => Date.now());
     const endpoint = options.endpoint || "/local-shioaji";
     const subscriptions = new Map();
     const contracts = new Map();
@@ -251,7 +252,7 @@
     const demandRetryTimers = new Map();
     const kbarRangeCache = new Map();
     const kbarInflight = new Map();
-    const HISTORY_DAYS = Object.freeze({ "1m": 3, "5m": 7, "15m": 30, "1h": 60, "1d": 1 });
+    const HISTORY_DAYS = Object.freeze({ "1m": 3, "5m": 7, "15m": 30, "1h": 60, "1d": 365 });
     const MAX_KBAR_CACHE_ENTRIES = 16;
     let source;
     let sourceOpen = false;
@@ -287,6 +288,20 @@
       }
     }
 
+    function marketPhase() {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Taipei", weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(new Date(now())).reduce((result, part) => {
+        if (part.type !== "literal") result[part.type] = part.value;
+        return result;
+      }, {});
+      if (["Sat", "Sun"].includes(parts.weekday || "")) return "closed";
+      const minutes = Number(parts.hour) * 60 + Number(parts.minute);
+      if (minutes >= 9 * 60 && minutes <= 13 * 60 + 30) return "open";
+      if (minutes > 13 * 60 + 30 && minutes < 15 * 60) return "closing";
+      return "closed";
+    }
+
     function dispatchSession(symbol, points) {
       if (!Array.isArray(points) || !points.length) return;
       for (const item of subscriptions.values()) {
@@ -307,7 +322,8 @@
         if (item.symbol !== snapshot.canonicalSymbol) continue;
         try { item.onSnapshot(snapshot); } catch { /* isolate panels */ }
       }
-      notifyState(snapshot.canonicalSymbol, "live", "none");
+      const phase = marketPhase();
+      notifyState(snapshot.canonicalSymbol, phase === "open" ? "live" : phase, phase === "open" ? "none" : `market_${phase}`);
     }
 
     function normalizeDateTime(date, time) {
@@ -398,7 +414,9 @@
           time: Math.floor(sourceTime / 1000), sourceTime,
           open, high, low, close,
           averagePrice: totalVolume > 0 ? weightedAmount / totalVolume : close,
-          volume, totalVolume, continuity: "complete",
+          volume, totalVolume, continuity: "complete", provider: "shioaji-kbars",
+          sourceVolumeUnit: "common_lot", canonicalVolumeUnit: "common_lot",
+          normalizationRevision: "taiwan-stock-common-lot/1",
         }];
       });
     }
@@ -650,6 +668,10 @@
         mode = next;
         connectSource();
         reconcileDemand();
+        const phase = marketPhase();
+        if (phase !== "open") {
+          for (const symbol of desiredSymbols()) notifyState(symbol, phase, `market_${phase}`);
+        }
       } catch {
         for (const symbol of desiredSymbols()) notifyState(symbol, "fallback", "shioaji_business_unavailable");
       }

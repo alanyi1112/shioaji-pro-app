@@ -46,6 +46,13 @@ export function inferTaiwanMarketPhase(input: MarketPhaseInput): MarketPhase {
   const weekday = nowParts?.weekday || "";
   const weekdayTradingWindow = !["Sat", "Sun"].includes(weekday) && minutes >= 9 * 60 && minutes <= 13 * 60 + 30;
   const sameTradingDay = Boolean(today && input.sessionDate === today && sourceDate === today && input.hasValidCandle);
+  const completedPriorSession = Boolean(
+    today
+    && input.sessionDate
+    && input.sessionDate < today
+    && sourceDate === input.sessionDate
+    && input.hasValidCandle,
+  );
   const sourceAgeSeconds = Number.isFinite(sourceTime) ? now.getTime() / 1000 - sourceTime : Number.POSITIVE_INFINITY;
   const sourceIsCurrent = sourceAgeSeconds >= -300 && sourceAgeSeconds <= 60 * 60;
   const explicitOpen = ["open", "regular", "trading"].includes(state);
@@ -59,6 +66,7 @@ export function inferTaiwanMarketPhase(input: MarketPhaseInput): MarketPhase {
   }
   if (explicitPreopen) return "preopen";
   if (nowParts && ["Sat", "Sun"].includes(weekday) && input.hasValidCandle) return "closed";
+  if (completedPriorSession && minutes >= 0 && minutes < 8 * 60) return "closed";
   if (weekdayTradingWindow && sameTradingDay && sourceIsCurrent) return "open";
   if (sameTradingDay && minutes > 13 * 60 + 30 && minutes < 15 * 60 && sourceAgeSeconds <= 2 * 60 * 60) return "closing";
   if (sameTradingDay && minutes >= 15 * 60) return "closed";

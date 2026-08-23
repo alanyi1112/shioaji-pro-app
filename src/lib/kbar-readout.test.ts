@@ -332,15 +332,20 @@ describe('跨日分隔線 boundary', () => {
         candle('2026-08-06T09:05:00'),
     ];
 
-    it('只選出日期改變的相鄰 candles', () => {
-        expect(selectDayBoundaries(bars, 5)).toEqual([
+    it('1m／5m／15m／1h 只選出日期改變的相鄰 candles', () => {
+        const expected = [
             { previousTime: bars[0]!.time, nextTime: bars[1]!.time },
-        ]);
+        ];
+        for (const interval of [1, 5, 15, 60, '1m', '5m', '15m', '1h']) {
+            expect(selectDayBoundaries(bars, interval)).toEqual(expected);
+        }
     });
 
-    it('同日缺口不增加 boundary，1D 完全排除', () => {
+    it('同日缺口不增加 boundary，分時與日週月完全排除', () => {
         expect(selectDayBoundaries(bars.slice(1), 5)).toEqual([]);
-        expect(selectDayBoundaries(bars, 1440)).toEqual([]);
+        for (const interval of [1440, 'intraday', '1d', '1wk', '1mo']) {
+            expect(selectDayBoundaries(bars, interval)).toEqual([]);
+        }
     });
 
     it('期貨夜盤跨午夜仍以台灣顯示日期分隔', () => {

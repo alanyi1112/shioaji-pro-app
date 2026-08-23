@@ -1,5 +1,6 @@
 import {
     CandlestickSeries,
+    ColorType,
     LineSeries,
     createChart,
     type UTCTimestamp,
@@ -14,6 +15,8 @@ import { createIndicatorSeriesRenderer } from './chart-indicators';
 import type { Candle } from './types/market';
 import { MarketOverlayPrimitive } from './market-overlay-primitive';
 import { PivotPrimitive } from './pivot-primitive';
+import { DayBoundaryPaneManager } from './day-boundary-primitive';
+import { getChartColors } from './theme-store';
 import {
     createFibonacciController,
     fibonacciIdentity,
@@ -55,6 +58,117 @@ describe('lightweight-charts browser harness', () => {
         chart.remove();
         expect(host.querySelectorAll('canvas')).toHaveLength(0);
     });
+
+    it('light／dark theme 都提供獨立亮黃色分日線 token', () => {
+        expect(
+            getChartColors({ mode: 'dark', convention: 'tw', fontScale: 1 })
+                .dayBoundary,
+        ).toBe('#facc15');
+        expect(
+            getChartColors({ mode: 'light', convention: 'tw', fontScale: 1 })
+                .dayBoundary,
+        ).toBe('#ca8a04');
+        expect(
+            getChartColors({ mode: 'dark', convention: 'tw', fontScale: 1 })
+                .dayBoundary,
+        ).not.toBe(
+            getChartColors({ mode: 'dark', convention: 'tw', fontScale: 1 })
+                .grid,
+        );
+    });
+
+    for (const chartCount of [1, 2, 4, 8]) {
+        it(`${chartCount} 圖亮黃色分日線跨 pane、resize、縮放與 cleanup`, async () => {
+            const consoleError = vi
+                .spyOn(console, 'error')
+                .mockImplementation(() => {});
+            const runtimes = Array.from({ length: chartCount }, (_, index) => {
+                const host = document.createElement('div');
+                host.style.width = '320px';
+                host.style.height = '220px';
+                document.body.append(host);
+                const chart = createChart(host, {
+                    width: 320,
+                    height: 220,
+                    layout: {
+                        background: { type: ColorType.Solid, color: '#111827' },
+                        textColor: '#cbd5e1',
+                    },
+                });
+                const candles = chart.addSeries(CandlestickSeries);
+                const paneSeries = chart.addSeries(
+                    LineSeries,
+                    { color: '#38bdf8' },
+                    1,
+                );
+                const first = (1_700_000_000 + index * 10_000) as UTCTimestamp;
+                const second = (first + 60) as UTCTimestamp;
+                candles.setData([
+                    { time: first, open: 100, high: 102, low: 99, close: 101 },
+                    { time: second, open: 101, high: 103, low: 100, close: 102 },
+                ]);
+                paneSeries.setData([
+                    { time: first, value: 50 },
+                    { time: second, value: 51 },
+                ]);
+                const manager = new DayBoundaryPaneManager();
+                manager.reconcile(
+                    chart.panes(),
+                    [{ previousTime: first, nextTime: second }],
+                    '#facc15',
+                );
+                chart.timeScale().fitContent();
+                return { host, chart, manager };
+            });
+
+            await new Promise<void>((resolve) =>
+                requestAnimationFrame(() =>
+                    requestAnimationFrame(() => resolve()),
+                ),
+            );
+            for (const runtime of runtimes) {
+                expect(runtime.manager.size).toBe(2);
+                const yellowPixels = [...runtime.host.querySelectorAll('canvas')]
+                    .map((canvas) => {
+                        const context = canvas.getContext('2d');
+                        if (!context) return 0;
+                        const pixels = context.getImageData(
+                            0,
+                            0,
+                            canvas.width,
+                            canvas.height,
+                        ).data;
+                        let count = 0;
+                        for (let offset = 0; offset < pixels.length; offset += 4) {
+                            const red = pixels[offset] ?? 0;
+                            const green = pixels[offset + 1] ?? 0;
+                            const blue = pixels[offset + 2] ?? 0;
+                            if (
+                                red >= 80 &&
+                                green >= 70 &&
+                                blue <= 70 &&
+                                red > green &&
+                                green > blue * 1.5 &&
+                                pixels[offset + 3] === 255
+                            ) {
+                                count += 1;
+                            }
+                        }
+                        return count;
+                    })
+                    .reduce((sum, count) => sum + count, 0);
+                expect(yellowPixels).toBeGreaterThan(0);
+                runtime.chart.resize(360, 240);
+                runtime.chart.timeScale().scrollToPosition(1, false);
+                runtime.manager.destroy();
+                expect(runtime.manager.size).toBe(0);
+                runtime.chart.remove();
+                expect(runtime.host.querySelectorAll('canvas')).toHaveLength(0);
+            }
+            expect(consoleError).not.toHaveBeenCalled();
+            consoleError.mockRestore();
+        });
+    }
 
     for (const chartCount of [1, 2, 4, 8]) {
         it(`${chartCount} 圖 Fibonacci controller／storage／overlay 維持隔離`, async () => {
@@ -220,6 +334,7 @@ describe('lightweight-charts browser harness', () => {
                 downVol: '#ff4055',
                 text: '#8b94a7',
                 grid: '#222b37',
+                dayBoundary: '#facc15',
                 crosshair: '#3d8bff',
                 border: '#222b37',
                 labelBg: '#181f2a',

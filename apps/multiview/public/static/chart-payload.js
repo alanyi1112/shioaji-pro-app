@@ -74,6 +74,13 @@
       error.code = "invalid-chart-payload";
       throw error;
     }
+    try {
+      global.QuoteChartVolumeContract?.assertPayload?.(prepared);
+    } catch {
+      const error = new Error("台股成交量來源或單位契約無效");
+      error.code = "invalid-chart-payload";
+      throw error;
+    }
     prepared.candles = normalizeCandles(prepared.candles);
     if (!prepared.candles.length) {
       const error = new Error("回傳資料沒有可繪製 K 線");
@@ -125,6 +132,7 @@
       quoteTime: payload.quoteTime || null,
       marketSession: payload.marketSession || null,
       realtimeCanonicalHandoff: payload.realtimeCanonicalHandoff || null,
+      volumeContract: payload.volumeContract || null,
     });
   }
 

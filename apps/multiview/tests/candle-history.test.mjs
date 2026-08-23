@@ -180,7 +180,9 @@ test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，�
     const first = await (await firstService.fetch(new Request("http://localhost/api/candles?symbol=3008.TW&interval=1d&display_count=20"), env, workerContext)).json();
     assert.equal(first.quote.sessionDate, "2026-07-31");
     assert.equal(first.candles.at(-1).close, 4035);
-    assert.equal(first.candles.at(-1).volume, 2970845);
+    assert.equal(first.candles.at(-1).volume, 2970.845);
+    assert.equal(first.volumeContract.canonicalVolumeUnit, "common_lot");
+    assert.equal(first.volumeContract.sourceVolumeUnit, "share");
     assert.equal(first.dataWindow.cache.fullWindowComplete, true);
     assert.deepEqual({ yahooCalls, officialCalls }, { yahooCalls: 1, officialCalls: 1 });
 

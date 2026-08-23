@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PaneAttachedParameter, Time } from 'lightweight-charts';
 import {
+    DAY_BOUNDARY_WIDTH_CSS_PX,
     DayBoundaryPaneManager,
     DayBoundaryPrimitive,
 } from './day-boundary-primitive';
 
-function drawPrimitive(primitive: DayBoundaryPrimitive) {
+function drawPrimitive(
+    primitive: DayBoundaryPrimitive,
+    { horizontalPixelRatio = 2 } = {},
+) {
     const fillRect = vi.fn();
     const context = {
         save: vi.fn(),
@@ -19,7 +23,7 @@ function drawPrimitive(primitive: DayBoundaryPrimitive) {
                 context,
                 mediaSize: { width: 100, height: 50 },
                 bitmapSize: { width: 200, height: 100 },
-                horizontalPixelRatio: 2,
+                horizontalPixelRatio,
                 verticalPixelRatio: 2,
             }),
     };
@@ -31,7 +35,12 @@ function drawPrimitive(primitive: DayBoundaryPrimitive) {
 }
 
 describe('DayBoundaryPrimitive', () => {
-    it('在兩根 candle 中點畫 2 CSS px，HiDPI 換算為 4 bitmap px', () => {
+    it('預設使用獨立亮黃色，不沿用 grid color', () => {
+        expect(new DayBoundaryPrimitive().color).toBe('#facc15');
+    });
+
+    it('在兩根 candle 中點畫 1.2 CSS px，HiDPI 2x 換算為 2.4 bitmap px', () => {
+        expect(DAY_BOUNDARY_WIDTH_CSS_PX).toBe(1.2);
         const requestUpdate = vi.fn();
         const chart = {
             timeScale: () => ({
@@ -47,7 +56,10 @@ describe('DayBoundaryPrimitive', () => {
         );
         expect(requestUpdate).toHaveBeenCalledOnce();
         const fillRect = drawPrimitive(primitive);
-        expect(fillRect).toHaveBeenCalledWith(8, 0, 4, 100);
+        expect(fillRect).toHaveBeenCalledWith(8.8, 0, 2.4, 100);
+        expect(
+            drawPrimitive(primitive, { horizontalPixelRatio: 1 }),
+        ).toHaveBeenCalledWith(4.4, 0, 1.2, 100);
         expect('hitTest' in primitive).toBe(false);
     });
 
@@ -80,11 +92,11 @@ describe('DayBoundaryPrimitive', () => {
         const primitive = new DayBoundaryPrimitive();
         primitive.attached({ chart, requestUpdate: vi.fn() } as unknown as PaneAttachedParameter<Time>);
         primitive.setData([{ previousTime: 1, nextTime: 2 }], '#123456');
-        expect(drawPrimitive(primitive)).toHaveBeenCalledWith(48, 0, 4, 100);
+        expect(drawPrimitive(primitive)).toHaveBeenCalledWith(48.8, 0, 2.4, 100);
 
         previousX = 40;
         nextX = 60;
-        expect(drawPrimitive(primitive)).toHaveBeenCalledWith(98, 0, 4, 100);
+        expect(drawPrimitive(primitive)).toHaveBeenCalledWith(98.8, 0, 2.4, 100);
     });
 });
 

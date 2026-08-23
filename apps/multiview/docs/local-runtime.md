@@ -26,8 +26,10 @@ pnpm dev:multiview
 開啟 `http://localhost:5173`，再從「版面」選擇
 `MultiView（開新分頁）`。也可直接開啟 `http://localhost:5174`。
 
-MultiView 只提供 `1d`、`1wk`、`1mo`，預設 `1d`。任何舊分 K 設定、query
-string 或直接 API request 都不能重新啟用分 K。
+MultiView 提供 `1m`、`5m`、`15m`、`1h`、`1d`、`1wk`、`1mo`，預設
+`1d`。本文件所稱「分 K」是分鐘 K 線；1／5／15／60 分 K 依相鄰 canonical
+candles 的 `Asia/Taipei` 日期變化，在前一日最後一根與下一日第一根之間顯示
+1.2 CSS px 亮黃色分日線。日／週／月 K、`intraday` 分時走勢與同日資料缺口不套用。
 
 ## macOS 常駐模式
 
@@ -64,6 +66,32 @@ heartbeat 不代表行情可用。
 若來源未提供成交量，成交量與 Volume MA5／MA10／MA20 顯示 unavailable，
 不得用零值、昨量、amount 或 Yahoo volume 冒充即時量。國外商品仍使用原本
 provider；MultiView「我的清單」與 RealTimeStock 自選清單各自獨立。
+
+### 台股整股成交量與跨畫面對照
+
+台股整股 `STK` 圖表在成交量柱、readout、Volume MA、MFI、Volume Profile 與
+其他量能衍生指標之前，統一正規化為 `common_lot`（張）。Shioaji Kbars／Tick
+原生 lot 採 identity conversion；Yahoo／TWSE 原生 shares 除以 1,000 並保留
+合法小數張。payload 必須攜帶可信 provider、source volume unit、normalization
+revision 與 source fingerprint；缺少、舊版、偽造或跨 provider 重放時必須失效
+重抓或 fail closed，不能把股數直接當張數。
+
+相同 STK、相同台北日期及相同 Shioaji 1 分 Kbars 在 RealTimeStock 主交易畫面與
+MultiView 聚合後，daily OHLCV、成交量柱與量能指標輸入必須完全相同。Yahoo／
+TWSE fallback 只承諾單位一致、provider 可辨識及整份 OHLCV 原子切換；因成交範圍
+或來源修訂不同，不承諾其數值與 Shioaji 完全相同。
+
+### 驗收矩陣
+
+| 路徑 | 適用時框 | 分日線 | 台股整股 volume | 失效行為 |
+|---|---|---|---|---|
+| RealTimeStock 主交易畫面 Shioaji | 1／5／15／60 分、日 K | 只在分鐘 K 顯示亮黃色 1.2 CSS px 線 | Shioaji lot → `common_lot` identity | unit 或 generation 不可信時拒絕增量 |
+| MultiView 強制 Shioaji | 1／5／15／60 分、日 K | 只在分鐘 K 顯示亮黃色 1.2 CSS px 線 | 同源 Kbars／Tick lot → `common_lot` | 清空混源 OHLCV，顯示 unavailable，不偷切 Yahoo |
+| MultiView 自動模式 | 1／5／15／60 分、日 K | 只在分鐘 K 顯示亮黃色 1.2 CSS px 線 | Shioaji 可用時同上；否則 Yahoo／TWSE shares ÷ 1,000 | 以完整 canonical payload 原子 fallback |
+| MultiView 強制 Yahoo | 日／週／月與既有延遲路徑 | 日／週／月不顯示 | Yahoo／TWSE shares ÷ 1,000 | 舊 schema／未知 unit 失效重抓或 fail closed |
+
+收盤後 Shioaji display bars 仍只屬本機同源顯示，不會寫入 D1 verified canonical
+history，也不取代既有 TWSE／TPEx 收盤核定流程。
 
 ## 盤後資料與排程
 

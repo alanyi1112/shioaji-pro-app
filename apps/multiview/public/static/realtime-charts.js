@@ -67,6 +67,131 @@
     return [...buckets.values()].map((row) => Object.freeze({ ...row }));
   }
 
+  function aggregateDailyCandles(points) {
+    const sessions = new Map();
+    for (const point of [...(points || [])].sort((left, right) => Number(left?.time) - Number(right?.time))) {
+      if (!validMinutePoint(point)) continue;
+      const date = sessionDateForTime(point.time);
+      if (!date) continue;
+      const current = sessions.get(date);
+      if (!current) {
+        sessions.set(date, {
+          time: taipeiMidnight(date), sessionDate: date,
+          open: Number(point.open), high: Number(point.high), low: Number(point.low), close: Number(point.close),
+          volume: Math.max(0, Number(point.volume)),
+          sourceTime: Number(point.sourceTime) || Number(point.time) * 1000,
+          provider: "shioaji-kbars",
+          continuity: point.continuity === "partial" ? "partial" : "complete",
+        });
+      } else {
+        current.high = Math.max(current.high, Number(point.high));
+        current.low = Math.min(current.low, Number(point.low));
+        current.close = Number(point.close);
+        current.volume += Math.max(0, Number(point.volume));
+        current.sourceTime = Math.max(current.sourceTime, Number(point.sourceTime) || Number(point.time) * 1000);
+        if (point.continuity === "partial") current.continuity = "partial";
+      }
+    }
+    return [...sessions.values()].map((row) => Object.freeze({ ...row }));
+  }
+
+  function createCommonLotVolumeCursor() {
+    let state;
+    return {
+      reset(identity, bootstrap) {
+        const totalVolume = Number(bootstrap?.totalVolume);
+        const sourceTime = Number(bootstrap?.sourceTime);
+        const sequence = Number(bootstrap?.sequence || 0);
+        const sessionDate = String(bootstrap?.sessionDate || "");
+        if (!identity || !/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || !Number.isFinite(totalVolume) || totalVolume < 0 || !Number.isFinite(sourceTime)) throw new Error("volume_cursor_bootstrap_invalid");
+        state = { identity: String(identity), sessionDate, totalVolume, sourceTime, sequence };
+      },
+      clear() { state = undefined; },
+      consume(identity, event) {
+        if (!state) return { accepted: false, delta: 0, reasonCode: "volume_cursor_unseeded" };
+        if (String(identity) !== state.identity) return { accepted: false, delta: 0, reasonCode: "volume_cursor_identity_mismatch" };
+        const sessionDate = String(event?.sessionDate || "");
+        const sourceTime = Number(event?.sourceTime);
+        const sequence = Number(event?.sequence);
+        const totalVolume = Number(event?.totalVolume);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || ![sourceTime, sequence, totalVolume].every(Number.isFinite) || totalVolume < 0) return { accepted: false, delta: 0, reasonCode: "volume_cursor_event_invalid" };
+        if (sessionDate < state.sessionDate) return { accepted: false, delta: 0, reasonCode: "volume_cursor_old_session" };
+        if (sessionDate > state.sessionDate) return { accepted: false, delta: 0, reasonCode: "volume_cursor_session_requires_bootstrap" };
+        if (sourceTime < state.sourceTime || (sourceTime === state.sourceTime && sequence <= state.sequence)) return { accepted: false, delta: 0, reasonCode: "volume_cursor_not_advanced" };
+        if (totalVolume < state.totalVolume) return { accepted: false, delta: 0, reasonCode: "volume_cursor_total_regression" };
+        const delta = totalVolume - state.totalVolume;
+        state = { ...state, sourceTime, sequence, totalVolume };
+        return { accepted: true, delta, reasonCode: "none" };
+      },
+      snapshot() { return state ? { ...state } : undefined; },
+    };
+  }
+
+  function createDailyKlineAccumulator(options = {}) {
+    const identity = String(options.identity || "");
+    const cursor = createCommonLotVolumeCursor();
+    let candles = [];
+    let bootstrapped = false;
+    const pending = [];
+
+    function append(snapshot) {
+      const open = Number(snapshot?.open); const high = Number(snapshot?.high); const low = Number(snapshot?.low); const close = Number(snapshot?.close);
+      if (!validSnapshot(snapshot) || snapshot.securityType !== "STK" || low > open || open > high || low > close || close > high) return false;
+      if (!bootstrapped) { pending.push({ ...snapshot }); return true; }
+      const result = cursor.consume(identity, {
+        sessionDate: snapshot.sessionDate,
+        sourceTime: Date.parse(snapshot.sourceTime),
+        sequence: Number(snapshot.sequence),
+        totalVolume: Number(snapshot.totalVolume),
+      });
+      if (!result.accepted && result.reasonCode === "volume_cursor_session_requires_bootstrap") {
+        const sourceTime = Date.parse(snapshot.sourceTime);
+        candles = [
+          ...candles.filter((row) => row.sessionDate !== snapshot.sessionDate),
+          Object.freeze({
+            time: taipeiMidnight(snapshot.sessionDate), sessionDate: snapshot.sessionDate,
+            open: Number(snapshot.open), high: Number(snapshot.high), low: Number(snapshot.low), close: Number(snapshot.close),
+            volume: Number(snapshot.totalVolume), sourceTime, provider: "shioaji-realtime", continuity: snapshot.continuity === "partial" ? "partial" : "complete",
+            realtime: { provider: "shioaji", sessionDate: snapshot.sessionDate, sourceTime: snapshot.sourceTime, provisional: true },
+          }),
+        ].sort((left, right) => Number(left.time) - Number(right.time));
+        cursor.reset(identity, { sessionDate: snapshot.sessionDate, sourceTime, sequence: Number(snapshot.sequence), totalVolume: Number(snapshot.totalVolume) });
+        return true;
+      }
+      if (!result.accepted) return false;
+      const index = candles.findIndex((row) => row.sessionDate === snapshot.sessionDate);
+      if (index < 0) return false;
+      const current = candles[index];
+      candles[index] = Object.freeze({
+        ...current,
+        open: Number(snapshot.open), high: Number(snapshot.high), low: Number(snapshot.low), close: Number(snapshot.close),
+        volume: Number(current.volume) + result.delta,
+        sourceTime: Date.parse(snapshot.sourceTime), provider: "shioaji-kbars",
+        continuity: snapshot.continuity === "partial" ? "partial" : current.continuity,
+        realtime: { provider: "shioaji", sessionDate: snapshot.sessionDate, sourceTime: snapshot.sourceTime, provisional: true },
+      });
+      return true;
+    }
+
+    function bootstrap(points) {
+      candles = aggregateDailyCandles(points);
+      const latest = candles.at(-1);
+      if (!latest) throw new Error("shioaji_daily_kbars_empty");
+      cursor.reset(identity, { sessionDate: latest.sessionDate, sourceTime: latest.sourceTime, sequence: 0, totalVolume: latest.volume });
+      bootstrapped = true;
+      pending.splice(0)
+        .sort((left, right) => Date.parse(left.sourceTime) - Date.parse(right.sourceTime) || Number(left.sequence) - Number(right.sequence))
+        .forEach(append);
+      return candles.length;
+    }
+
+    return {
+      append,
+      bootstrap,
+      snapshot() { return Object.freeze({ candles: Object.freeze(candles.map((row) => Object.freeze({ ...row }))), cursor: cursor.snapshot() }); },
+    };
+  }
+
   function createMinuteKlineAccumulator(options = {}) {
     const interval = String(options.interval || "1m");
     const canonical = new Map();
@@ -341,8 +466,11 @@
   globalScope.QuoteChartRealtimeCharts = {
     availableIntervals,
     aggregateCompletedDaily,
+    aggregateDailyCandles,
     aggregateMinuteCandles,
     canonicalHandoffReady,
+    createCommonLotVolumeCursor,
+    createDailyKlineAccumulator,
     createIntradayAccumulator,
     createMinuteKlineAccumulator,
     mergeRealtimeOverlay,

@@ -11,6 +11,7 @@ import type {
 import type { DayBoundary } from './kbar-readout';
 
 type RenderTarget = Parameters<IPrimitivePaneRenderer['draw']>[0];
+export const DAY_BOUNDARY_WIDTH_CSS_PX = 1.2;
 
 class DayBoundaryRenderer implements IPrimitivePaneRenderer {
     constructor(private readonly owner: DayBoundaryPrimitive) {}
@@ -22,7 +23,7 @@ class DayBoundaryRenderer implements IPrimitivePaneRenderer {
             const context = scope.context;
             const lineWidth = Math.max(
                 1,
-                Math.round(2 * scope.horizontalPixelRatio),
+                DAY_BOUNDARY_WIDTH_CSS_PX * scope.horizontalPixelRatio,
             );
             context.save();
             context.fillStyle = this.owner.color;
@@ -35,9 +36,8 @@ class DayBoundaryRenderer implements IPrimitivePaneRenderer {
                     .timeToCoordinate(boundary.nextTime as UTCTimestamp);
                 if (previous === null || next === null) continue;
                 const mediaX = (Number(previous) + Number(next)) / 2;
-                const bitmapX = Math.round(
-                    mediaX * scope.horizontalPixelRatio - lineWidth / 2,
-                );
+                const bitmapX =
+                    mediaX * scope.horizontalPixelRatio - lineWidth / 2;
                 context.fillRect(bitmapX, 0, lineWidth, scope.bitmapSize.height);
             }
             context.restore();
@@ -66,7 +66,7 @@ class DayBoundaryPaneView implements IPanePrimitivePaneView {
 export class DayBoundaryPrimitive implements IPanePrimitive<Time> {
     chart: IChartApi | null = null;
     boundaries: readonly DayBoundary[] = [];
-    color = 'rgba(34, 43, 55, 0.6)';
+    color = '#facc15';
 
     private requestUpdate: (() => void) | null = null;
     private readonly view = new DayBoundaryPaneView(this);
