@@ -153,6 +153,38 @@ test("快速重建採 latest-wins，只有最後 generation 可完成工作", ()
   assert.deepEqual(calls, ["second"]);
 });
 
+test("crosshair 高頻事件每 frame 只提交最新 candle，已提交相同 key 不再排程", () => {
+  const crosshairSource = extractFunction(appSource, "syncCrosshairForTime");
+  const hotPath = { frames: [], commits: [] };
+  vm.runInNewContext(`
+    let crosshairRenderFrame = 0;
+    let pendingSharedHoverTime;
+    let lastCrosshairCommitKey = "";
+    let crosshairPayloadRevision = 7;
+    const chart = {};
+    const candleSeries = {};
+    const isPanelActive = () => true;
+    const candleAt = (time) => ({ time });
+    const normalizeChartTime = (time) => String(time);
+    const panelLifecycle = { requestFrame(callback) { frames.push(callback); return frames.length; } };
+    const renderSyncedCrosshair = (time) => commits.push(time);
+    ${crosshairSource}
+    this.schedule = syncCrosshairForTime;
+    this.runFrame = () => frames.shift()?.();
+    this.setCommitted = (value) => { lastCrosshairCommitKey = value; };
+  `, hotPath);
+
+  hotPath.schedule("A");
+  hotPath.schedule("B");
+  hotPath.schedule("C");
+  assert.equal(hotPath.frames.length, 1);
+  hotPath.runFrame();
+  assert.deepEqual(hotPath.commits, ["C"]);
+  hotPath.setCommitted("C|7");
+  hotPath.schedule("C");
+  assert.equal(hotPath.frames.length, 0);
+});
+
 test("panel teardown 先失效 generation、解除 chart subscriptions，再移除實例", () => {
   assert.match(appSource, /panelRenderGeneration:\s*0/);
   assert.match(appSource, /const renderGeneration = state\.panelRenderGeneration \+ 1;[\s\S]*state\.panelRenderGeneration = renderGeneration;[\s\S]*const previousPanels = state\.panels;[\s\S]*state\.panels = \[\];[\s\S]*previousPanels\.forEach\(\(panel\) => panel\.destroy\(\)\)/);
@@ -176,6 +208,14 @@ test("即時技術指標刷新會重用既有主副圖 series", () => {
   assert.match(appSource, /if \(bollingerSeries\.length !== values\.length\)[\s\S]*values\.forEach\(\(data, index\) => bollingerSeries\[index\]\.setData/);
   assert.match(appSource, /function upsertIndicatorLine[\s\S]*indicatorSeriesByKey\.get\(key\)[\s\S]*series\.setData\(compactSeries\(data\)\)/);
   assert.match(appSource, /selectionSignature !== indicatorSelectionSignature[\s\S]*indicatorSeries = removeIndicatorSeries/);
+});
+
+test("技術副圖初次 time-range recovery 只修復既有 viewport，不銷毀重畫 chart", () => {
+  const source = extractFunction(appSource, "renderIndicatorChart");
+  const recovery = source.slice(source.indexOf("if (options.allowRecovery"));
+  assert.match(recovery, /indicatorChart\.resize\(indicatorSurface\.clientWidth, indicatorSurface\.clientHeight\)/);
+  assert.match(recovery, /syncIndicatorVisibleRangeToMain\(\)/);
+  assert.doesNotMatch(recovery, /indicatorChart\.remove\(\)|renderIndicatorChart\(lastPayload/);
 });
 
 test("payload 正規化模組在 app 之前載入", () => {

@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import {
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -94,6 +95,18 @@ import { priceDirection } from '../lib/price-direction';
 import { LatestWinsScheduler } from '../lib/latest-wins-scheduler';
 import { IndicatorCheckpointCache } from '../lib/indicator-checkpoints';
 import {
+    DAILY_GESTURE_WINDOW_MS,
+    DailyCandleGestureArbiter,
+    commitTargetDateSnapshot,
+    type DrilldownChartContext,
+} from '../lib/daily-minute-drilldown-contract';
+import {
+    loadMainChartTargetDate,
+    mainChartDailyTargetEligible,
+    mainChartTargetDateReasonMessage,
+    type MainChartTargetDateReason,
+} from '../lib/main-chart-daily-drilldown';
+import {
     createFibonacciController,
     dispatchFibonacciPointer,
     fibonacciIdentity,
@@ -142,7 +155,12 @@ import {
     subscribeSupportResistanceProductStates,
     supportResistanceProductKey,
 } from '../lib/support-resistance-state';
-import { cancelOrder, fetchKbars, updateOrderPrice } from '../lib/shioaji';
+import {
+    cancelOrder,
+    fetchInfo,
+    fetchKbars,
+    updateOrderPrice,
+} from '../lib/shioaji';
 import {
     isLatestGeneration,
     nextGeneration,
@@ -237,6 +255,21 @@ const EMPTY_FIBONACCI_SNAPSHOT: FibonacciSnapshot = {
     persistence: { state: 'ready' },
 };
 
+type MainChartTargetDateObservation = Readonly<{
+    symbol: string;
+    targetDate: string;
+    requestIdentity: string;
+    generation: number;
+    candles: readonly Candle[];
+}>;
+
+type MainChartDrilldownNotice = Readonly<{
+    status: 'loading' | 'success' | 'error';
+    targetDate: string;
+    reason?: MainChartTargetDateReason | string;
+    message: string;
+}>;
+
 // keep paging until this floor — one page per fetch, spans widen with tf
 const MAX_HISTORY_DAYS = 1095; // ~3 years
 
@@ -257,6 +290,8 @@ export function CandleChart({
     const [tfIdx, setTfIdx] = useState(1); // default 5m
     const [empty, setEmpty] = useState(false);
     const [loading, setLoading] = useState(false);
+    const loadingRef = useRef(loading);
+    loadingRef.current = loading;
     // ticks must NOT touch the series until history for the current
     // (symbol, timeframe) is in place — updating a freshly-switched series
     // with a bucket older than its last point makes lightweight-charts
@@ -293,6 +328,33 @@ export function CandleChart({
         rightEdge: 0,
     });
     const [fibonacciNotice, setFibonacciNotice] = useState('');
+    const [drilldownNotice, setDrilldownNotice] =
+        useState<MainChartDrilldownNotice | null>(null);
+    const [historyReloadVersion, setHistoryReloadVersion] = useState(0);
+    const targetDateGenerationRef = useRef(0);
+    const targetDateObservationRef =
+        useRef<MainChartTargetDateObservation | null>(null);
+    useEffect(
+        () => () => {
+            targetDateGenerationRef.current += 1;
+            targetDateObservationRef.current = null;
+        },
+        [],
+    );
+    const dailyGestureArbiterRef =
+        useRef<DailyCandleGestureArbiter | null>(null);
+    const dailyGestureTimerRef =
+        useRef<ReturnType<typeof setTimeout> | null>(null);
+    const dailyGesturePayloadRef = useRef(
+        new Map<string, Readonly<{ time: number; price: number }>>(),
+    );
+    const dailyDragRef = useRef<{
+        pointerId: number;
+        x: number;
+        y: number;
+        dragged: boolean;
+        suppressUntil: number;
+    } | null>(null);
     const fibonacciIdentityRef = useRef(fibonacciIdentityValue);
     fibonacciIdentityRef.current = fibonacciIdentityValue;
     const fibonacciPanelInstanceIdRef = useRef('');
@@ -474,6 +536,237 @@ export function CandleChart({
     );
     const rawIdentityRef = useRef('');
     const loadMoreRef = useRef<(() => void) | null>(null);
+
+    const clearDailyGestureTimer = (cancel = false) => {
+        if (dailyGestureTimerRef.current !== null) {
+            clearTimeout(dailyGestureTimerRef.current);
+            dailyGestureTimerRef.current = null;
+        }
+        if (cancel) {
+            dailyGestureArbiterRef.current?.cancel();
+            dailyGesturePayloadRef.current.clear();
+        }
+    };
+    const clearDailyGestureTimerRef = useRef(clearDailyGestureTimer);
+    clearDailyGestureTimerRef.current = clearDailyGestureTimer;
+
+    const commitDailyObservationClick = (time: number, price: number) => {
+        const c = contractRef.current;
+        if (
+            supportResistanceSelectionAllowed(
+                'observe',
+                1440,
+                enabledSupportResistanceFormulas(getInstancesSnapshot())
+                    .length > 0,
+            )
+        ) {
+            const selected = resolveCompletedSupportResistanceReferenceForTime(
+                {
+                    rows: rawRef.current,
+                    securityType: c.security_type,
+                    ...supportResistanceResolverRuntime('success', true),
+                },
+                time,
+            );
+            if (selected) {
+                const key = supportResistanceProductKey(c);
+                setSupportResistanceProductState({
+                    key,
+                    reference: selected,
+                    pinned: true,
+                });
+                setFibonacciNotice(
+                    `壓撐已改用 ${selected.date} K 棒重新計算`,
+                );
+                setOverlayRuntimeVersion((version) => version + 1);
+            } else {
+                setFibonacciNotice(
+                    '此 K 棒尚未完成，壓撐 reference 保持不變',
+                );
+            }
+            return;
+        }
+        setPickedPrice(c.code, price);
+    };
+    const commitDailyObservationClickRef = useRef(
+        commitDailyObservationClick,
+    );
+    commitDailyObservationClickRef.current = commitDailyObservationClick;
+
+    const targetDateFailureMessage = (reason: string) => {
+        if (reason === 'context_identity_mismatch') {
+            return '商品或圖表 context 已切換，本次結果已丟棄';
+        }
+        if (reason === 'request_cancelled') {
+            return '指定日期載入已取消';
+        }
+        if (reason === 'projection_incomplete') {
+            return '指定日期圖層尚未完整，已保留原日 K';
+        }
+        if (reason === 'projection_failed') {
+            return '指定日期圖層建立失敗，已保留原日 K';
+        }
+        return mainChartTargetDateReasonMessage(
+            reason as MainChartTargetDateReason,
+        );
+    };
+
+    const beginTargetDateDrilldown = async (time: number) => {
+        const c = contractRef.current;
+        const target = candleTimeIndexRef.current.get(time);
+        if (
+            tfMinutesRef.current !== 1440 ||
+            modeRef.current !== 'observe' ||
+            !target
+        ) {
+            return;
+        }
+        const targetDate = wallClockDateKey(target.time);
+        if (
+            !mainChartDailyTargetEligible({
+                targetDate,
+                securityType: c.security_type,
+            })
+        ) {
+            setDrilldownNotice({
+                status: 'error',
+                targetDate,
+                reason: 'invalid_target',
+                message: `${targetDate}：此日 K 尚未完成或商品不支援指定日期 drill-down（invalid_target）`,
+            });
+            return;
+        }
+        const generation = targetDateGenerationRef.current + 1;
+        targetDateGenerationRef.current = generation;
+        const panelIdentity = fibonacciPanelInstanceIdRef.current;
+        const baseline: DrilldownChartContext = {
+            symbol: c.code,
+            panelIdentity,
+            generation,
+            interval: '1d',
+            candles: barsRef.current.map((bar) => ({ ...bar })),
+            source: { identity: rawIdentityRef.current },
+            readout: kbarReadout,
+            volume: barsRef.current.map((bar) => bar.volume),
+            indicators: { dataVersion },
+            dayBoundaries: dayBoundariesRef.current,
+            viewport:
+                chartRef.current?.timeScale().getVisibleLogicalRange() ?? null,
+            tools: {
+                fibonacci: fibonacciSnapshot,
+                fixedRangeAnchors: Array.from(
+                    fixedRangeAnchorsRef.current.entries(),
+                ),
+                supportResistance: getSupportResistanceProductState(
+                    supportResistanceProductKey(c),
+                ),
+            },
+        };
+        setDrilldownNotice({
+            status: 'loading',
+            targetDate,
+            message: `正在載入 ${targetDate} 的 simulation 1 分 K…`,
+        });
+        const loaded = await loadMainChartTargetDate({
+            symbol: c.code,
+            targetDate,
+            generation,
+            getInfo: fetchInfo,
+            getKbars: (request) =>
+                fetchKbars(c, request.startDate, request.endDate),
+            normalizeKbars: (value) =>
+                canonicalKbarsForContract(
+                    c,
+                    value as Parameters<typeof kbarsToCandles>[0],
+                ),
+        });
+        if (
+            generation !== targetDateGenerationRef.current ||
+            contractRef.current.code !== c.code ||
+            tfMinutesRef.current !== 1440
+        ) {
+            return;
+        }
+        if (loaded.status === 'rejected') {
+            setDrilldownNotice({
+                status: 'error',
+                targetDate,
+                reason: loaded.reason,
+                message: `${targetDate}：${mainChartTargetDateReasonMessage(
+                    loaded.reason,
+                )}（${loaded.reason}）`,
+            });
+            return;
+        }
+        const outcome = commitTargetDateSnapshot({
+            baseline,
+            request: loaded.request,
+            currentIdentity: {
+                symbol: contractRef.current.code,
+                panelIdentity,
+                generation: targetDateGenerationRef.current,
+            },
+            response: loaded.response,
+            buildLayers: (snapshot) => {
+                const candles = snapshot.candles.map(
+                    ({ sessionDate: _sessionDate, ...bar }) =>
+                        ({ ...bar }) as Candle,
+                );
+                const last = candles[candles.length - 1] ?? null;
+                return {
+                    source: {
+                        identity: loaded.request.sourceIdentity,
+                        targetDate,
+                        mode: 'simulation',
+                    },
+                    readout: buildKbarReadoutDisplay(
+                        last,
+                        1,
+                        false,
+                        (value) => fmtContractPrice(c, value),
+                    ),
+                    volume: candles.map((bar) => bar.volume),
+                    indicators: {
+                        status: 'recompute-current-snapshot',
+                        candleCount: candles.length,
+                    },
+                    dayBoundaries: selectDayBoundaries(candles, 1),
+                    viewport: {
+                        mode: 'fit-target-session',
+                        targetDate,
+                        firstTime: candles[0]?.time,
+                        lastTime: last?.time,
+                    },
+                };
+            },
+        });
+        if (outcome.status === 'rejected') {
+            const reason = String(outcome.reason);
+            setDrilldownNotice({
+                status: 'error',
+                targetDate,
+                reason,
+                message: `${targetDate}：${targetDateFailureMessage(
+                    reason,
+                )}（${reason}）`,
+            });
+            return;
+        }
+        const candles = loaded.response.candles.map(
+            ({ sessionDate: _sessionDate, ...bar }) => ({ ...bar }) as Candle,
+        );
+        targetDateObservationRef.current = Object.freeze({
+            symbol: c.code,
+            targetDate,
+            requestIdentity: loaded.request.requestIdentity,
+            generation,
+            candles: Object.freeze(candles),
+        });
+        setTfIdx(0);
+    };
+    const beginTargetDateDrilldownRef = useRef(beginTargetDateDrilldown);
+    beginTargetDateDrilldownRef.current = beginTargetDateDrilldown;
+
     const resolveFibonacciPoint = (
         param: MouseEventParams,
     ): ReturnType<typeof resolveFibonacciAnchorPoint> => {
@@ -847,6 +1140,88 @@ export function CandleChart({
         pivotPrimitiveRef.current = pivotPrimitive;
         reconcileDayPrimitivesRef.current();
 
+        const dailyGestureArbiter = new DailyCandleGestureArbiter({
+            onSingle: (event) => {
+                const payload = dailyGesturePayloadRef.current.get(
+                    event.candleKey,
+                );
+                dailyGesturePayloadRef.current.delete(event.candleKey);
+                if (!payload) return;
+                commitDailyObservationClickRef.current(
+                    payload.time,
+                    payload.price,
+                );
+            },
+            onDrilldown: (event) => {
+                const payload = dailyGesturePayloadRef.current.get(
+                    event.candleKey,
+                );
+                dailyGesturePayloadRef.current.clear();
+                clearDailyGestureTimerRef.current(false);
+                if (!payload) return;
+                void beginTargetDateDrilldownRef.current(payload.time);
+            },
+        });
+        dailyGestureArbiterRef.current = dailyGestureArbiter;
+        const handleDailyChartGesture = (
+            param: MouseEventParams,
+            price: number,
+        ) => {
+            if (
+                tfMinutesRef.current !== 1440 ||
+                modeRef.current !== 'observe' ||
+                typeof param.time !== 'number'
+            ) {
+                return false;
+            }
+            const time = Number(param.time);
+            const candle = candleTimeIndexRef.current.get(time);
+            if (!candle) return false;
+            const targetDate = wallClockDateKey(candle.time);
+            const validTarget = mainChartDailyTargetEligible({
+                targetDate,
+                securityType: contractRef.current.security_type,
+            });
+            const now = performance.now();
+            const drag = dailyDragRef.current;
+            const owner =
+                drag?.dragged && now <= drag.suppressUntil
+                    ? ('drag' as const)
+                    : ('none' as const);
+            const candleKey = `${contractRef.current.code}|${time}`;
+            dailyGesturePayloadRef.current.set(candleKey, { time, price });
+            const result = dailyGestureArbiter.handleClick({
+                candleKey,
+                eventTime: now,
+                button: 0,
+                interval: '1d',
+                validCandle: validTarget,
+                mode: 'observe',
+                owner,
+            });
+            if (result.action === 'pending') {
+                clearDailyGestureTimerRef.current(false);
+                const snapshot = dailyGestureArbiter.snapshot();
+                const delay = Math.max(
+                    0,
+                    (snapshot?.deadline ?? now + DAILY_GESTURE_WINDOW_MS) -
+                        performance.now() +
+                        1,
+                );
+                dailyGestureTimerRef.current = setTimeout(() => {
+                    dailyGestureTimerRef.current = null;
+                    dailyGestureArbiter.flush(performance.now());
+                }, delay);
+                return true;
+            }
+            if (result.action === 'drilldown') return true;
+            if (result.action === 'passthrough' && result.reason === 'drag') {
+                dailyGesturePayloadRef.current.delete(candleKey);
+                return true;
+            }
+            return false;
+        };
+
         const handleChartClick = (param: MouseEventParams) => {
             const fibonacciResult = dispatchFibonacciPointer(
                 fibonacciControllerRef.current!,
@@ -855,6 +1230,7 @@ export function CandleChart({
                 () => {},
             );
             if (fibonacciResult.consumed) {
+                clearDailyGestureTimerRef.current(true);
                 if (fibonacciResult.reason === 'invalid-point') {
                     setFibonacciNotice(
                         '目前位置無法建立錨點；A／B 請選 K 棒，C 可選右側空白區',
@@ -877,6 +1253,7 @@ export function CandleChart({
             if (m === 'observe') {
                 const selection = rangeSelectionRef.current;
                 if (selection && typeof param.time === 'number') {
+                    clearDailyGestureTimerRef.current(true);
                     const selectedTime = Number(param.time);
                     if (selection.firstTime === null) {
                         selection.firstTime = selectedTime;
@@ -894,6 +1271,7 @@ export function CandleChart({
                     setOverlayRuntimeVersion((version) => version + 1);
                     return;
                 }
+                if (handleDailyChartGesture(param, price)) return;
                 if (
                     supportResistanceSelectionAllowed(
                         m,
@@ -1001,6 +1379,30 @@ export function CandleChart({
             }
         };
         chart.subscribeClick(handleChartClick);
+        const handleChartDoubleClick = (param: MouseEventParams) => {
+            if (
+                tfMinutesRef.current !== 1440 ||
+                modeRef.current !== 'observe' ||
+                typeof param.time !== 'number' ||
+                !param.point
+            ) {
+                return;
+            }
+            const time = Number(param.time);
+            const key = `${contractRef.current.code}|${time}`;
+            if (
+                dailyGestureArbiter.snapshot()?.event.candleKey !== key
+            ) {
+                return;
+            }
+            const raw = candles.coordinateToPrice(param.point.y);
+            if (raw === null) return;
+            handleDailyChartGesture(
+                param,
+                roundToTick(contractRef.current, Number(raw)),
+            );
+        };
+        chart.subscribeDblClick(handleChartDoubleClick);
 
         const handleCrosshairMove = (param: MouseEventParams) => {
             selectedReadoutTimeRef.current =
@@ -1045,6 +1447,41 @@ export function CandleChart({
         };
         host.addEventListener('pointerleave', handlePointerLeave);
         host.addEventListener('mouseleave', handlePointerLeave);
+        const handleDailyPointerDown = (event: PointerEvent) => {
+            if (event.button !== 0) return;
+            dailyDragRef.current = {
+                pointerId: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                dragged: false,
+                suppressUntil: 0,
+            };
+        };
+        const handleDailyPointerMove = (event: PointerEvent) => {
+            const current = dailyDragRef.current;
+            if (!current || current.pointerId !== event.pointerId) return;
+            if (
+                Math.hypot(
+                    event.clientX - current.x,
+                    event.clientY - current.y,
+                ) >= 4
+            ) {
+                current.dragged = true;
+            }
+        };
+        const handleDailyPointerUp = (event: PointerEvent) => {
+            const current = dailyDragRef.current;
+            if (!current || current.pointerId !== event.pointerId) return;
+            current.suppressUntil = current.dragged
+                ? performance.now() + DAILY_GESTURE_WINDOW_MS
+                : 0;
+            if (current.dragged) {
+                clearDailyGestureTimerRef.current(true);
+            }
+        };
+        host.addEventListener('pointerdown', handleDailyPointerDown, true);
+        host.addEventListener('pointermove', handleDailyPointerMove, true);
+        host.addEventListener('pointerup', handleDailyPointerUp, true);
         const handlePointerDownOutside = (event: PointerEvent) => {
             if (event.target instanceof Node && host.contains(event.target)) {
                 return;
@@ -1085,6 +1522,21 @@ export function CandleChart({
             host.removeEventListener('pointerleave', handlePointerLeave);
             host.removeEventListener('mouseleave', handlePointerLeave);
             host.removeEventListener(
+                'pointerdown',
+                handleDailyPointerDown,
+                true,
+            );
+            host.removeEventListener(
+                'pointermove',
+                handleDailyPointerMove,
+                true,
+            );
+            host.removeEventListener(
+                'pointerup',
+                handleDailyPointerUp,
+                true,
+            );
+            host.removeEventListener(
                 'pointermove',
                 handleHostGeometryChange,
                 true,
@@ -1092,6 +1544,7 @@ export function CandleChart({
             host.removeEventListener('wheel', handleHostGeometryChange, true);
             fibonacciResizeObserver.disconnect();
             chart.unsubscribeClick(handleChartClick);
+            chart.unsubscribeDblClick(handleChartDoubleClick);
             chart.unsubscribeCrosshairMove(handleCrosshairMove);
             chart.timeScale().unsubscribeVisibleLogicalRangeChange(
                 handleVisibleRangeChange,
@@ -1103,6 +1556,11 @@ export function CandleChart({
                 true,
             );
             clearFormingTimer();
+            clearDailyGestureTimerRef.current(true);
+            dailyDragRef.current = null;
+            if (dailyGestureArbiterRef.current === dailyGestureArbiter) {
+                dailyGestureArbiterRef.current = null;
+            }
             if (readoutRafRef.current !== null) {
                 cancelAnimationFrame(readoutRafRef.current);
                 readoutRafRef.current = null;
@@ -1283,9 +1741,25 @@ export function CandleChart({
     }, [themeKey]);
 
     // load kbars on symbol/timeframe change; pages of older history are
-    // pulled on demand by the visible-range subscription (loadMoreRef)
-    useEffect(() => {
+    // pulled on demand by the visible-range subscription (loadMoreRef).
+    // The exact-date branch must commit before paint so the 1m selector can
+    // never render with the prior daily snapshot for an intermediate frame.
+    useLayoutEffect(() => {
         let cancelled = false;
+        const stagedTargetObservation = targetDateObservationRef.current;
+        const exactTargetObservation =
+            stagedTargetObservation &&
+            stagedTargetObservation.symbol === contract.code &&
+            stagedTargetObservation.generation ===
+                targetDateGenerationRef.current &&
+            tf.minutes === 1
+                ? stagedTargetObservation
+                : null;
+        if (!exactTargetObservation) {
+            targetDateGenerationRef.current += 1;
+            targetDateObservationRef.current = null;
+            setDrilldownNotice(null);
+        }
         const generation = nextGeneration(chartLoadGenerationRef);
         const isCurrent = () =>
             !cancelled &&
@@ -1349,6 +1823,32 @@ export function CandleChart({
             setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
         };
+
+        if (exactTargetObservation) {
+            const exactBars = exactTargetObservation.candles.map((bar) => ({
+                ...bar,
+            }));
+            rawRef.current = exactBars;
+            rawIdentityRef.current = `${loadKey}|target-date|${exactTargetObservation.targetDate}`;
+            applyBars(exactBars);
+            lastBarRef.current = exactBars[exactBars.length - 1] ?? null;
+            loadedKeyRef.current = loadKey;
+            loadMoreRef.current = null;
+            setEmpty(false);
+            setLoading(false);
+            candleSeriesRef.current
+                ?.priceScale()
+                .applyOptions({ autoScale: true });
+            chartRef.current?.timeScale().fitContent();
+            setDrilldownNotice({
+                status: 'success',
+                targetDate: exactTargetObservation.targetDate,
+                message: `${exactTargetObservation.targetDate} 的 simulation 1 分 K 已載入`,
+            });
+            return () => {
+                cancelled = true;
+            };
+        }
         // Never label the previous symbol's drawing/readout as the new code
         // while its history request is still in flight.
         clearSeries(false);
@@ -1462,7 +1962,7 @@ export function CandleChart({
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [contract, tf]);
+    }, [contract, historyReloadVersion, tf]);
 
     // A formula-enabled reload starts on 5m. Bootstrap one product-scoped,
     // timeframe-independent canonical 1m authority window so minute charts
@@ -1513,6 +2013,7 @@ export function CandleChart({
     }
     useEffect(() => {
         if (!liveQuote || liveQuote.code !== contract.code) return;
+        if (targetDateObservationRef.current) return;
         // 試撮 (simtrade) 揭示價可以是漲跌停天地價 — 畫進 K 棒會把
         // Y 軸尺度撐爆（issue #5），一律排除
         if ('simtrade' in liveQuote && liveQuote.simtrade) return;
@@ -2365,6 +2866,7 @@ export function CandleChart({
         return cancelled;
     };
     const armFibonacci = (kind: FibonacciKind) => {
+        clearDailyGestureTimerRef.current(true);
         setMode('observe');
         rangeSelectionRef.current = null;
         if (!fibonacciControllerRef.current?.arm(kind)) {
@@ -2379,12 +2881,22 @@ export function CandleChart({
         );
     };
     const changeTradeMode = (nextMode: TradeMode) => {
+        clearDailyGestureTimerRef.current(true);
         cancelFibonacciPending();
         rangeSelectionRef.current = null;
         setMode(nextMode);
     };
     const changeTimeframe = (index: number) => {
+        clearDailyGestureTimerRef.current(true);
+        targetDateGenerationRef.current += 1;
+        const hadTargetObservation =
+            targetDateObservationRef.current !== null;
+        targetDateObservationRef.current = null;
+        setDrilldownNotice(null);
         cancelFibonacciPending();
+        if (index === tfIdx && hadTargetObservation) {
+            setHistoryReloadVersion((version) => version + 1);
+        }
         setTfIdx(index);
     };
     const clearFibonacci = (target: FibonacciKind | 'all') => {
@@ -2616,6 +3128,7 @@ export function CandleChart({
                             title='依序選取兩根 K 棒；交易模式優先'
                             disabled={mode !== 'observe'}
                             onClick={() => {
+                                clearDailyGestureTimerRef.current(true);
                                 cancelFibonacciPending();
                                 rangeSelectionRef.current = {
                                     instanceId: inst.id,
@@ -3306,6 +3819,22 @@ export function CandleChart({
                                 ? 'Option 高點/低點'
                                 : 'Option 自由價位'
                         } · Esc 取消`}
+                    </div>
+                )}
+                {drilldownNotice && (
+                    <div
+                        className={styles.dailyDrilldownNotice}
+                        role='status'
+                        data-daily-drilldown-status={drilldownNotice.status}
+                        data-daily-drilldown-target-date={
+                            drilldownNotice.targetDate
+                        }
+                        data-daily-drilldown-reason={
+                            drilldownNotice.reason ?? ''
+                        }
+                        title={drilldownNotice.message}
+                    >
+                        {drilldownNotice.message}
                     </div>
                 )}
                 {fibonacciNotice && !fibonacciSnapshot.pending && (

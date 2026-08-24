@@ -83,6 +83,7 @@ const PANEL_CANDLE_LOAD_TIMEOUT_MS = 30000;
 const PANEL_PREFETCH_TIMEOUT_MS = 18000;
 const PANEL_HISTORY_LOAD_TIMEOUT_MS = 30000;
 const PANEL_LOAD_RETRY_DELAYS_MS = [5000, 20000];
+const DAILY_MINUTE_SOURCE_IDENTITY = "local-shioaji-simulation";
 const FIXED_PROFILE_STATES = {
   idle: "idle",
   armed: "armed",
@@ -3261,6 +3262,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let realtimeDisplayState = "unavailable";
   let lastPayload = null;
   let lastPayloadRenderSignature = "";
+  let crosshairPayloadRevision = 0;
   let destroyed = false;
   const panelLifecycle = createLifecycleRegistry({
     isCurrent: () => state.panelRenderGeneration === renderGeneration,
@@ -3278,8 +3280,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let alignmentFrame = 0;
   let axisSafeWidthFrame = 0;
   let annotationRenderFrame = 0;
+  let pendingAnnotationState;
   let crosshairRenderFrame = 0;
+  let lastCrosshairCommitKey = "";
   let panelLoadRetryTimer = 0;
+  let dailyDrilldownGeneration = 0;
   let priceScaleMinWidth = SHARED_PRICE_SCALE_MIN_WIDTH;
   let isSyncingTimeScale = false;
   let isSyncingCrosshair = false;
@@ -3364,18 +3369,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   });
   const chartAnnotationController = window.QuoteChartAnnotations?.createController({
     getIdentity: () => `${String(symbolSelect.value || "").toUpperCase()}|${intervalSelect.value || ""}`,
-    onChange: (annotationState) => {
-      if (!isPanelActive()) return;
-      updateFibonacciCrosshairMarkers(annotationState);
-      updateFibonacciAutoScale(annotationState);
-      renderChartAnnotations();
-      if (annotationState.pending?.type === "fibonacci") status.textContent = `費波那契${annotationState.pending.kind === "retracement" ? "回撤" : "拓展"}：尚需 ${annotationState.pending.remaining} 個錨點`;
-      if (annotationState.pending?.type === "priceRange") {
-        status.textContent = annotationState.pending.anchors.length
-          ? "價格範圍：請點選終點價格"
-          : "價格範圍：請點選起點價格";
-      }
-    },
+    onChange: scheduleAnnotationStateRender,
   });
   const unsubscribeFibonacciProductClear = window.QuoteChartAnnotations?.subscribeProductClear?.((symbol) => {
     if (!isPanelActive()) return;
@@ -3385,7 +3379,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   element.addEventListener("pointerenter", () => element.classList.add("is-hovered"));
   element.addEventListener("pointerleave", () => element.classList.remove("is-hovered"));
-  element.addEventListener("dblclick", (event) => openPanelInNewTab(element, event));
+  element.addEventListener("dblclick", handlePanelDoubleClick);
   fillSymbolOptions(symbolSelect, defaultSymbolForPanel(panelPosition));
   fillIntervalOptions(intervalSelect, defaultIntervalForPanel(panelPosition), symbolSelect.value);
   chartAnnotationController?.restore();
@@ -3564,6 +3558,222 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     return candle && Number.isFinite(price) ? { time: normalizeChartTime(candle.time), price } : undefined;
   }
 
+  function dailyCandleForDoubleClick(event) {
+    if (currentChartCount() !== 1 || intervalSelect.value !== "1d" || event.button !== 0) return undefined;
+    if (isPanelNewTabIgnoredTarget(event.target)) return undefined;
+    const host = event.target?.closest?.(".chart-surface");
+    if (host !== surface || !chart || !candleSeries || !lastPayload?.candles?.length) return undefined;
+    if (chartAnnotationController?.hasPending?.() || isFixedProfileDrawing() || fixedProfileDragState) return undefined;
+    if (!isTaiwanRealtimeSymbol(symbolSelect.value)) return undefined;
+    const rect = surface.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const rightEdge = surface.clientWidth - getAxisSafeWidth();
+    if (x < 0 || x > rightEdge || y < 0 || y > surface.clientHeight) return undefined;
+    const candle = nearestCandleForCoordinate(x);
+    if (!candle) return undefined;
+    const candleX = chart.timeScale().timeToCoordinate?.(candle.time);
+    if (!Number.isFinite(candleX)) return undefined;
+    const candleIndex = candleIndexForTime(candle.time);
+    const neighbors = [candleAtIndex(candleIndex - 1), candleAtIndex(candleIndex + 1)]
+      .filter((row) => row && normalizeChartTime(row.time) !== normalizeChartTime(candle.time))
+      .map((row) => chart.timeScale().timeToCoordinate?.(row.time))
+      .filter(Number.isFinite);
+    const nearestGap = Math.min(36, ...neighbors.map((coordinate) => Math.abs(coordinate - candleX)));
+    const hitTolerance = Math.max(4, Math.min(18, Number.isFinite(nearestGap) ? nearestGap * 0.48 : 8));
+    if (Math.abs(x - candleX) > hitTolerance) return undefined;
+    const targetDate = supportResistanceSessionDate(candle.time);
+    const contract = window.QuoteDailyMinuteDrilldownContract;
+    if (!contract?.isCompletedTaiwanDailyTarget?.({ targetDate })) {
+      status.textContent = targetDate ? `${targetDate} 日 K 尚未完成，不能進入 1 分 K` : "無法辨識日 K 日期";
+      status.classList.add("is-visible");
+      return undefined;
+    }
+    return { candle, targetDate };
+  }
+
+  function dailyTargetDateReasonMessage(targetDate, reason) {
+    const messages = {
+      simulation_required: "本機 Shioaji 目前不是 simulation，已拒絕切換",
+      source_unavailable: "本機 simulation 指定日期資料目前不可用",
+      empty_response: "該交易日沒有可驗證的 1 分 K",
+      mixed_session_date: "指定日期資料混入其他交易日，已拒絕切換",
+      stale_generation: "圖表內容已切換，本次舊結果已丟棄",
+      response_too_large: "指定日期資料超過 600 根安全上限",
+      invalid_candle: "指定日期資料含非法 K 棒，已拒絕切換",
+      candle_out_of_order: "指定日期 K 棒排序不合法，已拒絕切換",
+    };
+    return `${targetDate}：${messages[reason] || `指定日期 1 分 K 不可用（${reason || "source_unavailable"}）`}`;
+  }
+
+  function stageDailyTargetDatePayload(snapshot) {
+    const candles = snapshot.candles.map((row) => ({ ...row }));
+    const latest = candles.at(-1);
+    if (!latest) throw new Error("empty_response");
+    const volumeContract = window.QuoteChartVolumeContract.contractForProvider("shioaji");
+    const indicators = window.QuoteChartRealtimeIndicators.compute(candles, state.indicatorParameters, { volumeAvailable: true });
+    const base = canonicalPayload || lastPayload || {};
+    return preparePanelPayload({
+      ...base,
+      symbol: snapshot.symbol,
+      interval: "1m",
+      provider: "shioaji",
+      candles,
+      indicators,
+      volumeContract,
+      realtimeDailyHistory: undefined,
+      realtimeProvider: undefined,
+      quoteTime: latest.time,
+      marketSession: "closed",
+      quote: {
+        kind: "session-close",
+        sourceProvider: "shioaji",
+        sourceQuoteTime: latest.sourceTime || new Date(latest.time * 1000).toISOString(),
+        sourceTimeZone: "Asia/Taipei",
+        sessionDate: snapshot.targetDate,
+        marketPhase: "closed",
+        marketSession: "closed",
+        freshness: "historical",
+        realtimeState: "closed",
+        volumeAvailability: { status: "available", reason: null, message: "" },
+        verification: { status: "not_applicable", provider: null, reason: "historical_session" },
+      },
+      dataQuality: { ignoredSessionDates: [] },
+      dataWindow: {
+        rawCandles: candles.length,
+        displayCandles: candles.length,
+        hasMoreBefore: false,
+        exactTargetDate: snapshot.targetDate,
+        sourceFingerprint: volumeContract.sourceFingerprint,
+        cache: {
+          store: "page-memory",
+          state: "exact-date",
+          source: DAILY_MINUTE_SOURCE_IDENTITY,
+          historyStore: "page-memory",
+          persistent: false,
+          rows: candles.length,
+        },
+      },
+    });
+  }
+
+  async function loadDailyCandleTargetDate(target) {
+    const contract = window.QuoteDailyMinuteDrilldownContract;
+    if (!contract || typeof realtimeCoordinator.loadTargetDate !== "function") {
+      status.textContent = dailyTargetDateReasonMessage(target.targetDate, "source_unavailable");
+      status.classList.add("is-visible");
+      return;
+    }
+    const generation = ++dailyDrilldownGeneration;
+    const baselineLoadToken = loadToken;
+    const baselineSymbol = symbolSelect.value;
+    const baselineInterval = intervalSelect.value;
+    const baselinePayload = lastPayload;
+    const baselineCanonicalPayload = canonicalPayload;
+    const baselineViewport = captureViewportSnapshot(baselinePayload?.candles || []);
+    const requestResult = contract.createTargetDateRequest({
+      symbol: baselineSymbol,
+      sourceIdentity: DAILY_MINUTE_SOURCE_IDENTITY,
+      mode: "simulation",
+      targetDate: target.targetDate,
+      generation,
+    });
+    if (requestResult.status !== "accepted") {
+      status.textContent = dailyTargetDateReasonMessage(target.targetDate, requestResult.reason);
+      status.classList.add("is-visible");
+      return;
+    }
+    status.textContent = `${target.targetDate} 1 分 K 載入中；目前日 K 保持不變`;
+    status.classList.add("is-visible");
+    let response;
+    try {
+      response = await realtimeCoordinator.loadTargetDate(requestResult.request);
+    } catch (error) {
+      const reason = String(error?.message || "source_unavailable");
+      if (!isPanelActive() || generation !== dailyDrilldownGeneration || baselineLoadToken !== loadToken) return;
+      status.textContent = dailyTargetDateReasonMessage(target.targetDate, reason);
+      status.classList.add("is-visible");
+      return;
+    }
+    if (!isPanelActive()
+      || generation !== dailyDrilldownGeneration
+      || baselineLoadToken !== loadToken
+      || baselineSymbol !== symbolSelect.value
+      || baselineInterval !== intervalSelect.value
+      || currentChartCount() !== 1) return;
+    const validation = contract.validateTargetDateResponse(requestResult.request, generation, response);
+    if (validation.status !== "accepted") {
+      status.textContent = dailyTargetDateReasonMessage(target.targetDate, validation.reason);
+      status.classList.add("is-visible");
+      return;
+    }
+    let preparedPayload;
+    try {
+      preparedPayload = stageDailyTargetDatePayload(validation.snapshot);
+    } catch (error) {
+      status.textContent = dailyTargetDateReasonMessage(target.targetDate, String(error?.message || "projection_failed"));
+      status.classList.add("is-visible");
+      return;
+    }
+    if (!isPanelActive()
+      || generation !== dailyDrilldownGeneration
+      || baselineLoadToken !== loadToken
+      || baselineSymbol !== symbolSelect.value
+      || baselineInterval !== intervalSelect.value
+      || currentChartCount() !== 1) return;
+    realtimeIndicatorScheduler.cancel();
+    clearPanelLoadRetry();
+    liveUpdateCleanup?.();
+    liveUpdateCleanup = undefined;
+    realtimeUpdateCleanup?.();
+    realtimeUpdateCleanup = undefined;
+    eventSource?.close();
+    eventSource = undefined;
+    latestRealtimeSnapshot = null;
+    realtimeDisplayState = "closed";
+    loadToken += 1;
+    resetHistoryLoadState();
+    intervalSelect.value = "1m";
+    restoreSupportResistanceInputsForContext(symbolSelect.value, intervalSelect.value);
+    chartAnnotationController?.restore();
+    peRiverController?.refreshContext();
+    updateChipIndicatorOptionsAvailability();
+    try {
+      clearFixedRangeVolumeProfile({ silent: true, persist: false });
+      applyPayload(preparedPayload, { prepared: true });
+      canonicalPayload = preparedPayload;
+      historyHasMoreBefore = false;
+      status.textContent = `${target.targetDate} 1 分 K 已載入`;
+      status.classList.remove("is-visible");
+    } catch {
+      intervalSelect.value = baselineInterval;
+      restoreSupportResistanceInputsForContext(symbolSelect.value, baselineInterval);
+      chartAnnotationController?.restore();
+      restoreFixedProfileState(baselinePayload?.candles || []);
+      peRiverController?.refreshContext();
+      updateChipIndicatorOptionsAvailability();
+      canonicalPayload = baselineCanonicalPayload;
+      if (baselinePayload) {
+        try { applyPayload(baselinePayload, { prepared: true, viewportSnapshot: baselineViewport }); } catch {}
+        connectStream(baselineSymbol, baselineInterval);
+      }
+      status.textContent = dailyTargetDateReasonMessage(target.targetDate, "projection_failed");
+      status.classList.add("is-visible");
+    }
+  }
+
+  function handlePanelDoubleClick(event) {
+    if (currentChartCount() > 1) {
+      openPanelInNewTab(element, event);
+      return;
+    }
+    const target = dailyCandleForDoubleClick(event);
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void loadDailyCandleTargetDate(target);
+  }
+
   function handlePanelContextMenu(event) {
     if (event.target?.closest?.(".chip-pane-chart, .chip-pane-context-menu")) return;
     event.preventDefault();
@@ -3625,11 +3835,14 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
   }
 
-  function handlePanelExportClick() {
-    exportPanelPng().catch((error) => {
+  async function handlePanelExportClick() {
+    try {
+      const result = await exportPanelPng();
+      if (result?.filename) status.textContent = `圖片已儲存：${result.filename}`;
+    } catch (error) {
       if (error?.name === "AbortError") return;
       status.textContent = `圖片儲存失敗：${error?.message || "請稍後再試"}`;
-    });
+    }
   }
 
   function handlePanelOrderClick() {
@@ -3933,6 +4146,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       panelLifecycle.cancelFrame(annotationRenderFrame);
       annotationRenderFrame = 0;
     }
+    pendingAnnotationState = undefined;
     if (crosshairRenderFrame) {
       panelLifecycle.cancelFrame(crosshairRenderFrame);
       crosshairRenderFrame = 0;
@@ -4015,6 +4229,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     historyHasMoreBefore = true;
     historyInteractionArmed = false;
     lastPayloadRenderSignature = "";
+    crosshairPayloadRevision += 1;
+    lastCrosshairCommitKey = "";
     sharedHoverTime = undefined;
     pendingSharedHoverTime = undefined;
     hideSharedCrosshair();
@@ -4157,14 +4373,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   function attachOverlayRerenderHooks() {
     if (overlayHooksAttached) return;
     overlayHooksAttached = true;
-    ["wheel", "pointermove", "pointerup", "pointerleave", "dblclick"].forEach((eventName) => {
+    ["wheel", "pointerup", "pointerleave", "dblclick"].forEach((eventName) => {
       surface.addEventListener(eventName, scheduleOverlayRender, { passive: true });
       indicatorSurface.addEventListener(eventName, scheduleOverlayRender, { passive: true });
     });
     surface.addEventListener("pointermove", handleSurfacePointerMove, { passive: true });
     surface.addEventListener("pointerleave", handleSurfacePointerLeave, { passive: true });
     surface.addEventListener("mouseleave", handleSurfacePointerLeave, { passive: true });
-    indicatorSurface.addEventListener("pointermove", handleIndicatorSurfacePointerMove, { passive: true });
     indicatorSurface.addEventListener("pointerleave", handleSurfacePointerLeave, { passive: true });
     indicatorSurface.addEventListener("mouseleave", handleSurfacePointerLeave, { passive: true });
     window.addEventListener("mousemove", handleWindowMouseLocation, { passive: true });
@@ -4176,14 +4391,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   function detachOverlayRerenderHooks() {
     if (!overlayHooksAttached) return;
     overlayHooksAttached = false;
-    ["wheel", "pointermove", "pointerup", "pointerleave", "dblclick"].forEach((eventName) => {
+    ["wheel", "pointerup", "pointerleave", "dblclick"].forEach((eventName) => {
       surface.removeEventListener(eventName, scheduleOverlayRender);
       indicatorSurface.removeEventListener(eventName, scheduleOverlayRender);
     });
     surface.removeEventListener("pointermove", handleSurfacePointerMove);
     surface.removeEventListener("pointerleave", handleSurfacePointerLeave);
     surface.removeEventListener("mouseleave", handleSurfacePointerLeave);
-    indicatorSurface.removeEventListener("pointermove", handleIndicatorSurfacePointerMove);
     indicatorSurface.removeEventListener("pointerleave", handleSurfacePointerLeave);
     indicatorSurface.removeEventListener("mouseleave", handleSurfacePointerLeave);
     window.removeEventListener("mousemove", handleWindowMouseLocation);
@@ -4514,7 +4728,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
     chipPaneManager?.setContext({ symbol: symbolSelect.value, interval: intervalSelect.value, tabId: state.activeMarketTabId, candles });
     renderEstimatedMarginCost(candles, selectedMain.has("estimatedMarginCost"));
-    lastPayloadRenderSignature = window.QuoteChartPayload.renderSignature(payload);
+    const nextPayloadRenderSignature = window.QuoteChartPayload.renderSignature(payload);
+    if (nextPayloadRenderSignature !== lastPayloadRenderSignature) crosshairPayloadRevision += 1;
+    lastPayloadRenderSignature = nextPayloadRenderSignature;
     renderMainOverlays(indicators, selectedMain);
     scheduleRenderedAxisSafeWidthSync();
     if (!preserveVisibleLogicalRange && !isFiniteLogicalRange(userVisibleLogicalRange)) scheduleTimeScaleRefit();
@@ -5654,6 +5870,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   }
 
   function schedulePanelLayoutRefresh({ preserveViewport = false } = {}) {
+    lastCrosshairCommitKey = "";
     if (preserveViewport && !pendingPanelViewportSnapshot) {
       pendingPanelViewportSnapshot = captureViewportSnapshot(lastPayload?.candles || []);
     }
@@ -6209,14 +6426,20 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   }
 
   function selectPivotProjectionForSurfaceEvent(event) {
+    const selected = selectPivotProjectionForClientX(event.clientX);
+    if (!selected) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function selectPivotProjectionForClientX(clientX) {
     if (selectedPivotMode() !== "traditional" || !pivotProjectionByPeriod.size) return false;
     const rect = surface.getBoundingClientRect();
-    const candle = nearestCandleForCoordinate(event.clientX - rect.left);
+    const candle = nearestCandleForCoordinate(Number(clientX) - rect.left);
     const time = normalizeChartTime(candle?.time);
     const referenceKey = pivotTargetPeriodByTime.get(time);
     if (!referenceKey || !pivotProjectionByPeriod.has(referenceKey)) return false;
-    event.preventDefault();
-    event.stopPropagation();
     pivotSelectedReferenceKey = referenceKey;
     pivotSelectedAnchorTime = time;
     pivotSelectionPinned = true;
@@ -6601,21 +6824,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         indicatorRecoveryCount += 1;
         isSyncingTimeScale = true;
         try {
-          dayBoundaryManager?.reconcile(
-            [candleSeries].filter(Boolean),
-            window.QuoteChartDayBoundaries.selectDayBoundaries(lastPayload?.candles || [], intervalSelect.value),
-            window.QuoteChartDayBoundaries.DEFAULT_COLOR,
-          );
-          indicatorChart.remove();
-          indicatorChart = undefined;
-          indicatorTimeAnchorSeries = undefined;
-          indicatorSeries = [];
-          indicatorSeriesByKey = new Map();
-          indicatorSelectionSignature = "";
-          renderIndicatorChart(lastPayload?.indicators || indicators, getSelectedSubIndicators(), { allowRecovery: false });
-          syncIndicatorTimeAnchor(lastPayload?.candles || []);
-          refreshDayBoundaries(lastPayload?.candles || []);
+          indicatorChart.resize(indicatorSurface.clientWidth, indicatorSurface.clientHeight);
           syncIndicatorVisibleRangeToMain();
+          refreshDayBoundaries(lastPayload?.candles || []);
         } finally {
           releaseTimeScaleSyncAfterFrame();
         }
@@ -6972,11 +7183,6 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     fibonacciAutoScaleLowerSeries.setData(lowerData);
     fibonacciAutoScaleUpperSeries.setData(upperData);
     chart.priceScale("right").applyOptions({ autoScale: true });
-    if (annotationRenderFrame) panelLifecycle.cancelFrame(annotationRenderFrame);
-    annotationRenderFrame = panelLifecycle.requestFrame(() => {
-      annotationRenderFrame = 0;
-      if (isPanelActive()) renderChartAnnotations();
-    });
   }
 
   function isFibonacciSelectionActive(annotationState = chartAnnotationController?.getState?.()) {
@@ -7363,6 +7569,26 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       renderPriceRange(pendingPriceRange.anchors[0], pendingPriceRange.preview, result, true);
     }
     if (svg.childNodes.length) chartAnnotationLayer.appendChild(svg);
+  }
+
+  function scheduleAnnotationStateRender(annotationState = chartAnnotationController?.getState?.()) {
+    pendingAnnotationState = annotationState;
+    if (!isPanelActive() || annotationRenderFrame) return;
+    annotationRenderFrame = panelLifecycle.requestFrame(() => {
+      annotationRenderFrame = 0;
+      if (!isPanelActive()) return;
+      const nextState = pendingAnnotationState || chartAnnotationController?.getState?.();
+      pendingAnnotationState = undefined;
+      updateFibonacciCrosshairMarkers(nextState);
+      updateFibonacciAutoScale(nextState);
+      renderChartAnnotations();
+      if (nextState?.pending?.type === "fibonacci") status.textContent = `費波那契${nextState.pending.kind === "retracement" ? "回撤" : "拓展"}：尚需 ${nextState.pending.remaining} 個錨點`;
+      if (nextState?.pending?.type === "priceRange") {
+        status.textContent = nextState.pending.anchors.length
+          ? "價格範圍：請點選終點價格"
+          : "價格範圍：請點選起點價格";
+      }
+    });
   }
 
   function renderMainOverlays(indicators, selectedMain) {
@@ -7800,18 +8026,6 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (chartAnnotationController?.hasPending?.()) {
       chartAnnotationController.previewPoint(chartPointForPanelEvent(event));
     }
-    const time = sharedCandleTimeForScreenX(event.clientX);
-    if (!time || !candleAt(time)) return;
-    sharedHoverTime = time;
-    syncCrosshairForTime(time);
-  }
-
-  function handleIndicatorSurfacePointerMove(event) {
-    if (!isPanelActive() || !indicatorChart || !lastPayload) return;
-    const time = sharedCandleTimeForScreenX(event.clientX);
-    if (!time || !candleAt(time)) return;
-    sharedHoverTime = time;
-    syncCrosshairForTime(time);
   }
 
   function handleSurfacePointerLeave() {
@@ -7896,6 +8110,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function syncCrosshairForTime(time) {
     if (!isPanelActive() || !chart || !candleSeries || !time || !candleAt(time)) return;
+    const commitKey = `${normalizeChartTime(time)}|${crosshairPayloadRevision}`;
+    if (!crosshairRenderFrame && commitKey === lastCrosshairCommitKey) return;
     pendingSharedHoverTime = time;
     if (crosshairRenderFrame) return;
     crosshairRenderFrame = panelLifecycle.requestFrame(() => {
@@ -7909,6 +8125,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function renderSyncedCrosshair(time) {
     if (!isPanelActive() || !chart || !candleSeries || !time || !candleAt(time)) return;
+    const commitKey = `${normalizeChartTime(time)}|${crosshairPayloadRevision}`;
+    if (commitKey === lastCrosshairCommitKey) return;
     const candle = candleAt(time);
     const indicatorValue = indicatorCrosshairValue(time);
     updateReadoutsForTime(time);
@@ -7922,11 +8140,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     chipPaneManager?.syncCrosshair(time);
     isSyncingCrosshair = false;
     positionSharedCrosshair(time);
+    lastCrosshairCommitKey = commitKey;
   }
 
   function clearSyncedCrosshair() {
     sharedHoverTime = undefined;
     pendingSharedHoverTime = undefined;
+    lastCrosshairCommitKey = "";
     if (crosshairRenderFrame) {
       panelLifecycle.cancelFrame(crosshairRenderFrame);
       crosshairRenderFrame = 0;
@@ -8483,7 +8703,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     realtimeUpdateCleanup?.();
     realtimeUpdateCleanup = undefined;
     minuteKlineAccumulator = isMinuteKlineInterval(interval)
-      ? window.QuoteChartRealtimeCharts.createMinuteKlineAccumulator({ interval })
+      ? window.QuoteChartRealtimeCharts.createMinuteKlineAccumulator({ interval, identity: `${symbol}|${interval}|${streamLoadToken}` })
       : undefined;
     dailyKlineAccumulator = interval === "1d"
       ? window.QuoteChartRealtimeCharts.createDailyKlineAccumulator({ identity: `${symbol}|1d|${streamLoadToken}` })
@@ -8750,6 +8970,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       clearPanelLoadRetry();
       finishFixedProfileDrag();
       surface.removeEventListener("click", handleFixedProfileSurfaceClick);
+      element.removeEventListener("dblclick", handlePanelDoubleClick);
       cleanupIndicatorMenus();
       element.removeEventListener("contextmenu", handlePanelContextMenu);
       element.removeEventListener("keydown", handlePanelContextKeydown);

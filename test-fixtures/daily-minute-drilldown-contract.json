@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "daily-minute-drilldown-fixture/1",
+  "request": {
+    "symbol": "2330",
+    "sourceIdentity": "local-shioaji-simulation",
+    "mode": "simulation",
+    "targetDate": "2026-08-21",
+    "generation": 7
+  },
+  "validResponse": {
+    "schemaVersion": "daily-minute-target-response/1",
+    "requestIdentity": "local-shioaji-simulation|2330|2026-08-21|1m",
+    "symbol": "2330",
+    "sourceIdentity": "local-shioaji-simulation",
+    "mode": "simulation",
+    "targetDate": "2026-08-21",
+    "interval": "1m",
+    "timeZone": "Asia/Taipei",
+    "candles": [
+      {
+        "time": 1787274000,
+        "sessionDate": "2026-08-21",
+        "open": 115,
+        "high": 116,
+        "low": 114.5,
+        "close": 115.5,
+        "volume": 12
+      },
+      {
+        "time": 1787274060,
+        "sessionDate": "2026-08-21",
+        "open": 115.5,
+        "high": 116.5,
+        "low": 115,
+        "close": 116,
+        "volume": 8
+      }
+    ]
+  },
+  "gesture": {
+    "base": {
+      "candleKey": "2330|2026-08-21",
+      "eventTime": 1000,
+      "button": 0,
+      "interval": "1d",
+      "validCandle": true,
+      "mode": "observe",
+      "owner": "none"
+    },
+    "passthrough": [
+      { "patch": { "button": 2 }, "reason": "not_left_button" },
+      { "patch": { "interval": "5m" }, "reason": "not_daily" },
+      { "patch": { "validCandle": false }, "reason": "invalid_target" },
+      { "patch": { "mode": "buy" }, "reason": "trading_mode" },
+      { "patch": { "mode": "sell" }, "reason": "trading_mode" },
+      { "patch": { "mode": "alert" }, "reason": "trading_mode" },
+      { "patch": { "owner": "fibonacci" }, "reason": "fibonacci" },
+      { "patch": { "owner": "price_range" }, "reason": "price_range" },
+      { "patch": { "owner": "fixed_vp" }, "reason": "fixed_vp" },
+      { "patch": { "owner": "drag" }, "reason": "drag" },
+      { "patch": { "owner": "drawing" }, "reason": "drawing" }
+    ]
+  },
+  "baseline": {
+    "symbol": "2330",
+    "panelIdentity": "main-chart",
+    "generation": 6,
+    "interval": "1d",
+    "candles": [{ "time": 1787241600, "close": 116 }],
+    "source": { "provider": "yahoo-chart" },
+    "readout": { "date": "2026-08-21", "close": 116 },
+    "volume": { "unit": "common_lot" },
+    "indicators": { "revision": "daily" },
+    "dayBoundaries": [],
+    "viewport": { "from": 0, "to": 100 },
+    "tools": { "pinnedReference": "2026-08-20" }
+  },
+  "commitLayers": {
+    "source": { "provider": "local-shioaji-simulation", "targetDate": "2026-08-21" },
+    "readout": { "date": "2026-08-21", "close": 116 },
+    "volume": { "unit": "common_lot", "status": "available" },
+    "indicators": { "revision": "minute" },
+    "dayBoundaries": [],
+    "viewport": { "from": 1787274000, "to": 1787274060 }
+  }
+}

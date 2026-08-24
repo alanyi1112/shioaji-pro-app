@@ -198,6 +198,13 @@ K 不套用。台股預設優先使用本機 Shioaji 即時行情，無可用 bu
 payload 內部一致，不保證不同 provider 的來源值完全相同。國外商品與 MultiView
 自己的「我的清單」仍沿用原有資料來源與獨立設定，不會與交易終端自選清單同步。
 
+主交易畫面的日 K 觀察模式可雙擊有效 K 棒，以該棒的 `Asia/Taipei` 日期向既有
+本機 Shioaji simulation market-data adapter 請求 start／end 相同的單日 1 分 K；
+完整驗證後才原子切到 `1m`。MultiView 單擊仍立即交給目前圖表工具；2／3／4／6／8
+圖合法雙擊以目前商品與週期開啟單圖新分頁，圖表數量為 1 時則由有效且已完成的日 K
+啟動相同 exact-date 契約並在原 panel 切換。兩條路徑都不會取得 broker authority、
+送出委託或啟停服務。
+
 第一次使用前先建立 repo 外的本機 D1，再啟動兩個前端：
 
 ```sh

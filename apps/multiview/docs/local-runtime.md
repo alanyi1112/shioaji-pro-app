@@ -31,6 +31,22 @@ MultiView 提供 `1m`、`5m`、`15m`、`1h`、`1d`、`1wk`、`1mo`，預設
 candles 的 `Asia/Taipei` 日期變化，在前一日最後一根與下一日第一根之間顯示
 1.2 CSS px 亮黃色分日線。日／週／月 K、`intraday` 分時走勢與同日資料缺口不套用。
 
+MultiView 的主圖單擊立即交給目前 active tool，不使用 260ms bounded double-click
+timer。2／3／4／6／8 圖合法雙擊以目前商品與 interval 開啟單圖新分頁；圖表數量為
+1 時，只有雙擊主圖內命中的有效已完成 `1d` candle，才以 local Shioaji simulation
+exact-date loader 在原 panel 原子切為該日期 `1m`。商品、週期、按鈕、連結、背景、
+非日 K及 pending drawing／固定範圍工具 ownership 均不啟動 loader。
+
+技術副圖初次 time range 尚未成立時只 resize 並同步既有 viewport，不重建 chart。
+籌碼副圖以 material payload 與 pane control signature 去重；日期範圍改變只先更新
+neutral time anchor，相同資料、metadata-only refresh、相同 presentation 或群組重排
+不會再次全量建立 series，也不會產生第二個相同 API request。
+
+滑鼠游標移動採 per-panel animation-frame latest-wins。一般 pointer move 只由 Lightweight
+Charts crosshair callback 更新必要 crosshair 與 readout，不會觸發 FVG、Volume Profile、
+價格極值、註記或壓撐 overlay 全量重建；相同 payload 與 candle time 直接 reuse，繪圖工具
+preview 另以單一 frame gate 合併。
+
 ## macOS 常駐模式
 
 ```sh
@@ -83,12 +99,16 @@ TWSE fallback 只承諾單位一致、provider 可辨識及整份 OHLCV 原子�
 
 ### 驗收矩陣
 
-| 路徑 | 適用時框 | 分日線 | 台股整股 volume | 失效行為 |
+| 路徑 | 適用時框 | 右側成交量 | 日 K 雙擊 | 失效行為 |
 |---|---|---|---|---|
-| RealTimeStock 主交易畫面 Shioaji | 1／5／15／60 分、日 K | 只在分鐘 K 顯示亮黃色 1.2 CSS px 線 | Shioaji lot → `common_lot` identity | unit 或 generation 不可信時拒絕增量 |
-| MultiView 強制 Shioaji | 1／5／15／60 分、日 K | 只在分鐘 K 顯示亮黃色 1.2 CSS px 線 | 同源 Kbars／Tick lot → `common_lot` | 清空混源 OHLCV，顯示 unavailable，不偷切 Yahoo |
-| MultiView 自動模式 | 1／5／15／60 分、日 K | 只在分鐘 K 顯示亮黃色 1.2 CSS px 線 | Shioaji 可用時同上；否則 Yahoo／TWSE shares ÷ 1,000 | 以完整 canonical payload 原子 fallback |
-| MultiView 強制 Yahoo | 日／週／月與既有延遲路徑 | 日／週／月不顯示 | Yahoo／TWSE shares ÷ 1,000 | 舊 schema／未知 unit 失效重抓或 fail closed |
+| RealTimeStock 主交易畫面 Shioaji | 1／5／15／60 分、日 K | Shioaji lot → `common_lot`；分鐘 K 有分日線 | local simulation exact-date，成功才切 `1m` | unit／generation 不可信時拒絕增量；原圖不變 |
+| MultiView 強制 Shioaji | 1／5／15／60 分、日 K | 同源 Kbars／Tick lot → `common_lot`；分鐘 K 有分日線 | 單圖有效日 K：local simulation exact-date；多圖：開單圖 | 混源 OHLCV 清空；非 simulation／日期不符時原圖不變 |
+| MultiView 自動模式 | 1／5／15／60 分、日 K | Shioaji 可用時同上；否則 Yahoo／TWSE shares ÷ 1,000 | 單圖有效日 K：local simulation exact-date；多圖：開單圖 | local adapter 不可用時保留原圖，不以 Yahoo 最近日替代 |
+| MultiView 強制 Yahoo | 日／週／月與既有延遲路徑 | Yahoo／TWSE shares ÷ 1,000 | 多圖開單圖；單圖 exact-date 仍須獨立通過 local simulation guard | 舊 schema／未知 unit 失效重抓；不混接 Shioaji 或 sample data |
+
+所有列都只描述本機 loopback simulation market-data 能力。驗收不得登入或切換
+production、啟用 CA、取得 broker authority、送出委託、寫入 verified history、
+部署或啟停服務；MultiView 仍不匯入交易函式或 order proxy。
 
 收盤後 Shioaji display bars 仍只屬本機同源顯示，不會寫入 D1 verified canonical
 history，也不取代既有 TWSE／TPEx 收盤核定流程。

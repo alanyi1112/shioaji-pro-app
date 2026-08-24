@@ -252,6 +252,7 @@
     const demandRetryTimers = new Map();
     const kbarRangeCache = new Map();
     const kbarInflight = new Map();
+    const targetDateInflight = new Map();
     const HISTORY_DAYS = Object.freeze({ "1m": 3, "5m": 7, "15m": 30, "1h": 60, "1d": 365 });
     const MAX_KBAR_CACHE_ENTRIES = 16;
     let source;
@@ -411,7 +412,7 @@
         totalVolume += volume;
         weightedAmount += close * volume;
         return [{
-          time: Math.floor(sourceTime / 1000), sourceTime,
+          time: Math.floor(sourceTime / 1000), sourceTime, sessionDate: nextDate,
           open, high, low, close,
           averagePrice: totalVolume > 0 ? weightedAmount / totalVolume : close,
           volume, totalVolume, continuity: "complete", provider: "shioaji-kbars",
@@ -485,7 +486,12 @@
       const entries = kbarRangeCache.get(symbol) || [];
       const covering = entries.find((entry) => entry.start <= start && entry.end >= end);
       if (covering) return clonePoints(covering.points.filter((point) => {
-        const date = sessionDate(new Date(Number(point.sourceTime)).toISOString());
+        const numericSourceTime = Number(point.sourceTime);
+        const sourceTime = Number.isFinite(numericSourceTime)
+          ? numericSourceTime
+          : Date.parse(String(point.sourceTime || ""));
+        if (!Number.isFinite(sourceTime)) return false;
+        const date = sessionDate(new Date(sourceTime).toISOString());
         return date >= start && date <= end;
       }));
       const key = `${symbol}|${start}|${end}`;
@@ -505,6 +511,62 @@
       }).finally(() => kbarInflight.delete(key));
       kbarInflight.set(key, task);
       return clonePoints(await task);
+    }
+
+    function validTargetDateRequest(request) {
+      const symbol = String(request?.symbol || "").trim().toUpperCase();
+      const targetDate = String(request?.targetDate || "");
+      const expectedKey = `local-shioaji-simulation|${symbol}|${targetDate}|1m`;
+      const [year, month, day] = targetDate.split("-").map(Number);
+      const calendarDate = new Date(Date.UTC(year, month - 1, day));
+      const validCalendarDate = /^\d{4}-\d{2}-\d{2}$/.test(targetDate)
+        && calendarDate.getUTCFullYear() === year
+        && calendarDate.getUTCMonth() === month - 1
+        && calendarDate.getUTCDate() === day;
+      return request?.schemaVersion === "daily-minute-target-request/1"
+        && /^[A-Z0-9^][A-Z0-9._^-]{0,31}$/.test(symbol)
+        && request.symbol === symbol
+        && validCalendarDate
+        && request.sourceIdentity === "local-shioaji-simulation"
+        && request.mode === "simulation"
+        && request.startDate === targetDate
+        && request.endDate === targetDate
+        && request.targetInterval === "1m"
+        && request.timeZone === "Asia/Taipei"
+        && Number.isInteger(request.generation)
+        && request.generation > 0
+        && request.maxCandles === 600
+        && request.singleFlightKey === expectedKey
+        && request.requestIdentity === `${expectedKey}|${request.generation}`;
+    }
+
+    function loadTargetDate(request) {
+      if (!validTargetDateRequest(request)) return Promise.reject(new Error("invalid_target_date_request"));
+      const existing = targetDateInflight.get(request.singleFlightKey);
+      if (existing) return existing;
+      let task;
+      task = (async () => {
+        const info = await api("/api/v1/info");
+        if (info?.simulation !== true) throw new Error("simulation_required");
+        const contract = await resolveContract(request.symbol);
+        const points = await loadKbarRange(request.symbol, contract, request.targetDate, request.targetDate);
+        if (points.length > request.maxCandles) throw new Error("shioaji_kbars_response_too_large");
+        return Object.freeze({
+          schemaVersion: "daily-minute-target-response/1",
+          requestIdentity: request.singleFlightKey,
+          symbol: request.symbol,
+          sourceIdentity: request.sourceIdentity,
+          mode: "simulation",
+          targetDate: request.targetDate,
+          interval: "1m",
+          timeZone: "Asia/Taipei",
+          candles: Object.freeze(clonePoints(points)),
+        });
+      })().finally(() => {
+        if (targetDateInflight.get(request.singleFlightKey) === task) targetDateInflight.delete(request.singleFlightKey);
+      });
+      targetDateInflight.set(request.singleFlightKey, task);
+      return task;
     }
 
     async function loadAndDispatchHistory(symbol, contract, end) {
@@ -731,6 +793,7 @@
       },
       connectionCount() { return source ? 1 : 0; },
       subscriptionCount() { return activeSymbols.size; },
+      loadTargetDate,
       kbarCacheEntryCount() {
         return [...kbarRangeCache.values()].reduce((sum, entries) => sum + entries.length, 0);
       },
@@ -740,6 +803,7 @@
         for (const timer of cooldowns.values()) clearTimeoutImpl(timer);
         cooldowns.clear();
         for (const symbol of demandRetryTimers.keys()) clearDemandRetry(symbol);
+        targetDateInflight.clear();
         if (modeTimer) clearIntervalImpl(modeTimer);
         closeSource("coordinator_destroyed");
       },

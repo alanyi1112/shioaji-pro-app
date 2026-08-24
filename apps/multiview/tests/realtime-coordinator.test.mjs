@@ -76,6 +76,7 @@ function localHarness({
   snapshotFailures = 0,
   snapshotAlwaysFails = false,
   now = "2026-08-06T02:00:00.000Z",
+  kbarPayload,
 } = {}) {
   const sources = [];
   const requests = [];
@@ -121,9 +122,9 @@ function localHarness({
       }
       return Response.json([{ datetime: "2026-08-06 09:01:00", open: 100, high: 102, low: 99, close: 101, average_price: 100.5, volume: 3, total_volume: 12 }]);
     }
-    if (url.pathname.endsWith("/api/v1/data/kbars")) return Response.json({
+    if (url.pathname.endsWith("/api/v1/data/kbars")) return Response.json(kbarPayload || {
       datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
-      Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7], Amount: [505, 714],
+      Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7],
     });
     throw new Error(`unexpected ${url.pathname}`);
   }
@@ -285,6 +286,90 @@ test("日 K 本機來源以有界 365 日視窗載入 1 分 Kbars，保留 100,0
   assert.equal(requests.length, 1);
   assert.equal(requests[0].body.start, "2025-08-07");
   assert.equal(requests[0].body.end, "2026-08-06");
+});
+
+function targetDateRequest(generation = 7) {
+  const targetDate = "2026-08-06";
+  const singleFlightKey = `local-shioaji-simulation|2330.TW|${targetDate}|1m`;
+  return {
+    schemaVersion: "daily-minute-target-request/1",
+    symbol: "2330.TW",
+    sourceIdentity: "local-shioaji-simulation",
+    mode: "simulation",
+    targetDate,
+    startDate: targetDate,
+    endDate: targetDate,
+    targetInterval: "1m",
+    timeZone: "Asia/Taipei",
+    generation,
+    maxCandles: 600,
+    singleFlightKey,
+    requestIdentity: `${singleFlightKey}|${generation}`,
+  };
+}
+
+test("單圖日 K 指定日期先重驗 simulation，再只讀同日 1 分 Kbars", async () => {
+  const h = localHarness();
+  const response = await h.coordinator.loadTargetDate(targetDateRequest());
+  assert.deepEqual(h.requests.map((item) => item.path), [
+    "/local-shioaji/api/v1/info",
+    "/local-shioaji/api/v1/data/contracts/2330",
+    "/local-shioaji/api/v1/data/kbars",
+  ]);
+  assert.deepEqual(h.requests.at(-1).body, {
+    contract: { security_type: "STK", region: "TW", exchange: "TSE", code: "2330", target_code: null },
+    start: "2026-08-06",
+    end: "2026-08-06",
+  });
+  assert.equal(response.schemaVersion, "daily-minute-target-response/1");
+  assert.equal(response.requestIdentity, targetDateRequest().singleFlightKey);
+  assert.equal(response.candles.length, 2);
+  assert.deepEqual(Array.from(response.candles, (row) => row.sessionDate), ["2026-08-06", "2026-08-06"]);
+});
+
+test("單圖指定日期相同 identity 跨 generation 共用一次 info 與 Kbars", async () => {
+  const h = localHarness();
+  const [first, second] = await Promise.all([
+    h.coordinator.loadTargetDate(targetDateRequest(7)),
+    h.coordinator.loadTargetDate(targetDateRequest(8)),
+  ]);
+  assert.equal(first, second);
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/api/v1/info")).length, 1);
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 1);
+});
+
+test("一般日 K 已填入 covering cache 時，單圖 exact-date 安全重用 sourceTime", async () => {
+  const h = localHarness();
+  h.coordinator.subscribe("panel-daily", { symbol: "2330.TW", interval: "1d" }, () => {}, () => {}, () => {});
+  await settle();
+  h.sources[0].open();
+  await settle();
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 1);
+  const response = await h.coordinator.loadTargetDate(targetDateRequest());
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 1);
+  assert.equal(response.candles.length, 2);
+  assert.deepEqual(Array.from(response.candles, (row) => row.sessionDate), ["2026-08-06", "2026-08-06"]);
+});
+
+test("單圖指定日期在非 simulation 時 fail closed 且不讀 contract 或 Kbars", async () => {
+  const h = localHarness({ simulation: false });
+  await assert.rejects(h.coordinator.loadTargetDate(targetDateRequest()), /simulation_required/);
+  assert.equal(h.requests.filter((item) => item.path.includes("/contracts/")).length, 0);
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 0);
+});
+
+test("單圖指定日期拒絕舊 schema、非同日範圍與偽造 single-flight key", async () => {
+  const h = localHarness();
+  for (const request of [
+    { ...targetDateRequest(), schemaVersion: "daily-minute-target-request/0" },
+    { ...targetDateRequest(), targetDate: "2026-02-30", startDate: "2026-02-30", endDate: "2026-02-30" },
+    { ...targetDateRequest(), endDate: "2026-08-07" },
+    { ...targetDateRequest(), singleFlightKey: "forged" },
+    { ...targetDateRequest(), requestIdentity: "replayed" },
+  ]) {
+    await assert.rejects(h.coordinator.loadTargetDate(request), /invalid_target_date_request/);
+  }
+  assert.equal(h.requests.length, 0);
 });
 
 test("本機 coordinator 相同商品採 ref-count，最後面板離開後才 unsubscribe", async () => {

@@ -30,12 +30,17 @@ MultiView MUST 以該 panel 現有 Pivot reference K 棒的合法 H／L／C 同�
 - **AND** 前端 MUST 清除舊線而不得沿用其他期間的值
 
 ### Requirement: MultiView 必須依來源週期保存 reference 並向較短週期繼承
-MultiView MUST 以 `canonical symbol + source interval` 在目前 panel document session 保存各來源週期的 enabled formulas、reference、anchor 與 pinned 狀態。週期階層 MUST 為 `月 > 週 > 日 > 60m > 15m > 5m > 1m`；來源週期建立的壓撐投影 MUST 顯示於相同或更短週期，且不得反向顯示於較長週期。直接點選合法 K 棒與「回到最新」MUST 只改變目前來源週期的所有 enabled formulas。
+MultiView MUST 以 `canonical symbol + source interval` 在目前 panel document session 保存各來源週期的 enabled formulas、reference、anchor 與 pinned 狀態。週期階層 MUST 為 `月 > 週 > 日 > 60m > 15m > 5m > 1m`；來源週期建立的壓撐投影 MUST 顯示於相同或更短週期，且不得反向顯示於較長週期。直接單擊合法 K 棒與「回到最新」MUST 只改變目前來源週期的所有 enabled formulas；包含日 K 在內的單擊 MUST 立即處理，不得為等待雙擊而加入 bounded delay。
 
 #### Scenario: 點選其他 K 棒
-- **WHEN** 任一壓撐公式已啟用且使用者點選該 panel 的其他合法 K 棒
+- **WHEN** 任一壓撐公式已啟用且使用者單擊該 panel 的其他合法 K 棒
 - **THEN** 所有 enabled formulas MUST 原子改用該 reference 並以該 K 棒為 anchor
 - **AND** UI MUST 顯示共用 reference 日期、適用期與 completed／provisional 狀態
+
+#### Scenario: 日 K 單擊不等待導覽雙擊
+- **WHEN** 任一壓撐公式已啟用且使用者在日 K 主圖單擊合法 K 棒
+- **THEN** reference MUST 在該次 click task 內更新，不得等待 260ms 或其他雙擊判定窗
+- **AND** 後續合法 `dblclick` MUST 由 panel 導覽開啟單圖
 
 #### Scenario: 週線與月線 reference
 - **WHEN** 使用者在週 K 或月 K 啟用任一壓撐公式

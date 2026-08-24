@@ -11,6 +11,10 @@ const {
   __test: {
     backfillCoverageState,
     backfillMenuState,
+    chipPayloadMaterialSignature,
+    chipReadoutContentSignature,
+    chipRequestKey,
+    createChipRenderGate,
     dailyDetailModel,
     detailItemsForPane,
     holderDetailModel,
@@ -20,12 +24,82 @@ const {
     shortMarginRatioRows,
     shouldContinueBackfillPolling,
     warningNoticeSignature,
+    shouldPreserveChipPayloadForEmptyContext,
+    shouldReuseChipPayload,
   },
 } = window.QuoteChartChipPanes;
 
 function normalized(value) {
   return JSON.parse(JSON.stringify(value));
 }
+
+test("籌碼 request identity 正規化商品、日期範圍與 dataset 順序", () => {
+  const input = {
+    symbol: "2330.tw",
+    interval: "1d",
+    candles: [{ time: "2026-07-02" }, { time: "2026-07-09" }],
+  };
+  assert.equal(
+    chipRequestKey({ ...input, datasets: ["shareholder-distribution", "margin-short", "shareholder-distribution"] }),
+    "2330.TW|1d|2026-07-02|2026-07-09|margin-short,shareholder-distribution",
+  );
+});
+
+test("同 context 空 candles 與相同 request identity 保留既有籌碼 payload", () => {
+  const payload = { distributionRows: [{ dataDate: "2026-07-09" }] };
+  assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: false, sourceChanged: false, candles: [] }), true);
+  assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: true, sourceChanged: false, candles: [] }), false);
+  assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: false, sourceChanged: true, candles: [] }), false);
+  assert.equal(shouldReuseChipPayload({ payload, payloadRequestKey: "same", requestKey: "same" }), true);
+  assert.equal(shouldReuseChipPayload({ force: true, payload, payloadRequestKey: "same", requestKey: "same" }), false);
+  assert.equal(shouldReuseChipPayload({ payload, payloadRequestKey: "old", requestKey: "new" }), false);
+  assert.equal(shouldReuseChipPayload({ payload: undefined, payloadRequestKey: "same", requestKey: "same" }), false);
+});
+
+test("籌碼 material signature 與 per-pane gate 忽略 refresh metadata 且只提交成功 render", () => {
+  const first = {
+    symbol: "2330.TW",
+    rows: [{ sessionDate: "2026-08-21", marginShort: { marginTodayBalanceLots: 10 }, provenance: { fetchedAt: "first" } }],
+    availability: { "margin-short": { status: "available", rowCount: 1 } },
+    coverage: [{ dataset: "margin-short", start: "2026-08-21", end: "2026-08-21", requestedStart: "2026-01-01", requestedEnd: "2026-08-21" }],
+    cache: { mode: "d1_hit" },
+  };
+  const metadataOnly = structuredClone(first);
+  metadataOnly.rows[0].provenance.fetchedAt = "second";
+  metadataOnly.coverage[0].requestedStart = "2025-01-01";
+  metadataOnly.cache.mode = "d1_refreshed";
+  assert.equal(chipPayloadMaterialSignature(first), chipPayloadMaterialSignature(metadataOnly));
+
+  const changed = structuredClone(metadataOnly);
+  changed.rows[0].marginShort.marginTodayBalanceLots = 11;
+  assert.notEqual(chipPayloadMaterialSignature(first), chipPayloadMaterialSignature(changed));
+
+  const gate = createChipRenderGate();
+  const firstSignature = `${chipPayloadMaterialSignature(first)}|balance`;
+  const changedSignature = `${chipPayloadMaterialSignature(changed)}|balance`;
+  assert.equal(gate.shouldRender(firstSignature), true);
+  gate.commit(firstSignature);
+  assert.equal(gate.shouldRender(firstSignature), false);
+  assert.equal(gate.shouldRender(changedSignature), true);
+  assert.equal(gate.shouldRender(changedSignature), true, "未 commit 的失敗 render 必須仍可安全重試");
+  gate.commit(changedSignature);
+  assert.equal(gate.shouldRender(changedSignature), false);
+  gate.reset();
+  assert.equal(gate.shouldRender(changedSignature), true);
+});
+
+test("籌碼 crosshair readout signature 只在可見內容改變時更新 DOM", () => {
+  const first = {
+    date: "2026-08-24",
+    segments: [{ label: "大戶", value: "67.5%", direction: "positive", showArrow: true }],
+    missing: false,
+  };
+  assert.equal(chipReadoutContentSignature(first), chipReadoutContentSignature(structuredClone(first)));
+  const changed = structuredClone(first);
+  changed.segments[0].value = "67.6%";
+  assert.notEqual(chipReadoutContentSignature(first), chipReadoutContentSignature(changed));
+  assert.equal(chipReadoutContentSignature(null), "");
+});
 
 test("提示關閉只套用相同商品週期與內容 signature", () => {
   const first = warningNoticeSignature({ symbol: "00919.tw", interval: "1d" }, "外資持股等待更新");

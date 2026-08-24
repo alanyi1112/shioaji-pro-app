@@ -183,10 +183,34 @@ test("crosshair 讀值熱路徑只更新內容，不量測或協調版面", () =
   assert.match(chipSource, /readoutMeasurer\.setAttribute\("aria-hidden", "true"\)/);
   assert.match(chipSource, /readoutMeasurer\.setAttribute\("data-export-exclude", "true"\)/);
   assert.match(chipSource, /function scheduleChipReadoutCohorts\(\)/);
+  assert.match(inlineBlock, /if \(signature === inlineReadoutSignature\) return false/);
   assert.match(chipSource, /ordered\.slice\(0, index \+ 1\)\.join\(","\)/);
   assert.match(styles, /\.chip-pane-inline-readout\s*\{[^}]*min-block-size: var\(--chip-readout-reserved-height, 0px\);/s);
   assert.match(styles, /\.chip-pane-readout-measurer\s*\{[^}]*visibility: hidden;[^}]*pointer-events: none;/s);
   assert.match(appSource, /chipReadoutGeometry\(\)/);
+});
+
+test("游標熱路徑以 chart callback 與 animation frame latest-wins，pointer move 不重建 overlays", () => {
+  const attachBlock = sourceFunction(appSource, "attachOverlayRerenderHooks", "detachOverlayRerenderHooks");
+  const pointerBlock = sourceFunction(appSource, "handleSurfacePointerMove", "handleSurfacePointerLeave");
+  const syncBlock = sourceFunction(appSource, "syncCrosshairForTime", "renderSyncedCrosshair");
+  const renderBlock = sourceFunction(appSource, "renderSyncedCrosshair", "clearSyncedCrosshair");
+  const annotationBlock = sourceFunction(appSource, "scheduleAnnotationStateRender", "renderMainOverlays");
+  assert.match(appSource, /chart\.subscribeCrosshairMove\(handleCrosshairMove\)/);
+  assert.match(appSource, /indicatorChart\.subscribeCrosshairMove\(handleIndicatorCrosshairMove\)/);
+  assert.match(attachBlock, /\["wheel", "pointerup", "pointerleave", "dblclick"\]/);
+  assert.doesNotMatch(attachBlock, /\["wheel", "pointermove"/);
+  assert.doesNotMatch(pointerBlock, /syncCrosshairForTime|sharedCandleTimeForScreenX/);
+  assert.doesNotMatch(appSource, /handleIndicatorSurfacePointerMove/);
+  assert.match(syncBlock, /if \(!crosshairRenderFrame && commitKey === lastCrosshairCommitKey\) return/);
+  assert.match(syncBlock, /crosshairPayloadRevision/);
+  assert.doesNotMatch(syncBlock, /lastPayloadRenderSignature/);
+  assert.match(syncBlock, /panelLifecycle\.requestFrame/);
+  assert.match(renderBlock, /if \(commitKey === lastCrosshairCommitKey\) return/);
+  assert.match(renderBlock, /lastCrosshairCommitKey = commitKey/);
+  assert.match(annotationBlock, /pendingAnnotationState = annotationState/);
+  assert.match(annotationBlock, /if \(!isPanelActive\(\) \|\| annotationRenderFrame\) return/);
+  assert.match(annotationBlock, /panelLifecycle\.requestFrame/);
 });
 
 test("即時日 K 新增日期會同步技術、分日線與籌碼時間錨點且不重新抓籌碼資料", () => {
@@ -824,11 +848,19 @@ test("alignment debug 可區分技術 series 空資料與未建立並記錄各 p
   assert.match(appSource, /viewportCoordinator\?\.recordRepair\?\.\(canonicalRange\)/);
 });
 
-test("技術指標有資料但初次 time range 為空時只重建一次", () => {
+test("技術指標有資料但初次 time range 為空時只修復 viewport、不重建副圖", () => {
   assert.match(appSource, /const renderToken = \+\+indicatorRenderToken/);
   assert.match(appSource, /Object\.values\(indicatorSeriesPointCounts\)\.some/);
   assert.match(appSource, /!hasExpectedPoints \|\| isValidTimeRange\(indicatorChart\.timeScale\(\)\.getVisibleRange\?\.\(\)\)/);
-  assert.match(appSource, /indicatorChart\.remove\(\);[\s\S]*?renderIndicatorChart\(lastPayload\?\.indicators \|\| indicators, getSelectedSubIndicators\(\), \{ allowRecovery: false \}\)/);
+  const recoveryBlock = appSource.slice(
+    appSource.indexOf("        indicatorRecoveryCount += 1;"),
+    appSource.indexOf("      }, 120);", appSource.indexOf("        indicatorRecoveryCount += 1;")),
+  );
+  assert.match(recoveryBlock, /indicatorChart\.resize\(indicatorSurface\.clientWidth, indicatorSurface\.clientHeight\)/);
+  assert.match(recoveryBlock, /syncIndicatorVisibleRangeToMain\(\)/);
+  assert.match(recoveryBlock, /refreshDayBoundaries\(lastPayload\?\.candles \|\| \[\]\)/);
+  assert.doesNotMatch(recoveryBlock, /indicatorChart\.remove\(\)/);
+  assert.doesNotMatch(recoveryBlock, /renderIndicatorChart\(/);
 });
 
 test("方式 B 提供單一資料群組拖曳把手與右鍵群組排序，方式 A 不增加常駐排序按鈕", () => {

@@ -483,8 +483,8 @@ test("主圖估算融資成本與清單 metadata UI 保留偏好、缺值及無�
   assert.match(appScript, /quoteChart\.estimatedMarginCost\.v1:/);
   assert.match(appScript, /state\.activeMarketTabId/);
   assert.match(appScript, /estimatedMarginAbortController\?\.abort\(\)/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
-  assert.match(indexHtml, /chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*app\.js\?v=20260807-inline-ticket-toolbar-v1/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260824-cursor-hotpath-v1/);
+  assert.match(indexHtml, /chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*app\.js\?v=20260824-single-chart-v1/);
   assert.match(appScript, /requestData\?\.\(\{[\s\S]*datasets: \["margin-short"\]/);
   assert.match(appScript, /加入日期未知/);
   assert.match(indexHtml, /id="watchlist-symbol-recommender"[^>]*maxlength="80"/);
@@ -1727,7 +1727,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(chipScript, /fetch\("\/api\/taiwan-stock-chip\/backfill"/);
   assert.match(chipScript, /backfillMenuItem\.removeEventListener\("click", requestBackfillFromContextMenu\)/);
   assert.match(chipScript, /function startBackfillPolling\(symbol\)/);
-  assert.match(chipScript, /invalidateChipRequestCache\(symbol\);\s*await load\(\)/);
+  assert.match(chipScript, /invalidateChipRequestCache\(symbol\);\s*await load\(\{ force: true \}\)/);
   assert.match(chipScript, /if \(identityChanged\) \{[\s\S]*?clearTimeout\(reloadTimer\);[\s\S]*?stopBackfillPolling\(\);/);
   assert.match(chipScript, /destroy\(\) \{ generation \+= 1; cancelPaneDrag\(\); clearTimeout\(reloadTimer\); stopBackfillPolling\(\);/);
   assert.match(chipScript, /surface\.addEventListener\("contextmenu", handleContextMenu\)/);
@@ -1775,7 +1775,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(chipScript, /\.map\(migratePaneId\).*\.filter\(\(id\) => validIds\.has\(id\)\)/);
   assert.match(chipScript, /selection\.modeASlotKind === "chip" \? \[selection\.modeAActivePaneId\] : \[\]/);
   assert.match(chipScript, /activateTechnicalSlot\(\)/);
-  assert.match(chipScript, /options\.onPresentationChange\?\.\(\{/);
+  assert.match(chipScript, /options\.onPresentationChange\?\.\(presentation\)/);
   assert.match(appScript, /onPresentationChange: \(presentation\) => \{\s*if \(isPanelActive\(\)\) applySubchartPresentation\(presentation\);\s*\}/);
   assert.match(appScript, /effectivePanelSubchartMode\(\) === CHART_PRESENTATION_MODES\.single\) chipPaneManager\?\.activateTechnicalSlot\(\)/);
   assert.match(appScript, /isTechnicalSubchartVisible\(\)/);
@@ -1909,9 +1909,9 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(styles, /\.chart-panel\.has-no-subchart \.subchart-slot\s*\{[^}]*display: none;/s);
   assert.match(indexHtml, /styles\.css\?v=20260810-interval-label-v1/);
   assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260824-cursor-hotpath-v1/);
   assert.match(indexHtml, /panel-image-export\.js\?v=20260721-panel-frame-v4/);
-  assert.match(indexHtml, /app\.js\?v=20260807-inline-ticket-toolbar-v1/);
+  assert.match(indexHtml, /app\.js\?v=20260824-single-chart-v1/);
 });
 
 test("固定範圍 VP 價格標籤無範圍前綴，水平線為 1px 且控制線為 2px", async () => {
@@ -1964,7 +1964,7 @@ test("K 線縮放與平移後不會被 layout 或延遲 refit 重設", async () 
   assert.match(refitScheduleBlock, /function cancelScheduledTimeScaleRefit\(\)/);
 });
 
-test("多圖 panel 雙擊以 page-scoped URL 在新分頁開啟單圖", async () => {
+test("多圖雙擊開單圖，單圖日 K 命中有效棒則原圖進入指定日期 1 分 K", async () => {
   const appScript = await readFile(new URL("../public/static/app.js", import.meta.url), "utf8");
   const initBlock = appScript.slice(appScript.indexOf("async function init()"), appScript.indexOf("function normalizeMainReadoutMode"));
   const openSingleBlock = appScript.slice(appScript.indexOf("function openPanelInNewTab"), appScript.indexOf("function isTaiwanStockSymbol"));
@@ -1977,7 +1977,19 @@ test("多圖 panel 雙擊以 page-scoped URL 在新分頁開啟單圖", async ()
   assert.match(appScript, /const SINGLE_CHART_OPEN_STREAM_RESUME_DELAY_MS = 3000/);
   assert.match(openSingleBlock, /const openerPanels = \[\.\.\.state\.panels\];\s*openerPanels\.forEach\(\(currentPanel\) => currentPanel\.pauseStream\?\.\(\)\);\s*const opened = window\.open/);
   assert.match(openSingleBlock, /window\.setTimeout\(\(\) => \{\s*openerPanels\.forEach\(\(currentPanel\) => currentPanel\.resumeStream\?\.\(\)\);\s*\}, SINGLE_CHART_OPEN_STREAM_RESUME_DELAY_MS\)/);
-  assert.match(appScript, /element\.addEventListener\("dblclick", \(event\) => openPanelInNewTab\(element, event/);
+  assert.match(appScript, /element\.addEventListener\("dblclick", handlePanelDoubleClick\)/);
+  assert.match(appScript, /function handlePanelDoubleClick\(event\) \{\s*if \(currentChartCount\(\) > 1\) \{\s*openPanelInNewTab\(element, event\);/);
+  assert.match(appScript, /const target = dailyCandleForDoubleClick\(event\);\s*if \(!target\) return;\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*void loadDailyCandleTargetDate\(target\)/);
+  assert.match(appScript, /currentChartCount\(\) !== 1 \|\| intervalSelect\.value !== "1d"/);
+  assert.match(appScript, /host !== surface[\s\S]*?isCompletedTaiwanDailyTarget/);
+  assert.match(appScript, /createTargetDateRequest\([\s\S]*?sourceIdentity: DAILY_MINUTE_SOURCE_IDENTITY[\s\S]*?realtimeCoordinator\.loadTargetDate/);
+  assert.match(appScript, /validateTargetDateResponse\(requestResult\.request, generation, response\)/);
+  assert.match(appScript, /if \(!isPanelActive\(\)\s*\|\| generation !== dailyDrilldownGeneration[\s\S]*?currentChartCount\(\) !== 1\) return;[\s\S]*?realtimeIndicatorScheduler\.cancel\(\)/);
+  assert.match(appScript, /intervalSelect\.value = "1m"[\s\S]*?applyPayload\(preparedPayload, \{ prepared: true \}\)/);
+  assert.match(appScript, /catch \{\s*intervalSelect\.value = baselineInterval;[\s\S]*?chartAnnotationController\?\.restore\(\);[\s\S]*?restoreFixedProfileState\(baselinePayload\?\.candles \|\| \[\]\);[\s\S]*?peRiverController\?\.refreshContext\(\);[\s\S]*?updateChipIndicatorOptionsAvailability\(\);[\s\S]*?applyPayload\(baselinePayload, \{ prepared: true, viewportSnapshot: baselineViewport \}\)/);
+  assert.doesNotMatch(appScript, /handleDailyObservationClick|dailyGestureArbiter|targetDateObservation/);
+  assert.match(indexHtml, /daily-minute-drilldown-contract\.js\?v=20260824-single-chart-v1/);
+  assert.ok(indexHtml.indexOf("daily-minute-drilldown-contract.js") < indexHtml.indexOf("app.js"));
   assert.match(appScript, /if \(!state\.singleChartView\) localStorage\.setItem\("chartCount", countSelect\.value\)/);
   assert.match(appScript, /countSelect\.value = state\.singleChartRequest \? "1"/);
   assert.match(appScript, /fillIntervalOptions\(intervalSelect, defaultIntervalForPanel\(panelPosition\), symbolSelect\.value\)/);
@@ -1986,6 +1998,29 @@ test("多圖 panel 雙擊以 page-scoped URL 在新分頁開啟單圖", async ()
   assert.doesNotMatch(initBlock, /await loadAppConfig\(\)[\s\S]*await loadInstruments\(\)/);
   assert.match(appScript, /select, input, button, summary, details, a, \[role="menu"\], \[contenteditable="true"\]/);
   assert.doesNotMatch(appScript, /setFocusedPanel|refreshFocusedPanelLayouts/);
+});
+
+test("籌碼刷新保留同 context 已驗證資料且不因重排重抓", async () => {
+  const chipScript = await readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8");
+  const loadStart = chipScript.indexOf("async function load({ force = false } = {})");
+  const reconcileStart = chipScript.indexOf("function reconcile()", loadStart - 5000);
+  const contextStart = chipScript.indexOf("setContext(next)");
+  const loadBlock = chipScript.slice(loadStart, chipScript.indexOf("for (const input of options.inputs)", loadStart));
+  const reconcileBlock = chipScript.slice(reconcileStart, loadStart);
+  const contextBlock = chipScript.slice(contextStart, chipScript.indexOf("updateCandles(candles)", contextStart));
+  assert.match(loadBlock, /if \(shouldReuseChipPayload\(\{ force, payload, payloadRequestKey, requestKey \}\)\) return/);
+  assert.match(loadBlock, /payload = result;\s*payloadRequestKey = requestKey/);
+  assert.match(loadBlock, /catch \(error\)[\s\S]*if \(payload === undefined\)[\s\S]*controller\.render\(\{ rows: \[\], distributionRows: \[\], availability: \{\} \}/);
+  assert.match(contextBlock, /if \(shouldPreserveChipPayloadForEmptyContext\(\{ identityChanged, sourceChanged, candles: nextContext\.candles \}\)\) return;\s*context = nextContext;/);
+  assert.match(contextBlock, /if \(sourceChanged\)[\s\S]*payload = undefined;[\s\S]*payloadRequestKey = ""/);
+  assert.match(contextBlock, /else if \(dataChanged\)[\s\S]*controller\.setCandles\(nextContext\.candles\);[\s\S]*load\(\)/);
+  assert.doesNotMatch(contextBlock, /else if \(dataChanged\) reconcile\(\)/);
+  assert.match(reconcileBlock, /const createdControllers = \[\]/);
+  assert.match(reconcileBlock, /for \(const controller of createdControllers\) controller\.render/);
+  assert.doesNotMatch(reconcileBlock, /for \(const controller of controllers\.values\(\)\) controller\.render\(payload/);
+  assert.match(chipScript, /chipPayloadMaterialSignature/);
+  assert.match(chipScript, /if \(!renderGate\.shouldRender\(renderSignature\)\) return false/);
+  assert.match(chipScript, /if \(nextSignature === presentationSignature\) return;\s*presentationSignature = nextSignature;/);
 });
 
 test("多圖 panel 支援直覺拖曳、鍵盤排序、原地同步與完整 cleanup", async () => {
@@ -2171,7 +2206,7 @@ test("多層副圖一般 wheel 捲頁且保持圖表範圍，Alt wheel 明確縮
     readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8"),
   ]);
   assert.match(indexHtml, /chart-interactions\.js[^<]*<\/script>[\s\S]*chip-panes\.js[^<]*<\/script>[\s\S]*live-batch-coordinator\.js[^<]*<\/script>[\s\S]*app\.js/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260807-inline-ticket-toolbar-v1/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260824-cursor-hotpath-v1/);
   assert.match(appScript, /QuoteChartInteractions\.chartInteractionOptions\(mode\)/);
   assert.match(appScript, /bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\)/);
   assert.match(appScript, /mainWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\);[\s\S]*?bindViewportIntent\(surface,[\s\S]*?chart = LightweightCharts\.createChart/s);

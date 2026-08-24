@@ -733,6 +733,67 @@
     return { start: dates[0] || "", end: dates.at(-1) || "" };
   }
 
+  function chipRequestKey({ symbol, interval, datasets, candles }) {
+    const range = rangeForCandles(candles);
+    const sortedDatasets = [...new Set(datasets || [])].sort();
+    return `${String(symbol || "").toUpperCase()}|${interval || ""}|${range.start}|${range.end}|${sortedDatasets.join(",")}`;
+  }
+
+  function shouldReuseChipPayload({ force = false, payload, payloadRequestKey, requestKey }) {
+    return !force && payload !== undefined && payloadRequestKey === requestKey;
+  }
+
+  function shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles }) {
+    return !identityChanged && !sourceChanged && Array.isArray(candles) && candles.length === 0;
+  }
+
+  const CHIP_NON_MATERIAL_KEYS = new Set([
+    "cache",
+    "fetchedAt",
+    "lastAttemptAt",
+    "lastSuccessAt",
+    "requestedEnd",
+    "requestedStart",
+    "updatedAt",
+  ]);
+
+  function canonicalChipMaterial(value) {
+    if (Array.isArray(value)) return value.map(canonicalChipMaterial);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !CHIP_NON_MATERIAL_KEYS.has(key))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, canonicalChipMaterial(nested)]));
+  }
+
+  function chipPayloadMaterialSignature(payload) {
+    if (!payload || typeof payload !== "object") return "";
+    return JSON.stringify(canonicalChipMaterial(payload));
+  }
+
+  function chipReadoutContentSignature(readout) {
+    if (!readout || typeof readout !== "object") return "";
+    return JSON.stringify(readout);
+  }
+
+  function createChipRenderGate() {
+    let committedSignature = "";
+    return {
+      shouldRender(signature) {
+        return Boolean(signature) && signature !== committedSignature;
+      },
+      commit(signature) {
+        committedSignature = String(signature || "");
+      },
+      reset() {
+        committedSignature = "";
+      },
+      signature() {
+        return committedSignature;
+      },
+    };
+  }
+
   function createAbortError() {
     try {
       return new DOMException("The operation was aborted", "AbortError");
@@ -763,7 +824,7 @@
   async function sharedChipRequest({ symbol, interval, datasets, candles, signal }) {
     const range = rangeForCandles(candles);
     const sortedDatasets = [...new Set(datasets)].sort();
-    const key = `${symbol}|${interval}|${range.start}|${range.end}|${sortedDatasets.join(",")}`;
+    const key = chipRequestKey({ symbol, interval, datasets: sortedDatasets, candles });
     if (signal?.aborted) throw createAbortError();
     if (requestCache.has(key)) return structuredClone(requestCache.get(key));
     let request = requestInFlight.get(key);
@@ -1216,11 +1277,14 @@
     let series = [];
     let lastPayload;
     let lastCandles = [];
+    let lastMaterialSignature = "";
+    const renderGate = createChipRenderGate();
     let resizeObserver;
     let intersectionObserver;
     let destroyed = false;
     let readoutReservationFrame = 0;
     let readoutReservationSignature = "";
+    let inlineReadoutSignature = "";
     let localReadoutReservation = 0;
     let cohortReadoutReservation = 0;
     let appliedReadoutReservation = 0;
@@ -1279,6 +1343,7 @@
       chart = undefined;
       anchor = undefined;
       series = [];
+      renderGate.reset();
       delete surface.dataset.chartMounted;
       surface.replaceChildren();
     }
@@ -1619,7 +1684,11 @@
 
     function renderInlineReadout(readout) {
       if (detailsPinnedDate && !holderDetails.hidden) readout = resolveReadout(detailsPinnedDate);
+      const signature = chipReadoutContentSignature(readout);
+      if (signature === inlineReadoutSignature) return false;
       renderReadoutInto(inlineReadout, readout);
+      inlineReadoutSignature = signature;
+      return true;
     }
 
     function readoutModelsForReservation() {
@@ -1765,11 +1834,16 @@
       return [...dailyRowsByDate.keys()].at(-1) || rangeForCandles(lastCandles).end;
     }
 
-    function render(payload, candles) {
+    function render(payload, candles, materialSignature) {
+      const payloadChanged = payload !== lastPayload;
       lastPayload = payload;
       lastCandles = candles || [];
+      if (materialSignature) lastMaterialSignature = materialSignature;
+      else if (payloadChanged || !lastMaterialSignature) lastMaterialSignature = chipPayloadMaterialSignature(payload);
       syncSeriesControls();
-      if (!chart || !anchor) return;
+      if (!chart || !anchor) return false;
+      const renderSignature = `${definition.id}|${lastMaterialSignature}|${reservationControlKey()}`;
+      if (!renderGate.shouldRender(renderSignature)) return false;
       clearSeries();
       chart.applyOptions({ rightPriceScale: { visible: true, borderVisible: true, ticksVisible: true } });
       const timeMap = candleTimeByDate(lastCandles);
@@ -2036,6 +2110,8 @@
       const mainRange = options.getMainRange?.();
       if (mainRange) chart.timeScale().setVisibleLogicalRange(mainRange);
       options.onLayoutChange?.();
+      renderGate.commit(renderSignature);
+      return true;
     }
 
     if ("IntersectionObserver" in global) {
@@ -2059,8 +2135,7 @@
         const nextRange = rangeForCandles(nextCandles);
         lastCandles = nextCandles;
         if (previousRange.start === nextRange.start && previousRange.end === nextRange.end) return;
-        const latestCandle = lastCandles.at(-1);
-        if (anchor && latestCandle?.time) anchor.update({ time: latestCandle.time, value: 1 });
+        if (anchor) anchor.setData(lastCandles.map((row) => ({ time: row.time, value: 1 })));
         const mainRange = options.getMainRange?.();
         if (mainRange && chart) chart.timeScale().setVisibleLogicalRange(mainRange);
         scheduleReadoutReservation({ invalidate: true });
@@ -2238,12 +2313,15 @@
     let generation = 0;
     let abortController;
     let payload;
+    let payloadRequestKey = "";
+    let payloadMaterialSignature = "";
     let syncing = false;
     let reloadTimer;
     let backfillPollTimer;
     let backfillPollSymbol = "";
     let backfillPollAttempts = 0;
     let paneDrag;
+    let presentationSignature = "";
     let currentNoticeSignature = "";
     let dismissedNoticeSignature = "";
     let manager;
@@ -2353,7 +2431,7 @@
       }
       backfillPollAttempts += 1;
       invalidateChipRequestCache(symbol);
-      await load();
+      await load({ force: true });
       if (symbol !== context.symbol || symbol !== backfillPollSymbol) return;
       const state = backfillCoverageState(payload);
       if (!shouldContinueBackfillPolling(state)) {
@@ -2386,6 +2464,10 @@
       if (mode === "A") return [...visibleGroups].filter(Boolean);
       return normalizeGroupOrder(selection.modeBGroupOrder, selection.modeBPaneOrder, selection.modeBSelectedPaneIds)
         .filter((groupId) => visibleGroups.has(groupId));
+    }
+
+    function desiredDatasets() {
+      return [...new Set(desiredPaneIds().flatMap((id) => datasetsForDefinition(CHIP_PANE_REGISTRY.find((item) => item.id === id) || {})))];
     }
 
     function orderedControllers() {
@@ -2644,11 +2726,15 @@
     }
 
     function notifyPresentation() {
-      options.onPresentationChange?.({
+      const presentation = {
         mode: presentationModeForChipMode(mode),
         modeASlotKind: selection.modeASlotKind,
         paneIds: desiredPaneIds(),
-      });
+      };
+      const nextSignature = `${presentation.mode}|${presentation.modeASlotKind}|${presentation.paneIds.join(",")}`;
+      if (nextSignature === presentationSignature) return;
+      presentationSignature = nextSignature;
+      options.onPresentationChange?.(presentation);
     }
 
     function updateInputs() {
@@ -2707,7 +2793,7 @@
           startBackfillPolling(requestSymbol);
         } else {
           reloadTimer = setTimeout(() => {
-            if (requestSymbol === context.symbol && mode !== "none") load();
+            if (requestSymbol === context.symbol && mode !== "none") load({ force: true });
           }, result.status === "accepted" ? 1800 : 400);
         }
       }
@@ -2716,6 +2802,7 @@
 
     function reconcile() {
       cancelPaneDrag();
+      const createdControllers = [];
       const suspended = mode === "none";
       if (suspended) {
         generation += 1;
@@ -2724,6 +2811,8 @@
         abortController?.abort();
         abortController = undefined;
         payload = undefined;
+        payloadRequestKey = "";
+        payloadMaterialSignature = "";
         setNotice("");
       }
       const desired = new Set(desiredPaneIds());
@@ -2755,6 +2844,7 @@
           onCrosshair(pointer, paneId) { if (!syncing) options.onCrosshair?.(pointer, paneId); },
         });
         controllers.set(definition.id, controller);
+        createdControllers.push(controller);
       }
       for (const id of desiredPaneIds()) {
         const controller = controllers.get(id);
@@ -2772,44 +2862,64 @@
       options.stack.hidden = controllers.size === 0;
       options.panel?.classList.toggle("has-chip-panes", controllers.size > 0);
       updateInputs();
-      if (payload) for (const controller of controllers.values()) controller.render(payload, context.candles);
+      if (payload && createdControllers.length) {
+        const requestKey = chipRequestKey({ ...context, datasets: desiredDatasets() });
+        if (payloadRequestKey === requestKey) {
+          for (const controller of createdControllers) controller.render(payload, context.candles, payloadMaterialSignature);
+        }
+      }
       if (!suspended) load();
       options.onLayoutChange?.();
       scheduleChipReadoutCohorts();
     }
 
-    async function load() {
-      const current = ++generation;
-      abortController?.abort();
-      abortController = undefined;
+    async function load({ force = false } = {}) {
       if (mode === "none") {
+        generation += 1;
+        abortController?.abort();
+        abortController = undefined;
         payload = undefined;
+        payloadRequestKey = "";
+        payloadMaterialSignature = "";
         setNotice("");
         return;
       }
-      abortController = new AbortController();
-      payload = undefined;
-      const datasets = [...new Set(desiredPaneIds().flatMap((id) => datasetsForDefinition(CHIP_PANE_REGISTRY.find((item) => item.id === id) || {})))];
+      const datasets = desiredDatasets();
       if (!controllers.size || !context.symbol || !context.candles.length || context.interval !== "1d" || !/\.TW(O)?$/.test(context.symbol)) {
+        generation += 1;
+        abortController?.abort();
+        abortController = undefined;
+        payload = undefined;
+        payloadRequestKey = "";
+        payloadMaterialSignature = "";
         options.stack.classList.toggle("chip-state-unavailable", Boolean(controllers.size));
         setNotice(controllers.size ? (context.interval !== "1d" ? "籌碼副圖只支援日 K" : "此商品沒有可載入的台股證券籌碼資料") : "");
         for (const controller of controllers.values()) controller.render({ rows: [], distributionRows: [], availability: {} }, context.candles);
         return;
       }
+      const requestKey = chipRequestKey({ ...context, datasets });
+      if (shouldReuseChipPayload({ force, payload, payloadRequestKey, requestKey })) return;
+      const current = ++generation;
+      abortController?.abort();
+      abortController = new AbortController();
       options.stack.classList.remove("chip-state-unavailable");
       setNotice("籌碼資料載入中");
       try {
         const result = await sharedChipRequest({ ...context, datasets, signal: abortController.signal });
         if (current !== generation) return;
         payload = result;
+        payloadRequestKey = requestKey;
+        payloadMaterialSignature = chipPayloadMaterialSignature(result);
         const warningText = warningMessages(result.warnings);
         if (!warningText.length) dismissedNoticeSignature = "";
         setNotice(warningText, { dismissible: true, signature: warningNoticeSignature(context, warningText) });
-        for (const controller of controllers.values()) controller.render(payload, context.candles);
+        for (const controller of controllers.values()) controller.render(payload, context.candles, payloadMaterialSignature);
       } catch (error) {
         if (error?.name === "AbortError" || current !== generation) return;
         setNotice(`籌碼資料暫時不可用：${error?.message || "請稍後重試"}`);
-        for (const controller of controllers.values()) controller.render({ rows: [], distributionRows: [], availability: {} }, context.candles);
+        if (payload === undefined) {
+          for (const controller of controllers.values()) controller.render({ rows: [], distributionRows: [], availability: {} }, context.candles);
+        }
       }
     }
 
@@ -2845,11 +2955,14 @@
 
     manager = {
       setContext(next) {
+        const nextContext = { ...context, ...next };
         const previousRange = rangeForCandles(context.candles);
-        const nextRange = rangeForCandles(next.candles || context.candles);
-        const identityChanged = context.symbol !== next.symbol || context.tabId !== next.tabId;
-        const dataChanged = identityChanged || context.interval !== next.interval || previousRange.start !== nextRange.start || previousRange.end !== nextRange.end;
-        context = { ...context, ...next };
+        const nextRange = rangeForCandles(nextContext.candles);
+        const identityChanged = context.symbol !== nextContext.symbol || context.tabId !== nextContext.tabId;
+        const sourceChanged = context.symbol !== nextContext.symbol || context.interval !== nextContext.interval;
+        const dataChanged = identityChanged || sourceChanged || previousRange.start !== nextRange.start || previousRange.end !== nextRange.end;
+        if (shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles: nextContext.candles })) return;
+        context = nextContext;
         if (identityChanged) {
           cancelPaneDrag();
           clearTimeout(reloadTimer);
@@ -2857,7 +2970,21 @@
           for (const controller of controllers.values()) controller.closeOverlays?.();
           selection = readSelection(context.tabId, context.symbol);
         }
-        if (dataChanged) reconcile();
+        if (sourceChanged) {
+          generation += 1;
+          abortController?.abort();
+          abortController = undefined;
+          payload = undefined;
+          payloadRequestKey = "";
+          payloadMaterialSignature = "";
+        }
+        if (identityChanged || sourceChanged) {
+          reconcile();
+        } else if (dataChanged) {
+          for (const controller of controllers.values()) controller.setCandles(nextContext.candles);
+          scheduleChipReadoutCohorts();
+          load();
+        }
       },
       updateCandles(candles) {
         const nextCandles = Array.isArray(candles) ? candles : [];
@@ -2934,6 +3061,12 @@
       groupSelectionState,
       holderAggregate,
       holderDetailModel,
+      chipRequestKey,
+      chipPayloadMaterialSignature,
+      chipReadoutContentSignature,
+      createChipRenderGate,
+      shouldPreserveChipPayloadForEmptyContext,
+      shouldReuseChipPayload,
       invalidateChipRequestCache,
       movePaneInOrder,
       migrateModeBSelectedPaneIds,

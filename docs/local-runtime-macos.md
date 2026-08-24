@@ -146,6 +146,27 @@ MultiView 都以 `common_lot`（張）呈現：Shioaji lot 不換算，Yahoo／T
 shares 除以 1,000。只有同一批 Shioaji Kbars 要求跨畫面 daily OHLCV 完全一致；
 fallback 不冒充跨 provider 數值 parity，且 Shioaji 本機 display 不取代收盤核定。
 
+## 主交易畫面指定日期 drill-down
+
+日 K 觀察模式可雙擊有效 K 棒進入該 `Asia/Taipei` 日期的 exact-date 1 分 K。
+主程式會先重新確認 `/api/v1/info` 為 simulation，再以相同 start／end 日期讀取
+Kbars；只有 symbol、source、schema、日期、排序、最多 600 根與 latest generation
+全部通過，才在 paint 前同步切換 candles、readout、成交量、指標、
+day-boundaries 與 viewport。空資料、混日、來源失敗或使用者快速切換時，原日 K
+與工具狀態保持不變。日 K 壓撐單擊使用 260ms bounded arbiter；同棒雙擊會取消
+單擊 reference 副作用。交易點價、費波那契、價格範圍、固定範圍 VP 與 drag
+保留原 ownership，不會因 drill-down 延遲或重送任何 broker write。
+
+這項能力只使用現有 loopback simulation market-data runtime；不會登入或切換
+production、不會啟用 CA、取得 broker authority、建立委託、寫入 D1 verified
+history、部署或改變服務生命週期。
+
+MultiView 主圖單擊仍立即交由目前工具處理。2／3／4／6／8 圖合法雙擊開啟目前
+商品與週期的單圖新分頁；圖表數量為 1 時，雙擊有效且已完成的日 K才使用相同
+simulation-only 指定日期契約，在原 panel 驗證成功後原子切為該日期 1 分 K。籌碼
+副圖在同商品刷新、重排或短暫 API 失敗時保留最後一份已驗證資料，只有商品或週期
+改變才清除舊 identity。
+
 ## MultiView 盤後資料 seed
 
 盤後資料只可從既有合法 Cloudflare OAuth session 唯讀匯入。工具從來源端限制為 12 個市場資料 table；不得先匯出整個 D1，也不得讀 browser cookie 或建立授權 bypass。

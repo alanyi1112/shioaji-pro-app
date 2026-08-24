@@ -408,6 +408,25 @@ export const fibonacciNotice = style({
     pointerEvents: 'none',
 });
 
+export const dailyDrilldownNotice = style({
+    position: 'absolute',
+    right: '64px',
+    bottom: '52px',
+    zIndex: 6,
+    maxWidth: 'min(32rem, calc(100% - 24px))',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    fontFamily: vars.font.body,
+    fontSize: '0.62rem',
+    color: vars.color.foreground,
+    background: 'color-mix(in srgb, ' + vars.color.panel + ' 92%, transparent)',
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    padding: '2px 7px',
+    pointerEvents: 'none',
+});
+
 export const triggerList = style({
     position: 'absolute',
     top: '8px',

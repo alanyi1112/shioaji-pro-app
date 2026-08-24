@@ -122,6 +122,7 @@ test("exporter 置換 Canvas、排除暫態 UI、只序列化指定 panel 且不
   assert.match(source, /\[data-export-exclude\]/);
   assert.match(source, /if \(source\.matches\(EXCLUDE_SELECTOR\)\) return document\.createTextNode\(""\)/);
   assert.match(appSource, /class: "chart-annotation-fibonacci-price-guide"[\s\S]*?"data-export-exclude": ""/);
+  assert.match(appSource, /圖片已儲存：\$\{result\.filename\}/);
   assert.match(source, /\.chip-pane-group-ghost/);
   assert.match(source, /\.indicator-options/);
   assert.match(source, /serializePanel\(panel, dimensions\)/);

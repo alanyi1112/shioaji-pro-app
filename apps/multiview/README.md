@@ -33,6 +33,12 @@ fallback 保留 provider 與 source unit，只保證單位與完整 payload 內�
 這項本機能力不會替 Sites／Cloudflare 啟用 Shioaji，也不會寫入 D1 verified
 canonical history。詳細安全與驗收矩陣見 `docs/local-runtime.md`。
 
+本機 MultiView 的主圖單擊不等待雙擊判定，會立即交給註記、壓撐、固定範圍 VP
+或目前 active tool。2／3／4／6／8 圖合法雙擊仍以目前商品與週期開啟單圖新分頁；
+圖表數量為 1 時，雙擊主圖內有效且已完成的日 K 會在原 panel 以 local Shioaji
+simulation 精確載入該日期 1 分 K。非日 K、背景、控制項或非法資料不切換，也不包含
+broker authority。
+
 ## 台股個股籌碼副圖
 
 - 適用範圍：商品目錄中 `quoteType=EQUITY` 且 exchange／canonical symbol 相符的 `.TW`、`.TWO` 普通股；目前只支援日 K。
@@ -40,6 +46,9 @@ canonical history。詳細安全與驗收矩陣見 `docs/local-runtime.md`。
 - 1／2／3 圖可切換 A 單一副圖或 B 多層副圖，首次預設 B；4／6／8 圖與 focus mode 固定 A，離開後恢復原偏好。
 - B 預設顯示三大法人合計、融資、融券、大戶持股、散戶持股；每個 panel 依 `tabId + symbol` 保存 A 最後項目與 B 勾選組合。
 - 大戶／散戶是 TDCC 集保持股級距，不代表投資人身分。預設大戶為分級 15（1,000,001 股以上），散戶為分級 1 至 3（10,000 股以下）。
+- 籌碼刷新採同 context stale-while-refresh：暫時空 K 棒、pane 重排、取消或短暫 API 失敗會保留最後一份已驗證的大戶／散戶資料；只有商品或週期改變才清除舊 identity。
+- 副圖 lifecycle 會分開處理 layout、時間 anchor 與實際資料；相同 material payload、相同 presentation 或初次 viewport recovery 不會銷毀 chart 後重畫，只有可見資料或 pane 控制值改變才更新 series。
+- 游標熱路徑以 Lightweight Charts crosshair callback 為單一時間來源，同一 animation frame 只提交最新 candle；一般滑鼠移動不重建 overlays，相同 candle 與相同籌碼 readout 也不重複更新 DOM。
 - 日資料以 FinMind 歷史 API 為主；TPEx／TWSE 合法 OpenAPI 可補最新可證明欄位；股權分散使用 TDCC 每週全市場快照。來源細節見 `docs/research/2026-07-15-taiwan-stock-chip-data-sources.md`。
 
 ### Runtime 設定與限制

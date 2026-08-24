@@ -414,7 +414,8 @@ test("主圖工具、註記圖層與匯出路徑保持可見且不攔截圖表�
   assert.match(autoScaleSource, /filter\(\(entry\) => entry\.kind === "extension"/);
   assert.doesNotMatch(autoScaleSource, /annotationState\?\.pending|pending\.preview|pending\.anchors/);
   assert.match(appScript, /function updateFibonacciCrosshairMarkers[\s\S]*?defaultVisible = mainLineCrosshairMarkerDefaults\.get\(series\) !== false[\s\S]*?crosshairMarkerVisible: shouldHide \? false : defaultVisible/);
-  assert.match(appScript, /onChange: \(annotationState\) => \{\s*if \(!isPanelActive\(\)\) return;\s*updateFibonacciCrosshairMarkers\(annotationState\)/);
+  assert.match(appScript, /onChange: scheduleAnnotationStateRender/);
+  assert.match(appScript, /function scheduleAnnotationStateRender[\s\S]*?panelLifecycle\.requestFrame[\s\S]*?updateFibonacciCrosshairMarkers\(nextState\)[\s\S]*?updateFibonacciAutoScale\(nextState\)[\s\S]*?renderChartAnnotations\(\)/);
   assert.match(appScript, /function addLine[\s\S]*?defaultCrosshairMarkerVisible = options\.crosshairMarkerVisible !== false[\s\S]*?crosshairMarkerVisible: isFibonacciSelectionActive\(\) \? false : defaultCrosshairMarkerVisible/);
   assert.match(appScript, /chart-annotation-fibonacci-anchor--\$\{point\.label\.toLowerCase\(\)\}/);
   assert.match(styles, /\.chart-annotation-layer\s*\{[^}]*pointer-events:\s*none/s);
