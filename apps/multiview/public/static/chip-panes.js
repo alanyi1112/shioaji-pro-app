@@ -744,7 +744,7 @@
   }
 
   function shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles }) {
-    return !identityChanged && !sourceChanged && Array.isArray(candles) && candles.length === 0;
+    return !sourceChanged && Array.isArray(candles) && candles.length === 0;
   }
 
   const CHIP_NON_MATERIAL_KEYS = new Set([
@@ -2955,13 +2955,14 @@
 
     manager = {
       setContext(next) {
-        const nextContext = { ...context, ...next };
+        const incomingContext = { ...context, ...next };
+        const sourceChanged = context.symbol !== incomingContext.symbol || context.interval !== incomingContext.interval;
+        const identityChanged = context.symbol !== incomingContext.symbol || context.tabId !== incomingContext.tabId;
+        const preserveEmptyContext = shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles: incomingContext.candles });
+        const nextContext = preserveEmptyContext ? { ...incomingContext, candles: context.candles } : incomingContext;
         const previousRange = rangeForCandles(context.candles);
         const nextRange = rangeForCandles(nextContext.candles);
-        const identityChanged = context.symbol !== nextContext.symbol || context.tabId !== nextContext.tabId;
-        const sourceChanged = context.symbol !== nextContext.symbol || context.interval !== nextContext.interval;
         const dataChanged = identityChanged || sourceChanged || previousRange.start !== nextRange.start || previousRange.end !== nextRange.end;
-        if (shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles: nextContext.candles })) return;
         context = nextContext;
         if (identityChanged) {
           cancelPaneDrag();
@@ -2988,6 +2989,7 @@
       },
       updateCandles(candles) {
         const nextCandles = Array.isArray(candles) ? candles : [];
+        if (!nextCandles.length && context.candles.length) return;
         const previousRange = rangeForCandles(context.candles);
         const nextRange = rangeForCandles(nextCandles);
         context = { ...context, candles: nextCandles };

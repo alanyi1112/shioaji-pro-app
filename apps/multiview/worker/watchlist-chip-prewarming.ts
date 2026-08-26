@@ -3,7 +3,7 @@ import { CHIP_BACKFILL_ORCHESTRATOR_CONTRACT, latestCompletedTaiwanSessionDate }
 export const WATCHLIST_CHIP_PREWARM_CONTRACT = Object.freeze({
   scheduler: "sites-worker-orchestrator",
   datasets: ["institutional-flow", "foreign-holding", "margin-short", "securities-lending"] as const,
-  lookbackDays: 730,
+  lookbackDays: 365,
   freshnessMs: 20 * 60 * 60 * 1000,
   maxTargetsPerRun: 40,
   requestTimeoutMs: 45 * 1000,
@@ -30,7 +30,7 @@ type WarmTargetRow = {
 type SchedulerRunRow = {
   heartbeat_at?: string | null;
   status?: string | null;
-  error_code?: string | null;
+  last_reason_code?: string | null;
 };
 
 export type WatchlistChipWarmTarget = {
@@ -136,7 +136,7 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
     const current = now instanceof Date ? now : new Date(now);
     const window = watchlistChipWarmWindow(current);
     const { symbols, states } = await readTargetsAndStates(db);
-    const schedulerRun = await db.prepare("SELECT heartbeat_at,status,error_code FROM tdcc_continuous_runs ORDER BY updated_at DESC LIMIT 1").first<SchedulerRunRow>();
+    const schedulerRun = await db.prepare("SELECT heartbeat_at,status,last_reason_code FROM chip_backfill_orchestrator_runs WHERE scope IN ('daily','combined') ORDER BY updated_at DESC LIMIT 1").first<SchedulerRunRow>();
     const schedulerHeartbeat = Date.parse(String(schedulerRun?.heartbeat_at || ""));
     const schedulerStale = !Number.isFinite(schedulerHeartbeat) || current.getTime() - schedulerHeartbeat > 36 * 3600000;
     let readySymbols = 0;
@@ -160,7 +160,7 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
     const pendingSymbols = Math.max(0, symbols.length - readySymbols);
     return {
       configured: true,
-      status: schedulerStale ? "scheduler_stale" : pendingSymbols ? "warming" : "healthy",
+      status: schedulerStale ? "scheduler_stale" : schedulerRun?.status === "failed" ? "degraded" : pendingSymbols ? "warming" : "healthy",
       scheduler: WATCHLIST_CHIP_PREWARM_CONTRACT.scheduler,
       lastHeartbeatAt: schedulerRun?.heartbeat_at || null,
       window,
@@ -169,7 +169,7 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
       pendingSymbols,
       retryWaitingSymbols,
       lastSuccessAt: successes.sort().at(-1) || null,
-      lastErrorCode: schedulerStale ? "scheduler_stale" : reasons.includes("rate_limited") ? "rate_limited" : schedulerRun?.error_code || reasons.at(-1) || null,
+      lastErrorCode: schedulerStale ? "scheduler_stale" : reasons.includes("rate_limited") ? "rate_limited" : schedulerRun?.last_reason_code || reasons.at(-1) || null,
     };
   } catch {
     return { configured: false, status: "unavailable", scheduler: WATCHLIST_CHIP_PREWARM_CONTRACT.scheduler, targetSymbols: 0, readySymbols: 0, pendingSymbols: 0, retryWaitingSymbols: 0, lastSuccessAt: null, lastErrorCode: "d1_unavailable" };

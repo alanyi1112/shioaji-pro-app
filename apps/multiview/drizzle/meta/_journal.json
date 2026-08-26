@@ -155,6 +155,13 @@
       "when": 1785515805037,
       "tag": "0021_bumpy_bruce_banner",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1787736000000,
+      "tag": "0022_tpex_pe_attempt_health",
+      "breakpoints": true
     }
   ]
 }

@@ -143,7 +143,8 @@ history，也不取代既有 TWSE／TPEx 收盤核定流程。
 及 verification 語意；未發布資料不補零、不 forward-fill。
 
 - 平日 16:45：daily cache／台股籌碼及有界 PE backfill。
-- 週六 10:00：有界 TDCC latest／continuous backfill。
+- 週六 22:30：有界 TDCC latest／continuous backfill 主要同步。
+- 週日 22:30：TDCC latest／continuous backfill 有限隔日重試。
 - 登入時也會觸發一次可重入的 overdue 檢查；run id、checkpoint、lease、retry
   與 changed-only write 避免重複寫入。
 

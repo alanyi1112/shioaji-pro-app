@@ -8,6 +8,7 @@ import {
   latestFirstPlan,
   mergePreferredPeRows,
   parseTpexDailySnapshot,
+  parseTpexDailySnapshotBundle,
   parseTwseDailySnapshot,
   parseTwseDailySnapshotBundle,
   provisionalPeRiverDateRange,
@@ -30,10 +31,12 @@ import { SqliteD1, applyDrizzleSql } from "./helpers/sqlite-d1.mjs";
 const finmind = JSON.parse(await readFile(new URL("./fixtures/finmind-pe-river.json", import.meta.url), "utf8"));
 const official = JSON.parse(await readFile(new URL("./fixtures/official-pe-daily.json", import.meta.url), "utf8"));
 const provisionalFixture = JSON.parse(await readFile(new URL("./fixtures/provisional-pe-river.json", import.meta.url), "utf8"));
+const tpexUnpublished = JSON.parse(await readFile(new URL("./fixtures/tpex-pe-unpublished.json", import.meta.url), "utf8"));
 const migrations = await Promise.all([
   readFile(new URL("../drizzle/0011_blue_typhoid_mary.sql", import.meta.url), "utf8"),
   readFile(new URL("../drizzle/0012_pe_river_pipeline.sql", import.meta.url), "utf8"),
   readFile(new URL("../drizzle/0013_public_warstar.sql", import.meta.url), "utf8"),
+  readFile(new URL("../drizzle/0022_tpex_pe_attempt_health.sql", import.meta.url), "utf8"),
 ]);
 const cloudflareRuntimeMigration = await readFile(new URL("../drizzle/0018_cloudflare_pe_runtime_columns.sql", import.meta.url), "utf8");
 
@@ -132,6 +135,47 @@ test("TWSE、TPEx 官方最新快照解析收盤、本益比、民國日期與�
   assert.deepEqual(twseBundle.gaps, [{ exchange: "TWSE", symbol: "1101.TW", sessionDate: "2026-07-21", officialClose: 24.05, source: "twse", reasonCode: "official_gap" }]);
   assert.deepEqual([twse[0].sessionDate, twse[0].officialClose, twse[0].fiscalYear, twse[0].fiscalQuarter], ["2026-07-21", 2410, "2026", "1"]);
   assert.deepEqual([tpex[0].sessionDate, tpex[0].officialClose, tpex[0].officialPeRatio], ["2026-07-22", 194.5, 20.2]);
+});
+
+test("TPEx 合法 D-1 PE 與 D quotes 分類為尚未發布，未知 schema 才回 schema mismatch", () => {
+  const pending = parseTpexDailySnapshotBundle(tpexUnpublished.pe, tpexUnpublished.close);
+  assert.equal(pending.status, "official_not_published");
+  assert.deepEqual(pending.diagnostic.peSourceDates, ["2026-08-25"]);
+  assert.deepEqual(pending.diagnostic.closeSourceDates, ["2026-08-26"]);
+  assert.deepEqual(parseTpexDailySnapshotBundle([], []), {
+    rows: [], gaps: [], status: "official_not_published",
+    diagnostic: { peRowCount: 0, closeRowCount: 0, peSourceDates: [], closeSourceDates: [], missingFields: [] },
+  });
+  assert.throws(() => parseTpexDailySnapshotBundle([{ unexpected: true }], [{ alsoUnexpected: true }]), /schema_mismatch/);
+  assert.throws(() => parseTpexDailySnapshotBundle({ rows: [] }, []), /schema_mismatch/);
+});
+
+test("TPEx 未發布 attempt 保留最後 verified row，health 分離本次結果與最後來源日", async () => {
+  const db = await pipelineDb();
+  try {
+    db.exec("INSERT INTO user_instruments (user_id,symbol,enabled) VALUES ('u','8069.TWO',1)");
+    const verified = parseTpexDailySnapshot(official.tpexPe, official.tpexClose)[0];
+    await ingestNormalizedPeRiverMonth({ db, symbol: verified.symbol, month: "2026-07", rows: [verified] });
+    const before = await db.prepare("SELECT official_close,official_pe_ratio,source_date FROM taiwan_stock_pe_valuation_daily WHERE symbol='8069.TWO'").first();
+    resetPeRiverDataCachesForTest();
+    const fetchImpl = async (input) => {
+      const url = String(input);
+      if (url.includes("BWIBBU_d")) return new Response(JSON.stringify(official.twse), { status: 200 });
+      if (url.includes("peratio_analysis")) return new Response(JSON.stringify(tpexUnpublished.pe), { status: 200 });
+      if (url.includes("tpex_mainboard_quotes")) return new Response(JSON.stringify(tpexUnpublished.close), { status: 200 });
+      return new Response("{}", { status: 404 });
+    };
+    const latest = await refreshPeRiverOfficialLatest({ db, runId: "tpex-unpublished", fetchImpl, now: new Date("2026-08-26T08:30:00Z") });
+    assert.equal(latest.failures.TPEx, "official_not_published");
+    assert.equal(latest.attempts.TPEx.status, "pending");
+    const after = await db.prepare("SELECT official_close,official_pe_ratio,source_date FROM taiwan_stock_pe_valuation_daily WHERE symbol='8069.TWO'").first();
+    assert.deepEqual({ ...after }, { ...before });
+    const health = await readPeRiverContinuousHealth(db);
+    assert.equal(health.latest.attempts.tpex.reasonCode, "official_not_published");
+    assert.equal(health.latest.attempts.tpex.lastVerifiedSourceDate, null);
+    assert.deepEqual(health.latest.attempts.tpex.diagnostic.peSourceDates, ["2026-08-25"]);
+    assert.equal(health.latest.providerMismatch, 0);
+  } finally { resetPeRiverDataCachesForTest(); db.close(); }
 });
 
 test("最近共同交易日以 0.01 核對，官方延遲與 mismatch 都不冒充 verified", () => {

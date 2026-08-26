@@ -48,7 +48,7 @@ test("籌碼 request identity 正規化商品、日期範圍與 dataset 順序",
 test("同 context 空 candles 與相同 request identity 保留既有籌碼 payload", () => {
   const payload = { distributionRows: [{ dataDate: "2026-07-09" }] };
   assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: false, sourceChanged: false, candles: [] }), true);
-  assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: true, sourceChanged: false, candles: [] }), false);
+  assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: true, sourceChanged: false, candles: [] }), true);
   assert.equal(shouldPreserveChipPayloadForEmptyContext({ identityChanged: false, sourceChanged: true, candles: [] }), false);
   assert.equal(shouldReuseChipPayload({ payload, payloadRequestKey: "same", requestKey: "same" }), true);
   assert.equal(shouldReuseChipPayload({ force: true, payload, payloadRequestKey: "same", requestKey: "same" }), false);

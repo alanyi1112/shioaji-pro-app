@@ -21,6 +21,34 @@ export const PE_RIVER_PROVISIONAL_NOT_BEFORE_MINUTE = 30;
 type UnknownRecord = Record<string, unknown>;
 type FetchLike = typeof fetch;
 
+export type PeRiverAttemptDiagnostic = {
+  peRowCount: number;
+  closeRowCount: number;
+  peSourceDates: string[];
+  closeSourceDates: string[];
+  missingFields: string[];
+};
+
+function providerAttemptError(reasonCode: "official_not_published" | "schema_mismatch", diagnostic: PeRiverAttemptDiagnostic) {
+  const error = new Error(reasonCode) as Error & { diagnostic?: PeRiverAttemptDiagnostic };
+  error.diagnostic = diagnostic;
+  return error;
+}
+
+export function peRiverProviderAttemptDiagnostic(value: unknown): PeRiverAttemptDiagnostic | null {
+  if (!value || typeof value !== "object") return null;
+  const diagnostic = (value as { diagnostic?: unknown }).diagnostic;
+  if (!diagnostic || typeof diagnostic !== "object") return null;
+  const candidate = diagnostic as Partial<PeRiverAttemptDiagnostic>;
+  return {
+    peRowCount: Number(candidate.peRowCount || 0),
+    closeRowCount: Number(candidate.closeRowCount || 0),
+    peSourceDates: Array.isArray(candidate.peSourceDates) ? candidate.peSourceDates.map(String).slice(0, 3) : [],
+    closeSourceDates: Array.isArray(candidate.closeSourceDates) ? candidate.closeSourceDates.map(String).slice(0, 3) : [],
+    missingFields: Array.isArray(candidate.missingFields) ? candidate.missingFields.map(String).slice(0, 8) : [],
+  };
+}
+
 const positive = (value: unknown): number | null => {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
@@ -239,7 +267,44 @@ export function parseTwseDailySnapshot(payload: unknown) {
 }
 
 export function parseTpexDailySnapshotBundle(pePayload: unknown, closePayload: unknown) {
-  if (!Array.isArray(pePayload) || !Array.isArray(closePayload) || pePayload.length < 1 || closePayload.length < 1 || pePayload.length > 5000 || closePayload.length > 15000) throw new Error("schema_mismatch");
+  if (!Array.isArray(pePayload) || !Array.isArray(closePayload) || pePayload.length > 5000 || closePayload.length > 15000) throw new Error("schema_mismatch");
+  const peDates = new Set<string>();
+  const closeDates = new Set<string>();
+  let validPeShapes = 0;
+  let validCloseShapes = 0;
+  for (const value of pePayload) {
+    if (!value || typeof value !== "object") continue;
+    const row = value as UnknownRecord;
+    const code = String(row.SecuritiesCompanyCode || row.Code || "").trim();
+    const date = safeDate(row.Date);
+    if (code && date && (Object.hasOwn(row, "PriceEarningRatio") || Object.hasOwn(row, "PEratio"))) {
+      validPeShapes += 1;
+      peDates.add(date);
+    }
+  }
+  for (const value of closePayload) {
+    if (!value || typeof value !== "object") continue;
+    const row = value as UnknownRecord;
+    const code = String(row.SecuritiesCompanyCode || row.Code || "").trim();
+    const date = safeDate(row.Date);
+    if (code && date && (Object.hasOwn(row, "Close") || Object.hasOwn(row, "ClosePrice"))) {
+      validCloseShapes += 1;
+      closeDates.add(date);
+    }
+  }
+  const diagnostic: PeRiverAttemptDiagnostic = {
+    peRowCount: pePayload.length,
+    closeRowCount: closePayload.length,
+    peSourceDates: [...peDates].sort().slice(-3),
+    closeSourceDates: [...closeDates].sort().slice(-3),
+    missingFields: [
+      ...(pePayload.length && !validPeShapes ? ["pe:SecuritiesCompanyCode|Code,Date,PriceEarningRatio|PEratio"] : []),
+      ...(closePayload.length && !validCloseShapes ? ["close:SecuritiesCompanyCode|Code,Date,Close|ClosePrice"] : []),
+    ],
+  };
+  if ((pePayload.length && !validPeShapes) || (closePayload.length && !validCloseShapes)) throw providerAttemptError("schema_mismatch", diagnostic);
+  const commonDates = new Set([...peDates].filter((date) => closeDates.has(date)));
+  if (!commonDates.size) return { rows: [] as PeRiverValuationRow[], gaps: [] as OfficialPeGap[], status: "official_not_published" as const, diagnostic };
   const closes = new Map<string, { date: string; close: number }>();
   for (const value of closePayload) {
     if (!value || typeof value !== "object") continue;
@@ -262,14 +327,15 @@ export function parseTpexDailySnapshotBundle(pePayload: unknown, closePayload: u
     if (pe) rows.push(officialRowBase("TPEx", code, date, close, pe, row.FiscalYearQuarter));
     else gaps.push(officialGapBase("TPEx", code, date, close));
   }
-  return { rows, gaps };
+  if (!rows.length && !gaps.length) throw providerAttemptError("schema_mismatch", diagnostic);
+  return { rows, gaps, status: "available" as const, diagnostic };
 }
 
 export function parseTpexDailySnapshot(pePayload: unknown, closePayload: unknown) {
   return parseTpexDailySnapshotBundle(pePayload, closePayload).rows;
 }
 
-type OfficialSnapshotBundle = { rows: PeRiverValuationRow[]; gaps: OfficialPeGap[] };
+type OfficialSnapshotBundle = { rows: PeRiverValuationRow[]; gaps: OfficialPeGap[]; status?: "available" | "official_not_published"; diagnostic?: PeRiverAttemptDiagnostic };
 const officialCache = new Map<PeRiverExchange, { expiresAt: number; bundle: OfficialSnapshotBundle; promise?: Promise<OfficialSnapshotBundle> }>();
 
 export function resetPeRiverDataCachesForTest() {
@@ -285,7 +351,10 @@ export async function fetchOfficialPeDailySnapshotBundle(exchange: PeRiverExchan
     const bundle = exchange === "TWSE"
       ? parseTwseDailySnapshotBundle(await get(TWSE_PE_DAILY_URL, 3_000_000))
       : parseTpexDailySnapshotBundle(await get(TPEX_PE_DAILY_URL, 3_000_000), await get(TPEX_CLOSE_DAILY_URL, 8_000_000));
-    if (!bundle.rows.length && !bundle.gaps.length) throw new Error("schema_mismatch");
+    if (!bundle.rows.length && !bundle.gaps.length) {
+      const diagnostic = bundle.diagnostic || { peRowCount: 0, closeRowCount: 0, peSourceDates: [], closeSourceDates: [], missingFields: [] };
+      throw providerAttemptError(bundle.status === "official_not_published" ? "official_not_published" : "schema_mismatch", diagnostic);
+    }
     officialCache.set(exchange, { bundle, expiresAt: Date.now() + 120000 });
     return bundle;
   })();

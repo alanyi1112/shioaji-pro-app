@@ -6,6 +6,7 @@ import {
   fetchFinMindPeHistory,
   fetchOfficialPeDailySnapshot,
   fetchOfficialPeDailySnapshotBundle,
+  peRiverProviderAttemptDiagnostic,
   provisionalPeRiverDateRange,
   reconcileProvisionalPeRiverRow,
   reserveFinMindBudget,
@@ -26,6 +27,14 @@ import {
 } from "./taiwan-stock-pe-river.ts";
 
 const RUN_ID = /^[a-zA-Z0-9:_-]{3,160}$/;
+
+type ProviderAttempt = {
+  attemptedAt: string;
+  status: "success" | "pending" | "failed";
+  reasonCode: string;
+  sourceDate: string | null;
+  diagnostic: ReturnType<typeof peRiverProviderAttemptDiagnostic>;
+};
 
 function targetRange(now: Date) {
   const end = now.toISOString().slice(0, 10);
@@ -86,21 +95,30 @@ async function applyOfficialPeRiverGap(input: { db: D1Database; gap: OfficialPeG
 
 export async function refreshPeRiverOfficialLatest(input: { db: D1Database; runId: string; fetchImpl?: typeof fetch; now?: Date; provisionalEnabled?: boolean }) {
   if (!RUN_ID.test(input.runId)) throw new Error("invalid_payload");
+  const now = input.now || new Date();
+  const nowText = now.toISOString();
   const targets = await discoverPeRiverTargets(input.db);
   const snapshots = new Map<PeRiverExchange, Awaited<ReturnType<typeof fetchOfficialPeDailySnapshot>>>();
   const gaps = new Map<PeRiverExchange, OfficialPeGap[]>();
   const failures: Record<string, string> = {};
+  const attempts = {} as Record<PeRiverExchange, ProviderAttempt>;
   for (const exchange of ["TWSE", "TPEx"] as const) {
     try {
       const bundle = await fetchOfficialPeDailySnapshotBundle(exchange, input.fetchImpl || fetch);
       snapshots.set(exchange, bundle.rows);
       gaps.set(exchange, bundle.gaps);
+      attempts[exchange] = { attemptedAt: nowText, status: "success", reasonCode: "available", sourceDate: null, diagnostic: bundle.diagnostic || null };
     }
-    catch (error) { failures[exchange] = safePeRiverBackfillError(error); snapshots.set(exchange, []); gaps.set(exchange, []); }
+    catch (error) {
+      const reasonCode = safePeRiverBackfillError(error);
+      failures[exchange] = reasonCode;
+      snapshots.set(exchange, []);
+      gaps.set(exchange, []);
+      attempts[exchange] = { attemptedAt: nowText, status: reasonCode === "official_not_published" ? "pending" : "failed", reasonCode, sourceDate: null, diagnostic: peRiverProviderAttemptDiagnostic(error) };
+    }
   }
   const accepted = [];
   let promoted = 0;
-  const now = input.now || new Date();
   for (const target of targets) {
     const row = snapshots.get(target.exchange)?.find((value) => value.symbol === target.symbol);
     if (!row) {
@@ -116,6 +134,8 @@ export async function refreshPeRiverOfficialLatest(input: { db: D1Database; runI
   const sourceDate = (rows: typeof accepted) => rows.reduce((latest, row) => row.sessionDate > latest ? row.sessionDate : latest, "") || null;
   const twseSourceDate = sourceDate(snapshots.get("TWSE") || []);
   const tpexSourceDate = sourceDate(snapshots.get("TPEx") || []);
+  attempts.TWSE.sourceDate = twseSourceDate;
+  attempts.TPEx.sourceDate = tpexSourceDate;
   let provisionalAccepted = 0;
   const provisional: Array<{ symbol: string; status: string; dates: string[] }> = [];
   if (input.provisionalEnabled) {
@@ -157,8 +177,8 @@ export async function refreshPeRiverOfficialLatest(input: { db: D1Database; runI
       }
     }
   }
-  const completed = await completePeRiverLatestLane({ db: input.db, runId: input.runId, twseSourceDate, tpexSourceDate, now });
-  return { ...completed, accepted: accepted.length, promoted, provisionalAccepted, provisional, failures, rows: accepted.map((row) => ({ symbol: row.symbol, exchange: row.exchange, sessionDate: row.sessionDate, officialClose: row.officialClose, officialPeRatio: row.officialPeRatio, validationStatus: row.validationStatus, source: row.source, provider: row.provider, sourceDate: row.sourceDate })) };
+  const completed = await completePeRiverLatestLane({ db: input.db, runId: input.runId, twseSourceDate, tpexSourceDate, attempts, now });
+  return { ...completed, accepted: accepted.length, promoted, provisionalAccepted, provisional, failures, attempts, rows: accepted.map((row) => ({ symbol: row.symbol, exchange: row.exchange, sessionDate: row.sessionDate, officialClose: row.officialClose, officialPeRatio: row.officialPeRatio, validationStatus: row.validationStatus, source: row.source, provider: row.provider, sourceDate: row.sourceDate })) };
 }
 
 export async function startPeRiverContinuousRun(input: {
@@ -204,11 +224,14 @@ export async function startPeRiverContinuousRun(input: {
   };
 }
 
-export async function completePeRiverLatestLane(input: { db: D1Database; runId: string; twseSourceDate?: string | null; tpexSourceDate?: string | null; now?: Date }) {
+export async function completePeRiverLatestLane(input: { db: D1Database; runId: string; twseSourceDate?: string | null; tpexSourceDate?: string | null; attempts?: Record<PeRiverExchange, ProviderAttempt>; now?: Date }) {
   if (!RUN_ID.test(input.runId)) throw new Error("invalid_payload");
   const nowText = (input.now || new Date()).toISOString();
-  await input.db.prepare(`INSERT INTO taiwan_stock_pe_control (control_key,scheduler_heartbeat_at,last_latest_run_at,latest_twse_source_date,latest_tpex_source_date) VALUES ('global',?,?,?,?) ON CONFLICT(control_key) DO UPDATE SET scheduler_heartbeat_at=excluded.scheduler_heartbeat_at,last_latest_run_at=excluded.last_latest_run_at,latest_twse_source_date=COALESCE(excluded.latest_twse_source_date,taiwan_stock_pe_control.latest_twse_source_date),latest_tpex_source_date=COALESCE(excluded.latest_tpex_source_date,taiwan_stock_pe_control.latest_tpex_source_date),updated_at=CURRENT_TIMESTAMP`).bind(nowText, nowText, input.twseSourceDate || null, input.tpexSourceDate || null).run();
-  return { status: "complete" as const, heartbeatAt: nowText, twseSourceDate: input.twseSourceDate || null, tpexSourceDate: input.tpexSourceDate || null };
+  const fallbackAttempt = (sourceDate?: string | null): ProviderAttempt => ({ attemptedAt: nowText, status: sourceDate ? "success" : "pending", reasonCode: sourceDate ? "available" : "official_not_published", sourceDate: sourceDate || null, diagnostic: null });
+  const twse = input.attempts?.TWSE || fallbackAttempt(input.twseSourceDate);
+  const tpex = input.attempts?.TPEx || fallbackAttempt(input.tpexSourceDate);
+  await input.db.prepare(`INSERT INTO taiwan_stock_pe_control (control_key,scheduler_heartbeat_at,last_latest_run_at,latest_twse_source_date,latest_tpex_source_date,latest_twse_attempt_at,latest_twse_attempt_status,latest_twse_attempt_reason_code,latest_twse_attempt_detail_json,latest_tpex_attempt_at,latest_tpex_attempt_status,latest_tpex_attempt_reason_code,latest_tpex_attempt_detail_json) VALUES ('global',?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(control_key) DO UPDATE SET scheduler_heartbeat_at=excluded.scheduler_heartbeat_at,last_latest_run_at=excluded.last_latest_run_at,latest_twse_source_date=COALESCE(excluded.latest_twse_source_date,taiwan_stock_pe_control.latest_twse_source_date),latest_tpex_source_date=COALESCE(excluded.latest_tpex_source_date,taiwan_stock_pe_control.latest_tpex_source_date),latest_twse_attempt_at=excluded.latest_twse_attempt_at,latest_twse_attempt_status=excluded.latest_twse_attempt_status,latest_twse_attempt_reason_code=excluded.latest_twse_attempt_reason_code,latest_twse_attempt_detail_json=excluded.latest_twse_attempt_detail_json,latest_tpex_attempt_at=excluded.latest_tpex_attempt_at,latest_tpex_attempt_status=excluded.latest_tpex_attempt_status,latest_tpex_attempt_reason_code=excluded.latest_tpex_attempt_reason_code,latest_tpex_attempt_detail_json=excluded.latest_tpex_attempt_detail_json,updated_at=CURRENT_TIMESTAMP`).bind(nowText, nowText, input.twseSourceDate || null, input.tpexSourceDate || null, twse.attemptedAt, twse.status, twse.reasonCode, JSON.stringify(twse.diagnostic), tpex.attemptedAt, tpex.status, tpex.reasonCode, JSON.stringify(tpex.diagnostic)).run();
+  return { status: "complete" as const, heartbeatAt: nowText, twseSourceDate: input.twseSourceDate || null, tpexSourceDate: input.tpexSourceDate || null, attempts: { TWSE: twse, TPEx: tpex } };
 }
 
 export async function completePeRiverHistoryTarget(input: { db: D1Database; runId: string; jobId: string; symbol: string; validationStatus: string; overlapDate?: string | null; now?: Date }) {
@@ -244,10 +267,18 @@ export async function readPeRiverContinuousHealth(db: D1Database) {
   const control = await db.prepare(`SELECT * FROM taiwan_stock_pe_control WHERE control_key='global'`).first<Record<string, unknown>>();
   const history = await db.prepare(`SELECT COUNT(*) AS target,SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) AS ready,SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS insufficient,SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS missing,SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END) AS blocked,SUM(CASE WHEN status='retry_waiting' THEN 1 ELSE 0 END) AS retry_waiting FROM taiwan_stock_pe_backfill_job`).first<Record<string, number | null>>();
   const latest = await db.prepare(`SELECT SUM(CASE WHEN reason_code='available' AND provisional_status IS NULL THEN 1 ELSE 0 END) AS fresh,SUM(CASE WHEN reason_code='official_not_published' OR provisional_status='pending' THEN 1 ELSE 0 END) AS pending,SUM(CASE WHEN reason_code IN ('retry_waiting','rate_limit_waiting') THEN 1 ELSE 0 END) AS retry,SUM(CASE WHEN reason_code='source_mismatch' OR provisional_quarantined=1 THEN 1 ELSE 0 END) AS mismatch,SUM(CASE WHEN provisional_status='provisional_capped' THEN 1 ELSE 0 END) AS provisional_capped,MAX(latest_source_date) AS source_date,MAX(verified_end) AS verified_end,MAX(display_end) AS display_end,MAX(official_source_date) AS official_source_date FROM taiwan_stock_pe_fetch_state`).first<Record<string, number | string | null>>();
+  const diagnostic = (value: unknown) => {
+    try { return value ? JSON.parse(String(value)) : null; }
+    catch { return null; }
+  };
+  const attempts = {
+    twse: { attemptedAt: control?.latest_twse_attempt_at || null, status: control?.latest_twse_attempt_status || null, reasonCode: control?.latest_twse_attempt_reason_code || null, diagnostic: diagnostic(control?.latest_twse_attempt_detail_json), lastVerifiedSourceDate: control?.latest_twse_source_date || null },
+    tpex: { attemptedAt: control?.latest_tpex_attempt_at || null, status: control?.latest_tpex_attempt_status || null, reasonCode: control?.latest_tpex_attempt_reason_code || null, diagnostic: diagnostic(control?.latest_tpex_attempt_detail_json), lastVerifiedSourceDate: control?.latest_tpex_source_date || null },
+  };
   return {
     scheduler: { heartbeatAt: control?.scheduler_heartbeat_at || null, lastLatestRunAt: control?.last_latest_run_at || null, lastHistoryRunAt: control?.last_history_run_at || null },
     history: { target: Number(history?.target || 0), ready: Number(history?.ready || 0), insufficient: Number(history?.insufficient || 0), missing: Number(history?.missing || 0), running: Number(history?.running || 0), blocked: Number(history?.blocked || 0), retryWaiting: Number(history?.retry_waiting || 0) },
-    latest: { fresh: Number(latest?.fresh || 0), pending: Number(latest?.pending || 0), retry: Number(latest?.retry || 0), mismatch: Number(latest?.mismatch || 0), provisionalCapped: Number(latest?.provisional_capped || 0), sourceDate: latest?.source_date || null, verifiedEnd: latest?.verified_end || null, displayEnd: latest?.display_end || null, officialSourceDate: latest?.official_source_date || null, twseSourceDate: control?.latest_twse_source_date || null, tpexSourceDate: control?.latest_tpex_source_date || null },
+    latest: { fresh: Number(latest?.fresh || 0), pending: Number(latest?.pending || 0), retry: Number(latest?.retry || 0), mismatch: Number(latest?.mismatch || 0), providerPending: Number(attempts.twse.status === "pending") + Number(attempts.tpex.status === "pending"), providerMismatch: Number(attempts.twse.reasonCode === "schema_mismatch") + Number(attempts.tpex.reasonCode === "schema_mismatch"), provisionalCapped: Number(latest?.provisional_capped || 0), sourceDate: latest?.source_date || null, verifiedEnd: latest?.verified_end || null, displayEnd: latest?.display_end || null, officialSourceDate: latest?.official_source_date || null, twseSourceDate: control?.latest_twse_source_date || null, tpexSourceDate: control?.latest_tpex_source_date || null, attempts },
     budget: { used: Number(control?.budget_used || 0), limit: Number(control?.budget_limit || FINMIND_SAFE_HOURLY_BUDGET), windowStart: control?.budget_window_start || null, windowEnd: control?.budget_window_start ? new Date(new Date(String(control.budget_window_start)).getTime() + 3600000).toISOString() : null },
   };
 }

@@ -425,7 +425,11 @@ async function saveState(db: D1Database | undefined, input: { symbol: string; da
 
 export function stateCovers(state: ChipFetchStateRow | null | undefined, start: string, end: string, dataset: ChipDataset, now = Date.now()) {
   if (!state || state.status !== "available" || !state.coverage_start || !state.coverage_end) return false;
-  if (dataset !== "shareholder-distribution") {
+  if (dataset === "shareholder-distribution") {
+    if (!state.source_date) return false;
+    const minimumDate = expectedTdccSnapshotMinimumDate(now);
+    if (end >= minimumDate && state.source_date < minimumDate) return false;
+  } else {
     if (state.coverage_start > start || !state.source_date) return false;
     const fullyCovered = state.coverage_end >= end && state.source_date >= end;
     const retryAfter = Date.parse(String(state.retry_after || ""));
@@ -436,6 +440,18 @@ export function stateCovers(state: ChipFetchStateRow | null | undefined, start: 
   const last = Date.parse(String(state.last_success_at || ""));
   const maxAge = dataset === "shareholder-distribution" ? 8 * 86400000 : (end < new Date().toISOString().slice(0, 10) ? 30 * 86400000 : 6 * 3600000);
   return Number.isFinite(last) && now - last < maxAge;
+}
+
+export function expectedTdccSnapshotMinimumDate(now: Date | string | number = new Date()) {
+  const current = now instanceof Date ? now : new Date(now);
+  if (!Number.isFinite(current.getTime())) throw new Error("invalid_response");
+  const taipeiNow = new Date(current.getTime() + 8 * 3600000);
+  const localMidnight = Date.UTC(taipeiNow.getUTCFullYear(), taipeiNow.getUTCMonth(), taipeiNow.getUTCDate());
+  const daysSinceFriday = (taipeiNow.getUTCDay() + 2) % 7;
+  let candidateFriday = localMidnight - daysSinceFriday * 86400000;
+  const publicationCutoff = candidateFriday + 86400000 + (22 * 60 + 30) * 60000;
+  if (taipeiNow.getTime() < publicationCutoff) candidateFriday -= 7 * 86400000;
+  return new Date(candidateFriday - 4 * 86400000).toISOString().slice(0, 10);
 }
 
 function adapterFor(dataset: typeof dailyDatasets[number], env: ChipEnv, fetchImpl: typeof fetch) {
@@ -510,10 +526,13 @@ export function sanitizeChipDailyRows(rows: ChipDailyRow[], requestedEnd: string
 
 export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; eligibility: TaiwanChipEligibility; fetchImpl?: typeof fetch; now?: Date | string }) {
   const { url, env, eligibility } = input;
+  const current = input.now instanceof Date ? input.now : input.now ? new Date(input.now) : new Date();
+  const nowMs = current.getTime();
+  if (!Number.isFinite(nowMs)) throw new Error("invalid_response");
   const symbol = eligibility.symbol;
   const interval = url.searchParams.get("interval") || "1d";
-  const requestedEnd = url.searchParams.get("end") || new Date().toISOString().slice(0, 10);
-  const start = url.searchParams.get("start") || new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+  const requestedEnd = url.searchParams.get("end") || current.toISOString().slice(0, 10);
+  const start = url.searchParams.get("start") || new Date(nowMs - 365 * 86400000).toISOString().slice(0, 10);
   const datasets = requestedDatasets(url);
   const end = requestedEnd;
   const datasetEligibility = buildDatasetEligibility({ eligible: eligibility.eligible, exchange: eligibility.exchange, interval });
@@ -538,8 +557,8 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
   await Promise.all(datasets.map(async (dataset, index) => {
     const datasetEnd = end;
     const stateSymbol = dataset === "shareholder-distribution" ? TDCC_MARKET_STATE_SYMBOL : symbol;
-    const cachedStateCovers = stateCovers(states[index], start, datasetEnd, dataset);
-    const distributionOutsideRequestedRange = dataset === "shareholder-distribution" && states[index]?.source_date && (states[index].source_date < start || states[index].source_date > datasetEnd);
+    const cachedStateCovers = stateCovers(states[index], start, datasetEnd, dataset, dataset === "shareholder-distribution" ? nowMs : Date.now());
+    const distributionOutsideRequestedRange = dataset === "shareholder-distribution" && states[index]?.source_date && states[index].source_date > datasetEnd;
     const cachedDatasetDates = dataset === "shareholder-distribution" ? distribution.map((row) => row.dataDate) : cachedDailyBefore.filter((row) => Boolean(row.provenance[dataset as keyof typeof row.provenance])).map((row) => row.sessionDate);
     const sourcePending = dataset !== "shareholder-distribution" && states[index]?.reason_code === "partial_data" && states[index]?.source_date && states[index]!.source_date! < datasetEnd;
     const cachedDatasetCovers = dataset === "shareholder-distribution"

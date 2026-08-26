@@ -14,6 +14,7 @@ const migration = await readFile(new URL("../drizzle/0015_short_tinkerer.sql", i
 const scopeMigration = await readFile(new URL("../drizzle/0020_chunky_justice.sql", import.meta.url), "utf8");
 const entrySource = await readFile(new URL("../worker/index.ts", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../worker/app.ts", import.meta.url), "utf8");
+const prewarmSource = await readFile(new URL("../worker/watchlist-chip-prewarming.ts", import.meta.url), "utf8");
 
 class Statement {
   constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
@@ -151,4 +152,9 @@ test("D1 migration、Worker scheduled handler 與 health 均包含 orchestrator"
   assert.match(appSource, /orchestrator-tick/);
   assert.match(appSource, /orchestrator-fail/);
   assert.match(appSource, /finalizeChipBackfillOrchestratorFailure/);
+  assert.match(appSource, /tick < WATCHLIST_CHIP_PREWARM_CONTRACT\.maxTargetsPerRun/);
+  assert.match(appSource, /nextProcessed <= processed/);
+  assert.match(appSource, /SELECT \* FROM user_instruments WHERE symbol = \?/);
+  assert.match(prewarmSource, /FROM chip_backfill_orchestrator_runs WHERE scope IN \('daily','combined'\)/);
+  assert.doesNotMatch(prewarmSource, /FROM tdcc_continuous_runs ORDER BY updated_at DESC LIMIT 1/);
 });

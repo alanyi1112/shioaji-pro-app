@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { changedChipDailyPatch, decorateDistributionRows, stateCovers, taiwanStockChipPayload } from "../worker/taiwan-stock-chip-service.ts";
+import { changedChipDailyPatch, decorateDistributionRows, expectedTdccSnapshotMinimumDate, stateCovers, taiwanStockChipPayload } from "../worker/taiwan-stock-chip-service.ts";
 import { parseTdccSnapshot } from "../worker/taiwan-stock-chip.ts";
 import { holdingFixture, institutionalFixture, marginFixture, tdccEtfFixture, tdccFixture } from "./fixtures/taiwan-stock-chip.mjs";
 
@@ -490,6 +490,20 @@ test("partial_data 冷卻到期後才重新檢查來源", () => {
   };
   assert.equal(stateCovers(state, "2026-07-01", "2026-07-30", "institutional-flow", now), true);
   assert.equal(stateCovers(state, "2026-07-01", "2026-07-30", "institutional-flow", Date.parse("2026-07-30T06:21:00.000Z")), false);
+});
+
+test("TDCC 發布窗口前接受前一期，窗口後要求新資料週", () => {
+  assert.equal(expectedTdccSnapshotMinimumDate("2026-08-21T02:00:00.000Z"), "2026-08-10");
+  assert.equal(expectedTdccSnapshotMinimumDate("2026-08-22T14:29:00.000Z"), "2026-08-10");
+  assert.equal(expectedTdccSnapshotMinimumDate("2026-08-22T14:30:00.000Z"), "2026-08-17");
+  assert.equal(expectedTdccSnapshotMinimumDate("2026-08-26T00:00:00.000Z"), "2026-08-17");
+  const oldWeek = {
+    status: "available", coverage_start: "2026-08-14", coverage_end: "2026-08-14", source_date: "2026-08-14",
+    reason_code: "available", last_success_at: "2026-08-21T00:56:00.000Z",
+  };
+  assert.equal(stateCovers(oldWeek, "2025-08-01", "2026-08-21", "shareholder-distribution", Date.parse("2026-08-21T02:00:00.000Z")), true);
+  assert.equal(stateCovers(oldWeek, "2025-08-01", "2026-08-26", "shareholder-distribution", Date.parse("2026-08-26T00:00:00.000Z")), false);
+  assert.equal(stateCovers({ ...oldWeek, source_date: "2026-08-21", coverage_end: "2026-08-21" }, "2025-08-01", "2026-08-26", "shareholder-distribution", Date.parse("2026-08-26T00:00:00.000Z")), true);
 });
 
 test("籌碼 canonical 內容相同時忽略 fetchedAt，實際資料變更才產生 patch", () => {

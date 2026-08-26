@@ -7,6 +7,16 @@ async function ensureColumns(db: D1Database, table: string, definitions: Array<[
 }
 
 export async function ensurePeRiverPipelineColumns(db: D1Database) {
+  await ensureColumns(db, "taiwan_stock_pe_control", [
+    ["latest_twse_attempt_at", "TEXT"],
+    ["latest_twse_attempt_status", "TEXT"],
+    ["latest_twse_attempt_reason_code", "TEXT"],
+    ["latest_twse_attempt_detail_json", "TEXT"],
+    ["latest_tpex_attempt_at", "TEXT"],
+    ["latest_tpex_attempt_status", "TEXT"],
+    ["latest_tpex_attempt_reason_code", "TEXT"],
+    ["latest_tpex_attempt_detail_json", "TEXT"],
+  ]);
   await ensureColumns(db, "taiwan_stock_pe_valuation_daily", [
     ["provider", "TEXT NOT NULL DEFAULT 'official'"],
     ["original_source", "TEXT NOT NULL DEFAULT 'unknown'"],

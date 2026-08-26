@@ -21,16 +21,16 @@ class Query {
     return { results: [] };
   }
   async first() {
-    if (this.sql.includes("FROM tdcc_continuous_runs")) return this.db.run || null;
+    if (this.sql.includes("FROM chip_backfill_orchestrator_runs")) return this.db.run || null;
     return null;
   }
 }
 
-const db = (symbols, states = [], run = { heartbeat_at: "2026-07-17T11:00:00.000Z", status: "completed", error_code: null }) => ({ symbols, states, run, prepare(sql) { return new Query(this, sql); } });
+const db = (symbols, states = [], run = { heartbeat_at: "2026-07-17T11:00:00.000Z", status: "completed", last_reason_code: null }) => ({ symbols, states, run, prepare(sql) { return new Query(this, sql); } });
 const state = (symbol, dataset, overrides = {}) => ({
   symbol,
   dataset,
-  coverage_start: "2024-07-17",
+  coverage_start: "2025-07-17",
   coverage_end: "2026-07-17",
   source_date: "2026-07-17",
   status: "available",
@@ -41,11 +41,11 @@ const state = (symbol, dataset, overrides = {}) => ({
   ...overrides,
 });
 
-test("預熱契約固定最近兩年、四類日資料與有限 targets", () => {
+test("預熱契約固定最近一年、四類日資料與有限 targets", () => {
   assert.deepEqual(WATCHLIST_CHIP_PREWARM_CONTRACT.datasets, ["institutional-flow", "foreign-holding", "margin-short", "securities-lending"]);
-  assert.equal(WATCHLIST_CHIP_PREWARM_CONTRACT.lookbackDays, 730);
+  assert.equal(WATCHLIST_CHIP_PREWARM_CONTRACT.lookbackDays, 365);
   assert.equal(WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun, 40);
-  assert.deepEqual(watchlistChipWarmWindow("2026-07-17T15:00:00.000Z"), { start: "2024-07-17", end: "2026-07-17" });
+  assert.deepEqual(watchlistChipWarmWindow("2026-07-17T15:00:00.000Z"), { start: "2025-07-17", end: "2026-07-17" });
   assert.equal(latestCompletedTaiwanSessionDate("2026-07-18T04:00:00.000Z"), "2026-07-17");
   assert.equal(latestCompletedTaiwanSessionDate("2026-07-20T01:00:00.000Z"), "2026-07-17");
 });
@@ -86,7 +86,7 @@ test("missing 優先、symbol 去重、retry-after dataset 暫不重抓且遵守
   const states = [
     ...datasets.map((dataset) => state("2330.TW", dataset)),
     state("00919.TW", "institutional-flow", { retry_after: "2026-07-18T00:00:00.000Z", status: "unavailable", last_success_at: null }),
-    state("00919.TW", "margin-short", { coverage_start: "2025-01-01" }),
+    state("00919.TW", "margin-short", { coverage_start: "2025-08-01" }),
   ];
   const result = await discoverWatchlistChipWarmTargets({ db: db(["2330.TW", "00919.TW", "00919.TW", "AAPL"], states), limit: 1, now: "2026-07-17T15:00:00.000Z" });
   assert.equal(result.targetSymbols, 2);
@@ -135,6 +135,14 @@ test("scheduler heartbeat 過期時 health 保留資料計數並標示 stale", a
   assert.equal(health.status, "scheduler_stale");
   assert.equal(health.readySymbols, 1);
   assert.equal(health.lastErrorCode, "scheduler_stale");
+});
+
+test("最近 daily orchestrator 失敗時 health 明確標示 degraded", async () => {
+  const states = WATCHLIST_CHIP_PREWARM_CONTRACT.datasets.map((dataset) => state("2330.TW", dataset));
+  const health = await readWatchlistChipPrewarmHealth(db(["2330.TW"], states, { heartbeat_at: "2026-07-17T14:00:00.000Z", status: "failed", last_reason_code: "invalid_response" }), "2026-07-17T15:00:00.000Z");
+  assert.equal(health.status, "degraded");
+  assert.equal(health.readySymbols, 1);
+  assert.equal(health.lastErrorCode, "invalid_response");
 });
 
 test("近期嘗試的 pending symbol 會冷卻，其他到期 symbol 仍可被挑選", async () => {

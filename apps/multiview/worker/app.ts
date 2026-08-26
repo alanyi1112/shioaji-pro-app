@@ -1238,13 +1238,21 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       const processed: string[] = [];
       let reason: string | null = null;
       for (const target of targets.targets) {
-        const eligibility = await taiwanChipEligibility(request, env, target.symbol);
-        const result = await prewarmTaiwanStockChipSymbol({ env, eligibility, datasets: target.datasets });
         processed.push(target.symbol);
-        const reasons = Object.values(result.availability || {}).map(String);
-        if (reasons.includes("rate_limited")) reason = "rate_limited";
-        else if (reasons.some((value) => ["not_published", "partial_data"].includes(value))) reason = "source_not_published";
-        else if (result.status !== "completed") reason = "provider_unavailable";
+        try {
+          const eligibility = await taiwanChipEligibility(request, env, target.symbol);
+          if (!eligibility.eligible) {
+            reason = reason || "provider_unavailable";
+            continue;
+          }
+          const result = await prewarmTaiwanStockChipSymbol({ env, eligibility, datasets: target.datasets });
+          const reasons = Object.values(result.availability || {}).map(String);
+          if (reasons.includes("rate_limited")) reason = "rate_limited";
+          else if (reasons.some((value) => ["not_published", "partial_data"].includes(value))) reason = "source_not_published";
+          else if (result.status !== "completed") reason = reason || "provider_unavailable";
+        } catch {
+          reason = reason || "provider_unavailable";
+        }
       }
       const remaining = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS });
       const done = remaining.dueSymbols === 0;
@@ -2240,8 +2248,13 @@ async function taiwanChipEligibility(request: Request, env: Env, symbol: string)
   const base = parseSetup(await setupText(request, env)).map(localCatalogEntry);
   const catalog = await readInstrumentCatalog(env.DB);
   const uid = identifiedUserId(request);
-  const savedRow = canonical && uid && env.DB
-    ? await env.DB.prepare("SELECT * FROM user_instruments WHERE user_id = ? AND symbol = ? AND enabled = 1 LIMIT 1").bind(uid, canonical).first<UserInstrumentRow>()
+  const schedulerAuthorized = authorizedTdccContinuous(request, env);
+  const savedRow = canonical && env.DB
+    ? uid
+      ? await env.DB.prepare("SELECT * FROM user_instruments WHERE user_id = ? AND symbol = ? AND enabled = 1 LIMIT 1").bind(uid, canonical).first<UserInstrumentRow>()
+      : schedulerAuthorized
+        ? await env.DB.prepare("SELECT * FROM user_instruments WHERE symbol = ? AND enabled = 1 ORDER BY updated_at DESC LIMIT 1").bind(canonical).first<UserInstrumentRow>()
+        : null
     : null;
   const savedEntry = savedRow ? localCatalogEntry({
     symbol: normalizeSymbol(savedRow.symbol),
@@ -2314,8 +2327,14 @@ export async function runChipBackfillScheduled(env: Env, scheduledTime: number) 
     if (!response.ok) throw new Error("provider_unavailable");
     return jsonObject(await response.json());
   };
-  const started = await invoke("orchestrator-start");
-  if (started.done !== true) await invoke("orchestrator-tick");
+  let result = await invoke("orchestrator-start");
+  let processed = Number(jsonObject(result.summary).processedSymbols || 0);
+  for (let tick = 0; result.done !== true && tick < WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun; tick += 1) {
+    result = await invoke("orchestrator-tick");
+    const nextProcessed = Number(jsonObject(result.summary).processedSymbols || 0);
+    if (result.done !== true && nextProcessed <= processed) break;
+    processed = nextProcessed;
+  }
 }
 
 async function batchCandleResponse(request: Request, env: Env) {

@@ -211,7 +211,7 @@ export function seedLiveDatabase({ stagingDbPath, liveDbPath, stateDir = DEFAULT
     const after = databaseSummary(liveDbPath);
     const report = {
       version: 1,
-      schemaRevision: "0021",
+      schemaRevision: "0022",
       completedAt: new Date().toISOString(),
       result: "completed",
       reasonCode: "none",
