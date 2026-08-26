@@ -4,6 +4,9 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/realtime-coordinator.js", import.meta.url), "utf8");
+const turnoverSource = await readFile(new URL("../public/static/kbar-turnover.js", import.meta.url), "utf8");
+const chartsSource = await readFile(new URL("../public/static/realtime-charts.js", import.meta.url), "utf8");
+const payloadSource = await readFile(new URL("../public/static/chart-payload.js", import.meta.url), "utf8");
 
 function eventTarget() {
   const listeners = new Map();
@@ -44,6 +47,7 @@ function harness() {
   }
   const sandbox = { globalThis: undefined };
   sandbox.globalThis = sandbox;
+  vm.runInNewContext(turnoverSource, sandbox);
   vm.runInNewContext(source, sandbox);
   const coordinator = sandbox.QuoteChartRealtime.createRealtimeCoordinator({
     WebSocketImpl: FakeSocket,
@@ -120,16 +124,19 @@ function localHarness({
         remainingSnapshotFailures = Math.max(0, remainingSnapshotFailures - 1);
         return Response.json({ reasonCode: "SessionNotEstablished" }, { status: 503 });
       }
-      return Response.json([{ datetime: "2026-08-06 09:01:00", open: 100, high: 102, low: 99, close: 101, average_price: 100.5, volume: 3, total_volume: 12 }]);
+      return Response.json([{ datetime: "2026-08-06 09:01:00", open: 100, high: 102, low: 99, close: 101, average_price: 100.5, volume: 3, total_volume: 12, total_amount: 1_219_000 }]);
     }
     if (url.pathname.endsWith("/api/v1/data/kbars")) return Response.json(kbarPayload || {
       datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
-      Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7],
+      Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7], Amount: [505_000, "714000.00"],
     });
     throw new Error(`unexpected ${url.pathname}`);
   }
   const sandbox = { globalThis: undefined, Intl, Date, Map, Set, Symbol, URL, Response };
   sandbox.globalThis = sandbox;
+  vm.runInNewContext(turnoverSource, sandbox);
+  vm.runInNewContext(chartsSource, sandbox);
+  vm.runInNewContext(payloadSource, sandbox);
   vm.runInNewContext(source, sandbox);
   const coordinator = sandbox.QuoteChartRealtime.createLocalShioajiCoordinator({
     fetchImpl,
@@ -143,7 +150,7 @@ function localHarness({
     now: () => clock,
   });
   return {
-    coordinator, sources, requests, windowTarget, documentTarget,
+    coordinator, sandbox, sources, requests, windowTarget, documentTarget,
     setSimulation(value) { currentSimulation = value; },
     setClock(value) { clock = Date.parse(value); },
     runTimer(delay) {
@@ -242,11 +249,80 @@ test("本機 coordinator 共用一條 SSE，先送 Snapshot 再交付當日 Kbar
   assert.equal(snapshots[0].canonicalSymbol, "2330.TW");
   assert.equal(sessions.length, 1);
   assert.deepEqual(Array.from(sessions[0], (item) => item.totalVolume), [5, 12]);
+  assert.deepEqual(Array.from(sessions[0], (item) => item.turnoverTwd), [505_000, 714_000]);
+  assert.deepEqual(Array.from(sessions[0], (item) => item.totalTurnoverTwd), [505_000, 1_219_000]);
+  assert.ok(sessions[0].every((item) => item.turnoverSchemaRevision === "multiview-kbar-turnover/1"));
   assert.deepEqual(h.requests.filter((item) => item.method === "POST").map((item) => item.path), [
     "/local-shioaji/api/v1/stream/subscribe",
     "/local-shioaji/api/v1/data/snapshots",
     "/local-shioaji/api/v1/data/kbars",
   ]);
+});
+
+test("Kbars Amount從coordinator經分鐘聚合到chart payload保持同一current schema", async () => {
+  const h = localHarness();
+  let session;
+  h.coordinator.subscribe("panel-5m", { symbol: "2330.TW", interval: "5m" }, () => {}, () => {}, (items) => { session = items; });
+  await settle();
+  h.sources[0].open();
+  await settle();
+  const candles = h.sandbox.QuoteChartRealtimeCharts.aggregateMinuteCandles(session, "5m");
+  const prepared = h.sandbox.QuoteChartPayload.preparePayload({ candles, indicators: {} });
+  assert.equal(prepared.candles.length, 1);
+  assert.equal(prepared.candles[0].turnoverTwd, 1_219_000);
+  assert.equal(prepared.candles[0].turnoverSchemaRevision, "multiview-kbar-turnover/1");
+});
+
+test("本機SSE Tick保留amount／total_amount與connection generation，舊source事件fail closed", async () => {
+  const h = localHarness();
+  const snapshots = [];
+  h.coordinator.subscribe("panel-live", { symbol: "2330.TW", interval: "1m" }, (item) => snapshots.push(item));
+  await settle();
+  h.sources[0].open();
+  await settle();
+  h.sources[0].emit("tick_stk", {
+    code: "2330", date: "2026-08-06", time: "09:02:01", open: 100, high: 103, low: 99, close: 102,
+    avg_price: 101, volume: 1, total_volume: 13, amount: "103000.00", total_amount: 1_322_000, simtrade: 0,
+  });
+  const live = snapshots.at(-1);
+  assert.equal(live.tickTurnoverTwd, 103_000);
+  assert.equal(live.totalTurnoverTwd, 1_322_000);
+  assert.equal(live.turnoverAvailable, true);
+  assert.equal(live.tradeEvent, true);
+  assert.equal(live.connectionGeneration, 1);
+
+  const acceptedCount = snapshots.length;
+  h.setSimulation(false);
+  h.runInterval(15_000);
+  await settle();
+  h.sources[0].emit("tick_stk", {
+    code: "2330", date: "2026-08-06", time: "09:03:01", open: 100, high: 103, low: 99, close: 102,
+    avg_price: 101, volume: 1, total_volume: 14, amount: 100_000, total_amount: 1_422_000,
+  });
+  assert.equal(snapshots.length, acceptedCount);
+});
+
+test("Amount缺漏、長度不符或單列非法只關閉精確值，不丟棄合法OHLCV", async () => {
+  for (const [amount, expected] of [
+    [undefined, [null, null]],
+    [[505_000], [null, null]],
+    [[505_000, "1e3"], [505_000, null]],
+    [[505_000, Number.MAX_SAFE_INTEGER + 1], [505_000, null]],
+  ]) {
+    const h = localHarness({ kbarPayload: {
+      datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
+      Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7],
+      ...(amount === undefined ? {} : { Amount: amount }),
+    } });
+    let session;
+    h.coordinator.subscribe("panel-1m", { symbol: "2330.TW", interval: "1m" }, () => {}, () => {}, (items) => { session = items; });
+    await settle();
+    h.sources[0].open();
+    await settle();
+    assert.equal(session.length, 2);
+    assert.deepEqual(Array.from(session, (item) => item.turnoverTwd), expected);
+    assert.deepEqual(Array.from(session, (item) => item.close), [101, 102]);
+  }
 });
 
 test("本機 simulation coordinator 收盤後交付 closed 狀態，不把舊 snapshot 誤標 live", async () => {
@@ -292,7 +368,7 @@ function targetDateRequest(generation = 7) {
   const targetDate = "2026-08-06";
   const singleFlightKey = `local-shioaji-simulation|2330.TW|${targetDate}|1m`;
   return {
-    schemaVersion: "daily-minute-target-request/1",
+    schemaVersion: "daily-minute-target-request/2",
     symbol: "2330.TW",
     sourceIdentity: "local-shioaji-simulation",
     mode: "simulation",
@@ -321,10 +397,27 @@ test("單圖日 K 指定日期先重驗 simulation，再只讀同日 1 分 Kbars
     start: "2026-08-06",
     end: "2026-08-06",
   });
-  assert.equal(response.schemaVersion, "daily-minute-target-response/1");
+  assert.equal(response.schemaVersion, "daily-minute-target-response/2");
   assert.equal(response.requestIdentity, targetDateRequest().singleFlightKey);
   assert.equal(response.candles.length, 2);
   assert.deepEqual(Array.from(response.candles, (row) => row.sessionDate), ["2026-08-06", "2026-08-06"]);
+  assert.deepEqual(Array.from(response.candles, (row) => row.turnoverTwd), [505_000, 714_000]);
+  assert.equal(response.turnoverSchemaRevision, "multiview-kbar-turnover/1");
+  assert.equal(response.turnoverSourceIdentity, "local-shioaji-simulation");
+  assert.equal(response.turnoverAvailability, "available");
+  assert.ok(response.candles.every((row) => row.turnoverSchemaRevision === response.turnoverSchemaRevision));
+});
+
+test("指定日期Amount缺漏只標記unavailable並保留合法同日OHLCV", async () => {
+  const h = localHarness({ kbarPayload: {
+    datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
+    Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7],
+  } });
+  const response = await h.coordinator.loadTargetDate(targetDateRequest());
+  assert.equal(response.turnoverAvailability, "unavailable");
+  assert.deepEqual(Array.from(response.candles, (row) => row.turnoverTwd), [null, null]);
+  assert.deepEqual(Array.from(response.candles, (row) => row.close), [101, 102]);
+  assert.ok(response.candles.every((row) => row.turnoverSchemaRevision === "multiview-kbar-turnover/1"));
 });
 
 test("單圖指定日期相同 identity 跨 generation 共用一次 info 與 Kbars", async () => {
@@ -361,7 +454,7 @@ test("單圖指定日期在非 simulation 時 fail closed 且不讀 contract 或
 test("單圖指定日期拒絕舊 schema、非同日範圍與偽造 single-flight key", async () => {
   const h = localHarness();
   for (const request of [
-    { ...targetDateRequest(), schemaVersion: "daily-minute-target-request/0" },
+    { ...targetDateRequest(), schemaVersion: "daily-minute-target-request/1" },
     { ...targetDateRequest(), targetDate: "2026-02-30", startDate: "2026-02-30", endDate: "2026-02-30" },
     { ...targetDateRequest(), endDate: "2026-08-07" },
     { ...targetDateRequest(), singleFlightKey: "forged" },

@@ -1,8 +1,11 @@
 import {
     DAILY_MINUTE_RESPONSE_REVISION,
+    TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+    TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
     TargetDateSingleFlight,
     createTargetDateRequest,
     isCompletedTaiwanDailyTarget,
+    targetDateTurnoverAvailability,
     validateTargetDateResponse,
     type TargetDateRequest,
     type TargetDateRequestReason,
@@ -64,6 +67,20 @@ function responseForCandles(
     request: TargetDateRequest,
     candles: readonly Candle[],
 ): ValidatedTargetDateResponse {
+    const projectedCandles = candles.map((candle) =>
+        Object.freeze({
+            time: candle.time,
+            sessionDate: wallClockSessionDate(candle.time),
+            open: candle.open,
+            high: candle.high,
+            low: candle.low,
+            close: candle.close,
+            volume: candle.volume,
+            turnoverTwd: candle.turnoverTwd ?? null,
+            turnoverSchemaRevision: TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+            turnoverSourceIdentity: TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
+        }),
+    );
     return Object.freeze({
         schemaVersion: DAILY_MINUTE_RESPONSE_REVISION,
         requestIdentity: request.singleFlightKey,
@@ -73,19 +90,10 @@ function responseForCandles(
         targetDate: request.targetDate,
         interval: '1m',
         timeZone: 'Asia/Taipei',
-        candles: Object.freeze(
-            candles.map((candle) =>
-                Object.freeze({
-                    time: candle.time,
-                    sessionDate: wallClockSessionDate(candle.time),
-                    open: candle.open,
-                    high: candle.high,
-                    low: candle.low,
-                    close: candle.close,
-                    volume: candle.volume,
-                }),
-            ),
-        ),
+        turnoverSchemaRevision: TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+        turnoverSourceIdentity: TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
+        turnoverAvailability: targetDateTurnoverAvailability(projectedCandles),
+        candles: Object.freeze(projectedCandles),
     });
 }
 

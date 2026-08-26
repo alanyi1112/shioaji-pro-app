@@ -1,4 +1,6 @@
 (function initRealtimeCharts(globalScope) {
+  const turnover = globalScope.QuoteChartKbarTurnover;
+  const TURNOVER_SCHEMA_REVISION = turnover?.TURNOVER_SCHEMA_REVISION || "turnover-contract-unavailable";
   const REALTIME_INTERVALS = new Set(["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
   const MINUTE_INTERVAL_SECONDS = Object.freeze({ "1m": 60, "5m": 300, "15m": 900, "1h": 3600 });
   const LOCAL_INTERVALS = new Set(["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
@@ -29,6 +31,17 @@
       && Number.isFinite(Number(point?.volume)) && Number(point.volume) >= 0;
   }
 
+  function exactTurnover(point) {
+    return point?.turnoverSchemaRevision === TURNOVER_SCHEMA_REVISION
+      ? turnover?.parseTurnoverTwd(point?.turnoverTwd) ?? null
+      : null;
+  }
+
+  function accumulateTurnover(current, point) {
+    const value = exactTurnover(point);
+    return current === null || value === null ? null : turnover.addTurnoverTwd(current, value);
+  }
+
   function aggregateMinuteCandles(points, interval = "1m") {
     const bucketSeconds = MINUTE_INTERVAL_SECONDS[interval];
     if (!bucketSeconds) return [];
@@ -46,10 +59,13 @@
       const existing = buckets.get(key);
       const hasGap = priorTime !== undefined && (point.time - priorTime > 60 || sessionDateForTime(priorTime) !== date);
       if (!existing) {
+        const turnoverTwd = exactTurnover(point);
         buckets.set(key, {
           time: point.time,
           open: Number(point.open), high: Number(point.high), low: Number(point.low), close: Number(point.close),
           volume: Math.max(0, Number(point.volume)),
+          turnoverTwd,
+          turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
           continuity: point.continuity === "partial" || (hasGap && sessionDateForTime(priorTime) === date) ? "partial" : "complete",
           provider: point.provider || "shioaji",
           sourceTime: Number(point.sourceTime) || Number(point.time) * 1000,
@@ -59,6 +75,7 @@
         existing.low = Math.min(existing.low, Number(point.low));
         existing.close = Number(point.close);
         existing.volume += Math.max(0, Number(point.volume));
+        existing.turnoverTwd = accumulateTurnover(existing.turnoverTwd, point);
         existing.sourceTime = Math.max(existing.sourceTime, Number(point.sourceTime) || Number(point.time) * 1000);
         if (point.continuity === "partial" || hasGap) existing.continuity = "partial";
       }
@@ -75,10 +92,13 @@
       if (!date) continue;
       const current = sessions.get(date);
       if (!current) {
+        const turnoverTwd = exactTurnover(point);
         sessions.set(date, {
           time: taipeiMidnight(date), sessionDate: date,
           open: Number(point.open), high: Number(point.high), low: Number(point.low), close: Number(point.close),
           volume: Math.max(0, Number(point.volume)),
+          turnoverTwd,
+          turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
           sourceTime: Number(point.sourceTime) || Number(point.time) * 1000,
           provider: "shioaji-kbars",
           continuity: point.continuity === "partial" ? "partial" : "complete",
@@ -88,6 +108,7 @@
         current.low = Math.min(current.low, Number(point.low));
         current.close = Number(point.close);
         current.volume += Math.max(0, Number(point.volume));
+        current.turnoverTwd = accumulateTurnover(current.turnoverTwd, point);
         current.sourceTime = Math.max(current.sourceTime, Number(point.sourceTime) || Number(point.time) * 1000);
         if (point.continuity === "partial") current.continuity = "partial";
       }
@@ -104,7 +125,16 @@
         const sequence = Number(bootstrap?.sequence || 0);
         const sessionDate = String(bootstrap?.sessionDate || "");
         if (!identity || !/^\d{4}-\d{2}-\d{2}$/.test(sessionDate) || !Number.isFinite(totalVolume) || totalVolume < 0 || !Number.isFinite(sourceTime)) throw new Error("volume_cursor_bootstrap_invalid");
-        state = { identity: String(identity), sessionDate, totalVolume, sourceTime, sequence };
+        const totalTurnoverTwd = turnover?.parseTurnoverTwd(bootstrap?.totalTurnoverTwd) ?? null;
+        state = {
+          identity: String(identity),
+          sessionDate,
+          totalVolume,
+          sourceTime,
+          sequence,
+          totalTurnoverTwd,
+          turnoverAvailable: bootstrap?.turnoverSchemaRevision === TURNOVER_SCHEMA_REVISION && totalTurnoverTwd !== null,
+        };
       },
       clear() { state = undefined; },
       consume(identity, event) {
@@ -120,8 +150,49 @@
         if (sourceTime < state.sourceTime || (sourceTime === state.sourceTime && sequence <= state.sequence)) return { accepted: false, delta: 0, reasonCode: "volume_cursor_not_advanced" };
         if (totalVolume < state.totalVolume) return { accepted: false, delta: 0, reasonCode: "volume_cursor_total_regression" };
         const delta = totalVolume - state.totalVolume;
-        state = { ...state, sourceTime, sequence, totalVolume };
-        return { accepted: true, delta, reasonCode: "none" };
+        let turnoverDeltaTwd = null;
+        let turnoverAvailable = state.turnoverAvailable;
+        let nextTotalTurnoverTwd = state.totalTurnoverTwd;
+        if (turnoverAvailable) {
+          const totalProvided = event?.totalTurnoverProvided === true;
+          const tickProvided = event?.tickTurnoverProvided === true;
+          const totalTurnoverTwd = totalProvided ? turnover?.parseTurnoverTwd(event?.totalTurnoverTwd) ?? null : null;
+          const tickTurnoverTwd = tickProvided ? turnover?.parseTurnoverTwd(event?.tickTurnoverTwd) ?? null : null;
+          if (event?.turnoverSchemaRevision !== TURNOVER_SCHEMA_REVISION || (totalProvided && totalTurnoverTwd === null)) {
+            turnoverAvailable = false;
+          } else if (totalProvided) {
+            if (totalTurnoverTwd < state.totalTurnoverTwd) {
+              turnoverAvailable = false;
+            } else {
+              const candidate = totalTurnoverTwd - state.totalTurnoverTwd;
+              const continuousSequence = sequence === state.sequence + 1;
+              if (continuousSequence && tickProvided && (tickTurnoverTwd === null || tickTurnoverTwd !== candidate)) {
+                turnoverAvailable = false;
+              } else {
+                turnoverDeltaTwd = candidate;
+                nextTotalTurnoverTwd = totalTurnoverTwd;
+              }
+            }
+          } else if (tickProvided && tickTurnoverTwd !== null) {
+            const nextTotal = turnover.addTurnoverTwd(state.totalTurnoverTwd, tickTurnoverTwd);
+            if (nextTotal === null) turnoverAvailable = false;
+            else {
+              turnoverDeltaTwd = tickTurnoverTwd;
+              nextTotalTurnoverTwd = nextTotal;
+            }
+          } else {
+            turnoverAvailable = false;
+          }
+        }
+        state = {
+          ...state,
+          sourceTime,
+          sequence,
+          totalVolume,
+          totalTurnoverTwd: turnoverAvailable ? nextTotalTurnoverTwd : null,
+          turnoverAvailable,
+        };
+        return { accepted: true, delta, turnoverDeltaTwd, turnoverAvailable, reasonCode: "none" };
       },
       snapshot() { return state ? { ...state } : undefined; },
     };
@@ -138,34 +209,57 @@
       const open = Number(snapshot?.open); const high = Number(snapshot?.high); const low = Number(snapshot?.low); const close = Number(snapshot?.close);
       if (!validSnapshot(snapshot) || snapshot.securityType !== "STK" || low > open || open > high || low > close || close > high) return false;
       if (!bootstrapped) { pending.push({ ...snapshot }); return true; }
+      if (snapshot.tradeEvent === false || snapshot.simtrade === true) return false;
       const result = cursor.consume(identity, {
         sessionDate: snapshot.sessionDate,
         sourceTime: Date.parse(snapshot.sourceTime),
         sequence: Number(snapshot.sequence),
         totalVolume: Number(snapshot.totalVolume),
+        tickTurnoverTwd: snapshot.tickTurnoverTwd,
+        totalTurnoverTwd: snapshot.totalTurnoverTwd,
+        tickTurnoverProvided: snapshot.tickTurnoverProvided,
+        totalTurnoverProvided: snapshot.totalTurnoverProvided,
+        turnoverSchemaRevision: snapshot.turnoverSchemaRevision,
       });
       if (!result.accepted && result.reasonCode === "volume_cursor_session_requires_bootstrap") {
         const sourceTime = Date.parse(snapshot.sourceTime);
+        const totalTurnoverTwd = snapshot.turnoverSchemaRevision === TURNOVER_SCHEMA_REVISION
+          ? turnover?.parseTurnoverTwd(snapshot.totalTurnoverTwd) ?? null
+          : null;
         candles = [
           ...candles.filter((row) => row.sessionDate !== snapshot.sessionDate),
           Object.freeze({
             time: taipeiMidnight(snapshot.sessionDate), sessionDate: snapshot.sessionDate,
             open: Number(snapshot.open), high: Number(snapshot.high), low: Number(snapshot.low), close: Number(snapshot.close),
-            volume: Number(snapshot.totalVolume), sourceTime, provider: "shioaji-realtime", continuity: snapshot.continuity === "partial" ? "partial" : "complete",
+            volume: Number(snapshot.totalVolume), turnoverTwd: totalTurnoverTwd,
+            turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+            sourceTime, provider: "shioaji-realtime", continuity: snapshot.continuity === "partial" ? "partial" : "complete",
             realtime: { provider: "shioaji", sessionDate: snapshot.sessionDate, sourceTime: snapshot.sourceTime, provisional: true },
           }),
         ].sort((left, right) => Number(left.time) - Number(right.time));
-        cursor.reset(identity, { sessionDate: snapshot.sessionDate, sourceTime, sequence: Number(snapshot.sequence), totalVolume: Number(snapshot.totalVolume) });
+        cursor.reset(identity, {
+          sessionDate: snapshot.sessionDate,
+          sourceTime,
+          sequence: Number(snapshot.sequence),
+          totalVolume: Number(snapshot.totalVolume),
+          totalTurnoverTwd,
+          turnoverSchemaRevision: snapshot.turnoverSchemaRevision,
+        });
         return true;
       }
       if (!result.accepted) return false;
       const index = candles.findIndex((row) => row.sessionDate === snapshot.sessionDate);
       if (index < 0) return false;
       const current = candles[index];
+      const turnoverTwd = result.turnoverAvailable
+        ? turnover.addTurnoverTwd(exactTurnover(current), result.turnoverDeltaTwd)
+        : null;
       candles[index] = Object.freeze({
         ...current,
         open: Number(snapshot.open), high: Number(snapshot.high), low: Number(snapshot.low), close: Number(snapshot.close),
         volume: Number(current.volume) + result.delta,
+        turnoverTwd,
+        turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
         sourceTime: Date.parse(snapshot.sourceTime), provider: "shioaji-kbars",
         continuity: snapshot.continuity === "partial" ? "partial" : current.continuity,
         realtime: { provider: "shioaji", sessionDate: snapshot.sessionDate, sourceTime: snapshot.sourceTime, provisional: true },
@@ -177,7 +271,14 @@
       candles = aggregateDailyCandles(points);
       const latest = candles.at(-1);
       if (!latest) throw new Error("shioaji_daily_kbars_empty");
-      cursor.reset(identity, { sessionDate: latest.sessionDate, sourceTime: latest.sourceTime, sequence: 0, totalVolume: latest.volume });
+      cursor.reset(identity, {
+        sessionDate: latest.sessionDate,
+        sourceTime: latest.sourceTime,
+        sequence: 0,
+        totalVolume: latest.volume,
+        totalTurnoverTwd: latest.turnoverTwd,
+        turnoverSchemaRevision: latest.turnoverSchemaRevision,
+      });
       bootstrapped = true;
       pending.splice(0)
         .sort((left, right) => Date.parse(left.sourceTime) - Date.parse(right.sourceTime) || Number(left.sequence) - Number(right.sequence))
@@ -201,10 +302,66 @@
     let lastSourceTime = 0;
     let lastSequence = 0;
     let lastTotalVolume = 0;
+    let lastTotalTurnoverTwd = null;
+    let turnoverChainAvailable = false;
+
+    function consumeTurnover(snapshot, sequence) {
+      if (!turnoverChainAvailable || snapshot.turnoverSchemaRevision !== TURNOVER_SCHEMA_REVISION) {
+        turnoverChainAvailable = false;
+        lastTotalTurnoverTwd = null;
+        return null;
+      }
+      const totalProvided = snapshot.totalTurnoverProvided === true;
+      const tickProvided = snapshot.tickTurnoverProvided === true;
+      const totalTurnoverTwd = totalProvided ? turnover?.parseTurnoverTwd(snapshot.totalTurnoverTwd) ?? null : null;
+      const tickTurnoverTwd = tickProvided ? turnover?.parseTurnoverTwd(snapshot.tickTurnoverTwd) ?? null : null;
+      if (totalProvided) {
+        if (totalTurnoverTwd === null || totalTurnoverTwd < lastTotalTurnoverTwd) {
+          turnoverChainAvailable = false;
+          lastTotalTurnoverTwd = null;
+          return null;
+        }
+        const delta = totalTurnoverTwd - lastTotalTurnoverTwd;
+        if (sequence === lastSequence + 1 && tickProvided && (tickTurnoverTwd === null || tickTurnoverTwd !== delta)) {
+          turnoverChainAvailable = false;
+          lastTotalTurnoverTwd = null;
+          return null;
+        }
+        lastTotalTurnoverTwd = totalTurnoverTwd;
+        return delta;
+      }
+      if (tickProvided && tickTurnoverTwd !== null) {
+        const nextTotal = turnover.addTurnoverTwd(lastTotalTurnoverTwd, tickTurnoverTwd);
+        if (nextTotal !== null) {
+          lastTotalTurnoverTwd = nextTotal;
+          return tickTurnoverTwd;
+        }
+      }
+      turnoverChainAvailable = false;
+      lastTotalTurnoverTwd = null;
+      return null;
+    }
+
+    function startSessionTurnover(snapshot) {
+      turnoverChainAvailable = false;
+      lastTotalTurnoverTwd = null;
+      if (snapshot.turnoverSchemaRevision !== TURNOVER_SCHEMA_REVISION) return null;
+      const totalProvided = snapshot.totalTurnoverProvided === true;
+      const tickProvided = snapshot.tickTurnoverProvided === true;
+      const totalTurnoverTwd = totalProvided ? turnover?.parseTurnoverTwd(snapshot.totalTurnoverTwd) ?? null : null;
+      const tickTurnoverTwd = tickProvided ? turnover?.parseTurnoverTwd(snapshot.tickTurnoverTwd) ?? null : null;
+      if (totalProvided) {
+        if (totalTurnoverTwd === null || (tickProvided && (tickTurnoverTwd === null || tickTurnoverTwd > totalTurnoverTwd))) return null;
+        turnoverChainAvailable = true;
+        lastTotalTurnoverTwd = totalTurnoverTwd;
+      }
+      return tickTurnoverTwd;
+    }
 
     function appendSnapshot(snapshot) {
       if (!validSnapshot(snapshot) || Number(snapshot.totalVolume) < 0 || Number(snapshot.close) <= 0) return false;
       if (!bootstrapped) { pending.push({ ...snapshot }); return true; }
+      if (snapshot.tradeEvent === false || snapshot.simtrade === true) return false;
       if (sessionDate && snapshot.sessionDate < sessionDate) return false;
       const sourceTime = Date.parse(snapshot.sourceTime);
       const sequence = Number(snapshot.sequence);
@@ -221,17 +378,29 @@
       const volume = lastSourceTime && sameSession
         ? Math.max(0, totalVolume - lastTotalVolume)
         : Math.max(0, Number(snapshot.tickVolume) || 0);
+      const turnoverDeltaTwd = sameSession ? consumeTurnover(snapshot, sequence) : startSessionTurnover(snapshot);
+      const existingTurnoverTwd = existing ? exactTurnover(existing) : 0;
+      const turnoverTwd = turnoverDeltaTwd !== null && existingTurnoverTwd !== null
+        ? turnover.addTurnoverTwd(existingTurnoverTwd, turnoverDeltaTwd)
+        : null;
       canonical.set(time, existing ? {
         ...existing,
         high: Math.max(Number(existing.high), close),
         low: Math.min(Number(existing.low), close),
         close,
         volume: Math.max(0, Number(existing.volume)) + volume,
+        turnoverTwd,
+        turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+        totalTurnoverTwd: turnoverChainAvailable ? lastTotalTurnoverTwd : null,
         totalVolume,
         sourceTime,
         continuity: existing.continuity === "partial" || snapshot.continuity === "partial" ? "partial" : "complete",
       } : {
-        time, open: close, high: close, low: close, close, volume, totalVolume, sourceTime,
+        time, open: close, high: close, low: close, close, volume, totalVolume,
+        turnoverTwd,
+        turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+        totalTurnoverTwd: turnoverChainAvailable ? lastTotalTurnoverTwd : null,
+        sourceTime,
         continuity: snapshot.continuity === "partial" ? "partial" : "complete", provider: "shioaji",
       });
       lastSourceTime = sourceTime;
@@ -249,6 +418,21 @@
       sessionDate = latest ? sessionDateForTime(latest.time) : "";
       lastSourceTime = Number(latest?.sourceTime) || Number(latest?.time || 0) * 1000;
       lastTotalVolume = Math.max(0, Number(latest?.totalVolume) || 0);
+      const latestTotalTurnoverTwd = latest?.turnoverSchemaRevision === TURNOVER_SCHEMA_REVISION
+        ? turnover?.parseTurnoverTwd(latest?.totalTurnoverTwd) ?? null
+        : null;
+      if (latestTotalTurnoverTwd !== null) {
+        lastTotalTurnoverTwd = latestTotalTurnoverTwd;
+        turnoverChainAvailable = true;
+      } else {
+        const latestSessionPoints = [...canonical.values()]
+          .filter((point) => sessionDateForTime(point.time) === sessionDate)
+          .sort((left, right) => left.time - right.time);
+        lastTotalTurnoverTwd = latestSessionPoints.reduce((sum, point) => (
+          sum === null ? null : turnover.addTurnoverTwd(sum, exactTurnover(point))
+        ), 0);
+        turnoverChainAvailable = lastTotalTurnoverTwd !== null;
+      }
       bootstrapped = true;
       const queued = pending.splice(0).sort((left, right) => Date.parse(left.sourceTime) - Date.parse(right.sourceTime) || Number(left.sequence) - Number(right.sequence));
       queued.forEach(appendSnapshot);

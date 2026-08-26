@@ -4,9 +4,11 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/realtime-charts.js", import.meta.url), "utf8");
+const turnoverSource = await readFile(new URL("../public/static/kbar-turnover.js", import.meta.url), "utf8");
 const fixture = JSON.parse(await readFile(new URL("../../../test-fixtures/chart-day-volume-parity.json", import.meta.url), "utf8"));
 const sandbox = { globalThis: undefined, Intl, Date, Set, Map };
 sandbox.globalThis = sandbox;
+vm.runInNewContext(turnoverSource, sandbox);
 vm.runInNewContext(source, sandbox);
 const api = sandbox.QuoteChartRealtimeCharts;
 
@@ -37,17 +39,20 @@ test("舊週月設定維持原值，只有分時與非法 interval 遷移為 1d"
 test("1 分 canonical 依台北交易日聚合 5／15／60 分且不補造缺口", () => {
   const point = (iso, values = {}) => ({
     time: Date.parse(iso) / 1000, sourceTime: Date.parse(iso),
-    open: 100, high: 102, low: 99, close: 101, volume: 5, continuity: "complete", ...values,
+    open: 100, high: 102, low: 99, close: 101, volume: 5, turnoverTwd: 500_000,
+    turnoverSchemaRevision: "multiview-kbar-turnover/1", continuity: "complete", ...values,
   });
   const rows = [
     point("2026-08-07T09:00:00+08:00"),
-    point("2026-08-07T09:01:00+08:00", { open: 101, high: 104, low: 100, close: 103, volume: 7 }),
-    point("2026-08-07T09:07:00+08:00", { open: 103, high: 105, low: 102, close: 104, volume: 3 }),
-    point("2026-08-10T09:00:00+08:00", { open: 110, high: 111, low: 109, close: 110, volume: 9 }),
+    point("2026-08-07T09:01:00+08:00", { open: 101, high: 104, low: 100, close: 103, volume: 7, turnoverTwd: 700_000 }),
+    point("2026-08-07T09:07:00+08:00", { open: 103, high: 105, low: 102, close: 104, volume: 3, turnoverTwd: null }),
+    point("2026-08-10T09:00:00+08:00", { open: 110, high: 111, low: 109, close: 110, volume: 9, turnoverTwd: 900_000 }),
   ];
   const five = api.aggregateMinuteCandles(rows, "5m");
   assert.equal(five.length, 3);
   assert.deepEqual({ open: five[0].open, high: five[0].high, low: five[0].low, close: five[0].close, volume: five[0].volume }, { open: 100, high: 104, low: 99, close: 103, volume: 12 });
+  assert.equal(five[0].turnoverTwd, 1_200_000);
+  assert.equal(five[1].turnoverTwd, null);
   assert.equal(five[1].continuity, "partial");
   assert.equal(five[2].time, rows[3].time);
   assert.equal(api.aggregateMinuteCandles(rows, "1h").length, 2);
@@ -68,6 +73,26 @@ test("Shioaji 1 分 Kbars 依台北日期聚合完整日 K，volume 維持 commo
   assert.ok(daily.every((row) => row.provider === "shioaji-kbars"));
 });
 
+test("分鐘與日K成交值只加總完整current-schema子集合並拒絕溢位", () => {
+  const point = (iso, turnoverTwd, revision = "multiview-kbar-turnover/1") => ({
+    time: Date.parse(iso) / 1000,
+    sourceTime: Date.parse(iso),
+    open: 100,
+    high: 101,
+    low: 99,
+    close: 100,
+    volume: 1,
+    turnoverTwd,
+    turnoverSchemaRevision: revision,
+    continuity: "complete",
+  });
+  const complete = [point("2026-08-07T09:00:00+08:00", 1_000_000), point("2026-08-07T09:01:00+08:00", 2_000_000)];
+  assert.equal(api.aggregateMinuteCandles(complete, "5m")[0].turnoverTwd, 3_000_000);
+  assert.equal(api.aggregateDailyCandles(complete)[0].turnoverTwd, 3_000_000);
+  assert.equal(api.aggregateMinuteCandles([...complete, point("2026-08-07T09:02:00+08:00", 1, "multiview-kbar-turnover/0")], "5m")[0].turnoverTwd, null);
+  assert.equal(api.aggregateDailyCandles([point("2026-08-07T09:00:00+08:00", Number.MAX_SAFE_INTEGER), point("2026-08-07T09:01:00+08:00", 1)])[0].turnoverTwd, null);
+});
+
 test("日 K accumulator 由 Kbars total seed，同 session 只收前進 delta，新 session 以整日 Snapshot 原子 bootstrap", () => {
   const points = [
     { time: Date.parse("2026-08-21T09:00:00+08:00") / 1000, sourceTime: Date.parse("2026-08-21T09:00:59+08:00"), open: 100, high: 101, low: 99, close: 100, volume: 40, continuity: "complete" },
@@ -85,6 +110,29 @@ test("日 K accumulator 由 Kbars total seed，同 session 只收前進 delta，
   assert.equal(accumulator.append(snapshot({ sessionDate: "2026-08-21", sourceTime: "2026-08-21T13:29:00+08:00", sequence: 99, totalVolume: 999 })), false);
 });
 
+test("日K forming與分鐘K共用精確累計成交值語意", () => {
+  const revision = "multiview-kbar-turnover/1";
+  const points = [
+    { time: Date.parse("2026-08-26T09:00:00+08:00") / 1000, sourceTime: Date.parse("2026-08-26T09:00:59+08:00"), open: 100, high: 101, low: 99, close: 100, volume: 10, turnoverTwd: 1_000_000, totalTurnoverTwd: 1_000_000, turnoverSchemaRevision: revision, continuity: "complete" },
+    { time: Date.parse("2026-08-26T09:01:00+08:00") / 1000, sourceTime: Date.parse("2026-08-26T09:01:59+08:00"), open: 100, high: 102, low: 100, close: 101, volume: 20, turnoverTwd: 2_000_000, totalTurnoverTwd: 3_000_000, turnoverSchemaRevision: revision, continuity: "complete" },
+  ];
+  const accumulator = api.createDailyKlineAccumulator({ identity: "2330.TW|1d|10" });
+  accumulator.bootstrap(points);
+  assert.equal(accumulator.append(snapshot({
+    sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:02:01+08:00", sequence: 1,
+    totalVolume: 33, tickVolume: 3, tickTurnoverTwd: 303_000, totalTurnoverTwd: 3_303_000,
+    tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+  })), true);
+  assert.equal(accumulator.snapshot().candles.at(-1).turnoverTwd, 3_303_000);
+  assert.equal(accumulator.append(snapshot({
+    sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:03:01+08:00", sequence: 2,
+    high: 103, close: 102, totalVolume: 34, tickVolume: 1, tickTurnoverTwd: 1, totalTurnoverTwd: 3_403_000,
+    tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+  })), true);
+  assert.equal(accumulator.snapshot().candles.at(-1).close, 102);
+  assert.equal(accumulator.snapshot().candles.at(-1).turnoverTwd, null);
+});
+
 test("分鐘 accumulator 先排隊 Tick，bootstrap 後拒絕倒序重送並避免重複量", () => {
   const accumulator = api.createMinuteKlineAccumulator({ interval: "5m" });
   const firstTick = snapshot({ sourceTime: "2026-07-31T09:01:30+08:00", sequence: 3, close: 102, totalVolume: 15, tickVolume: 3 });
@@ -100,6 +148,115 @@ test("分鐘 accumulator 先排隊 Tick，bootstrap 後拒絕倒序重送並避�
   assert.equal(model.oneMinute.length, 3);
   assert.deepEqual({ open: model.candles[0].open, high: model.candles[0].high, low: model.candles[0].low, close: model.candles[0].close, volume: model.candles[0].volume }, { open: 100, high: 102, low: 99, close: 99, volume: 20 });
   assert.equal(Object.isFrozen(model.candles), true);
+});
+
+test("forming成交值以累計cursor推進，sequence gap採完整delta且不重複消耗", () => {
+  const revision = "multiview-kbar-turnover/1";
+  const accumulator = api.createMinuteKlineAccumulator({ interval: "5m", identity: "2330.TW|5m|7" });
+  accumulator.bootstrap([
+    {
+      time: Date.parse("2026-08-26T09:00:00+08:00") / 1000,
+      sourceTime: Date.parse("2026-08-26T09:00:59+08:00"),
+      open: 100, high: 101, low: 99, close: 100, volume: 10, totalVolume: 10,
+      turnoverTwd: 1_000_000, totalTurnoverTwd: 1_000_000, turnoverSchemaRevision: revision, continuity: "complete",
+    },
+  ]);
+  const first = snapshot({
+    sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:01:01+08:00", sequence: 1,
+    close: 101, tickVolume: 2, totalVolume: 12, tickTurnoverTwd: 205_000, totalTurnoverTwd: 1_205_000,
+    tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+  });
+  assert.equal(accumulator.append(first), true);
+  assert.equal(accumulator.append(first), false);
+  assert.equal(accumulator.snapshot().oneMinute.at(-1).turnoverTwd, 205_000);
+
+  assert.equal(accumulator.append(snapshot({
+    sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:02:01+08:00", sequence: 4,
+    close: 102, tickVolume: 1, totalVolume: 15, tickTurnoverTwd: 100_000, totalTurnoverTwd: 1_805_000,
+    tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+  })), true);
+  const model = accumulator.snapshot();
+  assert.equal(model.oneMinute.at(-1).turnoverTwd, 600_000);
+  assert.equal(model.candles.at(-1).turnoverTwd, 1_805_000);
+});
+
+test("分鐘 accumulator 跨交易日以第一筆精確事件重建turnover chain", () => {
+  const revision = "multiview-kbar-turnover/1";
+  const accumulator = api.createMinuteKlineAccumulator({ interval: "1m", identity: "2330.TW|1m|cross-day" });
+  accumulator.bootstrap([{
+    time: Date.parse("2026-08-25T13:29:00+08:00") / 1000,
+    sourceTime: Date.parse("2026-08-25T13:29:59+08:00"),
+    open: 100, high: 100, low: 100, close: 100, volume: 1, totalVolume: 99,
+    turnoverTwd: 100_000, totalTurnoverTwd: 9_900_000, turnoverSchemaRevision: revision, continuity: "complete",
+  }]);
+  assert.equal(accumulator.append(snapshot({
+    sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:00:01+08:00", sequence: 1,
+    close: 101, tickVolume: 2, totalVolume: 2, tickTurnoverTwd: 202_000, totalTurnoverTwd: 202_000,
+    tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+  })), true);
+  assert.equal(accumulator.snapshot().oneMinute.at(-1).turnoverTwd, 202_000);
+  assert.equal(accumulator.append(snapshot({
+    sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:01:01+08:00", sequence: 2,
+    close: 102, tickVolume: 1, totalVolume: 3, tickTurnoverTwd: 102_000, totalTurnoverTwd: 304_000,
+    tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+  })), true);
+  assert.equal(accumulator.snapshot().oneMinute.at(-1).turnoverTwd, 102_000);
+});
+
+test("forming成交值矛盾／倒退／非法累計會永久fail unavailable但合法price與volume繼續", () => {
+  const revision = "multiview-kbar-turnover/1";
+  const seed = () => {
+    const accumulator = api.createMinuteKlineAccumulator({ interval: "1m", identity: "2330.TW|1m|8" });
+    accumulator.bootstrap([{
+      time: Date.parse("2026-08-26T09:00:00+08:00") / 1000,
+      sourceTime: Date.parse("2026-08-26T09:00:59+08:00"),
+      open: 100, high: 101, low: 99, close: 100, volume: 10, totalVolume: 10,
+      turnoverTwd: 1_000_000, totalTurnoverTwd: 1_000_000, turnoverSchemaRevision: revision, continuity: "complete",
+    }]);
+    return accumulator;
+  };
+  for (const values of [
+    { tickTurnoverTwd: 100_000, totalTurnoverTwd: 1_205_000, tickTurnoverProvided: true, totalTurnoverProvided: true },
+    { tickTurnoverTwd: 100_000, totalTurnoverTwd: 999_999, tickTurnoverProvided: true, totalTurnoverProvided: true },
+    { tickTurnoverTwd: 205_000, totalTurnoverTwd: "NaN", tickTurnoverProvided: true, totalTurnoverProvided: true },
+    { tickTurnoverTwd: null, totalTurnoverTwd: null, tickTurnoverProvided: false, totalTurnoverProvided: false },
+  ]) {
+    const accumulator = seed();
+    assert.equal(accumulator.append(snapshot({
+      sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:01:01+08:00", sequence: 1,
+      close: 102, tickVolume: 2, totalVolume: 12, turnoverSchemaRevision: revision, tradeEvent: true, ...values,
+    })), true);
+    const row = accumulator.snapshot().oneMinute.at(-1);
+    assert.equal(row.close, 102);
+    assert.equal(row.volume, 2);
+    assert.equal(row.turnoverTwd, null);
+    assert.equal(accumulator.append(snapshot({
+      sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:02:01+08:00", sequence: 2,
+      close: 103, tickVolume: 1, totalVolume: 13, tickTurnoverTwd: 100_000, totalTurnoverTwd: 1_305_000,
+      tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, tradeEvent: true,
+    })), true);
+    assert.equal(accumulator.snapshot().oneMinute.at(-1).turnoverTwd, null);
+  }
+});
+
+test("zero-volume與simtrade不推進forming candle或turnover cursor", () => {
+  const revision = "multiview-kbar-turnover/1";
+  const accumulator = api.createMinuteKlineAccumulator({ interval: "1m", identity: "2330.TW|1m|9" });
+  accumulator.bootstrap([{
+    time: Date.parse("2026-08-26T09:00:00+08:00") / 1000,
+    sourceTime: Date.parse("2026-08-26T09:00:59+08:00"),
+    open: 100, high: 101, low: 99, close: 100, volume: 10, totalVolume: 10,
+    turnoverTwd: 1_000_000, totalTurnoverTwd: 1_000_000, turnoverSchemaRevision: revision, continuity: "complete",
+  }]);
+  const before = JSON.stringify(accumulator.snapshot().oneMinute);
+  for (const values of [{ tradeEvent: false }, { tradeEvent: true, simtrade: true }]) {
+    assert.equal(accumulator.append(snapshot({
+      sessionDate: "2026-08-26", sourceTime: "2026-08-26T09:01:01+08:00", sequence: 1,
+      close: 999, tickVolume: 0, totalVolume: 10, tickTurnoverTwd: 0, totalTurnoverTwd: 1_000_000,
+      tickTurnoverProvided: true, totalTurnoverProvided: true, turnoverSchemaRevision: revision, ...values,
+    })), false);
+  }
+  assert.equal(JSON.stringify(accumulator.snapshot().oneMinute), before);
 });
 
 test("日 K 原子取代 Yahoo 同日 provisional，不重複成交量", () => {

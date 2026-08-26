@@ -1,3 +1,5 @@
+import { addKbarTurnoverTwd, parseKbarTurnoverTwd } from './kbar-turnover';
+
 export const TAIWAN_STOCK_VOLUME_NORMALIZATION_REVISION =
     'taiwan-stock-common-lot/1' as const;
 
@@ -27,6 +29,18 @@ export type TaiwanStockUnavailableVolume = Readonly<{
 export type TaiwanStockVolumeNormalization =
     | TaiwanStockCanonicalVolume
     | TaiwanStockUnavailableVolume;
+
+export function isAdvancingTaiwanStockTradeTick(input: Readonly<{
+    simtrade?: unknown;
+    volume?: unknown;
+}>): boolean {
+    return (
+        input.simtrade === false &&
+        typeof input.volume === 'number' &&
+        Number.isSafeInteger(input.volume) &&
+        input.volume > 0
+    );
+}
 
 const SHIOAJI_PROVIDERS = new Set([
     'shioaji',
@@ -146,6 +160,8 @@ export function readCurrentTaiwanStockCanonicalVolume(
 export type CommonLotVolumeCursorResult = Readonly<{
     accepted: boolean;
     delta: number;
+    turnoverDeltaTwd: number | null;
+    turnoverAvailable: boolean;
     reason:
         | 'accepted'
         | 'unseeded'
@@ -164,7 +180,15 @@ type CommonLotVolumeCursorEvent = Readonly<{
     sourceTime: number;
     sequence: number;
     totalVolume: number;
+    totalTurnoverTwd?: unknown;
+    turnoverTwd?: unknown;
 }>;
+
+type CommonLotVolumeCursorState = CommonLotVolumeCursorEvent &
+    Readonly<{
+        totalTurnoverTwd: number | null;
+        turnoverAvailable: boolean;
+    }>;
 
 function validCursorEvent(event: CommonLotVolumeCursorEvent): boolean {
     return (
@@ -179,10 +203,19 @@ function validCursorEvent(event: CommonLotVolumeCursorEvent): boolean {
 }
 
 export class CommonLotVolumeCursor {
-    private state: CommonLotVolumeCursorEvent | null = null;
+    private state: CommonLotVolumeCursorState | null = null;
 
     clear(): void {
         this.state = null;
+    }
+
+    private invalidateTurnoverChain(): void {
+        if (!this.state || !this.state.turnoverAvailable) return;
+        this.state = Object.freeze({
+            ...this.state,
+            totalTurnoverTwd: null,
+            turnoverAvailable: false,
+        });
     }
 
     reset(event: CommonLotVolumeCursorEvent): boolean {
@@ -190,19 +223,34 @@ export class CommonLotVolumeCursor {
             this.clear();
             return false;
         }
-        this.state = Object.freeze({ ...event });
+        const totalTurnoverTwd = parseKbarTurnoverTwd(
+            event.totalTurnoverTwd,
+        );
+        this.state = Object.freeze({
+            ...event,
+            totalTurnoverTwd,
+            turnoverAvailable: totalTurnoverTwd !== null,
+        });
         return true;
     }
 
     consume(event: CommonLotVolumeCursorEvent): CommonLotVolumeCursorResult {
         if (!validCursorEvent(event)) {
-            return { accepted: false, delta: 0, reason: 'invalid_event' };
+            return {
+                accepted: false,
+                delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
+                reason: 'invalid_event',
+            };
         }
         const previous = this.state;
         if (!previous) {
             return {
                 accepted: false,
                 delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
                 reason: 'unseeded',
             };
         }
@@ -210,16 +258,28 @@ export class CommonLotVolumeCursor {
             return {
                 accepted: false,
                 delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: previous.turnoverAvailable,
                 reason: 'identity_mismatch',
             };
         }
         if (event.sessionDate < previous.sessionDate) {
-            return { accepted: false, delta: 0, reason: 'old_session' };
-        }
-        if (event.sourceTime < previous.sourceTime) {
+            this.invalidateTurnoverChain();
             return {
                 accepted: false,
                 delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
+                reason: 'old_session',
+            };
+        }
+        if (event.sourceTime < previous.sourceTime) {
+            this.invalidateTurnoverChain();
+            return {
+                accepted: false,
+                delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
                 reason: 'old_source_time',
             };
         }
@@ -227,35 +287,107 @@ export class CommonLotVolumeCursor {
             event.sessionDate === previous.sessionDate &&
             event.sequence <= previous.sequence
         ) {
+            this.invalidateTurnoverChain();
             return {
                 accepted: false,
                 delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
                 reason: 'sequence_not_advanced',
             };
         }
         if (event.sessionDate > previous.sessionDate) {
+            this.invalidateTurnoverChain();
             return {
                 accepted: false,
                 delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
                 reason: 'session_change_requires_bootstrap',
             };
         }
         if (event.totalVolume < previous.totalVolume) {
+            this.invalidateTurnoverChain();
             return {
                 accepted: false,
                 delta: 0,
+                turnoverDeltaTwd: null,
+                turnoverAvailable: false,
                 reason: 'total_volume_regressed',
             };
         }
-        this.state = Object.freeze({ ...event });
+        const sourceTotalTurnover = parseKbarTurnoverTwd(
+            event.totalTurnoverTwd,
+        );
+        const sourceTickTurnover = parseKbarTurnoverTwd(event.turnoverTwd);
+        const hasSourceTotalTurnover =
+            event.totalTurnoverTwd !== undefined;
+        const hasSourceTickTurnover = event.turnoverTwd !== undefined;
+        let turnoverDeltaTwd: number | null = null;
+        let nextTotalTurnoverTwd: number | null = null;
+        let turnoverAvailable = previous.turnoverAvailable;
+        if (
+            (hasSourceTotalTurnover && sourceTotalTurnover === null) ||
+            (hasSourceTickTurnover && sourceTickTurnover === null)
+        ) {
+            turnoverAvailable = false;
+        }
+        if (turnoverAvailable && previous.totalTurnoverTwd !== null) {
+            if (sourceTotalTurnover !== null) {
+                if (sourceTotalTurnover >= previous.totalTurnoverTwd) {
+                    const cumulativeDelta =
+                        sourceTotalTurnover - previous.totalTurnoverTwd;
+                    // Bootstrap、React batch 或 transport coalescing 可能讓
+                    // sequence 跳號；此時 total_amount 的差額涵蓋多筆成交，
+                    // 不可拿最後一筆 amount 強制作相等比較。
+                    const singleAcceptedTick =
+                        event.sequence === previous.sequence + 1;
+                    if (
+                        sourceTickTurnover === null ||
+                        !singleAcceptedTick ||
+                        sourceTickTurnover === cumulativeDelta
+                    ) {
+                        turnoverDeltaTwd = cumulativeDelta;
+                        nextTotalTurnoverTwd = sourceTotalTurnover;
+                    } else {
+                        turnoverAvailable = false;
+                    }
+                } else {
+                    turnoverAvailable = false;
+                }
+            } else if (sourceTickTurnover !== null) {
+                nextTotalTurnoverTwd = addKbarTurnoverTwd(
+                    previous.totalTurnoverTwd,
+                    sourceTickTurnover,
+                );
+                if (nextTotalTurnoverTwd !== null) {
+                    turnoverDeltaTwd = sourceTickTurnover;
+                } else {
+                    turnoverAvailable = false;
+                }
+            } else {
+                turnoverAvailable = false;
+            }
+        }
+        if (!turnoverAvailable) {
+            turnoverDeltaTwd = null;
+            nextTotalTurnoverTwd = null;
+        }
+        this.state = Object.freeze({
+            ...event,
+            totalTurnoverTwd: nextTotalTurnoverTwd,
+            turnoverAvailable,
+        });
         return {
             accepted: true,
             delta: event.totalVolume - previous.totalVolume,
+            turnoverDeltaTwd,
+            turnoverAvailable,
             reason: 'accepted',
         };
     }
 
-    snapshot(): CommonLotVolumeCursorEvent | null {
+    snapshot(): CommonLotVolumeCursorState | null {
         return this.state ? Object.freeze({ ...this.state }) : null;
     }
 }

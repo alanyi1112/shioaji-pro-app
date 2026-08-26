@@ -9,6 +9,7 @@ import {
     mainChartTargetDateReasonMessage,
 } from './main-chart-daily-drilldown';
 import type { Candle } from './types/market';
+import { kbarsToTaiwanStockCandles } from './utils/kbars';
 
 const targetDate = '2026-08-21';
 const firstTime = Date.UTC(2026, 7, 21, 1, 0) / 1000;
@@ -21,6 +22,7 @@ function candle(time = firstTime): Candle {
         low: 99,
         close: 101,
         volume: 12,
+        turnoverTwd: 1_205_000,
     };
 }
 
@@ -90,7 +92,13 @@ describe('主交易畫面指定日期 simulation loader', () => {
                 symbol: '2330',
                 targetDate,
                 mode: 'simulation',
-                candles: [{ sessionDate: targetDate, volume: 12 }],
+                candles: [
+                    {
+                        sessionDate: targetDate,
+                        volume: 12,
+                        turnoverTwd: 1_205_000,
+                    },
+                ],
             },
         });
     });
@@ -219,5 +227,55 @@ describe('主交易畫面指定日期 simulation loader', () => {
         expect(mainChartTargetDateReasonMessage('simulation_required')).toContain(
             'simulation',
         );
+    });
+
+    it('同次 Kbars 的 Amount 缺漏只提交 turnover unavailable，不阻擋合法 OHLCV', async () => {
+        const result = await loadMainChartTargetDate({
+            symbol: '2330',
+            targetDate,
+            generation: 7,
+            getInfo: async () => ({ simulation: true }),
+            getKbars: async () => ({ source: 'same-response' }),
+            normalizeKbars: () =>
+                kbarsToTaiwanStockCandles({
+                    datetime: ['2026-08-21T09:00:00'],
+                    Open: [100],
+                    High: [102],
+                    Low: [99],
+                    Close: [101],
+                    Volume: [12],
+                }),
+        });
+        expect(result).toMatchObject({
+            status: 'accepted',
+            response: {
+                candles: [
+                    {
+                        sessionDate: targetDate,
+                        close: 101,
+                        volume: 12,
+                        turnoverTwd: null,
+                    },
+                ],
+            },
+        });
+    });
+
+    it('主畫面 response 驗證拒絕偽造的小數元 turnover', async () => {
+        const result = await loadMainChartTargetDate({
+            symbol: '2330',
+            targetDate,
+            generation: 7,
+            getInfo: async () => ({ simulation: true }),
+            getKbars: async () => ({}),
+            normalizeKbars: () => [
+                { ...candle(), turnoverTwd: 1.5 },
+            ],
+        });
+        expect(result).toEqual({
+            status: 'rejected',
+            targetDate,
+            reason: 'invalid_candle',
+        });
     });
 });

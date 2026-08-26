@@ -36,6 +36,10 @@ const realtimeChartsSource = readFileSync(
     new URL('../../apps/multiview/public/static/realtime-charts.js', import.meta.url),
     'utf8',
 );
+const kbarTurnoverSource = readFileSync(
+    new URL('../../apps/multiview/public/static/kbar-turnover.js', import.meta.url),
+    'utf8',
+);
 const realtimeIndicatorsSource = readFileSync(
     new URL('../../apps/multiview/public/static/realtime-indicators.js', import.meta.url),
     'utf8',
@@ -48,8 +52,13 @@ const sandbox: Record<string, unknown> = {
     Map,
 };
 sandbox.globalThis = sandbox;
+vm.runInNewContext(kbarTurnoverSource, sandbox);
 vm.runInNewContext(realtimeChartsSource, sandbox);
 vm.runInNewContext(realtimeIndicatorsSource, sandbox);
+
+const multiViewTurnover = sandbox.QuoteChartKbarTurnover as {
+    TURNOVER_SCHEMA_REVISION: string;
+};
 
 const multiViewCharts = sandbox.QuoteChartRealtimeCharts as {
     aggregateDailyCandles: (rows: unknown[]) => Array<Record<string, unknown>>;
@@ -60,6 +69,10 @@ const multiViewIndicators = sandbox.QuoteChartRealtimeIndicators as {
     };
 };
 
+function exactFixtureAmounts(rows: FixtureCandle[]): number[] {
+    return rows.map((_row, index) => (index + 1) * 1_000_000);
+}
+
 function fixtureKbars(rows: FixtureCandle[]): KBars {
     return {
         datetime: rows.map((row) => row.datetime),
@@ -68,7 +81,7 @@ function fixtureKbars(rows: FixtureCandle[]): KBars {
         Low: rows.map((row) => row.low),
         Close: rows.map((row) => row.close),
         Volume: rows.map((row) => row.volume),
-        Amount: rows.map((row) => row.close * row.volume),
+        Amount: exactFixtureAmounts(rows),
     };
 }
 
@@ -87,11 +100,14 @@ describe('主交易畫面與 MultiView 台股日 K common_lot parity', () => {
         const source = fixture.shioajiDailyAggregation.candles;
         const mainDaily = aggregate(kbarsToTaiwanStockCandles(fixtureKbars(source)), 1440);
         const multiDaily = multiViewCharts.aggregateDailyCandles(
-            source.map((row) => ({
+            source.map((row, index) => ({
                 ...row,
                 time: Date.parse(`${row.datetime}+08:00`) / 1000,
                 sourceTime: Date.parse(`${row.datetime}+08:00`),
                 continuity: 'complete',
+                turnoverTwd: exactFixtureAmounts(source)[index],
+                turnoverSchemaRevision:
+                    multiViewTurnover.TURNOVER_SCHEMA_REVISION,
             })),
         );
 
@@ -103,6 +119,21 @@ describe('主交易畫面與 MultiView 台股日 K common_lot parity', () => {
         );
         expect(mainDaily.map((row) => row.volume)).toEqual(
             fixture.shioajiDailyAggregation.expectedDaily.map((row) => row.volume),
+        );
+        const exactDailyTurnover = new Map<string, number>();
+        source.forEach((row, index) => {
+            const date = row.datetime.slice(0, 10);
+            exactDailyTurnover.set(
+                date,
+                (exactDailyTurnover.get(date) ?? 0) +
+                    exactFixtureAmounts(source)[index]!,
+            );
+        });
+        expect(mainDaily.map((row) => row.turnoverTwd)).toEqual(
+            [...exactDailyTurnover.values()],
+        );
+        expect(multiDaily.map((row) => row.turnoverTwd)).toEqual(
+            [...exactDailyTurnover.values()],
         );
     });
 });

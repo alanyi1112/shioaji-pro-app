@@ -1,7 +1,11 @@
 export const DAILY_MINUTE_REQUEST_REVISION =
-    'daily-minute-target-request/1' as const;
+    'daily-minute-target-request/2' as const;
 export const DAILY_MINUTE_RESPONSE_REVISION =
-    'daily-minute-target-response/1' as const;
+    'daily-minute-target-response/2' as const;
+export const TARGET_DATE_TURNOVER_SCHEMA_REVISION =
+    'multiview-kbar-turnover/1' as const;
+export const TARGET_DATE_TURNOVER_SOURCE_IDENTITY =
+    'local-shioaji-simulation' as const;
 export const DAILY_GESTURE_WINDOW_MS = 260;
 export const DAILY_MINUTE_MAX_CANDLES = 600;
 
@@ -76,7 +80,15 @@ export type TargetDateCandle = Readonly<{
     low: number;
     close: number;
     volume: number;
+    turnoverTwd: number | null;
+    turnoverSchemaRevision: typeof TARGET_DATE_TURNOVER_SCHEMA_REVISION;
+    turnoverSourceIdentity: typeof TARGET_DATE_TURNOVER_SOURCE_IDENTITY;
 }>;
+
+export type TargetDateTurnoverAvailability =
+    | 'available'
+    | 'partial'
+    | 'unavailable';
 
 export type ValidatedTargetDateResponse = Readonly<{
     schemaVersion: typeof DAILY_MINUTE_RESPONSE_REVISION;
@@ -87,6 +99,9 @@ export type ValidatedTargetDateResponse = Readonly<{
     targetDate: string;
     interval: '1m';
     timeZone: 'Asia/Taipei';
+    turnoverSchemaRevision: typeof TARGET_DATE_TURNOVER_SCHEMA_REVISION;
+    turnoverSourceIdentity: typeof TARGET_DATE_TURNOVER_SOURCE_IDENTITY;
+    turnoverAvailability: TargetDateTurnoverAvailability;
     candles: readonly TargetDateCandle[];
 }>;
 
@@ -237,6 +252,16 @@ function finite(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value);
 }
 
+export function targetDateTurnoverAvailability(
+    candles: readonly Readonly<{ turnoverTwd: number | null }>[],
+): TargetDateTurnoverAvailability {
+    const available = candles.filter(
+        (candle) => candle.turnoverTwd !== null,
+    ).length;
+    if (available === 0) return 'unavailable';
+    return available === candles.length ? 'available' : 'partial';
+}
+
 function normalizeTargetDateCandle(
     value: unknown,
 ): TargetDateCandle | TargetDateResponseReason {
@@ -256,6 +281,16 @@ function normalizeTargetDateCandle(
         priceValues.every((price) => price === 0) ||
         !finite(candle.volume) ||
         candle.volume < 0 ||
+        !Object.hasOwn(candle, 'turnoverTwd') ||
+        !(
+            candle.turnoverTwd === null ||
+            (Number.isSafeInteger(candle.turnoverTwd) &&
+                Number(candle.turnoverTwd) >= 0)
+        ) ||
+        candle.turnoverSchemaRevision !==
+            TARGET_DATE_TURNOVER_SCHEMA_REVISION ||
+        candle.turnoverSourceIdentity !==
+            TARGET_DATE_TURNOVER_SOURCE_IDENTITY ||
         Number(candle.high) <
             Math.max(Number(candle.open), Number(candle.close)) ||
         Number(candle.low) >
@@ -264,7 +299,22 @@ function normalizeTargetDateCandle(
     ) {
         return 'invalid_candle';
     }
-    return Object.freeze({ ...(candle as TargetDateCandle) });
+    const normalized = {
+        time: Number(candle.time),
+        sessionDate: String(candle.sessionDate),
+        open: Number(candle.open),
+        high: Number(candle.high),
+        low: Number(candle.low),
+        close: Number(candle.close),
+        volume: Number(candle.volume),
+        turnoverTwd:
+            candle.turnoverTwd === null
+                ? null
+                : Number(candle.turnoverTwd),
+        turnoverSchemaRevision: TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+        turnoverSourceIdentity: TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
+    };
+    return Object.freeze(normalized);
 }
 
 function taipeiSessionDate(time: number): string {
@@ -322,6 +372,17 @@ export function validateTargetDateResponse(
     if (response.timeZone !== 'Asia/Taipei') {
         return { status: 'rejected', reason: 'time_zone_mismatch' };
     }
+    if (
+        response.turnoverSchemaRevision !==
+            TARGET_DATE_TURNOVER_SCHEMA_REVISION ||
+        response.turnoverSourceIdentity !==
+            TARGET_DATE_TURNOVER_SOURCE_IDENTITY ||
+        !['available', 'partial', 'unavailable'].includes(
+            String(response.turnoverAvailability),
+        )
+    ) {
+        return { status: 'rejected', reason: 'schema_mismatch' };
+    }
     if (!Array.isArray(response.candles)) {
         return { status: 'rejected', reason: 'schema_mismatch' };
     }
@@ -350,6 +411,10 @@ export function validateTargetDateResponse(
         previousTime = candle.time;
         candles.push(candle);
     }
+    const turnoverAvailability = targetDateTurnoverAvailability(candles);
+    if (response.turnoverAvailability !== turnoverAvailability) {
+        return { status: 'rejected', reason: 'schema_mismatch' };
+    }
     return {
         status: 'accepted',
         snapshot: Object.freeze({
@@ -361,6 +426,9 @@ export function validateTargetDateResponse(
             targetDate: request.targetDate,
             interval: '1m',
             timeZone: 'Asia/Taipei',
+            turnoverSchemaRevision: TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+            turnoverSourceIdentity: TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
+            turnoverAvailability,
             candles: Object.freeze(candles),
         }),
     };

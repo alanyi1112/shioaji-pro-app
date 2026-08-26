@@ -4,8 +4,10 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/chart-payload.js", import.meta.url), "utf8");
+const turnoverSource = await readFile(new URL("../public/static/kbar-turnover.js", import.meta.url), "utf8");
 const sandbox = { globalThis: undefined, JSON, Number };
 sandbox.globalThis = sandbox;
+vm.runInNewContext(turnoverSource, sandbox);
 vm.runInNewContext(source, sandbox);
 const api = sandbox.QuoteChartPayload;
 
@@ -68,8 +70,17 @@ test("render signature 忽略非視覺快取 metadata，但會辨識行情變化
   });
   const metadataOnly = { ...base, dataWindow: { cache: { fetchedAt: "second" } } };
   const changed = { ...base, quote: { close: 12 } };
+  const turnoverChanged = {
+    ...base,
+    candles: base.candles.map((candle) => ({
+      ...candle,
+      turnoverTwd: 10_000,
+      turnoverSchemaRevision: "multiview-kbar-turnover/1",
+    })),
+  };
   assert.equal(api.renderSignature(base), api.renderSignature(metadataOnly));
   assert.notEqual(api.renderSignature(base), api.renderSignature(changed));
+  assert.notEqual(api.renderSignature(base), api.renderSignature(turnoverChanged));
 });
 
 test("指標 series 只保留 canonical candle time domain", () => {
@@ -98,4 +109,18 @@ test("screen X 只在扣除價格軸後的 plot 內轉成圖表座標", () => {
   assert.equal(api.plotCoordinateForScreenX(528, 100, 500, 72), 428);
   assert.equal(api.plotCoordinateForScreenX(99, 100, 500, 72), undefined);
   assert.equal(api.plotCoordinateForScreenX(529, 100, 500, 72), undefined);
+});
+
+test("chart payload保留current-schema成交值，無來源為null，拒絕舊schema與偽造值", () => {
+  const prepared = api.preparePayload({
+    candles: [
+      { time: 1, open: 10, high: 12, low: 9, close: 11, volume: 100, turnoverTwd: 1_000_000, turnoverSchemaRevision: "multiview-kbar-turnover/1" },
+      { time: 2, open: 11, high: 13, low: 10, close: 12, volume: 120 },
+    ],
+    indicators: {},
+  });
+  assert.deepEqual(Array.from(prepared.candles, (row) => row.turnoverTwd), [1_000_000, null]);
+  assert.equal(prepared.turnoverSchemaRevision, "multiview-kbar-turnover/1");
+  assert.throws(() => api.preparePayload({ candles: [{ time: 1, open: 10, high: 12, low: 9, close: 11, turnoverTwd: 1, turnoverSchemaRevision: "multiview-kbar-turnover/0" }] }), (error) => error.code === "invalid-turnover-schema");
+  assert.throws(() => api.preparePayload({ candles: [{ time: 1, open: 10, high: 12, low: 9, close: 11, turnoverTwd: "1e3", turnoverSchemaRevision: "multiview-kbar-turnover/1" }] }), (error) => error.code === "invalid-turnover-value");
 });

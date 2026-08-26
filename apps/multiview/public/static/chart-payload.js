@@ -1,4 +1,6 @@
 (function initChartPayload(global) {
+  const turnover = global.QuoteChartKbarTurnover;
+  const TURNOVER_SCHEMA_REVISION = turnover?.TURNOVER_SCHEMA_REVISION || "turnover-contract-unavailable";
   function clonePayload(payload) {
     if (!payload || typeof payload !== "object") return undefined;
     try {
@@ -40,7 +42,19 @@
       const low = finiteNumber(row.low);
       const close = finiteNumber(row.close);
       if ([open, high, low, close].some((value) => value === undefined)) return [];
-      return [{ ...row, open, high, low, close }];
+      const claimsExactTurnover = Object.prototype.hasOwnProperty.call(row, "turnoverTwd") && row.turnoverTwd !== null;
+      if (claimsExactTurnover && row.turnoverSchemaRevision !== TURNOVER_SCHEMA_REVISION) {
+        const error = new Error("成交值資料版本無效");
+        error.code = "invalid-turnover-schema";
+        throw error;
+      }
+      const turnoverTwd = claimsExactTurnover ? turnover?.parseTurnoverTwd(row.turnoverTwd) ?? null : null;
+      if (claimsExactTurnover && turnoverTwd === null) {
+        const error = new Error("成交值資料格式無效");
+        error.code = "invalid-turnover-value";
+        throw error;
+      }
+      return [{ ...row, open, high, low, close, turnoverTwd, turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION }];
     });
   }
 
@@ -88,6 +102,7 @@
       throw error;
     }
     const candleTimes = new Set(prepared.candles.map((row) => timeKey(row.time)));
+    prepared.turnoverSchemaRevision = TURNOVER_SCHEMA_REVISION;
     const indicators = prepared.indicators && typeof prepared.indicators === "object"
       ? prepared.indicators
       : {};

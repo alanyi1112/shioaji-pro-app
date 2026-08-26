@@ -2,6 +2,7 @@ import type { SecurityType } from './types/contract';
 import type { Candle } from './types/market';
 import type { PriceDirection } from './price-direction';
 import { priceDirection } from './price-direction';
+import { formatKbarTurnoverWan } from './kbar-turnover';
 
 const TAIPEI_OFFSET_SECONDS = 8 * 60 * 60;
 
@@ -130,11 +131,12 @@ export function formatKbarVolume(volume: number): string {
 }
 
 export interface KbarReadoutField {
-    key: 'open' | 'high' | 'low' | 'close' | 'volume';
-    label: '開' | '高' | '低' | '收' | '最新' | '量';
+    key: 'open' | 'high' | 'low' | 'close' | 'volume' | 'turnover';
+    label: '開' | '高' | '低' | '收' | '最新' | '量' | '值';
     value: string;
     rawValue?: number;
     tone: PriceDirection | 'neutral';
+    accessibleName?: string;
 }
 
 export interface KbarReadoutDisplay {
@@ -149,7 +151,9 @@ export function buildKbarReadoutDisplay(
     forming: boolean,
     priceFormatter: (value: number) => string,
     reference?: number,
+    securityType?: SecurityType,
 ): KbarReadoutDisplay {
+    const stockReadout = securityType === 'STK';
     if (!candle) {
         return {
             interval: '—',
@@ -160,6 +164,17 @@ export function buildKbarReadoutDisplay(
                 { key: 'low', label: '低', value: '—', tone: 'flat' },
                 { key: 'close', label: '收', value: '—', tone: 'flat' },
                 { key: 'volume', label: '量', value: '—', tone: 'neutral' },
+                ...(stockReadout
+                    ? [
+                          {
+                              key: 'turnover' as const,
+                              label: '值' as const,
+                              value: '—',
+                              tone: 'neutral' as const,
+                              accessibleName: '成交值 —',
+                          },
+                      ]
+                    : []),
             ],
         };
     }
@@ -181,10 +196,24 @@ export function buildKbarReadoutDisplay(
             {
                 key: 'volume',
                 label: '量',
-                value: formatKbarVolume(candle.volume),
+                value: `${formatKbarVolume(candle.volume)}${stockReadout ? '張' : ''}`,
                 rawValue: candle.volume,
                 tone: 'neutral',
             },
+            ...(stockReadout
+                ? [
+                      {
+                          key: 'turnover' as const,
+                          label: '值' as const,
+                          ...formatKbarTurnoverWan(candle.turnoverTwd),
+                          rawValue:
+                              candle.turnoverTwd === null
+                                  ? undefined
+                                  : candle.turnoverTwd,
+                          tone: 'neutral' as const,
+                      },
+                  ]
+                : []),
         ],
     };
 }

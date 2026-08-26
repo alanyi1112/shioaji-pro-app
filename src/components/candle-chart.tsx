@@ -76,6 +76,7 @@ import type { IndicatorPoint } from '../lib/indicators';
 import { DayBoundaryPaneManager } from '../lib/day-boundary-primitive';
 import {
     CommonLotVolumeCursor,
+    isAdvancingTaiwanStockTradeTick,
     normalizeTaiwanStockVolume,
 } from '../lib/chart-volume-contract';
 import {
@@ -176,6 +177,7 @@ import type { ContractInfo } from '../lib/types/contract';
 import type { Candle } from '../lib/types/market';
 import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
 import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
+import { addKbarTurnoverTwd } from '../lib/kbar-turnover';
 import { roundToTick } from '../lib/utils/ticksize';
 import { getChartColors, useThemeSettings } from '../lib/theme-store';
 import {
@@ -183,6 +185,7 @@ import {
     dateStrOffset,
     kbarsToCandles,
     kbarsToTaiwanStockCandles,
+    reattachLiveCandleTail,
     wallClockToUtc,
 } from '../lib/utils/kbars';
 import * as panel from './panel.css';
@@ -480,8 +483,13 @@ export function CandleChart({
     );
     const legendRafRef = useRef(false);
     const [kbarReadout, setKbarReadout] = useState<KbarReadoutDisplay>(() =>
-        buildKbarReadoutDisplay(null, 5, false, (value) =>
-            fmtContractPrice(contract, value),
+        buildKbarReadoutDisplay(
+            null,
+            5,
+            false,
+            (value) => fmtContractPrice(contract, value),
+            undefined,
+            contract.security_type,
         ),
     );
     const selectedReadoutTimeRef = useRef<number | null>(null);
@@ -709,8 +717,10 @@ export function CandleChart({
             response: loaded.response,
             buildLayers: (snapshot) => {
                 const candles = snapshot.candles.map(
-                    ({ sessionDate: _sessionDate, ...bar }) =>
-                        ({ ...bar }) as Candle,
+                    ({ sessionDate: _sessionDate, ...bar }) => ({
+                        ...bar,
+                        turnoverTwd: bar.turnoverTwd ?? null,
+                    }),
                 );
                 const last = candles[candles.length - 1] ?? null;
                 return {
@@ -724,6 +734,8 @@ export function CandleChart({
                         1,
                         false,
                         (value) => fmtContractPrice(c, value),
+                        undefined,
+                        c.security_type,
                     ),
                     volume: candles.map((bar) => bar.volume),
                     indicators: {
@@ -753,7 +765,10 @@ export function CandleChart({
             return;
         }
         const candles = loaded.response.candles.map(
-            ({ sessionDate: _sessionDate, ...bar }) => ({ ...bar }) as Candle,
+            ({ sessionDate: _sessionDate, ...bar }) => ({
+                ...bar,
+                turnoverTwd: bar.turnoverTwd ?? null,
+            }),
         );
         targetDateObservationRef.current = Object.freeze({
             symbol: c.code,
@@ -986,6 +1001,7 @@ export function CandleChart({
                     forming,
                     (value) => fmtContractPrice(contractRef.current, value),
                     readoutReference,
+                    contractRef.current.security_type,
                 ),
             );
         });
@@ -1872,27 +1888,20 @@ export function CandleChart({
                     if (!isCurrent() || loadedKeyRef.current !== loadKey) return;
                     oldestDay = from;
                     const boundary = rawRef.current[0]?.time ?? Infinity;
-                    const older = canonicalKbarsForContract(contract, k).filter(
-                        (b) => b.time < boundary,
-                    );
+                    const older = canonicalKbarsForContract(
+                        contract,
+                        k,
+                    ).filter((b) => b.time < boundary);
                     if (older.length === 0) {
                         dryPages += 1;
                         return;
                     }
                     dryPages = 0;
                     rawRef.current = [...older, ...rawRef.current];
-                    const bars = aggregate(rawRef.current, tf.minutes);
-                    // re-attach the live tail built from ticks since load —
-                    // raw history doesn't contain those bars
-                    const existing = barsRef.current;
-                    const lastAgg =
-                        bars.length > 0
-                            ? bars[bars.length - 1]!.time
-                            : -Infinity;
-                    for (const b of existing) {
-                        if (b.time === lastAgg) bars[bars.length - 1] = b;
-                        else if (b.time > lastAgg) bars.push(b);
-                    }
+                    const bars = reattachLiveCandleTail(
+                        aggregate(rawRef.current, tf.minutes),
+                        barsRef.current,
+                    );
                     applyBars(bars);
                 })
                 .catch(() => {
@@ -1926,12 +1935,26 @@ export function CandleChart({
                                 : total,
                         0,
                     );
+                    const sessionTurnovers = raw
+                        .filter(
+                            (bar) =>
+                                wallClockDateKey(bar.time) === sessionDate,
+                        )
+                        .map((bar) => bar.turnoverTwd);
+                    const totalTurnoverTwd = sessionTurnovers.reduce<
+                        number | null
+                    >(
+                        (total, value) =>
+                            addKbarTurnoverTwd(total, value),
+                        0,
+                    );
                     liveVolumeCursorRef.current.reset({
                         identity: liveVolumeIdentity,
                         sessionDate,
                         sourceTime: latestRaw.time,
                         sequence: 0,
                         totalVolume,
+                        totalTurnoverTwd,
                     });
                 }
                 applyBars(bars);
@@ -2028,10 +2051,16 @@ export function CandleChart({
         );
         const rawMinuteTime = Math.floor(tickTime / 60) * 60;
         let volumeDelta = quote?.tick?.volume ?? 0;
+        let turnoverDeltaTwd: number | null = null;
         if (usesTaiwanStockCommonLots(contract)) {
             const tick = quote?.tick;
             const identity = liveVolumeIdentityRef.current;
             if (!tick || !identity) return;
+            // Shioaji can publish non-trade tick snapshots with zero volume.
+            // They do not advance flashSeq and must not be fed to the strict
+            // cumulative cursor: treating a UI snapshot as a replay would
+            // permanently invalidate an otherwise trustworthy turnover chain.
+            if (!isAdvancingTaiwanStockTradeTick(tick)) return;
             const canonicalTotal = normalizeTaiwanStockVolume({
                 market: 'TW',
                 securityType: 'STK',
@@ -2044,11 +2073,14 @@ export function CandleChart({
                 identity,
                 sessionDate: wallClockDateKey(tickTime),
                 sourceTime: tickTime,
-                sequence: quote?.seq ?? 0,
+                sequence: quote?.flashSeq ?? 0,
                 totalVolume: canonicalTotal.value,
+                totalTurnoverTwd: tick.total_amount,
+                turnoverTwd: tick.amount,
             });
             if (!cursor.accepted) return;
             volumeDelta = cursor.delta;
+            turnoverDeltaTwd = cursor.turnoverDeltaTwd;
         }
         if (!Number.isFinite(volumeDelta) || volumeDelta < 0) return;
         const rawTail = rawRef.current[rawRef.current.length - 1];
@@ -2060,12 +2092,17 @@ export function CandleChart({
                 low: price,
                 close: price,
                 volume: volumeDelta,
+                turnoverTwd: turnoverDeltaTwd,
             });
         } else if (rawMinuteTime === rawTail.time) {
             rawTail.high = Math.max(rawTail.high, price);
             rawTail.low = Math.min(rawTail.low, price);
             rawTail.close = price;
             rawTail.volume += volumeDelta;
+            rawTail.turnoverTwd = addKbarTurnoverTwd(
+                rawTail.turnoverTwd,
+                turnoverDeltaTwd,
+            );
         }
         const bucketSec = tf.minutes * 60;
         const bucket =
@@ -2083,6 +2120,7 @@ export function CandleChart({
                 low: price,
                 close: price,
                 volume: volumeDelta,
+                turnoverTwd: turnoverDeltaTwd,
             };
             // a fresh bucket = the previous bar closed — keep barsRef in
             // sync (history paging re-attaches this tail) and recompute
@@ -2095,6 +2133,10 @@ export function CandleChart({
             bar.low = Math.min(bar.low, price);
             bar.close = price;
             bar.volume += volumeDelta;
+            bar.turnoverTwd = addKbarTurnoverTwd(
+                bar.turnoverTwd,
+                turnoverDeltaTwd,
+            );
         }
         lastBarRef.current = bar;
         markFormingBar(bar.time);
@@ -2119,7 +2161,16 @@ export function CandleChart({
             // a rejected update (e.g. timestamp older than the series tail)
             // must never take the app down — history reload will resync
         }
-    }, [liveQuote, quote?.tick?.volume, contract.code, tf.minutes]);
+    }, [
+        liveQuote,
+        quote?.flashSeq,
+        quote?.tick?.amount,
+        quote?.tick?.total_amount,
+        quote?.tick?.total_volume,
+        quote?.tick?.volume,
+        contract.code,
+        tf.minutes,
+    ]);
 
     // 自訂指標增刪改 → 重算指標 effect；被刪掉的型別把殘留實例一併清掉
     const [customVer, setCustomVer] = useState(0);
@@ -3508,7 +3559,14 @@ export function CandleChart({
                             <span
                                 key={field.key}
                                 className={styles.kbarReadoutField}
-                                title={`${field.label} ${field.value}`}
+                                title={
+                                    field.accessibleName ??
+                                    `${field.label} ${field.value}`
+                                }
+                                aria-label={
+                                    field.accessibleName ??
+                                    `${field.label} ${field.value}`
+                                }
                             >
                                 <span className={styles.kbarReadoutFieldLabel}>
                                     {field.label}

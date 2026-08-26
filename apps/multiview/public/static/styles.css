@@ -3838,6 +3838,15 @@ select {
   line-height: 1.1;
 }
 
+.readout-row > span {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.readout-row > span[data-main-readout="turnover"] {
+  pointer-events: auto;
+}
+
 .chart-grid.grid-4.is-mode-b-page-scroll .indicator-readout,
 .chart-grid.grid-6 .indicator-readout,
 .chart-grid.grid-8 .indicator-readout {

@@ -347,6 +347,7 @@ describe('lightweight-charts browser harness', () => {
             low: 99 + index,
             close: 101 + index,
             volume: 1000 + index,
+            turnoverTwd: null,
         }));
         renderer.update(candles);
         const pane = chart.panes()[1];

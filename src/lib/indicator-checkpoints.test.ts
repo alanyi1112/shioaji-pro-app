@@ -18,6 +18,7 @@ const bars = (count: number, start = 1_700_000_000): Candle[] =>
             low: close - 1.1,
             close,
             volume: 1000 + index * 13,
+            turnoverTwd: null,
         };
     });
 

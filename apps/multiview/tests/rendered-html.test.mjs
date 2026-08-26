@@ -484,7 +484,7 @@ test("主圖估算融資成本與清單 metadata UI 保留偏好、缺值及無�
   assert.match(appScript, /state\.activeMarketTabId/);
   assert.match(appScript, /estimatedMarginAbortController\?\.abort\(\)/);
   assert.match(indexHtml, /chip-panes\.js\?v=20260824-cursor-hotpath-v1/);
-  assert.match(indexHtml, /chart-payload\.js\?v=20260805-crosshair-alignment-v1[\s\S]*app\.js\?v=20260824-single-chart-v1/);
+  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260826-turnover-readout-v2/);
   assert.match(appScript, /requestData\?\.\(\{[\s\S]*datasets: \["margin-short"\]/);
   assert.match(appScript, /加入日期未知/);
   assert.match(indexHtml, /id="watchlist-symbol-recommender"[^>]*maxlength="80"/);
@@ -1910,8 +1910,8 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(indexHtml, /styles\.css\?v=20260810-interval-label-v1/);
   assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
   assert.match(indexHtml, /chip-panes\.js\?v=20260824-cursor-hotpath-v1/);
-  assert.match(indexHtml, /panel-image-export\.js\?v=20260721-panel-frame-v4/);
-  assert.match(indexHtml, /app\.js\?v=20260824-single-chart-v1/);
+  assert.match(indexHtml, /panel-image-export\.js\?v=20260826-turnover-readout-v1/);
+  assert.match(indexHtml, /app\.js\?v=20260826-turnover-readout-v2/);
 });
 
 test("固定範圍 VP 價格標籤無範圍前綴，水平線為 1px 且控制線為 2px", async () => {
@@ -1984,11 +1984,14 @@ test("多圖雙擊開單圖，單圖日 K 命中有效棒則原圖進入指定�
   assert.match(appScript, /host !== surface[\s\S]*?isCompletedTaiwanDailyTarget/);
   assert.match(appScript, /createTargetDateRequest\([\s\S]*?sourceIdentity: DAILY_MINUTE_SOURCE_IDENTITY[\s\S]*?realtimeCoordinator\.loadTargetDate/);
   assert.match(appScript, /validateTargetDateResponse\(requestResult\.request, generation, response\)/);
+  assert.match(appScript, /stageDailyTargetDatePayload\(validation\.snapshot, generation\)/);
+  assert.match(appScript, /targetDateSnapshot: \{[\s\S]*?requestIdentity: snapshot\.requestIdentity[\s\S]*?generation,[\s\S]*?turnoverAvailability: snapshot\.turnoverAvailability/);
+  assert.match(appScript, /preparedPayload\.targetDateSnapshot\?\.generation !== generation[\s\S]*?preparedPayload\.targetDateSnapshot\?\.requestIdentity !== validation\.snapshot\.requestIdentity/);
   assert.match(appScript, /if \(!isPanelActive\(\)\s*\|\| generation !== dailyDrilldownGeneration[\s\S]*?currentChartCount\(\) !== 1\) return;[\s\S]*?realtimeIndicatorScheduler\.cancel\(\)/);
   assert.match(appScript, /intervalSelect\.value = "1m"[\s\S]*?applyPayload\(preparedPayload, \{ prepared: true \}\)/);
   assert.match(appScript, /catch \{\s*intervalSelect\.value = baselineInterval;[\s\S]*?chartAnnotationController\?\.restore\(\);[\s\S]*?restoreFixedProfileState\(baselinePayload\?\.candles \|\| \[\]\);[\s\S]*?peRiverController\?\.refreshContext\(\);[\s\S]*?updateChipIndicatorOptionsAvailability\(\);[\s\S]*?applyPayload\(baselinePayload, \{ prepared: true, viewportSnapshot: baselineViewport \}\)/);
   assert.doesNotMatch(appScript, /handleDailyObservationClick|dailyGestureArbiter|targetDateObservation/);
-  assert.match(indexHtml, /daily-minute-drilldown-contract\.js\?v=20260824-single-chart-v1/);
+  assert.match(indexHtml, /daily-minute-drilldown-contract\.js\?v=20260826-turnover-readout-v2/);
   assert.ok(indexHtml.indexOf("daily-minute-drilldown-contract.js") < indexHtml.indexOf("app.js"));
   assert.match(appScript, /if \(!state\.singleChartView\) localStorage\.setItem\("chartCount", countSelect\.value\)/);
   assert.match(appScript, /countSelect\.value = state\.singleChartRequest \? "1"/);
@@ -2334,7 +2337,7 @@ test("共用垂直線、標題列逐日讀值、TDCC 缺值與 1px 對齊 contra
   assert.match(appScript, /if \(state\.mainReadoutMode === MAIN_READOUT_MODES\.fixed\) restoreLatestMainReadout\(\)/);
   assert.match(appScript, /if \(state\.mainReadoutMode === MAIN_READOUT_MODES\.floating\) \{\s*positionCursorTooltip\(mainReadout, surface, screenX\)/s);
   assert.match(appScript, /setReadoutDate\(mainReadout, candle\?\.time \?\? time\)/);
-  assert.match(appScript, /toggleReadoutGroup\(mainReadout, \["open", "high", "low", "close", "ohlcVolume", "change"\], true\)/);
+  assert.match(appScript, /toggleReadoutGroup\(mainReadout, \["open", "high", "low", "close", "ohlcVolume", "turnover", "change"\], true\)/);
   assert.match(appScript, /setReadoutValue\(mainReadout, "ohlcVolume", candle\?\.volume, volumeFormatter\)/);
   assert.doesNotMatch(appScript, /setReadoutValue\(mainReadout, "changePercent"|setTrend\("changePercent"|function formatSignedPercent/);
   assert.match(appScript, /function restoreLatestTechnicalReadout\(\)/);

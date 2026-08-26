@@ -23,6 +23,7 @@ const row = (
     low,
     close,
     volume: 100,
+    turnoverTwd: null,
 });
 
 describe('Traditional Pivot', () => {
@@ -112,6 +113,7 @@ describe('Traditional Pivot', () => {
         const rows = fixture.projectionRows.map((item) => ({
             ...item,
             time: Date.parse(item.time) / 1000,
+            turnoverTwd: null,
         }));
         const result = buildTraditionalPivotProjection(rows, rows);
         expect(result).toMatchObject({

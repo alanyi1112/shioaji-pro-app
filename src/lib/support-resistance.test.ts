@@ -28,6 +28,7 @@ const candle = (
     low,
     close,
     volume: 1,
+    turnoverTwd: null,
 });
 
 describe('support/resistance formula contract', () => {

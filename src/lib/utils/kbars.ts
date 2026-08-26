@@ -2,6 +2,10 @@
 
 import type { Candle, KBars } from '../types/market';
 import { normalizeTaiwanStockVolume } from '../chart-volume-contract';
+import {
+    addKbarTurnoverTwd,
+    parseKbarTurnoverTwd,
+} from '../kbar-turnover';
 
 // kbar datetimes are Taiwan local; encode wall-clock as UTC so the chart
 // axis shows Taiwan session times regardless of viewer timezone.
@@ -17,6 +21,10 @@ export function wallClockToUtc(dt: string): number {
 
 export function kbarsToCandles(k: KBars): Candle[] {
     const out: Candle[] = [];
+    const alignedAmount =
+        Array.isArray(k.Amount) && k.Amount.length === k.datetime.length
+            ? k.Amount
+            : null;
     for (let i = 0; i < k.datetime.length; i++) {
         const dt = k.datetime[i];
         if (!dt) continue;
@@ -27,6 +35,9 @@ export function kbarsToCandles(k: KBars): Candle[] {
             low: k.Low[i] ?? 0,
             close: k.Close[i] ?? 0,
             volume: k.Volume[i] ?? 0,
+            turnoverTwd: alignedAmount
+                ? parseKbarTurnoverTwd(alignedAmount[i])
+                : null,
         });
     }
     out.sort((a, b) => a.time - b.time);
@@ -68,10 +79,35 @@ export function aggregate(candles: Candle[], minutes: number): Candle[] {
             cur.low = Math.min(cur.low, c.low);
             cur.close = c.close;
             cur.volume += c.volume;
+            cur.turnoverTwd = addKbarTurnoverTwd(
+                cur.turnoverTwd,
+                c.turnoverTwd,
+            );
         }
     }
     if (cur) out.push(cur);
     return out;
+}
+
+/**
+ * 歷史分頁回來時，以目前 generation 內已由 tick 建立的 tail 覆蓋同
+ * bucket，並接回較新的 bucket。整根 Candle replacement 可避免價、量、值
+ * 分別 merge 後形成跨 snapshot 組合。
+ */
+export function reattachLiveCandleTail(
+    aggregatedHistory: readonly Candle[],
+    currentBars: readonly Candle[],
+): Candle[] {
+    const merged = aggregatedHistory.map((bar) => ({ ...bar }));
+    const lastHistoricalTime = merged.at(-1)?.time ?? -Infinity;
+    for (const liveBar of currentBars) {
+        if (liveBar.time === lastHistoricalTime && merged.length > 0) {
+            merged[merged.length - 1] = { ...liveBar };
+        } else if (liveBar.time > lastHistoricalTime) {
+            merged.push({ ...liveBar });
+        }
+    }
+    return merged;
 }
 
 export function dateStrOffset(daysAgo: number): string {

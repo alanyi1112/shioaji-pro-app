@@ -27,6 +27,7 @@ const referenceBars: Candle[] = closes.map((close, index) => ({
     low: close - 1.5,
     close,
     volume: index % 7 === 0 ? 0 : 100 + index,
+    turnoverTwd: null,
 }));
 
 describe('MultiChart 固定參考公式', () => {
@@ -52,6 +53,7 @@ describe('MultiChart 固定參考公式', () => {
                 low: close - 1,
                 close,
                 volume: 100 + index,
+                turnoverTwd: null,
             }),
         );
         const short = wilderRsiSeries(fixture, 5);
@@ -85,6 +87,7 @@ describe('MultiChart 固定參考公式', () => {
                 low: close - 1,
                 close,
                 volume: 100 + index,
+                turnoverTwd: null,
             }),
         );
         const result = stoch(fixture, 9, 3, 3);
@@ -129,6 +132,7 @@ describe('MultiChart 固定參考公式', () => {
             low: index % 2 === 0 ? 11.084524 : 16.915476,
             close: index % 2 === 0 ? 12.084524 : 17.915476,
             volume: 1,
+            turnoverTwd: null,
         }));
         const fixedBoll = bollinger(bollFixture, 20, 2);
         expect(fixedBoll.upper[19]?.value).toBe(20.830952);

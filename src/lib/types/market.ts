@@ -34,7 +34,7 @@ export interface KBars {
     Low: number[];
     Close: number[];
     Volume: number[];
-    Amount: number[];
+    Amount?: unknown[];
 }
 
 export interface Candle {
@@ -44,6 +44,8 @@ export interface Candle {
     low: number;
     close: number;
     volume: number;
+    /** Shioaji Amount 的精確新台幣元值；無法可信取得時為 null。 */
+    turnoverTwd: number | null;
 }
 
 export interface CalculatedIndexEvent {

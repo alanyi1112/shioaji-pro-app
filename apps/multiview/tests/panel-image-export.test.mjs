@@ -5,6 +5,7 @@ import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/panel-image-export.js", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../public/static/app.js", import.meta.url), "utf8");
+const indexHtml = await readFile(new URL("../public/static/index.html", import.meta.url), "utf8");
 const window = { devicePixelRatio: 2 };
 vm.runInNewContext(source, { window, Date, Math, DOMException });
 const { appendExportFrame, captureDimensions, captureFrameStyle, filenameForPanel, safeFilenamePart } = window.QuoteChartPanelImageExporter.__test;
@@ -143,4 +144,12 @@ test("exporter 置換 Canvas、排除暫態 UI、只序列化指定 panel 且不
   assert.match(source, /global\.html2canvas\(panel/);
   assert.match(source, /foreignObjectRendering: false/);
   assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket/);
+});
+
+test("完整panel匯出會保留目前可見的成交值readout", () => {
+  const turnoverStart = indexHtml.indexOf('data-main-readout="turnover"');
+  const turnoverEnd = indexHtml.indexOf('data-main-readout="change"', turnoverStart);
+  assert.ok(turnoverStart >= 0 && turnoverEnd > turnoverStart);
+  assert.doesNotMatch(indexHtml.slice(turnoverStart, turnoverEnd), /data-export-exclude/);
+  assert.match(source, /if \(!\(source instanceof HTMLCanvasElement\)\) \{\s*for \(const child of source\.childNodes\) target\.appendChild\(cloneNodeForExport\(child\)\);/s);
 });

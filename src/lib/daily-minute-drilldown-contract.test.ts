@@ -112,6 +112,7 @@ describe('指定日期 1 分 K request 與 response guard', () => {
         expect(main).toMatchObject({
             status: 'accepted',
             request: {
+                schemaVersion: 'daily-minute-target-request/2',
                 symbol: '2330',
                 targetDate: '2026-08-21',
                 startDate: '2026-08-21',
@@ -158,11 +159,56 @@ describe('指定日期 1 分 K request 與 response guard', () => {
             expect(Object.isFrozen(main.snapshot)).toBe(true);
             expect(Object.isFrozen(main.snapshot.candles)).toBe(true);
             expect(main.snapshot.candles).toHaveLength(2);
+            expect(main.snapshot).toMatchObject({
+                schemaVersion: 'daily-minute-target-response/2',
+                turnoverSchemaRevision: 'multiview-kbar-turnover/1',
+                turnoverSourceIdentity: 'local-shioaji-simulation',
+                turnoverAvailability: 'available',
+            });
+            expect(main.snapshot.candles[0]).toMatchObject({
+                turnoverTwd: 1_386_000,
+                turnoverSchemaRevision: 'multiview-kbar-turnover/1',
+                turnoverSourceIdentity: 'local-shioaji-simulation',
+            });
         }
     });
 
     it.each([
+        ['unavailable', [null, null]],
+        ['partial', [1_386_000, null]],
+    ] as const)('接受current schema成交值%s snapshot', (availability, values) => {
+        const candles = structuredClone(fixture.validResponse.candles);
+        candles.forEach((candle, index) => {
+            candle.turnoverTwd = values[index]!;
+        });
+        const value = response({
+            turnoverAvailability: availability,
+            candles,
+        });
+        const result = validateTargetDateResponse(request(), 7, value);
+        expect(result).toMatchObject({
+            status: 'accepted',
+            snapshot: { turnoverAvailability: availability },
+        });
+    });
+
+    it.each([
         ['schema_mismatch', () => response({ schemaVersion: 'old' }), 7],
+        [
+            'schema_mismatch',
+            () => response({ turnoverSchemaRevision: 'multiview-kbar-turnover/0' }),
+            7,
+        ],
+        [
+            'schema_mismatch',
+            () => response({ turnoverSourceIdentity: 'replayed-source' }),
+            7,
+        ],
+        [
+            'schema_mismatch',
+            () => response({ turnoverAvailability: 'unavailable' }),
+            7,
+        ],
         [
             'response_identity_mismatch',
             () => response({ requestIdentity: 'replay|other' }),
@@ -216,6 +262,28 @@ describe('指定日期 1 分 K request 與 response guard', () => {
             () => {
                 const candles = structuredClone(fixture.validResponse.candles);
                 candles[0]!.high = 100;
+                return response({ candles });
+            },
+            7,
+        ],
+        [
+            'invalid_candle',
+            () => {
+                const candles = structuredClone(
+                    fixture.validResponse.candles,
+                ) as Array<Record<string, unknown>>;
+                delete candles[0]!.turnoverSchemaRevision;
+                return response({ candles });
+            },
+            7,
+        ],
+        [
+            'invalid_candle',
+            () => {
+                const candles = structuredClone(
+                    fixture.validResponse.candles,
+                ) as Array<Record<string, unknown>>;
+                candles[0]!.turnoverTwd = 1.5;
                 return response({ candles });
             },
             7,

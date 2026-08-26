@@ -12,7 +12,15 @@ const candle = (
     high: number,
     close = (low + high) / 2,
     volume = 100,
-): Candle => ({ time, open: close, high, low, close, volume });
+): Candle => ({
+    time,
+    open: close,
+    high,
+    low,
+    close,
+    volume,
+    turnoverTwd: null,
+});
 
 describe('Fair Value Gap', () => {
     it('偵測 bullish／bearish 三根缺口並限制 marker／active zone 數量', () => {

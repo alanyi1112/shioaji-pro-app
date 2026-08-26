@@ -1,4 +1,5 @@
-globalThis.QuoteDailyMinuteDrilldownContract = (() => {
+var globalThis;
+(globalThis ||= {}).QuoteDailyMinuteDrilldownContract = (() => {
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -25,16 +26,21 @@ globalThis.QuoteDailyMinuteDrilldownContract = (() => {
     DAILY_MINUTE_REQUEST_REVISION: () => DAILY_MINUTE_REQUEST_REVISION,
     DAILY_MINUTE_RESPONSE_REVISION: () => DAILY_MINUTE_RESPONSE_REVISION,
     DailyCandleGestureArbiter: () => DailyCandleGestureArbiter,
+    TARGET_DATE_TURNOVER_SCHEMA_REVISION: () => TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+    TARGET_DATE_TURNOVER_SOURCE_IDENTITY: () => TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
     TargetDateSingleFlight: () => TargetDateSingleFlight,
     commitTargetDateSnapshot: () => commitTargetDateSnapshot,
     createDailyCandleGestureArbiter: () => createDailyCandleGestureArbiter,
     createTargetDateRequest: () => createTargetDateRequest,
     createTargetDateSingleFlight: () => createTargetDateSingleFlight,
     isCompletedTaiwanDailyTarget: () => isCompletedTaiwanDailyTarget,
+    targetDateTurnoverAvailability: () => targetDateTurnoverAvailability,
     validateTargetDateResponse: () => validateTargetDateResponse
   });
-  var DAILY_MINUTE_REQUEST_REVISION = "daily-minute-target-request/1";
-  var DAILY_MINUTE_RESPONSE_REVISION = "daily-minute-target-response/1";
+  var DAILY_MINUTE_REQUEST_REVISION = "daily-minute-target-request/2";
+  var DAILY_MINUTE_RESPONSE_REVISION = "daily-minute-target-response/2";
+  var TARGET_DATE_TURNOVER_SCHEMA_REVISION = "multiview-kbar-turnover/1";
+  var TARGET_DATE_TURNOVER_SOURCE_IDENTITY = "local-shioaji-simulation";
   var DAILY_GESTURE_WINDOW_MS = 260;
   var DAILY_MINUTE_MAX_CANDLES = 600;
   var SUPPORTED_TARGET_DATE_SOURCES = /* @__PURE__ */ new Set([
@@ -150,6 +156,13 @@ globalThis.QuoteDailyMinuteDrilldownContract = (() => {
   function finite(value) {
     return typeof value === "number" && Number.isFinite(value);
   }
+  function targetDateTurnoverAvailability(candles) {
+    const available = candles.filter(
+      (candle) => candle.turnoverTwd !== null
+    ).length;
+    if (available === 0) return "unavailable";
+    return available === candles.length ? "available" : "partial";
+  }
   function normalizeTargetDateCandle(value) {
     const candle = record(value);
     if (!candle) return "invalid_candle";
@@ -159,10 +172,22 @@ globalThis.QuoteDailyMinuteDrilldownContract = (() => {
       candle.low,
       candle.close
     ];
-    if (!Number.isInteger(candle.time) || Number(candle.time) <= 0 || !validCalendarDate(candle.sessionDate) || priceValues.some((price) => !finite(price)) || priceValues.every((price) => price === 0) || !finite(candle.volume) || candle.volume < 0 || Number(candle.high) < Math.max(Number(candle.open), Number(candle.close)) || Number(candle.low) > Math.min(Number(candle.open), Number(candle.close)) || Number(candle.high) < Number(candle.low)) {
+    if (!Number.isInteger(candle.time) || Number(candle.time) <= 0 || !validCalendarDate(candle.sessionDate) || priceValues.some((price) => !finite(price)) || priceValues.every((price) => price === 0) || !finite(candle.volume) || candle.volume < 0 || !Object.hasOwn(candle, "turnoverTwd") || !(candle.turnoverTwd === null || Number.isSafeInteger(candle.turnoverTwd) && Number(candle.turnoverTwd) >= 0) || candle.turnoverSchemaRevision !== TARGET_DATE_TURNOVER_SCHEMA_REVISION || candle.turnoverSourceIdentity !== TARGET_DATE_TURNOVER_SOURCE_IDENTITY || Number(candle.high) < Math.max(Number(candle.open), Number(candle.close)) || Number(candle.low) > Math.min(Number(candle.open), Number(candle.close)) || Number(candle.high) < Number(candle.low)) {
       return "invalid_candle";
     }
-    return Object.freeze({ ...candle });
+    const normalized = {
+      time: Number(candle.time),
+      sessionDate: String(candle.sessionDate),
+      open: Number(candle.open),
+      high: Number(candle.high),
+      low: Number(candle.low),
+      close: Number(candle.close),
+      volume: Number(candle.volume),
+      turnoverTwd: candle.turnoverTwd === null ? null : Number(candle.turnoverTwd),
+      turnoverSchemaRevision: TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+      turnoverSourceIdentity: TARGET_DATE_TURNOVER_SOURCE_IDENTITY
+    };
+    return Object.freeze(normalized);
   }
   function taipeiSessionDate(time) {
     const parts = TAIPEI_DATE_FORMATTER.formatToParts(
@@ -208,6 +233,11 @@ globalThis.QuoteDailyMinuteDrilldownContract = (() => {
     if (response.timeZone !== "Asia/Taipei") {
       return { status: "rejected", reason: "time_zone_mismatch" };
     }
+    if (response.turnoverSchemaRevision !== TARGET_DATE_TURNOVER_SCHEMA_REVISION || response.turnoverSourceIdentity !== TARGET_DATE_TURNOVER_SOURCE_IDENTITY || !["available", "partial", "unavailable"].includes(
+      String(response.turnoverAvailability)
+    )) {
+      return { status: "rejected", reason: "schema_mismatch" };
+    }
     if (!Array.isArray(response.candles)) {
       return { status: "rejected", reason: "schema_mismatch" };
     }
@@ -233,6 +263,10 @@ globalThis.QuoteDailyMinuteDrilldownContract = (() => {
       previousTime = candle.time;
       candles.push(candle);
     }
+    const turnoverAvailability = targetDateTurnoverAvailability(candles);
+    if (response.turnoverAvailability !== turnoverAvailability) {
+      return { status: "rejected", reason: "schema_mismatch" };
+    }
     return {
       status: "accepted",
       snapshot: Object.freeze({
@@ -244,6 +278,9 @@ globalThis.QuoteDailyMinuteDrilldownContract = (() => {
         targetDate: request.targetDate,
         interval: "1m",
         timeZone: "Asia/Taipei",
+        turnoverSchemaRevision: TARGET_DATE_TURNOVER_SCHEMA_REVISION,
+        turnoverSourceIdentity: TARGET_DATE_TURNOVER_SOURCE_IDENTITY,
+        turnoverAvailability,
         candles: Object.freeze(candles)
       })
     };

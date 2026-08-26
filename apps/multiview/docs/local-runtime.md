@@ -97,14 +97,38 @@ MultiView 聚合後，daily OHLCV、成交量柱與量能指標輸入必須完�
 TWSE fallback 只承諾單位一致、provider 可辨識及整份 OHLCV 原子切換；因成交範圍
 或來源修訂不同，不承諾其數值與 Shioaji 完全相同。
 
+### K 棒成交值 readout
+
+MultiView fixed／floating K 棒 readout 在「成交量」後顯示 `值`。可見格式為
+`值 …萬`，tooltip／accessible name 為 `成交值 …萬元`；0 元顯示 `0萬`，小於
+1,000 元顯示 `<0.1萬`，無可信值顯示 `值 —`。
+
+精確值只來自本機 Shioaji simulation 的同列 `KBars.Amount`，forming K 只接受同一
+identity、台北交易日、source time、sequence、connection 與 generation 下的 Tick
+`amount／total_amount`。5／15／60 分及日 K 只加總同一 canonical bucket 內合法且
+未溢位的元值。不得使用 OHLC、volume、average price、`weightedAmount`、Yahoo 或
+其他日期資料推算或補值。其他 provider、國外商品、指數、缺漏、非法或舊 schema
+都維持合法 OHLCV 並顯示 `值 —`。
+
+單圖日 K 指定日期 loader 使用 `daily-minute-target-response/2`；response 與每根
+candle 都綁定 `multiview-kbar-turnover/1`、`local-shioaji-simulation` 及整份
+`available／partial／unavailable` 狀態。projection 另綁當次 request identity、日期與
+panel generation，任一商品／日期／週期／generation 漂移即整份拒絕。Amount 缺漏只
+關閉成交值，不阻擋同日合法 OHLCV；離開指定日期後依目前 provider 重新載入，單日
+Amount 不會進入 Yahoo、Cloudflare、Sites 或 D1 payload。
+
+本能力只新增既有 readout 與完整 panel PNG 中的文字，不建立成交值 axis、series、
+price scale、指標或設定 checkbox，也不取得 production、CA、broker authority 或任何
+交易能力。
+
 ### 驗收矩陣
 
-| 路徑 | 適用時框 | 右側成交量 | 日 K 雙擊 | 失效行為 |
-|---|---|---|---|---|
-| RealTimeStock 主交易畫面 Shioaji | 1／5／15／60 分、日 K | Shioaji lot → `common_lot`；分鐘 K 有分日線 | local simulation exact-date，成功才切 `1m` | unit／generation 不可信時拒絕增量；原圖不變 |
-| MultiView 強制 Shioaji | 1／5／15／60 分、日 K | 同源 Kbars／Tick lot → `common_lot`；分鐘 K 有分日線 | 單圖有效日 K：local simulation exact-date；多圖：開單圖 | 混源 OHLCV 清空；非 simulation／日期不符時原圖不變 |
-| MultiView 自動模式 | 1／5／15／60 分、日 K | Shioaji 可用時同上；否則 Yahoo／TWSE shares ÷ 1,000 | 單圖有效日 K：local simulation exact-date；多圖：開單圖 | local adapter 不可用時保留原圖，不以 Yahoo 最近日替代 |
-| MultiView 強制 Yahoo | 日／週／月與既有延遲路徑 | Yahoo／TWSE shares ÷ 1,000 | 多圖開單圖；單圖 exact-date 仍須獨立通過 local simulation guard | 舊 schema／未知 unit 失效重抓；不混接 Shioaji 或 sample data |
+| 路徑 | 適用時框 | 右側成交量 | K 棒成交值 | 日 K 雙擊 | 失效行為 |
+|---|---|---|---|---|---|
+| RealTimeStock 主交易畫面 Shioaji | 1／5／15／60 分、日 K | Shioaji lot → `common_lot`；分鐘 K 有分日線 | 精確 Amount／Tick，以萬元 readout | local simulation exact-date，成功才切 `1m` | unit／generation 不可信時拒絕增量；原圖不變 |
+| MultiView 強制 Shioaji | 1／5／15／60 分、日 K | 同源 Kbars／Tick lot → `common_lot`；分鐘 K 有分日線 | 精確 Amount／Tick，以萬元 readout | 單圖有效日 K：local simulation exact-date；多圖：開單圖 | 成交值失效顯示 `值 —`；混源 OHLCV 清空；非 simulation／日期不符時原圖不變 |
+| MultiView 自動模式 | 1／5／15／60 分、日 K | Shioaji 可用時同上；否則 Yahoo／TWSE shares ÷ 1,000 | Shioaji 可用時精確；fallback 顯示 `值 —` | 單圖有效日 K：local simulation exact-date；多圖：開單圖 | local adapter 不可用時保留原圖，不以 Yahoo 最近日或估算值替代 |
+| MultiView 強制 Yahoo | 日／週／月與既有延遲路徑 | Yahoo／TWSE shares ÷ 1,000 | `值 —` | 多圖開單圖；單圖 exact-date 仍須獨立通過 local simulation guard | 舊 schema／未知 unit 失效重抓；不混接 Shioaji 或 sample data |
 
 所有列都只描述本機 loopback simulation market-data 能力。驗收不得登入或切換
 production、啟用 CA、取得 broker authority、送出委託、寫入 verified history、

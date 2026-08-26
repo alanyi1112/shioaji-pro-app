@@ -3606,7 +3606,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     return `${targetDate}：${messages[reason] || `指定日期 1 分 K 不可用（${reason || "source_unavailable"}）`}`;
   }
 
-  function stageDailyTargetDatePayload(snapshot) {
+  function stageDailyTargetDatePayload(snapshot, generation) {
     const candles = snapshot.candles.map((row) => ({ ...row }));
     const latest = candles.at(-1);
     if (!latest) throw new Error("empty_response");
@@ -3621,6 +3621,17 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       candles,
       indicators,
       volumeContract,
+      turnoverSchemaRevision: snapshot.turnoverSchemaRevision,
+      turnoverSourceIdentity: snapshot.turnoverSourceIdentity,
+      turnoverAvailability: snapshot.turnoverAvailability,
+      targetDateSnapshot: {
+        requestIdentity: snapshot.requestIdentity,
+        targetDate: snapshot.targetDate,
+        generation,
+        turnoverSchemaRevision: snapshot.turnoverSchemaRevision,
+        turnoverSourceIdentity: snapshot.turnoverSourceIdentity,
+        turnoverAvailability: snapshot.turnoverAvailability,
+      },
       realtimeDailyHistory: undefined,
       realtimeProvider: undefined,
       quoteTime: latest.time,
@@ -3709,7 +3720,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
     let preparedPayload;
     try {
-      preparedPayload = stageDailyTargetDatePayload(validation.snapshot);
+      preparedPayload = stageDailyTargetDatePayload(validation.snapshot, generation);
     } catch (error) {
       status.textContent = dailyTargetDateReasonMessage(target.targetDate, String(error?.message || "projection_failed"));
       status.classList.add("is-visible");
@@ -3721,6 +3732,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       || baselineSymbol !== symbolSelect.value
       || baselineInterval !== intervalSelect.value
       || currentChartCount() !== 1) return;
+    if (preparedPayload.targetDateSnapshot?.generation !== generation
+      || preparedPayload.targetDateSnapshot?.targetDate !== target.targetDate
+      || preparedPayload.targetDateSnapshot?.requestIdentity !== validation.snapshot.requestIdentity) return;
     realtimeIndicatorScheduler.cancel();
     clearPanelLoadRetry();
     liveUpdateCleanup?.();
@@ -3822,7 +3836,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       }
     }
     try {
-      return await window.QuoteChartPanelImageExporter?.exportPanelImage({
+      const panelImageExporter = window.QuoteChartPanelImageExporter;
+      if (typeof panelImageExporter?.exportPanelImage !== "function") {
+        throw new Error("圖片匯出元件尚未載入");
+      }
+      return await panelImageExporter.exportPanelImage({
         panel: element,
         symbol: symbolSelect.value,
         interval: intervalSelect.value,
@@ -4805,6 +4823,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       });
       root.classList.add("hidden");
     });
+    setTurnoverReadout(mainReadout, null);
     mainReadout.querySelectorAll("[data-main-readout]").forEach((node) => {
       node.classList.remove("hidden");
     });
@@ -7791,7 +7810,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     toggleReadoutRow(mainReadout, "volumeProfile", selectedMain.has("volumeProfile"));
     toggleReadoutRow(mainReadout, "peRiver", selectedMain.has("peRiver"));
     toggleReadoutRow(mainReadout, "estimatedMarginCost", selectedMain.has("estimatedMarginCost"));
-    toggleReadoutGroup(mainReadout, ["open", "high", "low", "close", "ohlcVolume", "change"], true);
+    toggleReadoutGroup(mainReadout, ["open", "high", "low", "close", "ohlcVolume", "turnover", "change"], true);
     toggleReadoutGroup(mainReadout, ["ma5", "ma10", "ma20", "ma60", "ma120"], selectedMain.has("ma"));
     toggleReadoutGroup(mainReadout, ["volume", "volumeMa5", "volumeMa10", "volumeMa20"], selectedMain.has("volume"));
     toggleReadoutGroup(mainReadout, ["bollU", "bollM", "bollL"], selectedMain.has("bollinger"));
@@ -7924,6 +7943,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     setReadoutValue(mainReadout, "close", close, tradePriceFormatter);
     const volumeFormatter = (value) => formatChartVolume(value, lastPayload?.volumeContract);
     setReadoutValue(mainReadout, "ohlcVolume", candle?.volume, volumeFormatter);
+    setTurnoverReadout(mainReadout, candle);
     const change = candle && previous ? close - previous.close : 0;
     setReadoutValue(mainReadout, "change", change, (value) => formatSignedQuotePrice(value, symbolSelect.value, close));
     const trend = trendClass(change);
@@ -8518,6 +8538,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const volumeContract = window.QuoteChartVolumeContract.contractForProvider("shioaji-realtime");
     const ohlcVolumeNode = mainReadout.querySelector('[data-ohlc="ohlcVolume"]');
     if (ohlcVolumeNode) ohlcVolumeNode.textContent = formatChartVolume(model.summary.totalVolume, volumeContract);
+    setTurnoverReadout(mainReadout, null);
     const volumeNode = mainReadout.querySelector('[data-main-indicator="volume"]');
     if (volumeNode) volumeNode.textContent = formatChartVolume(model.summary.totalVolume, volumeContract);
     mainReadout.classList.remove("hidden");
@@ -9701,6 +9722,18 @@ function setReadoutValue(root, key, value, formatter = formatPrice) {
   const node = root.querySelector(`[data-main-indicator="${key}"], [data-sub-indicator="${key}"], [data-ohlc="${key}"]`);
   if (!node) return;
   node.textContent = typeof value === "number" && Number.isFinite(value) ? formatter(value) : "--";
+}
+
+function setTurnoverReadout(root, candle) {
+  const item = root.querySelector('[data-main-readout="turnover"]');
+  const node = item?.querySelector('[data-ohlc="turnover"]');
+  if (!item || !node) return;
+  const contract = window.QuoteChartKbarTurnover;
+  const turnoverTwd = contract?.hasCurrentExactTurnover?.(candle) ? candle.turnoverTwd : null;
+  const display = contract?.formatTurnoverWan?.(turnoverTwd) || { value: "—", accessibleName: "成交值 —" };
+  node.textContent = display.value;
+  item.title = display.accessibleName;
+  item.setAttribute("aria-label", display.accessibleName);
 }
 
 function setReadoutDate(root, value) {

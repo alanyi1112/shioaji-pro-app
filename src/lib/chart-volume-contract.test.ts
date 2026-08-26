@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fixture from '../../test-fixtures/chart-day-volume-parity.json';
 import {
     CommonLotVolumeCursor,
+    isAdvancingTaiwanStockTradeTick,
     normalizeTaiwanStockVolume,
     readCurrentTaiwanStockCanonicalVolume,
     TAIWAN_STOCK_VOLUME_NORMALIZATION_REVISION,
@@ -14,6 +15,24 @@ import {
 } from './utils/kbars';
 
 describe('台股成交量共同契約 fixture', () => {
+    it('只有真實正整數成交量 Tick 才能推進累計成交值 cursor', () => {
+        expect(
+            isAdvancingTaiwanStockTradeTick({
+                simtrade: false,
+                volume: 1,
+            }),
+        ).toBe(true);
+        for (const candidate of [
+            { simtrade: false, volume: 0 },
+            { simtrade: true, volume: 1 },
+            { simtrade: false, volume: -1 },
+            { simtrade: false, volume: 1.5 },
+            { simtrade: false, volume: Number.NaN },
+        ]) {
+            expect(isAdvancingTaiwanStockTradeTick(candidate)).toBe(false);
+        }
+    });
+
     it('固定 Shioaji 1 分 Kbars 的跨日 daily OHLCV 期望值', () => {
         const minuteBars = fixture.shioajiDailyAggregation.candles.map(
             (row) => ({
@@ -23,6 +42,7 @@ describe('台股成交量共同契約 fixture', () => {
                 low: row.low,
                 close: row.close,
                 volume: row.volume,
+                turnoverTwd: null,
             }),
         );
         expect(
@@ -85,6 +105,7 @@ describe('台股成交量共同契約 fixture', () => {
             low: row.low,
             close: row.close,
             volume: row.volume,
+            turnoverTwd: null,
         }));
         const expected = fixture.dayBoundary.expectedBoundaryPairs.map(
             (pair) => {
@@ -156,7 +177,13 @@ describe('台股成交量共同契約 fixture', () => {
                 sequence: 1,
                 totalVolume: 105,
             }),
-        ).toEqual({ accepted: false, delta: 0, reason: 'unseeded' });
+        ).toEqual({
+            accepted: false,
+            delta: 0,
+            turnoverDeltaTwd: null,
+            turnoverAvailable: false,
+            reason: 'unseeded',
+        });
         expect(
             cursor.consume({
                 identity,
@@ -168,6 +195,8 @@ describe('台股成交量共同契約 fixture', () => {
         ).toEqual({
             accepted: false,
             delta: 0,
+            turnoverDeltaTwd: null,
+            turnoverAvailable: false,
             reason: 'session_change_requires_bootstrap',
         });
     });

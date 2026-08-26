@@ -231,6 +231,7 @@
 
   function createLocalShioajiCoordinator(options = {}) {
     const acceptance = globalScope.QuoteChartAcceptance;
+    const turnover = globalScope.QuoteChartKbarTurnover;
     const fetchImpl = options.fetchImpl || globalScope.fetch?.bind(globalScope);
     const EventSourceImpl = options.EventSourceImpl || globalScope.EventSource;
     const windowTarget = options.windowTarget || globalScope.window || globalScope;
@@ -255,6 +256,8 @@
     const targetDateInflight = new Map();
     const HISTORY_DAYS = Object.freeze({ "1m": 3, "5m": 7, "15m": 30, "1h": 60, "1d": 365 });
     const MAX_KBAR_CACHE_ENTRIES = 16;
+    const TURNOVER_SCHEMA_REVISION = turnover?.TURNOVER_SCHEMA_REVISION || "turnover-contract-unavailable";
+    const TURNOVER_SOURCE_IDENTITY = turnover?.TURNOVER_SOURCE_IDENTITY || "local-shioaji-simulation";
     let source;
     let sourceOpen = false;
     let enabled = options.enabled !== false;
@@ -356,6 +359,16 @@
       return Number.isFinite(result) ? result : NaN;
     }
 
+    function hasRawField(row, name) {
+      const pascal = name.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
+      return Object.prototype.hasOwnProperty.call(row || {}, name)
+        || Object.prototype.hasOwnProperty.call(row || {}, pascal);
+    }
+
+    function simtradeFlag(value) {
+      return value === true || value === 1 || value === "1";
+    }
+
     function nextSequence(symbol) {
       const next = Number(sequences.get(symbol) || 0) + 1;
       sequences.set(symbol, next);
@@ -372,6 +385,13 @@
       const averagePrice = numeric(row.average_price);
       if (!sourceTime || !validOhlc(open, high, low, close) || !Number.isFinite(averagePrice)) return null;
       const volumeAvailable = contract.security_type !== "IND" && Number.isFinite(numeric(row.total_volume));
+      // REST snapshot是累計bootstrap，不是可重放的逐筆事件；即使上游帶amount也不得當成新tick消耗。
+      const tickTurnoverProvided = false;
+      const totalTurnoverProvided = Object.prototype.hasOwnProperty.call(row || {}, "total_amount");
+      const tickTurnoverTwd = null;
+      const totalTurnoverTwd = totalTurnoverProvided ? turnover?.parseTurnoverTwd(row.total_amount) ?? null : null;
+      const tickVolume = volumeAvailable ? Math.max(0, numeric(row.volume)) : 0;
+      const isSimtrade = simtradeFlag(row.simtrade);
       return {
         canonicalSymbol: symbol,
         exchange: contract.exchange === "OTC" ? "TPEx" : "TWSE",
@@ -379,9 +399,19 @@
         contractCode: contract.code,
         sessionDate: sessionDate(sourceTime), sourceTime, receivedTime: new Date().toISOString(),
         open, high, low, close, averagePrice,
-        tickVolume: volumeAvailable ? Math.max(0, numeric(row.volume)) : 0,
+        tickVolume,
         totalVolume: volumeAvailable ? Math.max(0, numeric(row.total_volume)) : 0,
         volumeAvailable,
+        tickTurnoverTwd,
+        totalTurnoverTwd,
+        tickTurnoverProvided,
+        totalTurnoverProvided,
+        turnoverAvailable: !isSimtrade && totalTurnoverTwd !== null,
+        turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+        turnoverSourceIdentity: TURNOVER_SOURCE_IDENTITY,
+        tradeEvent: !isSimtrade && tickVolume > 0,
+        simtrade: isSimtrade,
+        connectionGeneration: generation,
         sequence: nextSequence(symbol), provider: "shioaji", continuity: "complete", reasonCode: "none",
       };
     }
@@ -393,8 +423,12 @@
       const lows = Array.isArray(payload?.Low) ? payload.Low : [];
       const closes = Array.isArray(payload?.Close) ? payload.Close : [];
       const volumes = Array.isArray(payload?.Volume) ? payload.Volume : [];
+      const amounts = Array.isArray(payload?.Amount) ? payload.Amount : null;
       if (![opens, highs, lows, closes, volumes].every((values) => values.length === datetimes.length)) return [];
+      const amountColumnsAligned = amounts !== null && amounts.length === datetimes.length;
       let totalVolume = 0;
+      let totalTurnoverTwd = 0;
+      let totalTurnoverAvailable = amountColumnsAligned;
       let weightedAmount = 0;
       let currentDate = "";
       return datetimes.flatMap((datetime, index) => {
@@ -407,15 +441,29 @@
         if (nextDate !== currentDate) {
           currentDate = nextDate;
           totalVolume = 0;
+          totalTurnoverTwd = 0;
+          totalTurnoverAvailable = amountColumnsAligned;
           weightedAmount = 0;
         }
         totalVolume += volume;
         weightedAmount += close * volume;
+        const turnoverTwd = amountColumnsAligned ? turnover?.parseTurnoverTwd(amounts[index]) ?? null : null;
+        if (turnoverTwd === null || !totalTurnoverAvailable) {
+          totalTurnoverAvailable = false;
+        } else {
+          const nextTotal = turnover.addTurnoverTwd(totalTurnoverTwd, turnoverTwd);
+          if (nextTotal === null) totalTurnoverAvailable = false;
+          else totalTurnoverTwd = nextTotal;
+        }
         return [{
           time: Math.floor(sourceTime / 1000), sourceTime, sessionDate: nextDate,
           open, high, low, close,
           averagePrice: totalVolume > 0 ? weightedAmount / totalVolume : close,
-          volume, totalVolume, continuity: "complete", provider: "shioaji-kbars",
+          volume, totalVolume, turnoverTwd,
+          totalTurnoverTwd: totalTurnoverAvailable ? totalTurnoverTwd : null,
+          turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+          turnoverSourceIdentity: TURNOVER_SOURCE_IDENTITY,
+          continuity: "complete", provider: "shioaji-kbars",
           sourceVolumeUnit: "common_lot", canonicalVolumeUnit: "common_lot",
           normalizationRevision: "taiwan-stock-common-lot/1",
         }];
@@ -440,6 +488,12 @@
       const averageCandidate = numeric(rawField(row, "avg_price") ?? rawField(row, "average_price"));
       const averagePrice = Number.isFinite(averageCandidate) ? averageCandidate : close;
       const volumeAvailable = !indexEvent && Number.isFinite(numeric(rawField(row, "total_volume")));
+      const tickTurnoverProvided = hasRawField(row, "amount");
+      const totalTurnoverProvided = hasRawField(row, "total_amount");
+      const tickTurnoverTwd = tickTurnoverProvided ? turnover?.parseTurnoverTwd(rawField(row, "amount")) ?? null : null;
+      const totalTurnoverTwd = totalTurnoverProvided ? turnover?.parseTurnoverTwd(rawField(row, "total_amount")) ?? null : null;
+      const tickVolume = volumeAvailable ? Math.max(0, numeric(rawField(row, "volume"))) : 0;
+      const isSimtrade = simtradeFlag(rawField(row, "simtrade"));
       return {
         canonicalSymbol: symbol,
         exchange: contract.exchange === "OTC" ? "TPEx" : "TWSE",
@@ -447,9 +501,19 @@
         contractCode: contract.code,
         sessionDate: sessionDate(sourceTime), sourceTime, receivedTime: new Date().toISOString(),
         open, high, low, close, averagePrice,
-        tickVolume: volumeAvailable ? Math.max(0, numeric(rawField(row, "volume"))) : 0,
+        tickVolume,
         totalVolume: volumeAvailable ? Math.max(Number(previous?.totalVolume || 0), numeric(rawField(row, "total_volume"))) : 0,
         volumeAvailable,
+        tickTurnoverTwd,
+        totalTurnoverTwd,
+        tickTurnoverProvided,
+        totalTurnoverProvided,
+        turnoverAvailable: !isSimtrade && (totalTurnoverTwd !== null || (!totalTurnoverProvided && tickTurnoverTwd !== null)),
+        turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+        turnoverSourceIdentity: TURNOVER_SOURCE_IDENTITY,
+        tradeEvent: !isSimtrade && tickVolume > 0,
+        simtrade: isSimtrade,
+        connectionGeneration: generation,
         sequence: nextSequence(symbol), provider: "shioaji", continuity: previous ? previous.continuity : "partial", reasonCode: previous ? "none" : "snapshot_pending",
       };
     }
@@ -483,8 +547,11 @@
     }
 
     async function loadKbarRange(symbol, contract, start, end) {
-      const entries = kbarRangeCache.get(symbol) || [];
-      const covering = entries.find((entry) => entry.start <= start && entry.end >= end);
+      const cacheIdentity = `${TURNOVER_SOURCE_IDENTITY}|${TURNOVER_SCHEMA_REVISION}|${symbol}`;
+      const entries = kbarRangeCache.get(cacheIdentity) || [];
+      const covering = entries.find((entry) => entry.sourceIdentity === TURNOVER_SOURCE_IDENTITY
+        && entry.turnoverSchemaRevision === TURNOVER_SCHEMA_REVISION
+        && entry.start <= start && entry.end >= end);
       if (covering) return clonePoints(covering.points.filter((point) => {
         const numericSourceTime = Number(point.sourceTime);
         const sourceTime = Number.isFinite(numericSourceTime)
@@ -494,7 +561,7 @@
         const date = sessionDate(new Date(sourceTime).toISOString());
         return date >= start && date <= end;
       }));
-      const key = `${symbol}|${start}|${end}`;
+      const key = `${cacheIdentity}|${start}|${end}`;
       if (kbarInflight.has(key)) return clonePoints(await kbarInflight.get(key));
       const task = api("/api/v1/data/kbars", {
         method: "POST",
@@ -503,10 +570,17 @@
         const size = Array.isArray(payload?.datetime) ? payload.datetime.length : 0;
         if (size > 100_000) throw new Error("shioaji_kbars_response_too_large");
         const points = clonePoints(sessionFromKbars(payload));
-        const nextEntries = [...entries, { start, end, points, usedAt: Date.now() }]
+        const nextEntries = [...entries, {
+          sourceIdentity: TURNOVER_SOURCE_IDENTITY,
+          turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+          start,
+          end,
+          points,
+          usedAt: Date.now(),
+        }]
           .sort((left, right) => right.usedAt - left.usedAt)
           .slice(0, MAX_KBAR_CACHE_ENTRIES);
-        kbarRangeCache.set(symbol, nextEntries);
+        kbarRangeCache.set(cacheIdentity, nextEntries);
         return points;
       }).finally(() => kbarInflight.delete(key));
       kbarInflight.set(key, task);
@@ -523,7 +597,7 @@
         && calendarDate.getUTCFullYear() === year
         && calendarDate.getUTCMonth() === month - 1
         && calendarDate.getUTCDate() === day;
-      return request?.schemaVersion === "daily-minute-target-request/1"
+      return request?.schemaVersion === "daily-minute-target-request/2"
         && /^[A-Z0-9^][A-Z0-9._^-]{0,31}$/.test(symbol)
         && request.symbol === symbol
         && validCalendarDate
@@ -551,8 +625,12 @@
         const contract = await resolveContract(request.symbol);
         const points = await loadKbarRange(request.symbol, contract, request.targetDate, request.targetDate);
         if (points.length > request.maxCandles) throw new Error("shioaji_kbars_response_too_large");
+        const exactTurnoverRows = points.filter((point) => point.turnoverTwd !== null).length;
+        const turnoverAvailability = exactTurnoverRows === 0
+          ? "unavailable"
+          : exactTurnoverRows === points.length ? "available" : "partial";
         return Object.freeze({
-          schemaVersion: "daily-minute-target-response/1",
+          schemaVersion: "daily-minute-target-response/2",
           requestIdentity: request.singleFlightKey,
           symbol: request.symbol,
           sourceIdentity: request.sourceIdentity,
@@ -560,6 +638,9 @@
           targetDate: request.targetDate,
           interval: "1m",
           timeZone: "Asia/Taipei",
+          turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+          turnoverSourceIdentity: TURNOVER_SOURCE_IDENTITY,
+          turnoverAvailability,
           candles: Object.freeze(clonePoints(points)),
         });
       })().finally(() => {
@@ -668,15 +749,19 @@
 
     function connectSource() {
       if (!enabled || source || !desiredSymbols().length || documentTarget?.hidden || !EventSourceImpl) return;
-      source = new EventSourceImpl(`${endpoint}/api/v1/stream/data`);
+      const currentSourceGeneration = generation;
+      const nextSource = new EventSourceImpl(`${endpoint}/api/v1/stream/data`);
+      source = nextSource;
       acceptance?.setGauge("sseOpenCount", 1);
       source.onopen = () => {
+        if (source !== nextSource || generation !== currentSourceGeneration) return;
         sourceOpen = true;
         activeSymbols.clear();
         reconcileDemand();
       };
       for (const eventName of ["tick_stk", "quote_idx"]) {
         source.addEventListener(eventName, (event) => {
+          if (source !== nextSource || generation !== currentSourceGeneration) return;
           try {
             const snapshot = snapshotFromEvent(eventName, JSON.parse(event.data));
             if (snapshot) dispatch(snapshot);
@@ -684,6 +769,7 @@
         });
       }
       source.onerror = () => {
+        if (source !== nextSource || generation !== currentSourceGeneration) return;
         sourceOpen = false;
         for (const symbol of desiredSymbols()) notifyState(symbol, "fallback", "shioaji_stream_unavailable");
       };

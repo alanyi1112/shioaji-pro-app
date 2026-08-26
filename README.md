@@ -198,12 +198,25 @@ K 不套用。台股預設優先使用本機 Shioaji 即時行情，無可用 bu
 payload 內部一致，不保證不同 provider 的來源值完全相同。國外商品與 MultiView
 自己的「我的清單」仍沿用原有資料來源與獨立設定，不會與交易終端自選清單同步。
 
+MultiView 的 K 棒 readout 會在成交量後顯示 `值 …萬`，tooltip／accessible name
+使用完整的 `成交值 …萬元`。非空值只接受本機 Shioaji simulation 同次回應的
+`KBars.Amount`，forming K 只接受可信 Tick `amount／total_amount`；5／15／60 分與
+日 K 由同一批精確元值聚合。Yahoo、國外商品、指數、缺漏或舊 schema 一律顯示
+`值 —`，不得用 OHLC、成交量、均價或 `weightedAmount` 推算。這是文字 readout，
+沒有成交值軸、series、設定、D1 寫入、production／CA 或 broker authority。
+
 主交易畫面的日 K 觀察模式可雙擊有效 K 棒，以該棒的 `Asia/Taipei` 日期向既有
 本機 Shioaji simulation market-data adapter 請求 start／end 相同的單日 1 分 K；
 完整驗證後才原子切到 `1m`。MultiView 單擊仍立即交給目前圖表工具；2／3／4／6／8
 圖合法雙擊以目前商品與週期開啟單圖新分頁，圖表數量為 1 時則由有效且已完成的日 K
 啟動相同 exact-date 契約並在原 panel 切換。兩條路徑都不會取得 broker authority、
 送出委託或啟停服務。
+
+MultiView exact-date response v2 會把同日每根 1 分 K 的 Amount、成交值來源／schema
+與 `available／partial／unavailable` 綁進不可變 snapshot；商品、日期、週期、panel
+generation 或 request identity 任一漂移都整份丟棄。Amount 缺漏不阻擋合法 OHLCV，
+但對應 readout 只顯示 `值 —`；返回一般日 K 時仍依目前 provider 重新載入，不把
+單日 simulation Amount 寫入 Yahoo、Cloudflare 或 D1 資料。
 
 第一次使用前先建立 repo 外的本機 D1，再啟動兩個前端：
 

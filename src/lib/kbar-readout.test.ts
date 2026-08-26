@@ -21,6 +21,7 @@ function candle(time: string, close = 191, volume = 39053): Candle {
         low: 189.5,
         close,
         volume,
+        turnoverTwd: null,
     };
 }
 
