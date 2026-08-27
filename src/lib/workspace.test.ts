@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_META, LAYOUT_PRESETS } from './workspace';
+import {
+    BLOCK_META,
+    LAYOUT_PRESETS,
+    loadWorkspace,
+    saveWorkspace,
+    type Workspace,
+} from './workspace';
 
 describe('market pulse workspace preset', () => {
     it('opens TSE and OTC contribution panels side by side', () => {
@@ -51,5 +57,56 @@ describe('signal radar workspace preset', () => {
             expect.objectContaining({ x: 19, y: 0, w: 5 }),
             expect.objectContaining({ x: 19, y: 10, w: 5 }),
         ]);
+    });
+});
+
+describe('smart-order panel workspace contract', () => {
+    it('matches the ticket footprint and remains a singleton', () => {
+        expect(BLOCK_META.smartorder).toMatchObject({
+            label: '智慧下單',
+            pinnable: false,
+            singleton: true,
+            defaultSize: { w: 5, h: 11, minW: 4, minH: 10 },
+        });
+    });
+
+    it('round-trips a resized smart-order panel through workspace persistence', () => {
+        const stored = new Map<string, string>();
+        const previousLocalStorage = globalThis.localStorage;
+        Object.defineProperty(globalThis, 'localStorage', {
+            configurable: true,
+            value: {
+                getItem: (key: string) => stored.get(key) ?? null,
+                setItem: (key: string, value: string) => stored.set(key, value),
+            },
+        });
+        const resized: Workspace = {
+            blocks: [{ id: 'smartorder-persisted', type: 'smartorder', pin: null }],
+            layout: [
+                {
+                    i: 'smartorder-persisted',
+                    x: 3,
+                    y: 7,
+                    w: 9,
+                    h: 18,
+                    minW: 4,
+                    minH: 10,
+                },
+            ],
+        };
+
+        try {
+            saveWorkspace(resized);
+            expect(loadWorkspace()).toEqual(resized);
+        } finally {
+            if (previousLocalStorage === undefined) {
+                Reflect.deleteProperty(globalThis, 'localStorage');
+            } else {
+                Object.defineProperty(globalThis, 'localStorage', {
+                    configurable: true,
+                    value: previousLocalStorage,
+                });
+            }
+        }
     });
 });

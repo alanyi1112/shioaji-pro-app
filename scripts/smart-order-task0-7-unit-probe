@@ -1,0 +1,45 @@
+#!/bin/zsh
+
+set -eu
+
+SCRIPT_PATH="${0:A}"
+REPOSITORY_ROOT="${SCRIPT_PATH:h:h}"
+APP_SUPPORT="${REALTIME_STOCK_APP_SUPPORT:-${HOME}/Library/Application Support/RealTimeStock}"
+NODE_RUNTIME_FILE="${APP_SUPPORT}/node-runtime-path"
+
+private_mode() {
+    local value
+    value="$(/usr/bin/stat -f '%Lp' "$1" 2>/dev/null || true)"
+    if [[ -z "${value}" ]]; then
+        value="$(/usr/bin/stat -c '%a' "$1" 2>/dev/null || true)"
+    fi
+    print -r -- "${value}"
+}
+
+if [[ "${APP_SUPPORT}" != /* ]] ||
+    [[ ! -d "${APP_SUPPORT}" || -L "${APP_SUPPORT}" || ! -O "${APP_SUPPORT}" ]] ||
+    [[ "$(private_mode "${APP_SUPPORT}")" != '700' ]] ||
+    [[ "${APP_SUPPORT:A}" != "${APP_SUPPORT}" ]] ||
+    [[ ! -f "${NODE_RUNTIME_FILE}" || -L "${NODE_RUNTIME_FILE}" || ! -O "${NODE_RUNTIME_FILE}" ]] ||
+    [[ "$(private_mode "${NODE_RUNTIME_FILE}")" != '600' ]]; then
+    print -u2 'Task 0.7 probe拒絕：App Support或persisted Node marker不是current-user private realpath'
+    exit 2
+fi
+
+NODE_BIN="$(head -n 1 "${NODE_RUNTIME_FILE}")"
+if [[ "${NODE_BIN}" != /* || ! -x "${NODE_BIN}" || "${NODE_BIN:A}" != "${NODE_BIN}" ]]; then
+    print -u2 'Task 0.7 probe拒絕：persisted Node不是可執行的絕對realpath'
+    exit 2
+fi
+
+if ! "${NODE_BIN}" -e '
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    process.exit(major === 24 && minor >= 15 && process.release.lts ? 0 : 1);
+'; then
+    print -u2 'Task 0.7 probe拒絕：persisted Node必須是LTS >=24.15且<25'
+    exit 2
+fi
+
+exec "${NODE_BIN}" \
+    "${REPOSITORY_ROOT}/scripts/smart-order-task0-7-unit-capability.mjs" \
+    --confirm=I_CONFIRM_SIMULATION_READONLY_UNIT_CAPABILITY_PROBE

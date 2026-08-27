@@ -429,10 +429,13 @@ function RiskMenu() {
                         />
                     </div>
                     <span className={styles.emptyHint}>
+                        此處是舊版手動下單的瀏覽器本機設定，不是智慧單
+                        Runtime RiskPolicy，也不會授予智慧單權限。
+                        <br />
                         目前當日損益估算：{Math.round(dailyPnl).toLocaleString()}
                         （持倉未實現＋期貨平倉）
                         <br />
-                        停損/停利觸價單不受風控封鎖。
+                        舊版停損/停利觸發送單已停用；僅保留到價提醒。
                     </span>
                 </>
             )}

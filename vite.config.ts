@@ -11,6 +11,7 @@ import {
     isTradingWriteRequest,
     normalizeRuntimeMode,
 } from './src/lib/runtime-mode-shared';
+import { smartOrderSameOriginGateway } from './scripts/smart-order-runtime/vite-same-origin-gateway.mjs';
 
 function runtimeModeFile() {
     return (
@@ -21,6 +22,18 @@ function runtimeModeFile() {
             'Application Support',
             'RealTimeStock',
             'runtime-mode',
+        )
+    );
+}
+
+function smartOrderAppSupportRoot() {
+    return (
+        process.env.REALTIME_STOCK_APP_SUPPORT ??
+        path.join(
+            os.homedir(),
+            'Library',
+            'Application Support',
+            'RealTimeStock',
         )
     );
 }
@@ -87,8 +100,51 @@ const pkg = JSON.parse(
     fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'),
 ) as { version?: string };
 
-export default defineConfig(({ mode }) => {
+const smartOrderSidecarOnlyModulePaths = new Set(
+    [
+        'smart-order-activation-domain.ts',
+        'smart-order-contract-price-domain.ts',
+        'smart-order-domain-atr.ts',
+        'smart-order-domain-calendar.ts',
+        'smart-order-domain-money.ts',
+        'smart-order-domain-types.ts',
+        'smart-order-domain.ts',
+        'smart-order-observation-domain.ts',
+        'smart-order-resolution-domain.ts',
+        'smart-order-risk-domain.ts',
+        'smart-order-state-machine.ts',
+        'smart-order-domain-test-mode.ts',
+        'smart-order-domain-test-mode.vitest.ts',
+    ].map((fileName) => path.resolve(__dirname, 'src/lib', fileName)),
+);
+
+export function isSmartOrderSidecarOnlyModule(id: string) {
+    const queryIndex = id.indexOf('?');
+    const cleanId = queryIndex === -1 ? id : id.slice(0, queryIndex);
+    return smartOrderSidecarOnlyModulePaths.has(path.resolve(cleanId));
+}
+
+export function smartOrderSidecarOnlyBoundary(): Plugin {
+    return {
+        name: 'smart-order-sidecar-only-boundary',
+        enforce: 'pre',
+        load(id) {
+            if (!isSmartOrderSidecarOnlyModule(id)) return null;
+            this.error(
+                `智慧下單交易核心只能由 Node sidecar 載入，禁止進入 Safari/WKWebView 瀏覽器 bundle：${id}`,
+            );
+        },
+    };
+}
+
+export default defineConfig(({ command, mode, isPreview }) => {
     const env = loadEnv(mode, process.cwd(), '');
+    const isManagedLocalServe = command === 'serve' && isPreview === false;
+    const isActualVitestExecution =
+        isManagedLocalServe &&
+        mode === 'test' &&
+        process.env.VITEST === 'true' &&
+        process.env.NODE_ENV === 'test';
     return {
         base: env.VITE_BASE ?? '/',
         // shioaji app upload flattens nested paths — emit a flat bundle.
@@ -119,12 +175,61 @@ export default defineConfig(({ mode }) => {
             ),
         },
         plugins: [
+            ...(command === 'build'
+                ? [smartOrderSidecarOnlyBoundary()]
+                : []),
+            ...(isManagedLocalServe
+                ? [
+                      smartOrderSameOriginGateway({
+                          appSupportRoot: smartOrderAppSupportRoot(),
+                      }),
+                  ]
+                : []),
             productionReadonlyGuard(),
             vanillaExtractPlugin(),
             react(),
         ],
         resolve: {
             alias: {
+                './smart-order-browser-gateway-mode':
+                    isManagedLocalServe
+                        ? path.resolve(
+                              __dirname,
+                              './src/lib/smart-order-browser-gateway-mode.vite.ts',
+                          )
+                        : path.resolve(
+                              __dirname,
+                              './src/lib/smart-order-browser-gateway-mode.ts',
+                          ),
+                './smart-order-domain-test-mode': isActualVitestExecution
+                    ? path.resolve(
+                          __dirname,
+                          './src/lib/smart-order-domain-test-mode.vitest.ts',
+                      )
+                    : path.resolve(
+                          __dirname,
+                          './src/lib/smart-order-domain-test-mode.ts',
+                      ),
+                './shioaji-trade-observer-runtime-authority.mjs':
+                    isActualVitestExecution
+                        ? path.resolve(
+                              __dirname,
+                              './scripts/smart-order-runtime/shioaji-trade-observer-runtime-authority.vitest.mjs',
+                          )
+                        : path.resolve(
+                              __dirname,
+                              './scripts/smart-order-runtime/shioaji-trade-observer-runtime-authority.mjs',
+                          ),
+                './official-market-calendar-authority.mjs':
+                    isActualVitestExecution
+                        ? path.resolve(
+                              __dirname,
+                              './scripts/smart-order-runtime/official-market-calendar-authority.vitest.mjs',
+                          )
+                        : path.resolve(
+                              __dirname,
+                              './scripts/smart-order-runtime/official-market-calendar-authority.mjs',
+                          ),
                 '@modules': modulesTarget,
                 '@': path.resolve(__dirname, './src'),
             },

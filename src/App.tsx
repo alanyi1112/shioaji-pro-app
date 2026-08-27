@@ -38,6 +38,7 @@ import { DepthMap } from './components/depth-map';
 import { PanelChrome } from './components/panel-chrome';
 import { QuoteBoard } from './components/quote-board';
 import { ScannerPanel } from './components/scanner-panel';
+import { SmartOrderPanel } from './components/smart-order-panel';
 import { TickTape } from './components/tick-tape';
 import { TrayPanel } from './components/tray-panel';
 import { Watchlist } from './components/watchlist';
@@ -196,6 +197,8 @@ function BlockBody({
             ) : (
                 <BlockPlaceholder />
             );
+        case 'smartorder':
+            return <SmartOrderPanel contract={contract} />;
         case 'tape':
             return contract ? (
                 <TickTape contract={contract} />

@@ -4,6 +4,10 @@
     "version": "0.0.0",
     "license": "AGPL-3.0-only",
     "type": "module",
+    "engines": {
+        "node": ">=24.15.0 <25"
+    },
+    "packageManager": "pnpm@11.16.0",
     "scripts": {
         "dev": "vite",
         "dev:multiview": "npm --prefix apps/multiview run dev:local",
@@ -15,6 +19,11 @@
         "lint:multiview": "npm --prefix apps/multiview run lint",
         "typecheck:multiview": "npm --prefix apps/multiview exec tsc -- --noEmit",
         "verify:multiview-governance": "node scripts/verify-multiview-governance.mjs",
+        "test:smart-order-contract-fixture": "vitest run scripts/smart-order-contract-probe.test.mjs",
+        "probe:smart-order-node-sqlite": "scripts/realtimestock-runtime node-sqlite-probe",
+        "probe:smart-order-task0-7-unit": "zsh scripts/smart-order-task0-7-unit-probe",
+        "probe:smart-order-gate": "scripts/realtimestock-runtime gate-probe-prepare",
+        "verify:smart-order-task13-2-evidence": "scripts/realtimestock-runtime task13-2-evidence",
         "multiview:state": "scripts/multiview-state",
         "local-runtime": "./scripts/realtimestock-runtime",
         "preview": "vite preview"

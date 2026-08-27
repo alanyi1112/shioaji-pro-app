@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuote, useTradingLive } from '../hooks/use-stream';
 import { checkOrderAllowed } from '../lib/risk';
 import {
+    cancelFuturesOrder,
     cancelOrder,
     placeFuturesOrder,
     placeStockOrder,
@@ -112,7 +113,12 @@ export function GridTicket({
         return out;
     };
 
-    const placeAt = async (price: number) => {
+    const placeAt = async (
+        price: number,
+        routeId:
+            | 'STK-MAN-PLACE-GRID-ONCE'
+            | 'STK-AUTO-PLACE-GRID-FOLLOW',
+    ) => {
         recentPlace.current.set(keyOf(price), Date.now());
         const c = contractRef.current;
         const p = paramsRef.current;
@@ -131,11 +137,15 @@ export function GridTicket({
                 octype: 'Auto',
             });
         }
-        return placeStockOrder(c, {
-            ...req,
-            price_type: 'LMT',
-            order_lot: 'Common',
-        });
+        return placeStockOrder(
+            c,
+            {
+                ...req,
+                price_type: 'LMT',
+                order_lot: 'Common',
+            },
+            routeId,
+        );
     };
 
     const layGrid = async () => {
@@ -150,7 +160,7 @@ export function GridTicket({
         let ok = 0;
         for (const price of prices) {
             try {
-                await placeAt(price);
+                await placeAt(price, 'STK-MAN-PLACE-GRID-ONCE');
                 ok += 1;
             } catch (e) {
                 notify({
@@ -173,7 +183,15 @@ export function GridTicket({
         if (gridOrders.length === 0) return;
         setBusy(true);
         const results = await Promise.allSettled(
-            gridOrders.map((t) => cancelOrder(t.order.id)),
+            gridOrders.map((t) =>
+                t.contract.security_type === 'STK'
+                    ? cancelOrder(
+                          t.order.id,
+                          t.order.account,
+                          'STK-MAN-CANCEL-GRID-ALL',
+                      )
+                    : cancelFuturesOrder(t),
+            ),
         );
         const ok = results.filter((r) => r.status === 'fulfilled').length;
         notify({
@@ -218,7 +236,14 @@ export function GridTicket({
                     const k = keyOf(t.status.modified_price || t.order.price);
                     if (!desired.has(k)) {
                         ops += 1;
-                        await cancelOrder(t.order.id).catch(() => undefined);
+                        await (t.contract.security_type === 'STK'
+                            ? cancelOrder(
+                                  t.order.id,
+                                  t.order.account,
+                                  'STK-AUTO-CANCEL-GRID-FOLLOW',
+                              )
+                            : cancelFuturesOrder(t)
+                        ).catch(() => undefined);
                     }
                 }
                 const now = Date.now();
@@ -231,7 +256,10 @@ export function GridTicket({
                     // (the poll hasn't caught up — re-placing would double)
                     if (!have.has(k) && !recentPlace.current.has(k)) {
                         ops += 1;
-                        await placeAt(Number(k)).catch(() => undefined);
+                        await placeAt(
+                            Number(k),
+                            'STK-AUTO-PLACE-GRID-FOLLOW',
+                        ).catch(() => undefined);
                     }
                 }
                 if (ops > 0) onChangedRef.current?.();

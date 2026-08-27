@@ -8,7 +8,14 @@ import { startBusinessSessionMonitor } from './lib/business-session-monitor';
 import { startRuntimeModeSync } from './lib/runtime-mode';
 import { isTauri, loadDesktopSettings } from './lib/tauri';
 import { initTheme } from './lib/theme-store';
-import { startTriggerEngine } from './lib/trigger-engine';
+import {
+    startLegacyAlertEngine,
+    stopLegacyAlertEngine,
+} from './lib/trigger-engine';
+
+if (import.meta.hot) {
+    import.meta.hot.dispose(() => stopLegacyAlertEngine());
+}
 
 // Keep the normal trading application as one static module graph. Loading its
 // Vanilla Extract styles through several concurrent dynamic imports can race
@@ -31,7 +38,9 @@ function AppGate() {
 export function renderTradingApp(root: Root) {
     initTheme();
     startAnalytics();
-    startTriggerEngine();
+    // Notification-only compatibility authority. Legacy stop/take inventory is
+    // deliberately display-only and cannot submit broker orders.
+    startLegacyAlertEngine();
     startRuntimeModeSync();
     startBusinessSessionMonitor();
     bootstrap();

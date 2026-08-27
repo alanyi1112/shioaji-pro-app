@@ -18,10 +18,13 @@ import {
     usePrivacyMoney,
 } from '../lib/privacy';
 import {
+    cancelFuturesOrder,
     cancelOrder,
     fetchSettlements,
     updateOrderPrice,
     updateOrderQty,
+    updateFuturesOrderPrice,
+    updateFuturesOrderQty,
     type Settlement,
 } from '../lib/shioaji';
 import {
@@ -113,7 +116,14 @@ function PositionsTable({
             const qty = mode === 'close' ? p.quantity : p.quantity * 2;
             if (isStockPosition(p)) {
                 // shares → Common lots + IntradayOdd remainder
-                await placeStockExitByShares(contract, exit, qty);
+                await placeStockExitByShares(
+                    contract,
+                    exit,
+                    qty,
+                    mode === 'close'
+                        ? 'STK-MAN-PLACE-POSITION-CLOSE'
+                        : 'STK-MAN-PLACE-POSITION-REVERSE',
+                );
             } else {
                 await placeQuickOrder(contract, exit, null, qty);
             }
@@ -354,10 +364,25 @@ function OrderEditor({
         const valid =
             field === 'qty' ? Number.isInteger(n) && n >= 1 : n > 0;
         if (valid) {
+            const isStock = trade.contract.security_type === 'STK';
             const req =
                 field === 'qty'
-                    ? updateOrderQty(trade.order.id, n)
-                    : updateOrderPrice(trade.order.id, n);
+                    ? isStock
+                        ? updateOrderQty(
+                              trade.order.id,
+                              n,
+                              trade.order.account,
+                              'STK-MAN-UPDATE-ORDER-QTY',
+                          )
+                        : updateFuturesOrderQty(trade, n)
+                    : isStock
+                      ? updateOrderPrice(
+                            trade.order.id,
+                            n,
+                            trade.order.account,
+                            'STK-MAN-UPDATE-ORDER-PRICE',
+                        )
+                      : updateFuturesOrderPrice(trade, n);
             req.then(() => {
                 notify({
                     kind: 'ok',
@@ -426,10 +451,16 @@ function OrdersTable({
     if (trades.length === 0) {
         return <div className={styles.emptyState}>NO ORDERS · 無委託</div>;
     }
-    const doCancel = async (id: string) => {
-        setCancelling(id);
+    const doCancel = async (trade: Trade) => {
+        setCancelling(trade.order.id);
         try {
-            await cancelOrder(id);
+            await (trade.contract.security_type === 'STK'
+                ? cancelOrder(
+                      trade.order.id,
+                      trade.order.account,
+                      'STK-MAN-CANCEL-ORDER-TABLE',
+                  )
+                : cancelFuturesOrder(trade));
             onChanged();
         } catch {
             // status refresh will surface reality
@@ -550,7 +581,7 @@ function OrdersTable({
                                             }
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                doCancel(t.order.id);
+                                                doCancel(t);
                                             }}
                                         >
                                             {cancelling === t.order.id

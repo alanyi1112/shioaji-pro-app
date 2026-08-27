@@ -9,7 +9,7 @@ HTTP API + SSE streaming. React 19 + TypeScript + Vite, zero backend code —
 it talks directly to your local `shioaji server`.
 
 以 Shioaji HTTP API 打造的專業交易終端：即時行情、K 線、五檔、閃電下單、
-圖表點價下單、停損停利觸價單、可拖拉的自訂版面。
+圖表點價下單、到價警示、可拖拉的自訂版面。
 
 **介面 100% 開源** — UI、行情串流、下單鏈路全部都在這個 repo，
 clone 下來就能 build 出完整的 Web 版終端。桌面版外殼（Tauri）、
@@ -38,7 +38,7 @@ Shioaji 1.7.1 的即時計算指數、成分股與產業貢獻，現在整合成
 - **K 線圖** — lightweight-charts，1m/5m/15m/60m/1D，即時 tick 更新當根 K 棒，
   **歷史無限回溯**（往左拖自動載入更舊 K 棒，最多三年）
   - **點價下單**：點圖表價位直接限價買賣
-  - **停損 / 停利**：在圖上掛觸價單（觸價送市價單），虛線顯示、可取消
+  - **停損 / 停利**：舊版瀏覽器觸發送單已停用；存量規則只供人工重建，新版持久化保護完成前不得自動送單
   - **委託管理**：未成交委託顯示為實線、overlay 有 CANCEL 按鈕、**拖曳委託線即改價**
   - **Hover 同步**：十字線價位即時同步到下單面板
 - **閃電下單** — 價格梯點擊即下單（左欄買/右欄賣），含安全開關；
@@ -56,7 +56,7 @@ Shioaji 1.7.1 的即時計算指數、成分股與產業貢獻，現在整合成
   點擊即加入追蹤
 - **類股熱力圖** — 指數 → 類股熱度總覽 → 點進類股看個股
 - **交易安全** — 風控 Kill Switch（單筆上限/日虧上限/一鍵鎖單）、
-  Esc×2 全部刪單、括號單（成交後自動掛 OCO 停損停利）、持倉一鍵平倉/反手、
+  Esc×2 全部刪單、舊版瀏覽器括號單與交易觸發器已 fail-closed 停用、持倉一鍵平倉/反手、
   委託改量、下單預估成本（手續費/稅/契約值）
 - **快捷鍵** — B/S 切換買賣、Esc×2 全刪單、⌘K 商品搜尋跳轉（支援中文股名）
 - **技術指標** — 21 種內建（主圖均線/通道/SAR/SuperTrend，副圖 MACD/RSI/KD
@@ -90,12 +90,38 @@ Shioaji 1.7.1 的即時計算指數、成分股與產業貢獻，現在整合成
 |------|-------|
 | ![dark](docs/shot-terminal-dark.png) | ![light](docs/shot-terminal-light.png) |
 
+## 智慧下單安全邊界（開發中）
+
+工作區可加入「智慧下單」面板，但目前仍是 **simulation-only、observe-only**
+的本機基礎設施：策略草稿可保存，所有 broker 寫入與自動寫入總開關維持封鎖。
+
+- 這是 Mac 本機持續監控，不是永豐券商雲端智慧單；關機、睡眠、斷網、
+  行情或交易 session 中斷時，不會繼續監控。
+- 觸發條件成立不等於 broker 已接受或成交；結果未知時禁止自動重送。
+- 外部 App、人工委託或部位變動可能使本機保留量失效，系統必須停止自動動作並
+  要求人工對帳。
+- 即使未來切到正式環境，也不得把本機智慧下單當成唯一停損、停利或風險保護。
+- RealTimeStock 規劃的股票本機上限是同一已驗證身分跨固定股票帳號共 20 筆，
+  且 paused、recovery、manual 與仍有 broker／保護義務等較保守狀態仍計入。
+  這和大戶投「同一 ID 跨帳號台股＋期權合計 20 筆」的券商雲端額度是兩套不同資源；
+  本機不會讀取、占用或同步券商雲端額度。
+- 現有瀏覽器括號單與 `localStorage` 交易 trigger 是舊流程，現已停用 broker authority；
+  存量停損／停利只顯示「待人工重建」且永不自動匯入或送單。純 alert 仍可在頁面開啟時通知，
+  但沒有常駐 sidecar、帳號固定、重啟復原或 exactly-once 保證。
+
+本機 sidecar 的 Node、私有儲存、mode switch、uninstall 與 write-locked 狀態請見
+[智慧下單本機 sidecar Runtime](scripts/smart-order-runtime/README.md)。
+
+> 平台範圍：RealTimeStock一般前端與桌面主程式仍維持下方既有Apple Silicon／Intel macOS、Windows與Linux支援；只有本change新增的智慧下單sidecar／Node `node:sqlite`交易Runtime，第一階段正式支援原生Apple Silicon `arm64` macOS實機。Intel／`x64`、Rosetta、VM、Windows與Linux不啟動智慧下單sender，也不取得broker authority；未來Intel交易Runtime將另立OpenSpec change。
+
 ## Desktop App 桌面版（推薦）
 
 到 [Releases](https://github.com/Sinotrade/shioaji-pro-app/releases) 下載對應平台安裝檔
 （macOS `.dmg`、Windows `.msi`、Linux `.AppImage`/`.deb`/`.rpm`）。桌面版特色：
 
 系統需求：macOS 13.3+（Apple Silicon / Intel）、Windows 10/11 x64、Linux x86_64。
+
+上述是RealTimeStock一般桌面主程式的系統需求，不表示智慧下單交易Runtime支援所有平台；該Runtime目前僅支援原生Apple Silicon `arm64` macOS實機。
 
 - **AI Agent** — 多供應商（Claude / Codex）agentic 對話、shioaji 技能市集、
   排程任務、操作觀察學習（桌面版專屬）
@@ -122,7 +148,8 @@ Shioaji 1.7.1 的即時計算指數、成分股與產業貢獻，現在整合成
 
 - 永豐金證券帳戶 + Shioaji API Key/Secret
   （在 [API 管理頁](https://www.sinotrade.com.tw/newweb/PythonAPIKey/) 建立）
-- [Node.js](https://nodejs.org/) 20+ 與 [pnpm](https://pnpm.io/)
+- [Node.js](https://nodejs.org/) 24.15.x LTS（`>=24.15.0 <25`）與
+  [pnpm](https://pnpm.io/)
 - Shioaji CLI：
 
 ```sh
@@ -184,6 +211,16 @@ cd /Users/alanyi/Documents/RealTimeStock
 ```
 
 watchdog 只會在已曾成功的 simulation generation 連續偵測到 `SessionNotEstablished` 時，以有限次數與退避策略重啟 8080 simulation API；不會操作 production、5173、5174、D1、盤後 pipeline、CA 或交易 API。5173 會保持可操作的 `OFFLINE` 工作區並自動重載自選清單。
+
+Gate 0 Task 0.3 若只缺當次實際 simulation 委託事件，可在「另一個已取得該次 simulation 操作授權的外部 client」即將操作時，啟動最多 90 秒的純觀察視窗。這 90 秒只包容 CLI 互動、雙重 simulation attestation 與 response-linked event correlation；一次性授權 envelope 仍只有 60 秒：
+
+```sh
+node scripts/smart-order-readonly-gate-runner.mjs \
+  --observe-external-order-event \
+  --confirm=I_CONFIRM_READONLY_OBSERVATION_OF_SEPARATELY_AUTHORIZED_EXTERNAL_SIMULATION_EVENT
+```
+
+這個 runner 只執行固定 managed simulation 帳號的唯讀對帳與事件觀察，不會 place、update、cancel、重試或 cleanup，也不會開啟 write master。行情可來自真實即時行情，但帳號、委託、委託回報與成交回報仍全部屬於 Shioaji simulation，不是 production 或真實下單。fixture、快取、舊事件與過期報告均不能代替當次實際 simulation `order_event`；結果不明或任一指紋漂移時必須 fail closed。
 
 ### 6. MultiView 多圖看盤（本機）
 
@@ -253,7 +290,7 @@ curl -X POST http://localhost:8080/api/v1/apps/shioaji-pro-app "${ARGS[@]}"
 
 - 預設為**模擬環境**；頂部會顯示「模擬環境」徽章，正式環境為紅色「正式環境」
 - 閃電下單預設**鎖定**，需手動啟用；圖表點價下單為 one-shot 模式
-- 停損/停利為**客戶端觸價單**，只在頁面開啟時監控
+- 舊版停損/停利客戶端觸發送單已停用；目前只有純到價提醒會在頁面開啟時監控
 - 正式環境的每一筆委託都是真實交易，請自行承擔風險
 
 ## Stack

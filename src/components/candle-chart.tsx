@@ -157,9 +157,11 @@ import {
     supportResistanceProductKey,
 } from '../lib/support-resistance-state';
 import {
+    cancelFuturesOrder,
     cancelOrder,
     fetchInfo,
     fetchKbars,
+    updateFuturesOrderPrice,
     updateOrderPrice,
 } from '../lib/shioaji';
 import {
@@ -169,6 +171,7 @@ import {
 import { setPickedPrice } from '../lib/price-sync';
 import { notify, placeQuickOrder } from '../lib/trade';
 import {
+    LEGACY_TRADING_TRIGGER_DISABLED_MESSAGE,
     addTrigger,
     removeTrigger,
     useTriggers,
@@ -235,8 +238,6 @@ const TRADE_MODES: { key: TradeMode; label: string }[] = [
     { key: 'observe', label: '游標' },
     { key: 'buy', label: '點價買' },
     { key: 'sell', label: '點價賣' },
-    { key: 'stop', label: '停損' },
-    { key: 'take', label: '停利' },
     { key: 'alert', label: '警示' },
 ];
 
@@ -1336,7 +1337,9 @@ export function CandleChart({
             setMode('observe'); // one-shot
             if (m === 'buy' || m === 'sell') {
                 const action = m === 'buy' ? 'Buy' : 'Sell';
-                placeQuickOrder(c, action, price, qty)
+                placeQuickOrder(c, action, price, qty, {
+                    stockRouteId: 'STK-MAN-PLACE-CHART',
+                })
                     .then((trade) =>
                         notify({
                             kind: 'ok',
@@ -1353,45 +1356,46 @@ export function CandleChart({
                     );
                 return;
             }
-            // stop / take triggers — direction inferred from click vs last
+            if (m === 'stop' || m === 'take') {
+                notify({
+                    kind: 'err',
+                    title: '舊版觸價下單已停用',
+                    body: LEGACY_TRADING_TRIGGER_DISABLED_MESSAGE,
+                });
+                return;
+            }
+            // Notification-only legacy authority. Browser-side stop/take
+            // creation is disabled and has no chart interaction mode.
             if (last === null) {
                 notify({
                     kind: 'err',
-                    title: '無法掛觸價單',
+                    title: '無法設定到價警示',
                     body: '尚未收到即時成交價',
                 });
                 return;
             }
             const below = price <= last;
             if (m === 'alert') {
-                addTrigger({
-                    code: c.code,
-                    condition: below ? 'below' : 'above',
-                    price,
-                    action: 'Sell', // unused for alerts
-                    quantity: 0,
-                    kind: 'alert',
-                });
+                try {
+                    addTrigger({
+                        code: c.code,
+                        condition: below ? 'below' : 'above',
+                        price,
+                        action: 'Sell', // canonical unused alert field
+                        quantity: 0,
+                        kind: 'alert',
+                    });
+                } catch (error) {
+                    notify({
+                        kind: 'err',
+                        title: '到價警示建立失敗',
+                        body:
+                            error instanceof Error
+                                ? error.message
+                                : String(error),
+                    });
+                }
                 return;
-            }
-            if (m === 'stop') {
-                addTrigger({
-                    code: c.code,
-                    condition: below ? 'below' : 'above',
-                    price,
-                    action: below ? 'Sell' : 'Buy',
-                    quantity: qty,
-                    kind: 'stop',
-                });
-            } else {
-                addTrigger({
-                    code: c.code,
-                    condition: below ? 'below' : 'above',
-                    price,
-                    action: below ? 'Buy' : 'Sell',
-                    quantity: qty,
-                    kind: 'take',
-                });
             }
         };
         chart.subscribeClick(handleChartClick);
@@ -3077,7 +3081,14 @@ export function CandleChart({
                 const orig =
                     d.trade.status.modified_price || d.trade.order.price;
                 if (d.price === orig) return;
-                updateOrderPrice(d.trade.order.id, d.price)
+                (d.trade.contract.security_type === 'STK'
+                      ? updateOrderPrice(
+                          d.trade.order.id,
+                          d.price,
+                          d.trade.order.account,
+                          'STK-MAN-UPDATE-CHART-DRAG',
+                      )
+                    : updateFuturesOrderPrice(d.trade, d.price))
                     .then(() => {
                         notify({
                             kind: 'ok',
@@ -3125,18 +3136,14 @@ export function CandleChart({
             series.createPriceLine({
                 price: t.price,
                 color:
-                    t.kind === 'stop'
-                        ? '#e0a43c'
-                        : t.kind === 'alert'
-                          ? '#8b94a7'
-                          : colors.crosshair,
+                    t.kind === 'alert' ? '#8b94a7' : '#6b7280',
                 lineWidth: 1,
                 lineStyle: 2, // dashed
                 axisLabelVisible: true,
                 title:
                     t.kind === 'alert'
                         ? '警示'
-                        : `${t.kind === 'stop' ? '停損' : '停利'}${t.action === 'Buy' ? '買' : '賣'}${t.quantity}`,
+                        : `${t.kind === 'stop' ? '舊停損' : '舊停利'}待人工重建（未啟用）`,
             }),
         );
         return () => {
@@ -3667,9 +3674,22 @@ export function CandleChart({
                         {m.label}
                     </button>
                 ))}
+                {(['停損', '停利'] as const).map((label) => (
+                    <button
+                        key={label}
+                        className={styles.modeBtn.normal}
+                        type='button'
+                        disabled
+                        aria-disabled='true'
+                        title={LEGACY_TRADING_TRIGGER_DISABLED_MESSAGE}
+                        style={{ cursor: 'not-allowed', opacity: 0.45 }}
+                    >
+                        {label}（停用）
+                    </button>
+                ))}
                 <label
                     className={styles.qtyWrap}
-                    title='圖表下單數量（點價買賣/停損/停利的口數或張數）'
+                    title='圖表點價買賣的口數或張數；舊版停損／停利已停用'
                 >
                     量
                     <input
@@ -3856,8 +3876,8 @@ export function CandleChart({
                     <div className={styles.modeHint}>
                         {mode === 'buy' && '點擊圖表價位 → 限價買進'}
                         {mode === 'sell' && '點擊圖表價位 → 限價賣出'}
-                        {mode === 'stop' && '點擊價位掛停損（觸價市價單）'}
-                        {mode === 'take' && '點擊價位掛停利（觸價市價單）'}
+                        {(mode === 'stop' || mode === 'take') &&
+                            '舊版停損／停利已停用，不會下單；請到智慧下單重建'}
                         {mode === 'alert' && '點擊價位設定到價警示（只通知不下單）'}
                     </div>
                 )}
@@ -3937,7 +3957,13 @@ export function CandleChart({
                                         className={styles.orderCancel}
                                         title='刪單'
                                         onClick={() =>
-                                            cancelOrder(t.order.id)
+                                            (t.contract.security_type === 'STK'
+                                                ? cancelOrder(
+                                                      t.order.id,
+                                                      t.order.account,
+                                                      'STK-MAN-CANCEL-CHART',
+                                                  )
+                                                : cancelFuturesOrder(t))
                                                 .then(() => {
                                                     notify({
                                                         kind: 'ok',
@@ -3976,14 +4002,25 @@ export function CandleChart({
                                     {t.condition === 'below' ? '≤' : '≥'}
                                     {fmtPrice(t.price)}
                                     {t.kind !== 'alert' &&
-                                        ` ${t.action === 'Buy' ? '買' : '賣'}${t.quantity}`}
+                                        ` 舊版${t.kind === 'stop' ? '停損' : '停利'}待人工重建（未啟用、不會下單）`}
                                 </span>
-                                <button
-                                    className={styles.triggerRemove}
-                                    onClick={() => removeTrigger(t.id)}
-                                >
-                                    <X size={10} />
-                                </button>
+                                {t.kind === 'alert' && (
+                                    <button
+                                        className={styles.triggerRemove}
+                                        title='刪除到價警示'
+                                        onClick={() => {
+                                            if (!removeTrigger(t.id)) {
+                                                notify({
+                                                    kind: 'err',
+                                                    title: '到價警示刪除失敗',
+                                                    body: `${t.code} 的警示狀態未變更`,
+                                                });
+                                            }
+                                        }}
+                                    >
+                                        <X size={10} />
+                                    </button>
+                                )}
                             </div>
                         ))}
                     </div>

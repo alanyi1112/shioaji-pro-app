@@ -18,7 +18,7 @@ import {
 } from 'react';
 import { useQuote, useTradingLive } from '../hooks/use-stream';
 import { maskMoney, usePrivacyMoney } from '../lib/privacy';
-import { cancelOrder } from '../lib/shioaji';
+import { cancelFuturesOrder, cancelOrder } from '../lib/shioaji';
 import { getAliasFor, onOrderEvent } from '../lib/stream';
 import { notify, placeQuickOrder } from '../lib/trade';
 import type { ContractInfo } from '../lib/types/contract';
@@ -476,6 +476,12 @@ export function FlashOrder({
                 action,
                 price,
                 q,
+                {
+                    stockRouteId:
+                        price === null
+                            ? 'STK-MAN-PLACE-FLASH-FLAT'
+                            : 'STK-MAN-PLACE-FLASH',
+                },
             );
             notify({
                 kind: 'ok',
@@ -515,7 +521,15 @@ export function FlashOrder({
         );
         if (targets.length === 0) return;
         const results = await Promise.allSettled(
-            targets.map((t) => cancelOrder(t.order.id)),
+            targets.map((t) =>
+                t.contract.security_type === 'STK'
+                    ? cancelOrder(
+                          t.order.id,
+                          t.order.account,
+                          'STK-MAN-CANCEL-FLASH-PRICE',
+                      )
+                    : cancelFuturesOrder(t),
+            ),
         );
         const ok = results.filter((r) => r.status === 'fulfilled').length;
         notify({
@@ -544,7 +558,15 @@ export function FlashOrder({
             return;
         }
         const results = await Promise.allSettled(
-            targets.map((t) => cancelOrder(t.order.id)),
+            targets.map((t) =>
+                t.contract.security_type === 'STK'
+                    ? cancelOrder(
+                          t.order.id,
+                          t.order.account,
+                          'STK-MAN-CANCEL-FLASH-SYMBOL',
+                      )
+                    : cancelFuturesOrder(t),
+            ),
         );
         const ok = results.filter((r) => r.status === 'fulfilled').length;
         notify({

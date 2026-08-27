@@ -2,6 +2,36 @@
 
 set -eu
 
+private_path_mode() {
+    local value
+    value="$(/usr/bin/stat -f '%Lp' "$1" 2>/dev/null || true)"
+    if [[ -z "${value}" ]]; then
+        value="$(/usr/bin/stat -c '%a' "$1" 2>/dev/null || true)"
+    fi
+    print -r -- "${value}"
+}
+
+private_path_size() {
+    local value
+    value="$(/usr/bin/stat -f '%z' "$1" 2>/dev/null || true)"
+    if [[ -z "${value}" ]]; then
+        value="$(/usr/bin/stat -c '%s' "$1" 2>/dev/null || true)"
+    fi
+    print -r -- "${value}"
+}
+
+current_user_private_file() {
+    local file_path="$1"
+    [[ -f "${file_path}" && ! -L "${file_path}" && -O "${file_path}" ]] &&
+        [[ "$(private_path_mode "${file_path}")" == '600' ]]
+}
+
+current_user_private_directory() {
+    local directory_path="$1"
+    [[ -d "${directory_path}" && ! -L "${directory_path}" && -O "${directory_path}" ]] &&
+        [[ "$(private_path_mode "${directory_path}")" == '700' ]]
+}
+
 SCRIPT_PATH="${0:A}"
 SCRIPT_DIR="${SCRIPT_PATH:h}"
 REPO_DIR="${REALTIME_STOCK_REPO_DIR:-${SCRIPT_DIR:h}}"
@@ -15,13 +45,19 @@ MULTIVIEW_LABEL="com.alanyi.realtimestock.multiview"
 MULTIVIEW_DAILY_LABEL="com.alanyi.realtimestock.multiview-daily-pipeline"
 MULTIVIEW_TDCC_LABEL="com.alanyi.realtimestock.multiview-tdcc-pipeline"
 PROD_LABEL="com.alanyi.realtimestock.production-readonly-api"
+SMART_ORDER_LABEL="com.alanyi.realtimestock.smart-order-sidecar"
 
 APP_SUPPORT="${REALTIME_STOCK_APP_SUPPORT:-${HOME}/Library/Application Support/RealTimeStock}"
+if [[ "${APP_SUPPORT}" == /* ]]; then
+    APP_SUPPORT="${APP_SUPPORT:A}"
+fi
 INSTALLED_BIN_DIR="${APP_SUPPORT}/bin"
 INSTALLED_SCRIPT="${INSTALLED_BIN_DIR}/realtimestock-runtime"
 GENERATED_DIR="${APP_SUPPORT}/LaunchAgents"
+NODE_RUNTIME_FILE="${APP_SUPPORT}/node-runtime-path"
 USER_LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 MODE_FILE="${APP_SUPPORT}/runtime-mode"
+API_GENERATION_FILE="${APP_SUPPORT}/runtime-api-generation"
 SIM_PLIST="${USER_LAUNCH_AGENTS}/${SIM_LABEL}.plist"
 WATCHDOG_PLIST="${USER_LAUNCH_AGENTS}/${WATCHDOG_LABEL}.plist"
 WEB_PLIST="${USER_LAUNCH_AGENTS}/${WEB_LABEL}.plist"
@@ -29,9 +65,26 @@ MULTIVIEW_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_LABEL}.plist"
 MULTIVIEW_DAILY_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_DAILY_LABEL}.plist"
 MULTIVIEW_TDCC_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_TDCC_LABEL}.plist"
 PROD_PLIST="${GENERATED_DIR}/${PROD_LABEL}.plist"
+SMART_ORDER_PLIST="${USER_LAUNCH_AGENTS}/${SMART_ORDER_LABEL}.plist"
 
 SHIOAJI_BIN="${REALTIME_STOCK_SHIOAJI_BIN:-${HOME}/.local/bin/shioaji}"
-NODE_BIN="/opt/homebrew/bin/node"
+NODE_BIN="${REALTIME_STOCK_NODE_BIN:-}"
+if [[ -z "${NODE_BIN}" ]] && current_user_private_file "${NODE_RUNTIME_FILE}"; then
+    NODE_BIN="$(head -n 1 "${NODE_RUNTIME_FILE}")"
+fi
+if [[ -z "${NODE_BIN}" ]]; then
+    NODE_BIN="$(command -v node 2>/dev/null || true)"
+fi
+if [[ -n "${NODE_BIN}" && "${NODE_BIN}" == /* ]]; then
+    NODE_BIN="${NODE_BIN:A}"
+fi
+APP_NODE_BIN="${REALTIME_STOCK_APP_NODE_BIN:-}"
+if [[ -z "${APP_NODE_BIN}" ]]; then
+    APP_NODE_BIN="$(command -v node 2>/dev/null || true)"
+fi
+if [[ -n "${APP_NODE_BIN}" && "${APP_NODE_BIN}" == /* ]]; then
+    APP_NODE_BIN="${APP_NODE_BIN:A}"
+fi
 VITE_BIN="${REPO_DIR}/node_modules/vite/bin/vite.js"
 MULTIVIEW_CLI="${REPO_DIR}/apps/multiview/node_modules/vinext/dist/cli.js"
 MULTIVIEW_STATE_SCRIPT="${REPO_DIR}/scripts/multiview-state"
@@ -39,6 +92,29 @@ WATCHDOG_SCRIPT="${REPO_DIR}/scripts/realtimestock-watchdog.mjs"
 WATCHDOG_STATE_DIR="${REALTIME_STOCK_WATCHDOG_STATE_DIR:-${APP_SUPPORT}/watchdog}"
 MULTIVIEW_STATE_DIR="${REALTIME_STOCK_MULTIVIEW_STATE_DIR:-${APP_SUPPORT}/MultiView}"
 MULTIVIEW_PIPELINE_SECRET_FILE="${MULTIVIEW_STATE_DIR}/pipeline-secret"
+SMART_ORDER_ENTRY="${REPO_DIR}/scripts/smart-order-runtime/sidecar-entry.mjs"
+SMART_ORDER_NODE_SQLITE_PROBE="${REPO_DIR}/scripts/smart-order-node-sqlite-capability-launcher.mjs"
+SMART_ORDER_NODE_SQLITE_ADMIN="${REPO_DIR}/scripts/smart-order-node-sqlite-capability-admin.mjs"
+SMART_ORDER_DIAGNOSTICS="${REPO_DIR}/scripts/smart-order-runtime/runtime-diagnostics.mjs"
+SMART_ORDER_GATE_PROBE_CLI="${REPO_DIR}/scripts/smart-order-runtime/gate-probe-cli.mjs"
+SMART_ORDER_TASK_0_3B_PROBE="${REPO_DIR}/scripts/smart-order-task0-3b-contract-probe.mjs"
+SMART_ORDER_TASK_0_3B_UPDATE_RECONCILE="${REPO_DIR}/scripts/smart-order-task0-3b-update-reconcile.mjs"
+SMART_ORDER_TASK_0_3C_EXTERNAL_SELL="${REPO_DIR}/scripts/smart-order-task0-3c-external-sell.mjs"
+SMART_ORDER_TASK_0_3C_AUTHORIZATION_PREVIEW="${REPO_DIR}/scripts/smart-order-task0-3c-authorization-preview.mjs"
+SMART_ORDER_TASK_0_3C_FINALIZE="${REPO_DIR}/scripts/smart-order-task0-3c-finalize.mjs"
+SMART_ORDER_TASK_0_3C_PREFLIGHT="${REPO_DIR}/scripts/smart-order-task0-3c-preflight.mjs"
+SMART_ORDER_TASK_0_4_0_6_PROBE="${REPO_DIR}/scripts/smart-order-task0-4-0-6-contract-probe.mjs"
+SMART_ORDER_TASK_13_2_EVIDENCE="${REPO_DIR}/scripts/smart-order-task13-2-evidence-aggregate.mjs"
+SMART_ORDER_LAUNCH_AGENT_INSTALLER="${REPO_DIR}/scripts/smart-order-runtime/launchagent-installer.mjs"
+SMART_ORDER_MODE_LEASE_HOLDER="${REPO_DIR}/scripts/smart-order-runtime/mode-execution-lease-holder.mjs"
+SMART_ORDER_PLATFORM_SUPPORT="${REPO_DIR}/scripts/smart-order-runtime/trading-runtime-platform-support.mjs"
+SMART_ORDER_RUNTIME_SOURCE="${REPO_DIR}/scripts/realtimestock-runtime"
+SMART_ORDER_ROOT="${APP_SUPPORT}/smart-order"
+SMART_ORDER_DATABASE_PATH="${SMART_ORDER_ROOT}/database/smart-orders.sqlite3"
+SMART_ORDER_CAPABILITY_PATH="${SMART_ORDER_ROOT}/private/gateway-capability.bin"
+SMART_ORDER_DISCOVERY_PATH="${SMART_ORDER_ROOT}/run/control-plane.json"
+SMART_ORDER_LIFECYCLE_STOP_COMPLETION_PATH="${SMART_ORDER_ROOT}/run/lifecycle-stop-completion.json"
+SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH="${SMART_ORDER_ROOT}/run/lifecycle-stop-barrier.json"
 
 usage() {
     print '使用方式：scripts/realtimestock-runtime <command>'
@@ -50,6 +126,410 @@ usage() {
     print '  multiview-daily       手動執行本機日資料與 PE bounded pipeline'
     print '  multiview-tdcc        手動執行本機 TDCC latest／continuous bounded pipeline'
     print '  status                顯示不含秘密值的服務與行情狀態'
+    print '  node-sqlite-probe     以persisted Node執行原生Apple Silicon arm64離線capability probe'
+    print '  node-sqlite-host-public'
+    print '                         建立／顯示本機私有attestation key的公開enrollment record'
+    print '  node-sqlite-trust-host <arm-public-json> <arm-report-json>'
+    print '                         明確綁定單一arm64 host key與current signed report lineage'
+    print '  node-sqlite-import-report <arm64> <report-json>'
+    print '                         匯入原生Apple Silicon主機的私有signed report'
+    print '  smart-order-start      只安裝／啟動simulation智慧下單sidecar；不觸碰其他服務'
+    print '  smart-order-task0-3c-stop'
+    print '                         僅以graceful lifecycle contract停止智慧下單sidecar；不觸碰其他服務'
+    print '  task0-3c-external-sell --ordinal=1|2 --run-id=... --operation-id=... --nonce=... --account-scope=sha256:... [--previous-target=...]'
+    print '                         sidecar停止期間逐筆exact authorization建立外部simulation working sell'
+    print '  task0-3c-authorization-preview --ordinal=1|2 --run-id=... --operation-id=... --nonce=... --account-scope=sha256:... [--previous-target=...]'
+    print '                         無broker authority地預覽逐筆exact authorization字串並發出提示音'
+    print '  task0-3c-finalize --run-id=... --account-scope=sha256:...'
+    print '                         sidecar重啟後唯讀核對完整兩筆集合與ExternalSellClaim'
+    print '  task0-3c-gate-recompute'
+    print '                         sidecar內以最長360秒外部event唯讀觀察原子重算observe-only Gate manifests'
+    print '  task0-3c-preflight     sidecar停止前唯讀證明position／零working sells並規劃兩個合法價位'
+    print '  gate-probe-prepare <absolute-private-envelope-json>'
+    print '                         互動式建立一次性simulation probe envelope；不執行broker write'
+    print '  task0-3b-probe --operation=... --run-id=... --operation-id=... --nonce=... --account-scope=sha256:... [--target=...]'
+    print '                         current contract／BBO逐次授權的同run place／update／cancel probe'
+    print '  task0-3b-reconcile-update'
+    print '                         唯讀核對已送出的固定update並建立同run下一revision；不送broker write'
+    print '  task0-3b-verify-update'
+    print '                         只驗證固定update與歸因；不建立revision或evidence、不送broker write'
+    print '  task0-4-0-6-probe --profile=... --run-id=... --operation-id=... --nonce=... --account-scope=sha256:...'
+    print '                         observer-ready後逐次授權的order／deal與LMT／MKT execution-policy probe'
+    print '  task13-2-evidence      唯讀驗證並彙整固定私有正式證據矩陣；不取得broker authority'
+    print '  strategy-cancel <strategy-id> <revision>'
+    print '                         取消策略；有副作用時只轉 cancel_pending'
+    print '  cancel-broker-order <strategy-id> <revision>'
+    print '                         另行確認唯一 working BrokerOrder 的取消 intent'
+    print '  drain-prepared <strategy-id> <revision>'
+    print '                         本機取消已證明未送出的 prepared intent'
+    print '  relinquish-protection-prepare <strategy-id> <revision>'
+    print '                         第一次確認人工接手保護並建立一致性 snapshot'
+    print '  relinquish-protection-commit <strategy-id> <revision> <challenge-id>'
+    print '                         第二次確認並原子建立 unmonitored blocker'
+    print '  （智慧下單 sidecar 僅在 simulation 以 observe-only／write disabled 啟動）'
+}
+
+run_smart_order_typed_drain_action() {
+    local action="$1"
+    local strategy_id="${2:-}"
+    local revision="${3:-}"
+    local challenge_id="${4:-}"
+    local mode_state api_generation
+    if [[ -z "${strategy_id}" || "${revision}" != <-> ]]; then
+        print -u2 'typed drain 需要 strategy-id 與非負整數 revision'
+        return 2
+    fi
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'typed drain 拒絕：sidecar／discovery／simulation generation 無法共同驗證'
+        return 1
+    fi
+    if [[ "${action}" == 'relinquish-protection-commit' ]]; then
+        if [[ -z "${challenge_id}" ]]; then
+            print -u2 '第二次確認需要第一次回傳的 challenge-id'
+            return 2
+        fi
+        env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+            REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+            "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" \
+            "${action}" "${strategy_id}" "${revision}" "${challenge_id}"
+        return
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" \
+        "${action}" "${strategy_id}" "${revision}"
+}
+
+run_smart_order_gate_probe_prepare() {
+    local envelope_path="${1:-}"
+    local mode_state api_generation
+    if [[ -z "${envelope_path}" || "${envelope_path}" != /* ]]; then
+        print -u2 'gate probe envelope 必須是絕對路徑'
+        return 2
+    fi
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'gate probe 拒絕：sidecar／discovery／simulation generation 無法共同驗證'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_GATE_PROBE_CLI}" "${envelope_path}"
+}
+
+run_smart_order_task0_3b_probe() {
+    local mode_state api_generation
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3b probe 拒絕：sidecar／discovery／simulation generation 無法共同驗證'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_3B_PROBE}" "$@"
+}
+
+run_smart_order_task0_3c_external_sell() {
+    local mode_state api_generation api_info
+    preflight_persisted_smart_order_runtime_contract
+    if job_loaded "${SMART_ORDER_LABEL}" ||
+        [[ -e "${SMART_ORDER_DISCOVERY_PATH}" || -L "${SMART_ORDER_DISCOVERY_PATH}" ]] ||
+        [[ -e "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" || -L "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" ]] ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3c external sender拒絕：sidecar未完整停止或simulation generation無法驗證'
+        return 1
+    fi
+    api_info="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/info 2>/dev/null || true)"
+    if ! print -r -- "${api_info}" | jq -e '.simulation == true' >/dev/null 2>&1; then
+        print -u2 'Task 0.3c external sender拒絕：simulation API listener不可用或模式不符'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_3C_EXTERNAL_SELL}" "$@"
+}
+
+run_smart_order_task0_3c_authorization_preview() {
+    local mode_state api_generation api_info
+    preflight_persisted_smart_order_runtime_contract
+    if job_loaded "${SMART_ORDER_LABEL}" ||
+        [[ -e "${SMART_ORDER_DISCOVERY_PATH}" || -L "${SMART_ORDER_DISCOVERY_PATH}" ]] ||
+        [[ -e "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" || -L "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" ]] ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3c authorization preview拒絕：sidecar未完整停止或simulation generation無法驗證'
+        return 1
+    fi
+    api_info="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/info 2>/dev/null || true)"
+    if ! print -r -- "${api_info}" | jq -e '.simulation == true' >/dev/null 2>&1; then
+        print -u2 'Task 0.3c authorization preview拒絕：simulation API listener不可用或模式不符'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_3C_AUTHORIZATION_PREVIEW}" "$@"
+}
+
+run_smart_order_task0_3c_preflight() {
+    local mode_state api_generation
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3c preflight拒絕：sidecar／discovery／simulation generation無法共同驗證'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_3C_PREFLIGHT}"
+}
+
+run_smart_order_task0_3c_gate_recompute() {
+    local mode_state api_generation
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3c Gate recompute拒絕：sidecar／discovery／simulation generation無法共同驗證'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" gate-recompute-external
+}
+
+run_smart_order_task0_3c_finalize() {
+    local mode_state api_generation
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3c finalizer拒絕：sidecar／discovery／simulation generation無法共同驗證'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_3C_FINALIZE}" "$@"
+}
+
+run_smart_order_task0_3b_update_reconcile() {
+    local reconcile_mode="${1:-}"
+    local mode_state api_generation
+    preflight_persisted_smart_order_runtime_contract
+    if ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.3b update reconciliation拒絕：目前不是受管simulation generation'
+        return 1
+    fi
+    if [[ "${reconcile_mode}" == 'verify-only' ]]; then
+        env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+            REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+            "${NODE_BIN}" "${SMART_ORDER_TASK_0_3B_UPDATE_RECONCILE}" --verify-only
+        return
+    fi
+    if [[ -n "${reconcile_mode}" ]]; then
+        print -u2 'Task 0.3b update reconciliation模式無效'
+        return 2
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_3B_UPDATE_RECONCILE}"
+}
+
+run_smart_order_task0_4_0_6_probe() {
+    local mode_state api_generation
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 'Task 0.4／0.6 probe 拒絕：sidecar／discovery／simulation generation 無法共同驗證'
+        return 1
+    fi
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_0_4_0_6_PROBE}" "$@"
+}
+
+run_smart_order_task13_2_evidence() {
+    preflight_persisted_smart_order_runtime_contract
+    env -i \
+        PATH='/usr/bin:/bin:/usr/sbin:/sbin' \
+        LANG='C' \
+        LC_ALL='C' \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        "${NODE_BIN}" "${SMART_ORDER_TASK_13_2_EVIDENCE}"
+}
+
+validate_smart_order_node() {
+    local candidate="$1"
+    if [[ -z "${candidate}" || "${candidate}" != /* || ! -x "${candidate}" ]]; then
+        print -u2 '智慧下單 Runtime 需要可執行的 Node.js 絕對路徑'
+        return 1
+    fi
+    if ! "${candidate}" -e '
+        const [major, minor, patch] = process.versions.node.split(".").map(Number);
+        const supported =
+            major === 24 &&
+            (minor > 15 || (minor === 15 && patch >= 0)) &&
+            typeof process.release.lts === "string" &&
+            process.release.lts.length > 0;
+        process.exit(supported ? 0 : 1);
+    '; then
+        print -u2 '智慧下單 Runtime 僅支援 Node.js LTS >=24.15.0 且 <25；目前 Node 不符合，保持 fail closed'
+        return 1
+    fi
+}
+
+assert_private_app_support_contract() {
+    local canonical_repo
+    canonical_repo="${REPO_DIR:A}"
+    if [[ "${APP_SUPPORT}" != /* ]] ||
+        ! current_user_private_directory "${APP_SUPPORT}" ||
+        [[ "${APP_SUPPORT:A}" != "${APP_SUPPORT}" ]]; then
+        print -u2 'REALTIME_STOCK_APP_SUPPORT 必須是 realpath、目前使用者擁有且 mode 0700 的實體目錄'
+        return 1
+    fi
+    if [[ "${APP_SUPPORT}" == "${canonical_repo}" ||
+        "${APP_SUPPORT}" == "${canonical_repo}/"* ]]; then
+        print -u2 'REALTIME_STOCK_APP_SUPPORT 必須位於 RealTimeStock source repository 外'
+        return 1
+    fi
+}
+
+read_persisted_smart_order_node_contract() {
+    local candidate resolved size
+    assert_private_app_support_contract
+    if ! current_user_private_file "${NODE_RUNTIME_FILE}"; then
+        print -u2 'persisted Node runtime path 必須是目前使用者擁有且 mode 0600 的實體檔案'
+        return 1
+    fi
+    size="$(private_path_size "${NODE_RUNTIME_FILE}")"
+    if [[ "${size}" != <1-4096> ]]; then
+        print -u2 'persisted Node runtime path 檔案大小不合法'
+        return 1
+    fi
+    candidate="$(< "${NODE_RUNTIME_FILE}")"
+    if [[ -z "${candidate}" || "${candidate}" != /* ||
+        "${candidate}" == *$'\n'* || ${#candidate} -gt 4095 ]]; then
+        print -u2 'persisted Node runtime path 必須是單一絕對路徑'
+        return 1
+    fi
+    resolved="${candidate:A}"
+    if [[ "${candidate}" != "${resolved}" || ! -f "${resolved}" ||
+        -L "${resolved}" || ! -x "${resolved}" ]]; then
+        print -u2 'persisted Node runtime path 必須是可執行檔的 canonical realpath'
+        return 1
+    fi
+    if ! current_user_private_file "${NODE_RUNTIME_FILE}"; then
+        print -u2 'persisted Node runtime path 在讀取期間失去私有權限'
+        return 1
+    fi
+    validate_smart_order_node "${resolved}"
+    print -r -- "${resolved}"
+}
+
+preflight_persisted_smart_order_runtime_contract() {
+    local persisted_node
+    persisted_node="$(read_persisted_smart_order_node_contract)"
+    NODE_BIN="${persisted_node}"
+}
+
+read_private_runtime_mode_contract() {
+    local mode
+    assert_private_app_support_contract
+    if ! current_user_private_file "${MODE_FILE}"; then
+        return 1
+    fi
+    mode="$(< "${MODE_FILE}")"
+    if [[ "${mode}" != 'simulation' && "${mode}" != 'production-readonly' ]]; then
+        return 1
+    fi
+    print -r -- "${mode}"
+}
+
+read_private_api_generation_contract() {
+    local expected_mode="$1"
+    local generation token size
+    assert_private_app_support_contract
+    if ! current_user_private_file "${API_GENERATION_FILE}"; then
+        return 1
+    fi
+    size="$(private_path_size "${API_GENERATION_FILE}")"
+    if [[ "${size}" != <1-256> ]]; then
+        return 1
+    fi
+    generation="$(< "${API_GENERATION_FILE}")"
+    if [[ "${generation}" != "${expected_mode}:"* ]]; then
+        return 1
+    fi
+    token="${generation#*:}"
+    if [[ -z "${token}" || ${#token} -gt 240 ||
+        "${token}" == *[^A-Za-z0-9._:-]* ]]; then
+        return 1
+    fi
+    print -r -- "${generation}"
+}
+
+ensure_private_app_support_root() {
+    local canonical_repo candidate_parent
+    canonical_repo="${REPO_DIR:A}"
+    candidate_parent="${APP_SUPPORT:h:A}"
+    if [[ "${APP_SUPPORT}" == "${canonical_repo}" ||
+        "${APP_SUPPORT}" == "${canonical_repo}/"* ||
+        "${candidate_parent}" == "${canonical_repo}" ||
+        "${candidate_parent}" == "${canonical_repo}/"* ]]; then
+        print -u2 'REALTIME_STOCK_APP_SUPPORT 必須位於 RealTimeStock source repository 外'
+        return 1
+    fi
+    mkdir -p "${APP_SUPPORT}"
+    if [[ ! -d "${APP_SUPPORT}" || -L "${APP_SUPPORT}" || ! -O "${APP_SUPPORT}" ]]; then
+        print -u2 'REALTIME_STOCK_APP_SUPPORT 必須是目前使用者擁有的實體目錄'
+        return 1
+    fi
+    chmod 700 "${APP_SUPPORT}"
+}
+
+persist_node_runtime_contract() {
+    local candidate tmp_file
+    candidate="${NODE_BIN}"
+    if [[ -z "${candidate}" || "${candidate}" != /* ]]; then
+        print -u2 '無法解析 Node.js 的絕對路徑'
+        return 1
+    fi
+    candidate="${candidate:A}"
+    validate_smart_order_node "${candidate}"
+    ensure_private_app_support_root
+    umask 077
+    tmp_file="${NODE_RUNTIME_FILE}.tmp.$$"
+    print -r -- "${candidate}" > "${tmp_file}"
+    chmod 600 "${tmp_file}"
+    mv -f "${tmp_file}" "${NODE_RUNTIME_FILE}"
+    NODE_BIN="${candidate}"
 }
 
 ensure_multiview_pipeline_secret() {
@@ -72,7 +552,7 @@ ensure_runtime_dependencies() {
         print -u2 "找不到 Shioaji CLI：${SHIOAJI_BIN}"
         return 1
     fi
-    if [[ ! -x "${NODE_BIN}" ]]; then
+    if [[ -z "${NODE_BIN}" || "${NODE_BIN}" != /* || ! -x "${NODE_BIN}" ]]; then
         print -u2 "找不到 Node.js：${NODE_BIN}"
         return 1
     fi
@@ -95,9 +575,26 @@ ensure_runtime_dependencies() {
 }
 
 write_mode() {
-    mkdir -p "${APP_SUPPORT}"
+    local tmp_file
+    ensure_private_app_support_root
     umask 077
-    print -r -- "$1" > "${MODE_FILE}"
+    tmp_file="${MODE_FILE}.tmp.$$"
+    print -r -- "$1" > "${tmp_file}"
+    chmod 600 "${tmp_file}"
+    mv -f "${tmp_file}" "${MODE_FILE}"
+}
+
+write_api_generation() {
+    local mode="$1"
+    local generation tmp_file
+    validate_smart_order_node "${NODE_BIN}"
+    generation="$("${NODE_BIN}" -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+    ensure_private_app_support_root
+    umask 077
+    tmp_file="${API_GENERATION_FILE}.tmp.$$"
+    print -r -- "${mode}:${generation}" > "${tmp_file}"
+    chmod 600 "${tmp_file}"
+    mv -f "${tmp_file}" "${API_GENERATION_FILE}"
 }
 
 read_mode() {
@@ -134,8 +631,90 @@ assert_no_ca() {
     fi
 }
 
+smart_order_platform_supported() {
+    if [[ -z "${NODE_BIN}" || "${NODE_BIN}" != /* ||
+        ! -x "${NODE_BIN}" || ! -f "${SMART_ORDER_PLATFORM_SUPPORT}" ||
+        -L "${SMART_ORDER_PLATFORM_SUPPORT}" ]]; then
+        return 1
+    fi
+    "${NODE_BIN}" "${SMART_ORDER_PLATFORM_SUPPORT}" >/dev/null 2>&1
+}
+
+remove_unsupported_smart_order_launchagent_artifact() {
+    if smart_order_platform_supported; then
+        print -u2 '拒絕移除智慧下單 LaunchAgent：目前平台受支援'
+        return 1
+    fi
+    if [[ "${SMART_ORDER_PLIST}" !=
+        "${USER_LAUNCH_AGENTS}/com.alanyi.realtimestock.smart-order-sidecar.plist" ]]; then
+        print -u2 '智慧下單 LaunchAgent 路徑不符合固定邊界；保持 fail closed'
+        return 1
+    fi
+    if [[ -e "${SMART_ORDER_PLIST}" || -L "${SMART_ORDER_PLIST}" ]]; then
+        command rm -f -- "${SMART_ORDER_PLIST}"
+    fi
+}
+
+write_smart_order_plist() {
+    local result
+    if ! smart_order_platform_supported; then
+        remove_unsupported_smart_order_launchagent_artifact
+        print -u2 '智慧下單交易 Runtime 僅支援原生 Apple Silicon arm64 macOS；x64、Rosetta、VM 與其他平台保持 fail closed'
+        return 1
+    fi
+    ensure_private_app_support_root
+    mkdir -p "${USER_LAUNCH_AGENTS}"
+    if [[ ! -f "${SMART_ORDER_LAUNCH_AGENT_INSTALLER}" ||
+        -L "${SMART_ORDER_LAUNCH_AGENT_INSTALLER}" ]]; then
+        print -u2 '智慧下單 LaunchAgent installer 不存在或不可信'
+        return 1
+    fi
+    result="$("${NODE_BIN}" "${SMART_ORDER_LAUNCH_AGENT_INSTALLER}" \
+        "${SMART_ORDER_PLIST}" "${INSTALLED_SCRIPT}" \
+        "${SMART_ORDER_RUNTIME_SOURCE}" "${REPO_DIR}" "${HOME}" \
+        "${APP_SUPPORT}")" || return 1
+    if ! print -r -- "${result}" | jq -e '
+        type == "object" and
+        .schemaVersion == "smart-order-launchagent-installer/2026-08-22.3" and
+        .installed == true and
+        (.installedRuntimeSha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        (.installedBundleSha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        (.launchAgentPlistSha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        .platformSupportPolicy == "smart-order-trading-runtime-platform/native-apple-silicon-arm64/2026-08-22.1" and
+        .brokerAuthority == false and
+        .writeMasterAuthority == false
+    ' >/dev/null 2>&1; then
+        print -u2 '智慧下單 LaunchAgent installer 回傳無效；保持停止'
+        return 1
+    fi
+}
+
+verify_smart_order_plist_binding() {
+    local result
+    smart_order_platform_supported || return 1
+    result="$("${NODE_BIN}" "${SMART_ORDER_LAUNCH_AGENT_INSTALLER}" \
+        --verify "${SMART_ORDER_PLIST}" "${INSTALLED_SCRIPT}" \
+        "${SMART_ORDER_RUNTIME_SOURCE}" "${REPO_DIR}" "${HOME}" \
+        "${APP_SUPPORT}")" || return 1
+    if ! print -r -- "${result}" | jq -e '
+        type == "object" and
+        .schemaVersion == "smart-order-launchagent-installer/2026-08-22.3" and
+        .verified == true and
+        (.installedRuntimeSha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        (.installedBundleSha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        (.launchAgentPlistSha256 | type == "string" and test("^sha256:[0-9a-f]{64}$")) and
+        .platformSupportPolicy == "smart-order-trading-runtime-platform/native-apple-silicon-arm64/2026-08-22.1" and
+        .brokerAuthority == false and
+        .writeMasterAuthority == false
+    ' >/dev/null 2>&1; then
+        print -u2 '智慧下單 LaunchAgent binding 無效；拒絕 bootstrap'
+        return 1
+    fi
+}
+
 write_plists() {
-    mkdir -p "${APP_SUPPORT}" "${GENERATED_DIR}" "${USER_LAUNCH_AGENTS}"
+    ensure_private_app_support_root
+    mkdir -p "${GENERATED_DIR}" "${USER_LAUNCH_AGENTS}"
     umask 077
 
     cat > "${SIM_PLIST}" <<EOF
@@ -149,6 +728,7 @@ write_plists() {
 <key>HOME</key><string>${HOME}</string>
 <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
 <key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+<key>REALTIME_STOCK_APP_SUPPORT</key><string>${APP_SUPPORT}</string>
 </dict>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
@@ -190,6 +770,7 @@ EOF
 <key>HOME</key><string>${HOME}</string>
 <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${HOME}/.local/bin</string>
 <key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string>
+<key>REALTIME_STOCK_APP_SUPPORT</key><string>${APP_SUPPORT}</string>
 </dict>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
@@ -198,6 +779,13 @@ EOF
 <key>StandardErrorPath</key><string>/dev/null</string>
 </dict></plist>
 EOF
+
+    if smart_order_platform_supported; then
+        write_smart_order_plist
+    else
+        remove_unsupported_smart_order_launchagent_artifact
+        print -u2 '一般 RealTimeStock plist 照常建立；智慧下單交易 Runtime 因非原生 Apple Silicon arm64 而不安裝'
+    fi
 
     cat > "${MULTIVIEW_PLIST}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -250,7 +838,10 @@ EOF
 <key>WorkingDirectory</key><string>${REPO_DIR}/apps/multiview</string>
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>${HOME}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string></dict>
 <key>RunAtLoad</key><true/>
-<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>7</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+<key>StartCalendarInterval</key><array>
+<dict><key>Weekday</key><integer>7</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+<dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+</array>
 <key>StandardOutPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-pipeline.log</string>
 <key>StandardErrorPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-pipeline.log</string>
 </dict></plist>
@@ -279,10 +870,21 @@ EOF
     mkdir -p "${MULTIVIEW_STATE_DIR}/logs"
     chmod 700 "${MULTIVIEW_STATE_DIR}/logs"
     chmod 600 "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    if smart_order_platform_supported && [[ -f "${SMART_ORDER_PLIST}" ]]; then
+        chmod 600 "${SMART_ORDER_PLIST}"
+    fi
 }
 
 job_loaded() {
     launchctl print "${LAUNCH_DOMAIN}/$1" >/dev/null 2>&1
+}
+
+job_pid() {
+    local value
+    value="$(launchctl print "${LAUNCH_DOMAIN}/$1" 2>/dev/null |
+        awk '/^[[:space:]]*pid = / {print $3; exit}')"
+    [[ "${value}" == <1-> ]] || return 1
+    print -r -- "${value}"
 }
 
 bootout_job() {
@@ -300,6 +902,473 @@ bootstrap_job() {
     fi
 }
 
+strict_smart_order_discovery_epoch() {
+    local minimum_started_at_epoch_ms="${1:-0}"
+    local now_epoch_ms file_size
+    [[ "${minimum_started_at_epoch_ms}" == <0-> ]] || return 1
+    assert_private_app_support_contract >/dev/null 2>&1 || return 1
+    current_user_private_directory "${SMART_ORDER_ROOT}" || return 1
+    current_user_private_directory "${SMART_ORDER_ROOT}/run" || return 1
+    current_user_private_file "${SMART_ORDER_DISCOVERY_PATH}" || return 1
+    file_size="$(private_path_size "${SMART_ORDER_DISCOVERY_PATH}")"
+    [[ "${file_size}" == <1-1024> ]] || return 1
+    now_epoch_ms="$(($(date +%s) * 1000))"
+    jq -er \
+        --arg expected_schema 'smart-order-local-sidecar/2026-08-11.1' \
+        --argjson minimum_started_at_epoch_ms "${minimum_started_at_epoch_ms}" \
+        --argjson now_epoch_ms "${now_epoch_ms}" '
+            if type == "object" and
+                (keys | sort) == ([
+                    "host",
+                    "port",
+                    "runtimeEpochId",
+                    "schemaVersion",
+                    "startedAtEpochMs"
+                ] | sort) and
+                .schemaVersion == $expected_schema and
+                .host == "127.0.0.1" and
+                (.port | type == "number" and floor == . and . >= 1 and . <= 65535) and
+                (.runtimeEpochId | type == "string" and test("^[A-Za-z0-9._:-]{1,240}$")) and
+                (.startedAtEpochMs | type == "number" and floor == . and
+                    . >= $minimum_started_at_epoch_ms and
+                    . <= ($now_epoch_ms + 30000))
+            then .runtimeEpochId
+            else error("invalid smart-order discovery")
+            end
+        ' "${SMART_ORDER_DISCOVERY_PATH}" 2>/dev/null
+}
+
+smart_order_sidecar_status() {
+    local job_state='stopped'
+    local discovery_state='absent'
+    local repository_state='not-created'
+    local generation_state='absent'
+    local health_state='unverified'
+    local readiness_state='not-ready'
+    local obligation_state='0'
+    local reconciliation_state='required-before-any-write'
+    local blocker_state='unknown'
+    local remainder_state='unknown'
+    local remainder_max_shares='unknown'
+    local drain_items='unavailable'
+    local drain_records='unavailable'
+    local mode_state api_generation diagnostics
+    if job_loaded "${SMART_ORDER_LABEL}"; then
+        job_state='loaded'
+    fi
+    if [[ -e "${SMART_ORDER_DISCOVERY_PATH}" || -L "${SMART_ORDER_DISCOVERY_PATH}" ]]; then
+        if strict_smart_order_discovery_epoch >/dev/null; then
+            discovery_state='valid-private'
+        else
+            discovery_state='unsafe-or-invalid'
+        fi
+    fi
+    if [[ -e "${SMART_ORDER_ROOT}" || -L "${SMART_ORDER_ROOT}" ]]; then
+        if ! current_user_private_directory "${SMART_ORDER_ROOT}"; then
+            repository_state='unsafe-path'
+            obligation_state='unknown'
+        elif [[ -e "${SMART_ORDER_DATABASE_PATH}" || -L "${SMART_ORDER_DATABASE_PATH}" ]]; then
+            if current_user_private_directory "${SMART_ORDER_ROOT}/database" &&
+                current_user_private_file "${SMART_ORDER_DATABASE_PATH}" &&
+                { [[ ! -e "${SMART_ORDER_DATABASE_PATH}-wal" && ! -L "${SMART_ORDER_DATABASE_PATH}-wal" ]] ||
+                    current_user_private_file "${SMART_ORDER_DATABASE_PATH}-wal"; } &&
+                { [[ ! -e "${SMART_ORDER_DATABASE_PATH}-shm" && ! -L "${SMART_ORDER_DATABASE_PATH}-shm" ]] ||
+                    current_user_private_file "${SMART_ORDER_DATABASE_PATH}-shm"; }; then
+                repository_state='private-present'
+            else
+                repository_state='unsafe-path'
+            fi
+            obligation_state='unknown'
+        fi
+    fi
+    if mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" &&
+        api_generation="$(read_private_api_generation_contract "${mode_state}" 2>/dev/null)"; then
+        generation_state='valid-private'
+    elif [[ -e "${API_GENERATION_FILE}" || -L "${API_GENERATION_FILE}" ||
+        -e "${MODE_FILE}" || -L "${MODE_FILE}" ]]; then
+        generation_state='unsafe-or-invalid'
+    fi
+    if [[ "${job_state}" == 'loaded' && "${mode_state:-unknown}" == 'simulation' &&
+        "${discovery_state}" == 'valid-private' &&
+        "${generation_state}" == 'valid-private' &&
+        -f "${SMART_ORDER_DIAGNOSTICS}" && -x "${NODE_BIN}" ]]; then
+        diagnostics="$(env \
+            REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+            REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+            "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" status 2>/dev/null || true)"
+        if print -r -- "${diagnostics}" | jq -e '
+            type == "object" and
+            .schemaVersion == "smart-order-runtime-diagnostics/2026-08-12.2" and
+            .authenticated == true and
+            .dispatchAllowed == false and
+            .writeMaster == "disabled" and
+            .accountIdentifiersExposed == false and
+            .entityIdentifiersExposed == false and
+            .secretValuesExposed == false and
+            (.activeObligationCount | type == "number" and floor == . and . >= 0) and
+            (.blockerCount | type == "number" and floor == . and . >= 0) and
+            (.runtimeTrackedUnprotectedRemainder.state == "known" or
+             .runtimeTrackedUnprotectedRemainder.state == "unknown") and
+            (.drainItems | type == "array" and length <= 16 and
+                all(type == "object" and
+                    (.kind | type == "string") and
+                    (.count | type == "number" and floor == . and . >= 0) and
+                    (.disposition | type == "string"))) and
+            (.drainRecordsTruncated | type == "boolean") and
+            (.drainRecords | type == "array" and length <= 100 and
+                to_entries | all(
+                    (.value | type == "object") and
+                    ((.value | keys | sort) == [
+                        "disposition", "kind", "ordinal", "quantityShares",
+                        "quantityState", "state"
+                    ]) and
+                    (.value.ordinal == (.key + 1)) and
+                    (.value.kind | type == "string") and
+                    (.value.state | type == "string") and
+                    (.value.disposition | type == "string") and
+                    (.value.quantityState == "not_applicable" or
+                     .value.quantityState == "exact" or
+                     .value.quantityState == "conservative_maximum") and
+                    (if .value.quantityState == "not_applicable"
+                     then .value.quantityShares == null
+                     else (.value.quantityShares | type == "number" and
+                           floor == . and . >= 0)
+                     end)))
+        ' >/dev/null 2>&1; then
+            health_state='authenticated'
+            obligation_state="$(print -r -- "${diagnostics}" | jq -r '.activeObligationCount')"
+            repository_state="$(print -r -- "${diagnostics}" | jq -r 'if .repositoryReady then "private-verified" else "private-unready" end')"
+            readiness_state='not-ready'
+            reconciliation_state="$(print -r -- "${diagnostics}" | jq -r '.reconciliation')"
+            blocker_state="$(print -r -- "${diagnostics}" | jq -r '.blockerCount')"
+            remainder_state="$(print -r -- "${diagnostics}" | jq -r '.runtimeTrackedUnprotectedRemainder.state')"
+            remainder_max_shares="$(print -r -- "${diagnostics}" | jq -r '.runtimeTrackedUnprotectedRemainder.conservativeMaximumShares')"
+            drain_items="$(print -r -- "${diagnostics}" | jq -c '[.drainItems[] | select(.count > 0) | {kind, count, disposition}]')"
+            drain_records="$(print -r -- "${diagnostics}" | jq -c '[.drainRecords[] | {ordinal, kind, state, quantityShares, quantityState, disposition}]')"
+        fi
+    fi
+    print "smart_order_sidecar_job=${job_state}"
+    print "smart_order_sidecar_health=${health_state}"
+    print "smart_order_sidecar_discovery=${discovery_state}"
+    print "smart_order_sidecar_readiness=${readiness_state}"
+    print "smart_order_mode_generation=${generation_state}"
+    print "smart_order_repository=${repository_state}"
+    print "smart_order_reconciliation=${reconciliation_state}"
+    print "smart_order_lifecycle_blockers=${blocker_state}"
+    print "smart_order_unprotected_remainder_state=${remainder_state}"
+    print "smart_order_unprotected_remainder_max_shares=${remainder_max_shares}"
+    print "smart_order_active_obligations=${obligation_state}"
+    print "smart_order_drain_items=${drain_items}"
+    print "smart_order_drain_records=${drain_records}"
+    print 'smart_order_write_master=disabled'
+}
+
+wait_smart_order_sidecar_started() {
+    local minimum_started_at_epoch_ms="$1"
+    local expected_api_generation="$2"
+    local expected_api_pid="$3"
+    local attempt current_api_generation current_api_pid diagnostics
+    local discovery_port runtime_epoch sidecar_pid sidecar_pid_after
+    for attempt in {1..15}; do
+        if job_loaded "${SIM_LABEL}" &&
+            current_api_pid="$(job_pid "${SIM_LABEL}" 2>/dev/null)" &&
+            [[ "${current_api_pid}" == "${expected_api_pid}" ]] &&
+            current_api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)" &&
+            [[ "${current_api_generation}" == "${expected_api_generation}" ]] &&
+            sidecar_pid="$(job_pid "${SMART_ORDER_LABEL}" 2>/dev/null)" &&
+            runtime_epoch="$(strict_smart_order_discovery_epoch "${minimum_started_at_epoch_ms}" 2>/dev/null)" &&
+            discovery_port="$(jq -er '.port' "${SMART_ORDER_DISCOVERY_PATH}" 2>/dev/null)" &&
+            lsof -nP -a -p "${sidecar_pid}" -iTCP:"${discovery_port}" -sTCP:LISTEN >/dev/null 2>&1; then
+            diagnostics="$(env \
+                REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+                REALTIME_STOCK_EXPECTED_API_GENERATION="${expected_api_generation}" \
+                "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" status 2>/dev/null || true)"
+            sidecar_pid_after="$(job_pid "${SMART_ORDER_LABEL}" 2>/dev/null || true)"
+            if [[ "${sidecar_pid_after}" == "${sidecar_pid}" ]] &&
+                [[ "$(job_pid "${SIM_LABEL}" 2>/dev/null || true)" == "${expected_api_pid}" ]] &&
+                [[ "$(read_private_api_generation_contract simulation 2>/dev/null || true)" == "${expected_api_generation}" ]] &&
+                [[ "$(strict_smart_order_discovery_epoch "${minimum_started_at_epoch_ms}" 2>/dev/null || true)" == "${runtime_epoch}" ]] &&
+                print -r -- "${diagnostics}" | jq -e '
+                    type == "object" and
+                    .schemaVersion == "smart-order-runtime-diagnostics/2026-08-12.2" and
+                    .authenticated == true and
+                    .dispatchAllowed == false and
+                    .writeMaster == "disabled" and
+                    .accountIdentifiersExposed == false and
+                    .entityIdentifiersExposed == false and
+                    .secretValuesExposed == false
+                ' >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    print -u2 '智慧下單 sidecar 未能在 15 秒內建立私有 loopback discovery；broker write 仍封鎖'
+    return 1
+}
+
+start_smart_order_sidecar() {
+    local mode_state api_generation api_pid minimum_started_at_epoch_ms
+    if ! smart_order_platform_supported; then
+        print -u2 '智慧下單 sidecar 拒絕啟動：僅支援原生 Apple Silicon arm64 macOS；未取得 broker authority'
+        return 1
+    fi
+    preflight_persisted_smart_order_runtime_contract
+    if ! mode_state="$(read_private_runtime_mode_contract)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation)" ||
+        ! api_pid="$(job_pid "${SIM_LABEL}")"; then
+        print -u2 '智慧下單 sidecar 僅允許在 simulation 啟動'
+        return 1
+    fi
+    if [[ ! -f "${SMART_ORDER_ENTRY}" ]]; then
+        print -u2 '找不到智慧下單 sidecar entry；broker write 仍封鎖'
+        return 1
+    fi
+    if [[ ! -f "${API_GENERATION_FILE}" ]]; then
+        print -u2 '缺少私有 API generation marker；智慧下單 sidecar 保持停止'
+        return 1
+    fi
+    if job_loaded "${SMART_ORDER_LABEL}"; then
+        print -u2 '智慧下單 sidecar 已載入；拒絕以 start 入口重啟'
+        return 1
+    fi
+    minimum_started_at_epoch_ms="$("${NODE_BIN}" -e 'process.stdout.write(String(Date.now()))')"
+    if [[ "$(job_pid "${SIM_LABEL}" 2>/dev/null || true)" != "${api_pid}" ]] ||
+        [[ "$(read_private_api_generation_contract simulation 2>/dev/null || true)" != "${api_generation}" ]]; then
+        print -u2 '智慧下單 sidecar 啟動前 API PID／generation 已漂移'
+        return 1
+    fi
+    if ! verify_smart_order_plist_binding; then
+        print -u2 '智慧下單 sidecar 啟動前 installed runtime／plist binding 已漂移'
+        return 1
+    fi
+    launchctl bootstrap "${LAUNCH_DOMAIN}" "${SMART_ORDER_PLIST}"
+    if ! wait_smart_order_sidecar_started \
+        "${minimum_started_at_epoch_ms}" "${api_generation}" "${api_pid}"; then
+        return 1
+    fi
+    verify_smart_order_plist_binding
+}
+
+start_smart_order_sidecar_only() {
+    local mode_state
+    preflight_persisted_smart_order_runtime_contract
+    if job_loaded "${SMART_ORDER_LABEL}"; then
+        print -u2 '智慧下單 sidecar 已載入；拒絕以 sidecar-only 入口重啟'
+        return 1
+    fi
+    if ! job_loaded "${SIM_LABEL}"; then
+        print -u2 '智慧下單 sidecar-only 啟動要求現有 managed simulation API；不會代為啟動或重啟'
+        return 1
+    fi
+    if ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]]; then
+        print -u2 '智慧下單 sidecar-only 啟動要求 current simulation mode marker'
+        return 1
+    fi
+    if ! read_private_api_generation_contract simulation >/dev/null 2>&1; then
+        print -u2 '智慧下單 sidecar-only 啟動缺少 current simulation API generation；不得事後補造或重啟 API'
+        return 1
+    fi
+    write_smart_order_plist
+    start_smart_order_sidecar
+}
+
+quiesce_smart_order_sidecar_for_lifecycle() {
+    local operation="$1"
+    local mode_state api_generation result
+    if [[ ! -e "${SMART_ORDER_ROOT}" && ! -L "${SMART_ORDER_ROOT}" &&
+        ! -e "${SMART_ORDER_DISCOVERY_PATH}" && ! -L "${SMART_ORDER_DISCOVERY_PATH}" ]] &&
+        ! job_loaded "${SMART_ORDER_LABEL}"; then
+        return 0
+    fi
+    preflight_persisted_smart_order_runtime_contract
+    if ! job_loaded "${SMART_ORDER_LABEL}" ||
+        ! strict_smart_order_discovery_epoch >/dev/null 2>&1 ||
+        ! mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! api_generation="$(read_private_api_generation_contract simulation 2>/dev/null)"; then
+        print -u2 '拒絕生命週期操作：智慧單 sidecar／私有 discovery／simulation generation 無法共同驗證；本次未停止任何服務。'
+        return 1
+    fi
+    result="$(env \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="${api_generation}" \
+        "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" quiesce "${operation}" \
+        2>/dev/null)" || {
+        print -u2 '拒絕生命週期操作：無法取得 authenticated durable quiesce 結果；本次未停止任何服務。'
+        return 1
+    }
+    if ! print -r -- "${result}" | jq -e \
+        --arg operation "${operation}" '
+            type == "object" and
+            .schemaVersion == "smart-order-runtime-quiesce-result/2026-08-12.1" and
+            .operation == $operation and
+            .state == "quiescing" and
+            .drainAllowed == true and
+            .dispatchAllowed == false and
+            .writeMaster == "disabled" and
+            (.blockerCount | type == "number" and floor == . and . == 0) and
+            .accountIdentifiersExposed == false and
+            .entityIdentifiersExposed == false and
+            .secretValuesExposed == false
+        ' >/dev/null 2>&1; then
+        print -u2 '拒絕生命週期操作：智慧單仍有未完成 strategy／intent／order／reservation／claim／obligation 或對帳義務；sidecar 已維持 observe-only／reconciling 且未停止其他服務。'
+        return 1
+    fi
+}
+
+stop_smart_order_sidecar_for_lifecycle() {
+    local operation="${1:-}"
+    local result completion_binding finalized
+    case "${operation}" in
+        graceful_stop|production_readonly|uninstall) ;;
+        *)
+            print -u2 '拒絕停止智慧下單 sidecar：生命週期 operation 未明確指定或不受此路徑支援'
+            return 1
+            ;;
+    esac
+    if [[ ! -e "${SMART_ORDER_ROOT}" && ! -L "${SMART_ORDER_ROOT}" &&
+        ! -e "${SMART_ORDER_DISCOVERY_PATH}" && ! -L "${SMART_ORDER_DISCOVERY_PATH}" ]] &&
+        ! job_loaded "${SMART_ORDER_LABEL}"; then
+        return 0
+    fi
+    # Recover the exact post-completion crash window.  Both the
+    # HMAC completion and its matching barrier must exist, discovery must be
+    # gone, and the completion itself proves listener/repository/lease release.
+    # The old launchd job may still be loaded if the client lost the response
+    # or crashed before bootout; only after verification may we unload it.
+    # A lone barrier remains fail closed and is never guessed complete.
+    if [[ ! -e "${SMART_ORDER_DISCOVERY_PATH}" && ! -L "${SMART_ORDER_DISCOVERY_PATH}" &&
+        -e "${SMART_ORDER_LIFECYCLE_STOP_COMPLETION_PATH}" &&
+        -e "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" ]]; then
+        result="$(env \
+            REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+            "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" pending-stop \
+            2>/dev/null)" || {
+            print -u2 '拒絕恢復生命週期操作：pending stop completion 無法驗證；handoff barrier 保留。'
+            return 1
+        }
+        if ! print -r -- "${result}" | jq -e \
+            --arg operation "${operation}" '
+                type == "object" and
+                .schemaVersion == "smart-order-runtime-stop-pending/2026-08-12.1" and
+                .operation == $operation and
+                (.stopRevision | type == "number" and floor == . and . >= 0) and
+                .repositoryClosed == true and
+                .controlPlaneUnpublished == true and
+                .runtimeLeaseReleased == true and
+                .dispatchAllowed == false and
+                .writeMaster == "disabled" and
+                .brokerWriteAttempted == false and
+                .secretValuesExposed == false
+            ' >/dev/null 2>&1; then
+            print -u2 '拒絕恢復生命週期操作：pending completion 與 operation 不一致；handoff barrier 保留。'
+            return 1
+        fi
+        completion_binding="$(print -r -- "${result}" | jq -c '.completionBinding')"
+        if job_loaded "${SMART_ORDER_LABEL}"; then
+            bootout_job "${SMART_ORDER_LABEL}"
+            if job_loaded "${SMART_ORDER_LABEL}"; then
+                print -u2 'pending completion 已驗證，但 sidecar job 尚未卸載；handoff barrier 保留。'
+                return 1
+            fi
+        fi
+        finalized="$(env \
+            REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+            REALTIME_STOCK_LIFECYCLE_STOP_BINDING="${completion_binding}" \
+            "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" finalize-stop \
+            2>/dev/null)" || {
+            print -u2 'pending stop completion 未能 single-consume；handoff barrier 保留。'
+            return 1
+        }
+        if ! print -r -- "${finalized}" | jq -e \
+            --arg operation "${operation}" '
+                type == "object" and
+                .schemaVersion == "smart-order-runtime-stop-finalized/2026-08-12.1" and
+                .operation == $operation and
+                (.stopRevision | type == "number" and floor == . and . >= 0) and
+                .finalized == true and
+                .dispatchAllowed == false and
+                .writeMaster == "disabled" and
+                .brokerWriteAttempted == false and
+                .secretValuesExposed == false
+            ' >/dev/null 2>&1; then
+            print -u2 'pending stop finalize projection 無效；handoff barrier 保留。'
+            return 1
+        fi
+        return 0
+    fi
+    quiesce_smart_order_sidecar_for_lifecycle "${operation}"
+    result="$(env \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_EXPECTED_API_GENERATION="$(read_private_api_generation_contract simulation)" \
+        "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" stop "${operation}" \
+        2>/dev/null)" || {
+        print -u2 '拒絕生命週期操作：sidecar 未產生 exact durable stop completion；本次不執行 bootout。'
+        return 1
+    }
+    if ! print -r -- "${result}" | jq -e \
+        --arg operation "${operation}" '
+            type == "object" and
+            .schemaVersion == "smart-order-runtime-stop-result/2026-08-12.1" and
+            .operation == $operation and
+            .state == "closed" and
+            (.stopRevision | type == "number" and floor == . and . >= 0) and
+            .repositoryClosed == true and
+            .controlPlaneUnpublished == true and
+            .runtimeLeaseReleased == true and
+            .dispatchAllowed == false and
+            .writeMaster == "disabled" and
+            .brokerWriteAttempted == false and
+            .secretValuesExposed == false
+        ' >/dev/null 2>&1; then
+        print -u2 '拒絕生命週期操作：stop completion schema／binding 無效；本次不執行 bootout。'
+        return 1
+    fi
+    if [[ -e "${SMART_ORDER_DISCOVERY_PATH}" || -L "${SMART_ORDER_DISCOVERY_PATH}" ]]; then
+        print -u2 '拒絕生命週期操作：stop completion 後 discovery 仍存在；本次不執行 bootout。'
+        return 1
+    fi
+    # launchd may still show the now-closed process until its normal exit.  It
+    # is safe to unload only after the exact HMAC completion above proved that
+    # the listener, repository, discovery, and exclusive Runtime lease are gone.
+    bootout_job "${SMART_ORDER_LABEL}"
+    if job_loaded "${SMART_ORDER_LABEL}"; then
+        print -u2 '拒絕完成生命週期操作：sidecar job 尚未卸載；handoff barrier 保留，replacement 維持封鎖。'
+        return 1
+    fi
+    completion_binding="$(print -r -- "${result}" | jq -c '.completionBinding')"
+    finalized="$(env \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_LIFECYCLE_STOP_BINDING="${completion_binding}" \
+        "${NODE_BIN}" "${SMART_ORDER_DIAGNOSTICS}" finalize-stop \
+        2>/dev/null)" || {
+        print -u2 '生命週期 job 已卸載，但 exact completion 未完成 single-consume；handoff barrier 保留，replacement 維持封鎖。'
+        return 1
+    }
+    if ! print -r -- "${finalized}" | jq -e \
+        --arg operation "${operation}" '
+            type == "object" and
+            .schemaVersion == "smart-order-runtime-stop-finalized/2026-08-12.1" and
+            .operation == $operation and
+            (.stopRevision | type == "number" and floor == . and . >= 0) and
+            .finalized == true and
+            .dispatchAllowed == false and
+            .writeMaster == "disabled" and
+            .brokerWriteAttempted == false and
+            .secretValuesExposed == false
+        ' >/dev/null 2>&1; then
+        print -u2 '生命週期 job 已卸載，但 finalize projection 無效；handoff barrier 保留，replacement 維持封鎖。'
+        return 1
+    fi
+}
+
+assert_smart_order_uninstall_safe() {
+    stop_smart_order_sidecar_for_lifecycle uninstall
+}
+
 watchdog_environment() {
     env \
         REALTIME_STOCK_REPO_DIR="${REPO_DIR}" \
@@ -307,7 +1376,7 @@ watchdog_environment() {
         REALTIME_STOCK_WATCHDOG_STATE_DIR="${WATCHDOG_STATE_DIR}" \
         REALTIME_STOCK_MODE_FILE="${MODE_FILE}" \
         REALTIME_STOCK_SIM_SERVICE_TARGET="${LAUNCH_DOMAIN}/${SIM_LABEL}" \
-        "${NODE_BIN}" "${WATCHDOG_SCRIPT}" "$1"
+        "${APP_NODE_BIN}" "${WATCHDOG_SCRIPT}" "$1"
 }
 
 reset_watchdog() {
@@ -315,7 +1384,7 @@ reset_watchdog() {
 }
 
 watchdog_status() {
-    if [[ -f "${WATCHDOG_SCRIPT}" && -x "${NODE_BIN}" ]]; then
+    if [[ -f "${WATCHDOG_SCRIPT}" && -x "${APP_NODE_BIN}" ]]; then
         watchdog_environment status
     else
         print 'business_watchdog_state=unavailable'
@@ -327,7 +1396,7 @@ watchdog_status() {
 }
 
 watchdog_once() {
-    if [[ ! -f "${WATCHDOG_SCRIPT}" || ! -x "${NODE_BIN}" ]]; then
+    if [[ ! -f "${WATCHDOG_SCRIPT}" || ! -x "${APP_NODE_BIN}" ]]; then
         return 1
     fi
     watchdog_environment once
@@ -436,19 +1505,212 @@ wait_business_session() {
     return 1
 }
 
+run_smart_order_sidecar_start_with_shared_mode_execution_lease() {
+    local holder_pid holder_ready=false operation_status=1 holder_status=0
+    local status_file error_file completion_file completion_nonce attempt
+    preflight_persisted_smart_order_runtime_contract
+    if [[ ! -f "${SMART_ORDER_MODE_LEASE_HOLDER}" ||
+        -L "${SMART_ORDER_MODE_LEASE_HOLDER}" ]]; then
+        print -u2 '拒絕 sidecar-only 啟動：找不到 shared mode execution lease holder'
+        return 1
+    fi
+    status_file="$(mktemp -t realtimestock-shared-mode-lease-status)" || return 1
+    error_file="$(mktemp -t realtimestock-shared-mode-lease-error)" || {
+        command rm -f "${status_file}"
+        return 1
+    }
+    completion_file="$(mktemp -t realtimestock-shared-mode-lease-completion)" || {
+        command rm -f "${status_file}" "${error_file}"
+        return 1
+    }
+    chmod 600 "${status_file}" "${error_file}" "${completion_file}"
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        "${NODE_BIN}" "${SMART_ORDER_MODE_LEASE_HOLDER}" \
+        "${APP_SUPPORT}" "$$" "${completion_file}" shared \
+        >"${status_file}" 2>"${error_file}" &
+    holder_pid=$!
+    for attempt in {1..700}; do
+        if jq -e '
+            type == "object" and
+            .schemaVersion == "smart-order-mode-execution-lease-holder/2026-08-20.1" and
+            .acquired == true and
+            .mode == "shared" and
+            (.completionNonce | type == "string" and test("^[0-9a-f-]{36}$")) and
+            .brokerAuthority == false
+        ' "${status_file}" >/dev/null 2>&1; then
+            holder_ready=true
+            break
+        fi
+        if ! kill -0 "${holder_pid}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+    if [[ "${holder_ready}" != true ]]; then
+        wait "${holder_pid}" 2>/dev/null || true
+        print -u2 '拒絕 sidecar-only 啟動：無法取得 shared mode execution lease；未建立 plist 或啟動 job。'
+        if [[ -s "${error_file}" ]]; then
+            sed -n '1p' "${error_file}" >&2
+        fi
+        command rm -f "${status_file}" "${error_file}" "${completion_file}"
+        return 1
+    fi
+
+    if start_smart_order_sidecar_only; then
+        operation_status=0
+    else
+        operation_status=$?
+    fi
+    completion_nonce="$(jq -er '.completionNonce' "${status_file}")" ||
+        operation_status=1
+    if [[ -n "${completion_nonce:-}" ]]; then
+        print -r -- "${completion_nonce}" > "${completion_file}" ||
+            operation_status=1
+        chmod 600 "${completion_file}" || operation_status=1
+    fi
+    kill -TERM "${holder_pid}" 2>/dev/null || true
+    wait "${holder_pid}" || holder_status=$?
+    command rm -f "${status_file}" "${error_file}" "${completion_file}"
+    if (( holder_status != 0 )); then
+        print -u2 'sidecar-only 啟動已停止 mutation，但 shared lease holder 未正常結束；結果維持 fail closed。'
+        return 1
+    fi
+    return "${operation_status}"
+}
+
+run_with_exclusive_mode_execution_lease() {
+    local operation="$1"
+    local holder_pid holder_ready=false operation_status=1 holder_status=0
+    local status_file error_file completion_file completion_nonce attempt
+    case "${operation}" in
+        simulation|production-readonly) ;;
+        *)
+            print -u2 '拒絕 mode switch：exclusive lease operation 不受支援'
+            return 2
+            ;;
+    esac
+    preflight_persisted_smart_order_runtime_contract
+    if [[ ! -f "${SMART_ORDER_MODE_LEASE_HOLDER}" ]]; then
+        print -u2 '拒絕 mode switch：找不到 exclusive mode execution lease holder'
+        return 1
+    fi
+    status_file="$(mktemp -t realtimestock-mode-lease-status)" || return 1
+    error_file="$(mktemp -t realtimestock-mode-lease-error)" || {
+        command rm -f "${status_file}"
+        return 1
+    }
+    completion_file="$(mktemp -t realtimestock-mode-lease-completion)" || {
+        command rm -f "${status_file}" "${error_file}"
+        return 1
+    }
+    chmod 600 "${status_file}" "${error_file}" "${completion_file}"
+    env REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        "${NODE_BIN}" "${SMART_ORDER_MODE_LEASE_HOLDER}" \
+        "${APP_SUPPORT}" "$$" "${completion_file}" \
+        >"${status_file}" 2>"${error_file}" &
+    holder_pid=$!
+    for attempt in {1..700}; do
+        if jq -e '
+            type == "object" and
+            .schemaVersion == "smart-order-mode-execution-lease-holder/2026-08-20.1" and
+            .acquired == true and
+            .mode == "exclusive" and
+            (.completionNonce | type == "string" and test("^[0-9a-f-]{36}$")) and
+            .brokerAuthority == false
+        ' "${status_file}" >/dev/null 2>&1; then
+            holder_ready=true
+            break
+        fi
+        if ! kill -0 "${holder_pid}" 2>/dev/null; then
+            break
+        fi
+        sleep 0.05
+    done
+    if [[ "${holder_ready}" != true ]]; then
+        wait "${holder_pid}" 2>/dev/null || true
+        print -u2 '拒絕 mode switch：無法取得 exclusive mode execution lease；未變更任何服務或 mode marker。'
+        if [[ -s "${error_file}" ]]; then
+            sed -n '1p' "${error_file}" >&2
+        fi
+        command rm -f "${status_file}" "${error_file}" "${completion_file}"
+        return 1
+    fi
+
+    if [[ "${operation}" == 'simulation' ]]; then
+        if switch_simulation; then
+            operation_status=0
+        else
+            operation_status=$?
+        fi
+    else
+        if switch_production_readonly; then
+            operation_status=0
+        else
+            operation_status=$?
+        fi
+    fi
+
+    if (( operation_status == 0 )); then
+        completion_nonce="$(jq -er '.completionNonce' "${status_file}")" ||
+            operation_status=1
+        if (( operation_status == 0 )); then
+            print -r -- "${completion_nonce}" > "${completion_file}" ||
+                operation_status=1
+            chmod 600 "${completion_file}" || operation_status=1
+        fi
+    fi
+    kill -TERM "${holder_pid}" 2>/dev/null || true
+    wait "${holder_pid}" || holder_status=$?
+    command rm -f "${status_file}" "${error_file}" "${completion_file}"
+    if (( holder_status != 0 )); then
+        print -u2 'mode switch 已完成安全操作，但 exclusive lease holder 未正常結束；後續切換維持 fail closed。'
+        return 1
+    fi
+    return "${operation_status}"
+}
+
 ensure_web_job() {
     bootstrap_job "${WEB_LABEL}" "${WEB_PLIST}"
 }
 
+prepare_smart_order_sidecar_for_simulation_return() {
+    local mode_state api_generation
+    # A completed production-readonly transition has already quiesced, durably
+    # stopped, unpublished and finalized the smart-order Runtime.  Its DB root
+    # is intentionally retained, so root existence alone cannot require a
+    # second authenticated stop after the control plane is gone.  Accept this
+    # narrow already-stopped state only while both private mode authorities
+    # still prove the same production-readonly incarnation and no unfinished
+    # stop handoff exists.  Every other absent／crash state keeps the original
+    # fail-closed graceful-stop path.
+    if ! job_loaded "${SMART_ORDER_LABEL}" &&
+        [[ ! -e "${SMART_ORDER_DISCOVERY_PATH}" &&
+        ! -L "${SMART_ORDER_DISCOVERY_PATH}" &&
+        ! -e "${SMART_ORDER_LIFECYCLE_STOP_COMPLETION_PATH}" &&
+        ! -L "${SMART_ORDER_LIFECYCLE_STOP_COMPLETION_PATH}" &&
+        ! -e "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" &&
+        ! -L "${SMART_ORDER_LIFECYCLE_STOP_BARRIER_PATH}" ]] &&
+        mode_state="$(read_private_runtime_mode_contract 2>/dev/null)" &&
+        [[ "${mode_state}" == 'production-readonly' ]] &&
+        api_generation="$(read_private_api_generation_contract production-readonly 2>/dev/null)" &&
+        [[ "${api_generation}" == production-readonly:* ]]; then
+        return 0
+    fi
+    stop_smart_order_sidecar_for_lifecycle graceful_stop
+}
+
 switch_simulation() {
     local business_status
+    preflight_persisted_smart_order_runtime_contract
     ensure_runtime_dependencies
     [[ -f "${SIM_PLIST}" && -f "${WATCHDOG_PLIST}" && -f "${WEB_PLIST}" && -f "${MULTIVIEW_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
 
+    prepare_smart_order_sidecar_for_simulation_return
     bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
     wait_port_free 8080
+    write_api_generation simulation
     write_mode simulation
     reset_watchdog
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
@@ -473,16 +1735,24 @@ switch_simulation() {
     restart_multiview || true
     bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
     bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
+    if smart_order_platform_supported; then
+        [[ -f "${SMART_ORDER_PLIST}" ]] || write_smart_order_plist
+        start_smart_order_sidecar
+    else
+        print -u2 'simulation 與一般 RealTimeStock 服務已切換；智慧下單交易 Runtime 在不支援平台維持停止'
+    fi
 
     print '已切換至 simulation'
     runtime_status
 }
 
 switch_production_readonly() {
+    preflight_persisted_smart_order_runtime_contract
     ensure_runtime_dependencies
     assert_no_ca
     [[ -f "${SIM_PLIST}" && -f "${WATCHDOG_PLIST}" && -f "${WEB_PLIST}" && -f "${PROD_PLIST}" ]] || write_plists
 
+    stop_smart_order_sidecar_for_lifecycle production_readonly
     bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${PROD_LABEL}"
     bootout_job "${SIM_LABEL}"
@@ -490,6 +1760,7 @@ switch_production_readonly() {
     bootout_job "${MULTIVIEW_DAILY_LABEL}"
     bootout_job "${MULTIVIEW_TDCC_LABEL}"
     wait_port_free 8080
+    write_api_generation production-readonly
     write_mode production-readonly
     ensure_web_job
     bootstrap_job "${PROD_LABEL}" "${PROD_PLIST}"
@@ -524,6 +1795,7 @@ runtime_status() {
     print "business_watchdog_job=$(job_loaded "${WATCHDOG_LABEL}" && print loaded || print stopped)"
     print "production_readonly_job=$(job_loaded "${PROD_LABEL}" && print loaded || print stopped)"
     print "web_job=$(job_loaded "${WEB_LABEL}" && print loaded || print stopped)"
+    smart_order_sidecar_status
     print "multiview_job=$(job_loaded "${MULTIVIEW_LABEL}" && print loaded || print stopped)"
     print "multiview_daily_pipeline_job=$(job_loaded "${MULTIVIEW_DAILY_LABEL}" && print loaded || print stopped)"
     print "multiview_tdcc_pipeline_job=$(job_loaded "${MULTIVIEW_TDCC_LABEL}" && print loaded || print stopped)"
@@ -563,6 +1835,7 @@ runtime_status() {
     state_status="$(MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" status 2>/dev/null || true)"
     print "multiview_d1_integrity=$(print -r -- "${state_status}" | awk -F= '$1 == "integrity" {print $2}')"
     print "multiview_d1_coverage=$(print -r -- "${state_status}" | awk -F= '$1 == "schema_coverage" {print $2}')"
+    print "multiview_after_hours_source=$(print -r -- "${state_status}" | awk -F= '$1 == "after_hours_source" {print $2}')"
     local after_hours_all='completed'
     local after_hours_group after_hours_value
     for after_hours_group in market chip tdcc pe; do
@@ -576,10 +1849,13 @@ runtime_status() {
 
 install_runtime() {
     local business_status
+    persist_node_runtime_contract
+    preflight_persisted_smart_order_runtime_contract
     ensure_runtime_dependencies
     mkdir -p "${INSTALLED_BIN_DIR}"
     install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"
     write_plists
+    stop_smart_order_sidecar_for_lifecycle graceful_stop
     bootout_job "${PROD_LABEL}"
     bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${SIM_LABEL}"
@@ -592,6 +1868,7 @@ install_runtime() {
     wait_port_free 5174
     MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" migrate
     ensure_multiview_pipeline_secret
+    write_api_generation simulation
     write_mode simulation
     reset_watchdog
     bootstrap_job "${SIM_LABEL}" "${SIM_PLIST}"
@@ -621,11 +1898,18 @@ install_runtime() {
         print -u2 '安裝完成，但 MultiView 尚未通過健康檢查；simulation API 與本機 Web 維持執行'
         return 1
     fi
+    if smart_order_platform_supported; then
+        [[ -f "${SMART_ORDER_PLIST}" ]] || write_smart_order_plist
+        start_smart_order_sidecar
+    else
+        print -u2 '一般 RealTimeStock LaunchAgent 已安裝；智慧下單交易 Runtime 在不支援平台維持停止'
+    fi
     print 'LaunchAgent 已安裝；登入後預設只會自動啟動 simulation'
     runtime_status
 }
 
 uninstall_runtime() {
+    assert_smart_order_uninstall_safe
     bootout_job "${PROD_LABEL}"
     bootout_job "${WATCHDOG_LABEL}"
     bootout_job "${SIM_LABEL}"
@@ -633,16 +1917,23 @@ uninstall_runtime() {
     bootout_job "${MULTIVIEW_LABEL}"
     bootout_job "${MULTIVIEW_DAILY_LABEL}"
     bootout_job "${MULTIVIEW_TDCC_LABEL}"
-    command rm -f "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    bootout_job "${SMART_ORDER_LABEL}"
+    command rm -f "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${SMART_ORDER_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
     command rm -f "${WATCHDOG_STATE_DIR}/state.json" "${WATCHDOG_STATE_DIR}/watchdog-once.lock"
     command rmdir "${WATCHDOG_STATE_DIR}" 2>/dev/null || true
     command rm -f "${INSTALLED_SCRIPT}"
+    command rm -f "${SMART_ORDER_CAPABILITY_PATH}"
     write_mode simulation
-    print "已移除 RealTimeStock LaunchAgent；.env、MultiView D1、備份、清單與設定仍保留在 ${MULTIVIEW_STATE_DIR}"
+    print "已移除 RealTimeStock LaunchAgent 與未使用的智慧下單 gateway capability；.env、MultiView D1、智慧下單 DB／WAL／backup／strategy／audit 與設定仍保留"
 }
 
 service_api_simulation() {
+    preflight_persisted_smart_order_runtime_contract
     ensure_runtime_dependencies
+    # The marker identifies this exact API process incarnation.  KeepAlive,
+    # watchdog kickstart, and manual service restarts must all retire the old
+    # smart-order fence before the API opens a listener.
+    write_api_generation simulation
     write_mode simulation
     cd "${REPO_DIR}"
     unset SJ_CA_PATH SJ_CA_PASSWD
@@ -653,8 +1944,10 @@ service_api_simulation() {
 }
 
 service_api_production_readonly() {
+    preflight_persisted_smart_order_runtime_contract
     ensure_runtime_dependencies
     assert_no_ca
+    write_api_generation production-readonly
     write_mode production-readonly
     cd "${REPO_DIR}"
     unset SJ_CA_PATH SJ_CA_PASSWD
@@ -669,8 +1962,78 @@ service_web() {
     cd "${REPO_DIR}"
     exec env \
         VITE_API_TARGET=http://127.0.0.1:8080 \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
         REALTIME_STOCK_MODE_FILE="${MODE_FILE}" \
-        "${NODE_BIN}" "${VITE_BIN}" --host 127.0.0.1 --strictPort
+        "${APP_NODE_BIN}" "${VITE_BIN}" --host 127.0.0.1 --strictPort
+}
+
+service_smart_order_sidecar() {
+    local persisted_node mode_state
+    preflight_persisted_smart_order_runtime_contract
+    if ! smart_order_platform_supported; then
+        print -u2 '智慧下單 sidecar 拒絕啟動：僅支援原生 Apple Silicon arm64 macOS；未取得 broker authority'
+        return 1
+    fi
+    persisted_node="${NODE_BIN}"
+    if ! mode_state="$(read_private_runtime_mode_contract)" ||
+        [[ "${mode_state}" != 'simulation' ]] ||
+        ! read_private_api_generation_contract simulation >/dev/null; then
+        print -u2 '智慧下單 sidecar 拒絕啟動：目前不是 simulation'
+        return 1
+    fi
+    if [[ ! -f "${SMART_ORDER_ENTRY}" ]]; then
+        print -u2 '智慧下單 sidecar entry 不存在；保持 fail closed'
+        return 1
+    fi
+    cd "${REPO_DIR}"
+    exec env \
+        REALTIME_STOCK_APP_SUPPORT="${APP_SUPPORT}" \
+        "${persisted_node}" "${SMART_ORDER_ENTRY}"
+}
+
+probe_smart_order_node_sqlite() {
+    preflight_persisted_smart_order_runtime_contract
+    if ! smart_order_platform_supported; then
+        print -u2 'Node SQLite capability probe僅接受原生Apple Silicon arm64實機'
+        return 1
+    fi
+    if [[ ! -f "${SMART_ORDER_NODE_SQLITE_PROBE}" ||
+        -L "${SMART_ORDER_NODE_SQLITE_PROBE}" ]]; then
+        print -u2 'Node SQLite capability probe不存在或不是實體source file'
+        return 1
+    fi
+    cd "${REPO_DIR}"
+    exec env -i \
+        PATH='/usr/bin:/bin:/usr/sbin:/sbin' \
+        LANG='C' \
+        LC_ALL='C' \
+        REALTIME_STOCK_NODE_SQLITE_APP_SUPPORT="${APP_SUPPORT}" \
+        REALTIME_STOCK_NODE_SQLITE_LAUNCHAGENT_PLIST="${SMART_ORDER_PLIST}" \
+        REALTIME_STOCK_NODE_SQLITE_INSTALLED_RUNTIME="${INSTALLED_SCRIPT}" \
+        "${NODE_BIN}" "${SMART_ORDER_NODE_SQLITE_PROBE}"
+}
+
+run_smart_order_node_sqlite_admin() {
+    local admin_command="$1"
+    shift
+    preflight_persisted_smart_order_runtime_contract
+    if ! smart_order_platform_supported; then
+        print -u2 'Node SQLite capability admin僅接受原生Apple Silicon arm64實機'
+        return 1
+    fi
+    if [[ ! -f "${SMART_ORDER_NODE_SQLITE_ADMIN}" ||
+        -L "${SMART_ORDER_NODE_SQLITE_ADMIN}" ]]; then
+        print -u2 'Node SQLite capability admin不存在或不是實體source file'
+        return 1
+    fi
+    cd "${REPO_DIR}"
+    exec env -i \
+        PATH='/usr/bin:/bin:/usr/sbin:/sbin' \
+        LANG='C' \
+        LC_ALL='C' \
+        REALTIME_STOCK_NODE_SQLITE_APP_SUPPORT="${APP_SUPPORT}" \
+        "${NODE_BIN}" "${SMART_ORDER_NODE_SQLITE_ADMIN}" \
+        "${admin_command}" "$@"
 }
 
 service_multiview() {
@@ -688,7 +2051,7 @@ service_multiview() {
         WRANGLER_LOG_PATH="${MULTIVIEW_STATE_DIR}/logs/wrangler.log" \
         MINIFLARE_REGISTRY_PATH="${MULTIVIEW_STATE_DIR}/registry" \
         MULTIVIEW_LOCAL_PIPELINE_SECRET="${pipeline_secret}" \
-        "${NODE_BIN}" "${MULTIVIEW_CLI}" dev --hostname 127.0.0.1 --port 5174
+        "${APP_NODE_BIN}" "${MULTIVIEW_CLI}" dev --hostname 127.0.0.1 --port 5174
 }
 
 service_multiview_daily_pipeline() {
@@ -702,7 +2065,7 @@ service_multiview_daily_pipeline() {
         --data "{\"action\":\"daily\",\"scheduledTime\":${scheduled_time}}" | jq -e '.ok == true' >/dev/null
     cd "${REPO_DIR}/apps/multiview"
     env PE_RIVER_BACKFILL_SECRET="${pipeline_secret}" PE_RIVER_INGEST_SECRET="${pipeline_secret}" \
-        "${NODE_BIN}" scripts/pe-river-continuous-backfill.mjs \
+        "${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs \
         --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-pe-$(date +%Y%m%d-%H)"
 }
 
@@ -715,7 +2078,7 @@ service_multiview_tdcc_pipeline() {
     wait_multiview
     cd "${REPO_DIR}/apps/multiview"
     env TDCC_CONTINUOUS_BACKFILL_SECRET="${pipeline_secret}" TDCC_HISTORY_INGEST_SECRET="${pipeline_secret}" \
-        "${NODE_BIN}" scripts/tdcc-history-backfill.mjs --continuous \
+        "${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs --continuous \
         --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-tdcc-$(date +%Y%m%d)" \
         --checkpoint="${checkpoint_dir}/continuous.json" --claim-limit=2 --max-run-ms=1200000
 }
@@ -724,17 +2087,56 @@ command_name="${1:-}"
 case "${command_name}" in
     install) install_runtime ;;
     uninstall) uninstall_runtime ;;
-    simulation) switch_simulation ;;
-    production-readonly) switch_production_readonly ;;
+    simulation) run_with_exclusive_mode_execution_lease simulation ;;
+    production-readonly) run_with_exclusive_mode_execution_lease production-readonly ;;
     restart) restart_multiview ;;
     multiview-daily) service_multiview_daily_pipeline ;;
     multiview-tdcc) service_multiview_tdcc_pipeline ;;
     status) runtime_status ;;
+    node-sqlite-probe) probe_smart_order_node_sqlite ;;
+    node-sqlite-host-public)
+        run_smart_order_node_sqlite_admin host-public ;;
+    node-sqlite-trust-host)
+        run_smart_order_node_sqlite_admin trust-host "${2:-}" "${3:-}" ;;
+    node-sqlite-import-report)
+        run_smart_order_node_sqlite_admin import-report "${2:-}" "${3:-}" ;;
+    smart-order-start) run_smart_order_sidecar_start_with_shared_mode_execution_lease ;;
+    smart-order-task0-3c-stop) stop_smart_order_sidecar_for_lifecycle graceful_stop ;;
+    gate-probe-prepare)
+        run_smart_order_gate_probe_prepare "${2:-}" ;;
+    task0-3b-probe)
+        shift
+        run_smart_order_task0_3b_probe "$@" ;;
+    task0-3c-external-sell)
+        shift
+        run_smart_order_task0_3c_external_sell "$@" ;;
+    task0-3c-authorization-preview)
+        shift
+        run_smart_order_task0_3c_authorization_preview "$@" ;;
+    task0-3c-preflight)
+        run_smart_order_task0_3c_preflight ;;
+    task0-3c-finalize)
+        shift
+        run_smart_order_task0_3c_finalize "$@" ;;
+    task0-3c-gate-recompute)
+        run_smart_order_task0_3c_gate_recompute ;;
+    task0-3b-reconcile-update)
+        run_smart_order_task0_3b_update_reconcile ;;
+    task0-3b-verify-update)
+        run_smart_order_task0_3b_update_reconcile verify-only ;;
+    task0-4-0-6-probe)
+        shift
+        run_smart_order_task0_4_0_6_probe "$@" ;;
+    task13-2-evidence)
+        run_smart_order_task13_2_evidence ;;
+    strategy-cancel|cancel-broker-order|drain-prepared|relinquish-protection-prepare|relinquish-protection-commit)
+        run_smart_order_typed_drain_action "${command_name}" "${2:-}" "${3:-}" "${4:-}" ;;
     watchdog-once) watchdog_once ;;
     watchdog-reset) reset_watchdog ;;
     service-api-simulation) service_api_simulation ;;
     service-api-production-readonly) service_api_production_readonly ;;
     service-web) service_web ;;
+    service-smart-order-sidecar) service_smart_order_sidecar ;;
     service-multiview) service_multiview ;;
     service-multiview-daily-pipeline) service_multiview_daily_pipeline ;;
     service-multiview-tdcc-pipeline) service_multiview_tdcc_pipeline ;;

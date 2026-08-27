@@ -9,6 +9,7 @@ export type BlockType =
     | 'chart'
     | 'depth'
     | 'ticket'
+    | 'smartorder'
     | 'tape'
     | 'flash'
     | 'pnl'
@@ -99,6 +100,12 @@ export const BLOCK_META: Record<
         label: '下單面板',
         pinnable: true,
         singleton: false,
+        defaultSize: { w: 5, h: 11, minW: 4, minH: 10 },
+    },
+    smartorder: {
+        label: '智慧下單',
+        pinnable: false,
+        singleton: true,
         defaultSize: { w: 5, h: 11, minW: 4, minH: 10 },
     },
     tape: {

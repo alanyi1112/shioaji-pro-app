@@ -21,6 +21,7 @@ import type {
 } from './types/market';
 import type {
     FuturesOrderReq,
+    OrderResult,
     StockOrderReq,
     Trade,
 } from './types/order';
@@ -40,6 +41,10 @@ import {
 } from './stream';
 import type { HistoryTicks } from './types/tick';
 import { todayStr } from './utils/date';
+import {
+    submitManualStockBrokerWrite,
+    type SmartOrderStockWriteRouteId,
+} from './smart-order-client';
 
 export interface ServerInfo {
     name: string;
@@ -590,37 +595,104 @@ function ensureAccepted<
     return t;
 }
 
-export function placeStockOrder(contract: ContractBase, order: StockOrderReq) {
-    return apiPost<Trade>('/api/v1/order/place_order', {
-        contract: contractKey(contract),
-        stock_order: { ...order, account: accountFor('S') },
-    }).then(ensureAccepted);
+export function placeStockOrder(
+    contract: ContractBase,
+    order: StockOrderReq,
+    routeId: SmartOrderStockWriteRouteId,
+): Promise<Trade> {
+    return submitManualStockBrokerWrite(routeId, {
+        schemaVersion: 'smart-order-manual-broker-write-request/2026-08-14.1',
+        operation: 'place',
+        brokerPath: '/api/v1/order/place_order',
+        payload: {
+            contract: contractKey(contract),
+            stock_order: { ...order, account: accountFor('S') },
+        },
+    });
 }
 
 export function placeFuturesOrder(
     contract: ContractBase,
     order: FuturesOrderReq,
 ) {
+    if (!['FUT', 'OPT'].includes(String(contract.security_type))) {
+        return Promise.reject(
+            new TypeError('futures broker path requires a futures contract'),
+        );
+    }
     return apiPost<Trade>('/api/v1/order/place_order', {
         contract: orderableKey(contract),
         futures_order: { ...order, account: accountFor('F') },
     }).then(ensureAccepted);
 }
 
-export function cancelOrder(tradeId: string) {
-    return apiPost<Trade>('/api/v1/order/cancel_order', { trade_id: tradeId });
+export function cancelOrder(
+    tradeId: string,
+    account: OrderResult['account'],
+    routeId: SmartOrderStockWriteRouteId,
+): Promise<Trade> {
+    return submitManualStockBrokerWrite(routeId, {
+        schemaVersion: 'smart-order-manual-broker-write-request/2026-08-14.1',
+        operation: 'cancel',
+        brokerPath: '/api/v1/order/cancel_order',
+        payload: { trade_id: tradeId, account },
+    });
 }
 
-export function updateOrderPrice(tradeId: string, price: number) {
+function requireFuturesTrade(trade: Trade): Trade {
+    if (!['FUT', 'OPT'].includes(String(trade.contract.security_type))) {
+        throw new TypeError('futures broker path requires a futures trade');
+    }
+    return trade;
+}
+
+export function cancelFuturesOrder(trade: Trade) {
+    const current = requireFuturesTrade(trade);
+    return apiPost<Trade>('/api/v1/order/cancel_order', {
+        trade_id: current.order.id,
+    });
+}
+
+export function updateOrderPrice(
+    tradeId: string,
+    price: number,
+    account: OrderResult['account'],
+    routeId: SmartOrderStockWriteRouteId,
+): Promise<Trade> {
+    return submitManualStockBrokerWrite(routeId, {
+        schemaVersion: 'smart-order-manual-broker-write-request/2026-08-14.1',
+        operation: 'update_price',
+        brokerPath: '/api/v1/order/update_price',
+        payload: { trade_id: tradeId, price, account },
+    });
+}
+
+export function updateFuturesOrderPrice(trade: Trade, price: number) {
+    const current = requireFuturesTrade(trade);
     return apiPost<Trade>('/api/v1/order/update_price', {
-        trade_id: tradeId,
+        trade_id: current.order.id,
         price,
     });
 }
 
-export function updateOrderQty(tradeId: string, quantity: number) {
+export function updateOrderQty(
+    tradeId: string,
+    quantity: number,
+    account: OrderResult['account'],
+    routeId: SmartOrderStockWriteRouteId,
+): Promise<Trade> {
+    return submitManualStockBrokerWrite(routeId, {
+        schemaVersion: 'smart-order-manual-broker-write-request/2026-08-14.1',
+        operation: 'update_quantity',
+        brokerPath: '/api/v1/order/update_qty',
+        payload: { trade_id: tradeId, quantity, account },
+    });
+}
+
+export function updateFuturesOrderQty(trade: Trade, quantity: number) {
+    const current = requireFuturesTrade(trade);
     return apiPost<Trade>('/api/v1/order/update_qty', {
-        trade_id: tradeId,
+        trade_id: current.order.id,
         quantity,
     });
 }

@@ -1,0 +1,2716 @@
+{
+  "schemaVersion": "smart-order-task-14-7-acceptance-manifest/2026-08-12.1",
+  "manifestId": "smart-order-task-14-7/offline/2026-08-12.1",
+  "manifestSha256": "sha256:024879f2d7739ba517954a08c8f052881c50648c7fe12000456cae9cea79e7a5",
+  "changeId": "add-durable-smart-order-panel-and-protective-exits",
+  "scope": {
+    "assessmentMode": "offline",
+    "completionLevel": "artifact_only",
+    "brokerNetworkAccessed": false,
+    "api8080Accessed": false,
+    "brokerWriteAuthority": false,
+    "productionAuthorized": false,
+    "caAuthorized": false,
+    "realOrderAuthorized": false,
+    "containsSecrets": false,
+    "containsAccountIdentifiers": false
+  },
+  "readiness": {
+    "artifactApplyReady": true,
+    "writeUnlockReady": false,
+    "featureReleaseReady": false
+  },
+  "scenarioRoleDefinitions": {
+    "normal": "直接執行綁定的規範 Scenario，不額外注入故障；若 Scenario 本身是拒絕案例，正常結果就是依規範拒絕。",
+    "failure": "在綁定 Scenario 注入缺資料、stale、I/O、mode、broker 回應或前置條件失敗；未知結果必須 fail closed。",
+    "race": "在綁定 Scenario 加入同 revision 或同資源的並發與狀態漂移；不得產生第二個 authority、intent 或 side effect。"
+  },
+  "sources": [
+    {
+      "id": "SPEC-DURABLE",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/specs/durable-smart-order-runtime/spec.md",
+      "sha256": "sha256:c3f62ca3751ff684ac1e8fa35adac62e8abdcb7015975c38c686a41277999ae6"
+    },
+    {
+      "id": "SPEC-PROTECTIVE",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/specs/protective-exit-order-ticket/spec.md",
+      "sha256": "sha256:eb3d60f5f5316355b7b4fe36a71a6ecb755e1d54b6024e9221b1bdeb2230429b"
+    },
+    {
+      "id": "SPEC-SAFE-RUNTIME",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/specs/safe-local-runtime-mode-switch/spec.md",
+      "sha256": "sha256:6e6a05f6fe95c062b6c2ae330de86acaddf303f629b187c3d49438a699ccc23c"
+    },
+    {
+      "id": "SPEC-SMART-PANEL",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/specs/smart-order-panel/spec.md",
+      "sha256": "sha256:832950c6cb3eb46dfbac2618557598d25b28167b586bd78a79fa25833df3a7c7"
+    },
+    {
+      "id": "MANUAL-ROUTE-COVERAGE",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/manual-stock-write-route-coverage.md",
+      "sha256": "sha256:2b567c0af7d403ae01cc7391836bbf5a01efe9bbbccc54874ca2ab1df254bd05"
+    },
+    {
+      "id": "OFFICIAL-DECISION-TABLES",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/official-smart-order-decision-tables.md",
+      "sha256": "sha256:11895dc2c423c41a82762f82ffa13f8c7d2263f23527667fef0f524c209e52fe"
+    },
+    {
+      "id": "TASK-13-4-ACCEPTANCE",
+      "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/task-13-4-feature-acceptance.json",
+      "sha256": "sha256:509cd75bc0520d01fb4d33da223ac7ef551c1b14926b076ea05a876ef196200d"
+    }
+  ],
+  "companionMatrix": {
+    "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/task-14-7-acceptance-matrix.md",
+    "sha256": "sha256:a47967b9f316a91dbb4b58da1d0db9b8126c20cd5ffe2242a6ac5c3f0cf62c90"
+  },
+  "simulationEvidence": [
+    {
+      "id": "SIM-CURRENT-NONE",
+      "evidenceClass": "none",
+      "eligibility": "missing",
+      "sha256": null,
+      "reason": "no_current_eligible_live_simulation_evidence"
+    }
+  ],
+  "manualRouteCoverage": {
+    "id": "MRC-2026-08-11.1",
+    "sourceId": "MANUAL-ROUTE-COVERAGE",
+    "coverageComplete": true,
+    "manualEquivalencePassed": true,
+    "serverDerivedProvenancePassed": true,
+    "automationAccountEligibility": "disabled"
+  },
+  "featureGates": [
+    {
+      "id": "runtime_core",
+      "gateClass": "gate_1",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete"
+      ]
+    },
+    {
+      "id": "protective_exit",
+      "gateClass": "gate_2",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "protective_exit_acceptance_missing"
+      ]
+    },
+    {
+      "id": "quick",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility"
+      ]
+    },
+    {
+      "id": "good_till",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility"
+      ]
+    },
+    {
+      "id": "multi_condition",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility"
+      ]
+    },
+    {
+      "id": "parent_child",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility"
+      ]
+    },
+    {
+      "id": "stop_take",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility"
+      ]
+    },
+    {
+      "id": "trailing_exit",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility"
+      ]
+    },
+    {
+      "id": "scheduled_quantity",
+      "gateClass": "gate_3",
+      "state": "disabled",
+      "blockers": [
+        "no_current_eligible_live_simulation_evidence",
+        "write_unlock_gates_incomplete",
+        "bounded_quote_simulation_e2e_pending_market_reproducibility",
+        "scheduled_quantity_algorithm_unverified"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "DSR-001",
+      "sourceId": "SPEC-DURABLE",
+      "title": "智慧單必須明示為本機監控而非券商雲端",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-001-N",
+          "sourceScenario": "關閉 5173 後本機服務仍正常",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-001-F",
+          "sourceScenario": "Runtime 心跳逾時",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-001-R",
+          "sourceScenario": "關閉 5173 後本機服務仍正常",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-002",
+      "sourceId": "SPEC-DURABLE",
+      "title": "本機控制面必須有 same-origin 認證與 CSRF 邊界",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-002-N",
+          "sourceScenario": "合法 same-origin 請求",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-002-F",
+          "sourceScenario": "惡意網頁直接呼叫 Runtime",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-002-R",
+          "sourceScenario": "合法 SSE 連線",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-003",
+      "sourceId": "SPEC-DURABLE",
+      "title": "Runtime 必須是 single-writer 並使用具故障邊界的 SQLite",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-003-N",
+          "sourceScenario": "第二個 Runtime 同時啟動",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-003-F",
+          "sourceScenario": "migration 或 integrity 失敗",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-003-R",
+          "sourceScenario": "活動資料庫備份",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-004",
+      "sourceId": "SPEC-DURABLE",
+      "title": "策略與 broker 操作必須固定綁定明確交易身分",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-004-N",
+          "sourceScenario": "建立後切換 UI 帳號",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-004-F",
+          "sourceScenario": "帳號欄位缺少或回傳不符",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-004-R",
+          "sourceScenario": "update 或 cancel 等待期間 target 已變更",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-005",
+      "sourceId": "SPEC-DURABLE",
+      "title": "authenticated identity group 必須穩定不可逆且在不確定時 fail closed",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-005-N",
+          "sourceScenario": "Runtime 重啟後同一身分登入",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-005-F",
+          "sourceScenario": "identity key 遺失或 mapping 衝突",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-005-R",
+          "sourceScenario": "Runtime 重啟後同一身分登入",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-006",
+      "sourceId": "SPEC-DURABLE",
+      "title": "持久化模型必須分離策略、activation、intent 與 broker order",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-006-N",
+          "sourceScenario": "Runtime 在 part-filled 時重啟",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-006-F",
+          "sourceScenario": "非法狀態轉移",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-006-R",
+          "sourceScenario": "Runtime 在 part-filled 時重啟",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-007",
+      "sourceId": "SPEC-DURABLE",
+      "title": "每個 broker side effect 必須先持久化意圖",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-007-N",
+          "sourceScenario": "使用者重複點擊建立",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-007-F",
+          "sourceScenario": "程序在 broker 呼叫前當機",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-007-R",
+          "sourceScenario": "dispatching commit 後第一個 byte 前當機",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-008",
+      "sourceId": "SPEC-DURABLE",
+      "title": "自動送單只能提供 at-most-once dispatch 不得宣稱 broker exactly-once",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-008-N",
+          "sourceScenario": "canonical correlation 唯一解析同交易日 target",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-008-F",
+          "sourceScenario": "HTTP write 後回應遺失",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-008-R",
+          "sourceScenario": "deal event 早於 order ack",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-009",
+      "sourceId": "SPEC-DURABLE",
+      "title": "broker reconciliation 必須明確帳號、有界且以事件為主",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-009-N",
+          "sourceScenario": "斷線期間 broker order 已成交",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-009-F",
+          "sourceScenario": "upstream 沒有穩定事件序號",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-009-R",
+          "sourceScenario": "斷線期間 broker order 已成交",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-010",
+      "sourceId": "SPEC-DURABLE",
+      "title": "所有 RealTimeStock 交易寫入必須經同一 gateway 與 arbiter",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-010-N",
+          "sourceScenario": "手動單與保護單競爭同一部位",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-010-F",
+          "sourceScenario": "外部 App 改變部位",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-010-R",
+          "sourceScenario": "既有手動 FOK 或零股尚未通過 gateway 回歸",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-011",
+      "sourceId": "SPEC-DURABLE",
+      "title": "每個 broker write 必須使用 server-derived provenance 防止 confused deputy",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-011-N",
+          "sourceScenario": "automation gate 關閉時合法手動 ticket下單",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-011-F",
+          "sourceScenario": "automation 偽造 manual provenance",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-011-R",
+          "sourceScenario": "automation 偽造 manual provenance",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-012",
+      "sourceId": "SPEC-DURABLE",
+      "title": "每次交易寫入必須雙重證明 simulation",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-012-N",
+          "sourceScenario": "條件命中同時切換 mode",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-012-F",
+          "sourceScenario": "broker ack 後尚未 durable commit 即當機",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-012-R",
+          "sourceScenario": "mode switch 與 HTTP write 競爭",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-013",
+      "sourceId": "SPEC-DURABLE",
+      "title": "Runtime 必須持有 canonical 風控與分級 kill switch",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-013-N",
+          "sourceScenario": "日損上限命中",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-013-F",
+          "sourceScenario": "風控資料過期",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-013-R",
+          "sourceScenario": "多個 kill switch 同時啟用",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-014",
+      "sourceId": "SPEC-DURABLE",
+      "title": "canonical daily PnL 必須有版本化計算與新鮮度契約",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-014-N",
+          "sourceScenario": "本交易日完整來源可重算 PnL",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-014-F",
+          "sourceScenario": "fee 或 tax mapping 未通過 Gate 0",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-014-R",
+          "sourceScenario": "成交事件重複或晚到",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-015",
+      "sourceId": "SPEC-DURABLE",
+      "title": "行情條件必須使用即時 subscription 與可驗證新鮮度",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-015-N",
+          "sourceScenario": "快取行情已逾時",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-015-F",
+          "sourceScenario": "AND 條件時間不一致",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-015-R",
+          "sourceScenario": "啟用時條件已成立",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-016",
+      "sourceId": "SPEC-DURABLE",
+      "title": "斷線、睡眠與 clock gap 必須採可重建或人工處理",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-016-N",
+          "sourceScenario": "crossing 條件在 gap 期間可能發生",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-016-F",
+          "sourceScenario": "trailing 極值無法完整重建",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-016-R",
+          "sourceScenario": "排程點在離線期間錯過",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-017",
+      "sourceId": "SPEC-DURABLE",
+      "title": "交易日曆與 canonical contract 不可用時必須停止",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-017-N",
+          "sourceScenario": "臨時休市或日曆過期",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-017-F",
+          "sourceScenario": "contract metadata 不完整",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-017-R",
+          "sourceScenario": "本機時鐘偏差",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-018",
+      "sourceId": "SPEC-DURABLE",
+      "title": "部位 reservation 與張股單位必須 account-wide",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-018-N",
+          "sourceScenario": "一張與一千股轉換",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-018-F",
+          "sourceScenario": "兩個並發買單合計超過曝險上限",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-018-R",
+          "sourceScenario": "並發新增曝險納入同一 reservation CAS",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-019",
+      "sourceId": "SPEC-DURABLE",
+      "title": "health 與交易 readiness 必須分開",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-019-N",
+          "sourceScenario": "API listener 正常但帳號事件未訂閱",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-019-F",
+          "sourceScenario": "quote ready 但 DB read-only",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-019-R",
+          "sourceScenario": "API listener 正常但帳號事件未訂閱",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-020",
+      "sourceId": "SPEC-DURABLE",
+      "title": "Runtime 資源使用必須遠離官方上限",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-020-N",
+          "sourceScenario": "已知全域使用量仍保有本地 headroom",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-020-F",
+          "sourceScenario": "subscription budget 用盡",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-020-R",
+          "sourceScenario": "broker queue 滿",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-021",
+      "sourceId": "SPEC-DURABLE",
+      "title": "策略控制與 confirmation 必須版本化且不可變",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-021-N",
+          "sourceScenario": "pause 時仍有 working order",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-021-F",
+          "sourceScenario": "修改已確認 payload",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-021-R",
+          "sourceScenario": "resume 時條件已成立",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-022",
+      "sourceId": "SPEC-DURABLE",
+      "title": "manual intervention 必須依 reason code 使用版本化解除矩陣",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-022-N",
+          "sourceScenario": "唯一 final evidence 解決 manual 狀態",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-022-F",
+          "sourceScenario": "無法取得證據而人工接手",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-022-R",
+          "sourceScenario": "unknown submission 直接按 resume",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-023",
+      "sourceId": "SPEC-DURABLE",
+      "title": "observe-only 與 write master 必須預設安全",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-023-N",
+          "sourceScenario": "Gate 0 尚未完成",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-023-F",
+          "sourceScenario": "Runtime crash 後由 LaunchAgent 自動重啟",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-023-R",
+          "sourceScenario": "從 production-readonly 回到 simulation",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-024",
+      "sourceId": "SPEC-DURABLE",
+      "title": "gate manifest 必須在 dispatch path 機械性強制執行",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-024-N",
+          "sourceScenario": "current eligible manifest 的全部 conjunct 一致",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-024-F",
+          "sourceScenario": "adapter 或 Shioaji capability 改變",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-024-R",
+          "sourceScenario": "手動設定 write-master 環境變數",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-025",
+      "sourceId": "SPEC-DURABLE",
+      "title": "Gate 0 simulation probe 必須使用不可被策略重用的 safety envelope",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-025-N",
+          "sourceScenario": "逐次授權 probe 操作同 run 唯一 target",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-025-F",
+          "sourceScenario": "無法確定重現特定simulation狀態",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-025-R",
+          "sourceScenario": "probe response遺失",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-026",
+      "sourceId": "SPEC-DURABLE",
+      "title": "歷程、通知與資料保留不得冒充 broker 證據",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-026-N",
+          "sourceScenario": "查看策略歷程",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-026-F",
+          "sourceScenario": "一年資料到期",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-026-R",
+          "sourceScenario": "查看策略歷程",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "DSR-027",
+      "sourceId": "SPEC-DURABLE",
+      "title": "舊交易 trigger 與新 Runtime 不得同時送單",
+      "scenarios": {
+        "normal": {
+          "caseId": "DSR-027-N",
+          "sourceScenario": "升級時發現舊 trigger",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "DSR-027-F",
+          "sourceScenario": "新 Runtime 成為 authority",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "DSR-027-R",
+          "sourceScenario": "升級時發現舊 trigger",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "PET-001",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "下單面板價別必須使用中文名稱且保留 canonical code",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-001-N",
+          "sourceScenario": "選擇限價單",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-001-F",
+          "sourceScenario": "顯示範圍市價",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-001-R",
+          "sourceScenario": "選擇限價單",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit"
+      ]
+    },
+    {
+      "id": "PET-002",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "自動保護第一階段只支援現股多單整股",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-002-N",
+          "sourceScenario": "在融資或空單票券啟用保護",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-002-F",
+          "sourceScenario": "在融資或空單票券啟用保護",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-002-R",
+          "sourceScenario": "在融資或空單票券啟用保護",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit"
+      ]
+    },
+    {
+      "id": "PET-003",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "含保護的新單必須先保存完整計畫才可送進場",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-003-N",
+          "sourceScenario": "同一 transaction 保存保護計畫與 entry intent",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-003-F",
+          "sourceScenario": "Runtime 無法保存保護計畫",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-003-R",
+          "sourceScenario": "保存後在 broker 回應前當機",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit"
+      ]
+    },
+    {
+      "id": "PET-004",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "confirmation 必須綁定精確 entry 與保護 payload",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-004-N",
+          "sourceScenario": "確認後修改數量",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-004-F",
+          "sourceScenario": "確認後修改數量",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-004-R",
+          "sourceScenario": "確認後修改數量",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit"
+      ]
+    },
+    {
+      "id": "PET-005",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "停損停利必須支援價位百分比與 ATR",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-005-N",
+          "sourceScenario": "以百分比設定多單停損",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-005-F",
+          "sourceScenario": "輸入 NaN、Infinity 或非正數",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-005-R",
+          "sourceScenario": "canonical 百分比與 ATR golden vector",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "PET-006",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "ATR 必須使用版本化固定快照",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-006-N",
+          "sourceScenario": "盤中建立 ATR 保護",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-006-F",
+          "sourceScenario": "ATR 資料不足或 revision 不一致",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-006-R",
+          "sourceScenario": "盤中建立 ATR 保護",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "PET-007",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "價格換算必須使用 canonical contract 與方向性 tick arithmetic",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-007-N",
+          "sourceScenario": "ETF 停損落在非法檔位",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-007-F",
+          "sourceScenario": "委託價超過漲跌停",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-007-R",
+          "sourceScenario": "價格跨越 tick 級距",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "PET-008",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "觸發條件與 broker 委託政策必須分離",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-008-N",
+          "sourceScenario": "停損條件命中",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-008-F",
+          "sourceScenario": "只有 BidAsk 更新",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-008-R",
+          "sourceScenario": "MKT IOC 未成交",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "PET-009",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "正式保護數量與基準必須使用累計實際成交",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-009-N",
+          "sourceScenario": "entry 發生滑價",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-009-F",
+          "sourceScenario": "entry 部分成交",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-009-R",
+          "sourceScenario": "entry 發生滑價",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "PET-010",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "既有部位的百分比與 ATR 基準必須明確且可驗證",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-010-N",
+          "sourceScenario": "既有部位缺少可驗證 average cost",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-010-F",
+          "sourceScenario": "既有部位缺少可驗證 average cost",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-010-R",
+          "sourceScenario": "既有部位缺少可驗證 average cost",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "PET-011",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "保護命中時尚有 entry 餘量必須先處理競態",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-011-N",
+          "sourceScenario": "停損命中且 entry 尚有未成交量",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-011-F",
+          "sourceScenario": "停損命中且 entry 尚有未成交量",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-011-R",
+          "sourceScenario": "停損命中且 entry 尚有未成交量",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take",
+        "trailing_exit"
+      ]
+    },
+    {
+      "id": "PET-012",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "移動出場必須保存啟動門檻與有利極值",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-012-N",
+          "sourceScenario": "多單啟動後創高再回撤",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-012-F",
+          "sourceScenario": "gap 期間極值不可重建",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-012-R",
+          "sourceScenario": "啟動前先碰固定停損",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "trailing_exit"
+      ]
+    },
+    {
+      "id": "PET-013",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "同組保護必須以 reservation 與 OCO remainder 防止重複出場",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-013-N",
+          "sourceScenario": "停利部分成交",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-013-F",
+          "sourceScenario": "第一個 leg 結果未知",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-013-R",
+          "sourceScenario": "同一筆 observation 同時命中停損與停利",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take",
+        "trailing_exit"
+      ]
+    },
+    {
+      "id": "PET-014",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "外部部位變動不得導致超賣",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-014-N",
+          "sourceScenario": "使用者在券商 App 手動賣出",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-014-F",
+          "sourceScenario": "使用者在券商 App 手動賣出",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-014-R",
+          "sourceScenario": "使用者在券商 App 手動賣出",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take",
+        "trailing_exit"
+      ]
+    },
+    {
+      "id": "PET-015",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "UI 必須區分保護生命週期與未受保護數量",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-015-N",
+          "sourceScenario": "broker 回傳 PendingSubmit",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-015-F",
+          "sourceScenario": "保護 Runtime 離線",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-015-R",
+          "sourceScenario": "broker 回傳 PendingSubmit",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit",
+        "stop_take",
+        "trailing_exit"
+      ]
+    },
+    {
+      "id": "PET-016",
+      "sourceId": "SPEC-PROTECTIVE",
+      "title": "保護設定在最小 footprint 必須可讀可操作",
+      "scenarios": {
+        "normal": {
+          "caseId": "PET-016-N",
+          "sourceScenario": "預設最小下單面板",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "PET-016-F",
+          "sourceScenario": "預設最小下單面板",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "PET-016-R",
+          "sourceScenario": "預設最小下單面板",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "protective_exit"
+      ]
+    },
+    {
+      "id": "SLR-001",
+      "sourceId": "SPEC-SAFE-RUNTIME",
+      "title": "本機 runtime 生命週期必須納入智慧單 sidecar 與 gateway",
+      "scenarios": {
+        "normal": {
+          "caseId": "SLR-001-N",
+          "sourceScenario": "安裝本機 runtime",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SLR-001-F",
+          "sourceScenario": "查看 status",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SLR-001-R",
+          "sourceScenario": "安裝本機 runtime",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "SLR-002",
+      "sourceId": "SPEC-SAFE-RUNTIME",
+      "title": "sidecar 每次交易寫入都必須重新驗證 simulation",
+      "scenarios": {
+        "normal": {
+          "caseId": "SLR-002-N",
+          "sourceScenario": "dispatch 已持有 execution lease",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SLR-002-F",
+          "sourceScenario": "ack 已回傳但 DB commit 尚未完成",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SLR-002-R",
+          "sourceScenario": "TOCTOU mode 競態",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "SLR-003",
+      "sourceId": "SPEC-SAFE-RUNTIME",
+      "title": "切換 production-readonly 前必須 quiesce 並處理智慧單義務",
+      "scenarios": {
+        "normal": {
+          "caseId": "SLR-003-N",
+          "sourceScenario": "條件命中時要求切換 production-readonly",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SLR-003-F",
+          "sourceScenario": "仍有 working simulation order",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SLR-003-R",
+          "sourceScenario": "reconciling intent 或 pending-submit order",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "SLR-004",
+      "sourceId": "SPEC-SAFE-RUNTIME",
+      "title": "watchdog 或 API generation 改變後智慧單必須先 recovery",
+      "scenarios": {
+        "normal": {
+          "caseId": "SLR-004-N",
+          "sourceScenario": "recovery 完成",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SLR-004-F",
+          "sourceScenario": "watchdog 重啟 8080",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SLR-004-R",
+          "sourceScenario": "watchdog 重啟 8080",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "SLR-005",
+      "sourceId": "SPEC-SAFE-RUNTIME",
+      "title": "stop rollback 與 uninstall 不得遺棄未終結智慧單",
+      "scenarios": {
+        "normal": {
+          "caseId": "SLR-005-N",
+          "sourceScenario": "所有義務已終結",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SLR-005-F",
+          "sourceScenario": "一般 uninstall 有 active strategy",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SLR-005-R",
+          "sourceScenario": "Runtime追蹤的未受保護remainder仍存在",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "SLR-006",
+      "sourceId": "SPEC-SAFE-RUNTIME",
+      "title": "非 loopback 與 Cloudflare 不得啟動智慧單 Runtime",
+      "scenarios": {
+        "normal": {
+          "caseId": "SLR-006-N",
+          "sourceScenario": "synthetic 非 simulation 驗證",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SLR-006-F",
+          "sourceScenario": "synthetic 非 simulation 驗證",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SLR-006-R",
+          "sourceScenario": "synthetic 非 simulation 驗證",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core"
+      ]
+    },
+    {
+      "id": "SOP-001",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "工作區必須提供永久標示本機邊界的智慧下單面板",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-001-N",
+          "sourceScenario": "從新增面板建立",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-001-F",
+          "sourceScenario": "本機電腦睡眠或 Runtime 離線",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-001-R",
+          "sourceScenario": "從新增面板建立",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-002",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "面板必須與商品聯動但不得改寫已建立策略",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-002-N",
+          "sourceScenario": "聯動 K 線圖切換商品",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-002-F",
+          "sourceScenario": "聯動商品沒有 fresh quote",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-002-R",
+          "sourceScenario": "聯動 K 線圖切換商品",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-003",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "面板必須提供七種型別化台股智慧單",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-003-N",
+          "sourceScenario": "某一策略類型尚未通過 gate",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-003-F",
+          "sourceScenario": "某一策略類型尚未通過 gate",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-003-R",
+          "sourceScenario": "某一策略類型尚未通過 gate",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-004",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "全新智慧單的類型選擇器必須預設移動出場單",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-004-N",
+          "sourceScenario": "從空狀態新增全新智慧單",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-004-F",
+          "sourceScenario": "移動出場單尚未通過 gate",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-004-R",
+          "sourceScenario": "返回既有草稿",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-005",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "建立前必須確認 Runtime 回傳的 canonical 不可變快照",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-005-N",
+          "sourceScenario": "監控與委託商品不同",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-005-F",
+          "sourceScenario": "確認後 payload 改變",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-005-R",
+          "sourceScenario": "使用者要修改監控中策略",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-006",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "快速單只可使用九種已驗證行情條件",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-006-N",
+          "sourceScenario": "條件由 false 變 true",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-006-F",
+          "sourceScenario": "啟用當下已為 true",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-006-R",
+          "sourceScenario": "quote 欄位未完成 API mapping",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick"
+      ]
+    },
+    {
+      "id": "SOP-007",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "停損停利單只能保護可驗證現股多單",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-007-N",
+          "sourceScenario": "為既有部位建立雙向保護",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-007-F",
+          "sourceScenario": "部位已被其他策略保留",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-007-R",
+          "sourceScenario": "為既有部位建立雙向保護",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "stop_take"
+      ]
+    },
+    {
+      "id": "SOP-008",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "長效單必須依 1 至 30 日與累計實際成交量執行",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-008-N",
+          "sourceScenario": "長效單看 A 下 B",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-008-F",
+          "sourceScenario": "前日 IOC 未成交",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-008-R",
+          "sourceScenario": "前日 ROD 到期或 broker 拒絕",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "good_till"
+      ]
+    },
+    {
+      "id": "SOP-009",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "多條件單必須限制七條並要求 coherent fresh observations",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-009-N",
+          "sourceScenario": "OR 兩條同時成立",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-009-F",
+          "sourceScenario": "多商品拓樸任一 leg 未通過 gate",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-009-R",
+          "sourceScenario": "AND 使用不同時間的 true",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "multi_condition"
+      ]
+    },
+    {
+      "id": "SOP-010",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "母子單必須遵守每leg商品相等與完整有效期",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-010-N",
+          "sourceScenario": "母單部分成交",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-010-F",
+          "sourceScenario": "母單部分成交後被取消",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-010-R",
+          "sourceScenario": "deal event 重送",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "parent_child"
+      ]
+    },
+    {
+      "id": "SOP-011",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "移動出場必須只對可驗證現股多單追蹤有利極值",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-011-N",
+          "sourceScenario": "Runtime 重啟且無行情缺口",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-011-F",
+          "sourceScenario": "無法重建睡眠期間極值",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-011-R",
+          "sourceScenario": "Runtime 重啟且無行情缺口",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "trailing_exit"
+      ]
+    },
+    {
+      "id": "SOP-012",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "定時定量必須僅限建立當日並禁止補送",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-012-N",
+          "sourceScenario": "剩餘量小於 slot 數量",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-012-F",
+          "sourceScenario": "某 mode 的官方欄位或算法尚未證實",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-012-R",
+          "sourceScenario": "前一 slot 委託仍 working",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-013",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "策略有效期與歷史必須符合明確例外",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-013-N",
+          "sourceScenario": "一般策略超過 30 日",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-013-F",
+          "sourceScenario": "策略到期仍有 working order",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-013-R",
+          "sourceScenario": "一般策略超過 30 日",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-014",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "同一 authenticated identity 的未終結策略總數不得超過 20",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-014-N",
+          "sourceScenario": "不同帳號合計已達 20",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-014-F",
+          "sourceScenario": "暫停策略",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-014-R",
+          "sourceScenario": "不同帳號合計已達 20",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-015",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "第一階段支援範圍必須雙層阻擋",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-015-N",
+          "sourceScenario": "UI 被繞過送入不支援 payload",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-015-F",
+          "sourceScenario": "UI 被繞過送入不支援 payload",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-015-R",
+          "sourceScenario": "UI 被繞過送入不支援 payload",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-016",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "pause、resume、cancel 與 broker order 操作必須分離",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-016-N",
+          "sourceScenario": "取消仍有 working order 的策略",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-016-F",
+          "sourceScenario": "stale UI 操作",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-016-R",
+          "sourceScenario": "取消仍有 working order 的策略",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-017",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "面板狀態不得把觸發或接受冒充成交",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-017-N",
+          "sourceScenario": "broker 接受但尚未成交",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-017-F",
+          "sourceScenario": "IOC 部分成交",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-017-R",
+          "sourceScenario": "broker 接受但尚未成交",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    },
+    {
+      "id": "SOP-018",
+      "sourceId": "SPEC-SMART-PANEL",
+      "title": "面板必須在接近下單面板 footprint 內保持可存取",
+      "scenarios": {
+        "normal": {
+          "caseId": "SOP-018-N",
+          "sourceScenario": "最小核准 footprint",
+          "role": "normal",
+          "injection": "none",
+          "expectedOutcome": "source_scenario_contract_holds_without_broker_authority",
+          "status": "missing"
+        },
+        "failure": {
+          "caseId": "SOP-018-F",
+          "sourceScenario": "最小核准 footprint",
+          "role": "failure",
+          "injection": "required_input_or_dependency_fails_or_becomes_unavailable",
+          "expectedOutcome": "fail_closed_and_no_unverified_broker_side_effect",
+          "status": "missing"
+        },
+        "race": {
+          "caseId": "SOP-018-R",
+          "sourceScenario": "最小核准 footprint",
+          "role": "race",
+          "injection": "concurrent_revision_or_authoritative_state_changes_before_completion",
+          "expectedOutcome": "single_linearized_authority_and_no_duplicate_side_effect",
+          "status": "missing"
+        }
+      },
+      "simulationEvidenceId": "SIM-CURRENT-NONE",
+      "manualRouteCoverageId": "MRC-2026-08-11.1",
+      "featureGateIds": [
+        "runtime_core",
+        "quick",
+        "good_till",
+        "multi_condition",
+        "parent_child",
+        "stop_take",
+        "trailing_exit",
+        "scheduled_quantity"
+      ]
+    }
+  ],
+  "summary": {
+    "requirementCount": 67,
+    "normalScenarioCount": 67,
+    "failureScenarioCount": 67,
+    "raceScenarioCount": 67,
+    "currentEligibleSimulationEvidenceCount": 0,
+    "enabledFeatureGateCount": 0,
+    "manualRouteCoverageComplete": true
+  }
+}

@@ -4,6 +4,7 @@ import { trackActivity } from './activity';
 import { checkOrderAllowed } from './risk';
 import {
     cancelOrder,
+    cancelFuturesOrder,
     fetchTrades,
     placeFuturesOrder,
     placeStockOrder,
@@ -16,6 +17,7 @@ import {
     type StockOrderLot,
     type Trade,
 } from './types/order';
+import type { SmartOrderStockWriteRouteId } from './smart-order-client';
 
 export interface AppNotice {
     kind: 'ok' | 'err' | 'info';
@@ -91,22 +93,31 @@ export async function placeQuickOrder(
     action: Action,
     price: number | null,
     quantity: number,
-    opts?: { bypassRisk?: boolean; orderLot?: StockOrderLot },
+    opts?: {
+        orderLot?: StockOrderLot;
+        stockRouteId?: SmartOrderStockWriteRouteId;
+    },
 ): Promise<Trade> {
     assertTradingLive();
     if (contract.security_type === 'IND') {
         throw new Error('指數商品僅提供行情，不可下單');
     }
-    if (!opts?.bypassRisk) {
-        const blocked = checkOrderAllowed(quantity);
-        if (blocked) throw new Error(blocked);
-    }
+    const blocked = checkOrderAllowed(quantity);
+    if (blocked) throw new Error(blocked);
     trackActivity(
         '下單',
         `${contract.code} ${action === 'Buy' ? '買' : '賣'} ${quantity} @${price ?? '市價'}`,
     );
     const market = price === null;
-    return sendOrder(contract, action, price, quantity, market, opts?.orderLot);
+    return sendOrder(
+        contract,
+        action,
+        price,
+        quantity,
+        market,
+        opts?.orderLot,
+        opts?.stockRouteId,
+    );
 }
 
 async function sendOrder(
@@ -116,6 +127,7 @@ async function sendOrder(
     quantity: number,
     market: boolean,
     orderLot?: StockOrderLot,
+    stockRouteId?: SmartOrderStockWriteRouteId,
 ): Promise<Trade> {
     if (contract.security_type === 'IND') {
         throw new Error('指數商品僅提供行情，不可下單');
@@ -129,15 +141,28 @@ async function sendOrder(
               order_type: market ? 'IOC' : 'ROD',
               octype: 'Auto',
           })
-        : await placeStockOrder(contract, {
-              action,
-              price: price ?? 0,
-              quantity,
-              price_type: market ? 'MKT' : 'LMT',
-              order_type: market ? 'IOC' : 'ROD',
-              order_lot: orderLot ?? 'Common',
-          });
+        : await placeStockOrder(
+              contract,
+              {
+                  action,
+                  price: price ?? 0,
+                  quantity,
+                  price_type: market ? 'MKT' : 'LMT',
+                  order_type: market ? 'IOC' : 'ROD',
+                  order_lot: orderLot ?? 'Common',
+              },
+              requireStockRouteId(stockRouteId),
+          );
     return trade;
+}
+
+function requireStockRouteId(
+    routeId: SmartOrderStockWriteRouteId | undefined,
+): SmartOrderStockWriteRouteId {
+    if (!routeId) {
+        throw new Error('股票下單缺少 server-derived route binding');
+    }
+    return routeId;
 }
 
 // close/flip a stock position counted in SHARES: whole lots go out as a
@@ -148,13 +173,20 @@ export async function placeStockExitByShares(
     contract: ContractBase & { limit_up?: number; limit_down?: number },
     action: Action,
     shares: number,
+    routeId:
+        | 'STK-MAN-PLACE-POSITION-CLOSE'
+        | 'STK-MAN-PLACE-POSITION-REVERSE',
 ): Promise<Trade[]> {
     assertTradingLive();
     const lots = Math.floor(shares / 1000);
     const odd = shares % 1000;
     const out: Trade[] = [];
     if (lots > 0) {
-        out.push(await placeQuickOrder(contract, action, null, lots));
+        out.push(
+            await placeQuickOrder(contract, action, null, lots, {
+                stockRouteId: routeId,
+            }),
+        );
     }
     if (odd > 0) {
         const limitPrice =
@@ -165,6 +197,7 @@ export async function placeStockExitByShares(
         out.push(
             await placeQuickOrder(contract, action, limitPrice, odd, {
                 orderLot: 'IntradayOdd',
+                stockRouteId: routeId,
             }),
         );
     }
@@ -186,7 +219,15 @@ export async function cancelAllOrders(): Promise<number> {
         ACTIVE_ORDER_STATUSES.has(t.status.status),
     );
     const results = await Promise.allSettled(
-        working.map((t) => cancelOrder(t.order.id)),
+        working.map((t) =>
+            t.contract.security_type === 'STK'
+                ? cancelOrder(
+                      t.order.id,
+                      t.order.account,
+                      'STK-MAN-CANCEL-HOTKEY-ALL',
+                  )
+                : cancelFuturesOrder(t),
+        ),
     );
     const ok = results.filter((r) => r.status === 'fulfilled').length;
     notify({

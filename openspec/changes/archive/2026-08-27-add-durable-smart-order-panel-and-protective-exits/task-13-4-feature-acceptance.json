@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "smart-order-task-13-4-feature-acceptance/2026-08-23.1",
+  "manifestId": "smart-order-task-13-4/offline/2026-08-23.1",
+  "manifestSha256": "sha256:e8351e1cac39028b9eb675bb37eb548691479110aad920c28914aeffe65e175f",
+  "changeId": "add-durable-smart-order-panel-and-protective-exits",
+  "scope": {
+    "assessmentMode": "offline",
+    "brokerNetworkAccessed": false,
+    "brokerWriteAuthority": false,
+    "productionAuthorized": false,
+    "caAuthorized": false,
+    "realOrderAuthorized": false,
+    "containsSecrets": false,
+    "containsAccountIdentifiers": false
+  },
+  "sources": [
+    { "id": "canonical_domain", "path": "scripts/smart-order-runtime/canonical-strategy-draft.mjs", "sha256": "sha256:ce49257f41d9cefb01e565e926a374659d4eadbff33e3c8c01dbdcd6cddd2fb9" },
+    { "id": "canonical_fixtures", "path": "scripts/smart-order-runtime/canonical-strategy-draft-fixtures.mjs", "sha256": "sha256:c4ea939eaf449318d4dec729da637e4f47cabc7058bf061cc6af6bfec5a88d68" },
+    { "id": "feature_gate", "path": "scripts/smart-order-runtime/gate-manifest.mjs", "sha256": "sha256:f3be77805ad388ea00e592d02155951f9a9df7abffe0d97f9bedccfec546fb7f" },
+    { "id": "repository_runtime", "path": "scripts/smart-order-runtime/repository-worker.mjs", "sha256": "sha256:4ae21d002325e6a4688456be1352b1f3b906a03ac24a6fd4b02578db453c20cb" },
+    { "id": "controller_runtime", "path": "scripts/smart-order-runtime/runtime-controller.mjs", "sha256": "sha256:7f868f0f3b6d96cac5a25a3e0196ce3e09d87bcfb71e8b221222863ab29325bb" },
+    { "id": "broker_adapter", "path": "scripts/smart-order-runtime/node-safe-broker-adapter.mjs", "sha256": "sha256:62027d41384f01346859bc366159f2c042dd239dfe06d48ad9fe37af664d10fd" },
+    { "id": "canonical_domain_tests", "path": "scripts/smart-order-runtime/canonical-strategy-draft.test.mjs", "sha256": "sha256:054c5d480e2574c0d3fc3143671da8fd13fef6261d86dc939524caedd690034e" },
+    { "id": "repository_integration_tests", "path": "scripts/smart-order-runtime/repository.test.mjs", "sha256": "sha256:817c2d1d9389af6026c5ef6fe3a6feff6a908dcb439e30847d808472c000917c" },
+    { "id": "controller_integration_tests", "path": "scripts/smart-order-runtime/runtime-controller.test.mjs", "sha256": "sha256:c6e17d129d1723cc6ad120dc1ac18d7709e151c7b9ceadca59bc858e8fa322d8" },
+    { "id": "broker_adapter_tests", "path": "scripts/smart-order-runtime/node-safe-broker-adapter.test.mjs", "sha256": "sha256:8a7845650211d2a90867da9b0fe1b51ebfddee767ffe3d4597c191fedc765bda" },
+    { "id": "gateway_integration_tests", "path": "scripts/smart-order-runtime/vite-same-origin-gateway.test.mjs", "sha256": "sha256:7b1dba9af9724392a12ca506e2fcda3d810ae5f057a685326a5ba1e79486721e" },
+    { "id": "dispatch_integration_tests", "path": "scripts/smart-order-runtime/broker-dispatch-coordinator.test.mjs", "sha256": "sha256:9a436d05f2c0135527a83755b9bdff371c70314c079bd18f74dcdc751a138fbd" }
+  ],
+  "strategies": [
+    { "id": "quick", "domainAcceptance": "passed", "adapterAcceptance": "passed", "productionWiring": "connected", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete"] },
+    { "id": "good_till", "domainAcceptance": "passed", "adapterAcceptance": "passed", "productionWiring": "connected", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete"] },
+    { "id": "multi_condition", "domainAcceptance": "passed", "adapterAcceptance": "passed", "productionWiring": "connected", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete"] },
+    { "id": "parent_child", "domainAcceptance": "passed", "adapterAcceptance": "passed", "productionWiring": "connected", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete"] },
+    { "id": "stop_take", "domainAcceptance": "passed", "adapterAcceptance": "passed", "productionWiring": "connected", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete"] },
+    { "id": "trailing_exit", "domainAcceptance": "passed", "adapterAcceptance": "passed", "productionWiring": "connected", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete"] },
+    { "id": "scheduled_quantity", "domainAcceptance": "passed", "adapterAcceptance": "fail_closed_passed", "productionWiring": "connected_fail_closed", "featureGateState": "disabled", "boundedQuoteSimulationE2E": "pending_market_reproducibility", "confirmedFillClaimed": false, "sourceIds": ["canonical_domain", "canonical_fixtures", "feature_gate", "repository_runtime", "controller_runtime", "broker_adapter", "canonical_domain_tests", "repository_integration_tests", "controller_integration_tests", "broker_adapter_tests", "gateway_integration_tests", "dispatch_integration_tests"], "blockers": ["bounded_quote_simulation_e2e_pending_market_reproducibility", "write_unlock_gates_incomplete", "scheduled_quantity_algorithm_unverified"] }
+  ],
+  "summary": {
+    "strategyCount": 7,
+    "domainAcceptancePassedCount": 7,
+    "adapterAcceptancePassedCount": 7,
+    "productionWiringConnectedCount": 7,
+    "enabledFeatureGateCount": 0,
+    "boundedQuoteSimulationE2ECompleteCount": 0,
+    "confirmedFillClaimCount": 0
+  }
+}

@@ -1,6 +1,6 @@
 // src/components/order-ticket.css.ts
 
-import { style, styleVariants } from '@vanilla-extract/css';
+import { globalStyle, style, styleVariants } from '@vanilla-extract/css';
 import { vars } from '../theme.css';
 
 export const body = style({
@@ -8,6 +8,10 @@ export const body = style({
     flexDirection: 'column',
     gap: vars.space.sm,
     padding: vars.space.md,
+    height: '100%',
+    minHeight: 0,
+    overflowY: 'auto',
+    boxSizing: 'border-box',
 });
 
 export const sideTabs = style({
@@ -179,6 +183,9 @@ const execBase = style({
     border: '1px solid',
     borderRadius: vars.radius.sm,
     transition: 'all 0.12s',
+    position: 'sticky',
+    bottom: 0,
+    zIndex: 2,
     ':disabled': { opacity: 0.35, cursor: 'not-allowed' },
 });
 
@@ -225,4 +232,126 @@ export const feedback = style({
     minHeight: '1.2em',
     whiteSpace: 'pre-wrap',
     wordBreak: 'break-all',
+});
+
+export const protectionSection = style({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: vars.space.xs,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    background: vars.color.inset,
+    padding: vars.space.sm,
+});
+
+export const protectionHeader = style({
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: vars.space.sm,
+});
+
+globalStyle(`${protectionHeader} > div`, {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    minWidth: 0,
+});
+
+globalStyle(`${protectionHeader} strong`, {
+    fontFamily: vars.font.display,
+    fontSize: '0.72rem',
+});
+
+globalStyle(`${protectionHeader} span`, {
+    fontFamily: vars.font.body,
+    fontSize: '0.6rem',
+    color: vars.color.mutedForeground,
+});
+
+export const protectionSettings = style({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: vars.space.xs,
+    maxHeight: '260px',
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    paddingRight: '2px',
+});
+
+export const protectionTabs = style({
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '2px',
+    position: 'sticky',
+    top: 0,
+    zIndex: 1,
+    background: vars.color.inset,
+});
+
+export const protectionPanel = style({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: vars.space.xs,
+});
+
+export const protectionField = style({
+    display: 'grid',
+    gridTemplateColumns: 'minmax(5rem, auto) minmax(0, 1fr)',
+    alignItems: 'center',
+    gap: '3px 6px',
+    fontFamily: vars.font.body,
+    fontSize: '0.65rem',
+});
+
+export const protectionCheckbox = style({
+    display: 'flex',
+    alignItems: 'center',
+    gap: vars.space.xs,
+    color: vars.color.mutedForeground,
+    fontFamily: vars.font.body,
+    fontSize: '0.62rem',
+});
+
+globalStyle(`${protectionField} input, ${protectionField} select`, {
+    minWidth: 0,
+    color: vars.color.foreground,
+    background: vars.color.panel,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    padding: '4px 6px',
+    fontFamily: vars.font.mono,
+});
+
+globalStyle(`${protectionField} small`, {
+    gridColumn: '2',
+    color: vars.color.mutedForeground,
+    fontSize: '0.58rem',
+});
+
+export const protectionPreview = style({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    padding: '6px',
+    borderRadius: vars.radius.sm,
+    background: vars.color.panel,
+    color: vars.color.mutedForeground,
+    fontFamily: vars.font.mono,
+    fontSize: '0.58rem',
+});
+
+export const protectionBlocked = style({
+    margin: 0,
+    color: vars.color.amber,
+    fontFamily: vars.font.body,
+    fontSize: '0.62rem',
+});
+
+export const protectionBoundary = style({
+    margin: 0,
+    color: vars.color.mutedForeground,
+    fontFamily: vars.font.body,
+    fontSize: '0.58rem',
+    lineHeight: 1.45,
 });
