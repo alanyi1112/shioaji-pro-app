@@ -346,6 +346,16 @@
   const requestCache = new Map();
   const requestInFlight = new Map();
   const MAX_CACHE_ENTRIES = 80;
+  const DAILY_CACHE_FRESHNESS_MS = 15 * 60 * 1000;
+  const TDCC_CACHE_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+  const requestMetrics = {
+    requested: 0,
+    cacheHit: 0,
+    inFlightJoin: 0,
+    usedAfterNavigation: 0,
+    evictedUnused: 0,
+    failed: 0,
+  };
 
   function safeNumber(value) {
     const number = Number(value);
@@ -728,6 +738,17 @@
     localStorage.setItem(selectionStorageKey(tabId, symbol), JSON.stringify(selection));
   }
 
+  function modeBSelectionDatasets(selection) {
+    const selected = migrateModeBSelectedPaneIds(selection);
+    const paneIds = paneIdsForGroupOrder(selection?.modeBGroupOrder, selected)
+      .filter((paneId) => selected.includes(paneId));
+    return [...new Set(paneIds.flatMap((paneId) => datasetsForDefinition(CHIP_PANE_REGISTRY.find((item) => item.id === paneId) || {})))];
+  }
+
+  function selectedDatasetsForContext(tabId, symbol) {
+    return modeBSelectionDatasets(readSelection(tabId, symbol));
+  }
+
   function rangeForCandles(candles) {
     const dates = (candles || []).map((row) => dateForChartTime(row.time)).filter(Boolean).sort();
     return { start: dates[0] || "", end: dates.at(-1) || "" };
@@ -739,11 +760,74 @@
     return `${String(symbol || "").toUpperCase()}|${interval || ""}|${range.start}|${range.end}|${sortedDatasets.join(",")}`;
   }
 
+  function chipCacheFreshnessMs(datasets = []) {
+    return datasets.length > 0 && datasets.every((dataset) => dataset === "shareholder-distribution")
+      ? TDCC_CACHE_FRESHNESS_MS
+      : DAILY_CACHE_FRESHNESS_MS;
+  }
+
+  function chipCacheEntryState(entry, datasets = [], nowMs = Date.now()) {
+    if (!entry) return { available: false, stale: true };
+    const cachedAt = Number(entry.cachedAt || 0);
+    return {
+      available: true,
+      stale: !Number.isFinite(cachedAt) || nowMs - cachedAt >= chipCacheFreshnessMs(datasets.length ? datasets : entry.datasets),
+    };
+  }
+
+  function markChipCacheUsed(key) {
+    const entry = requestCache.get(key);
+    if (!entry || !entry.prefetched || entry.usedAfterNavigation) return;
+    entry.usedAfterNavigation = true;
+    requestMetrics.usedAfterNavigation += 1;
+  }
+
+  function readCachedChipRequest(input, options = {}) {
+    const key = chipRequestKey(input);
+    const entry = requestCache.get(key);
+    if (!entry) return null;
+    requestMetrics.cacheHit += 1;
+    entry.lastAccessedAt = Number(options.nowMs || Date.now());
+    if (options.markUsed) markChipCacheUsed(key);
+    return {
+      key,
+      payload: structuredClone(entry.payload),
+      ...chipCacheEntryState(entry, input.datasets, entry.lastAccessedAt),
+    };
+  }
+
+  function writeCachedChipRequest(key, payload, options = {}) {
+    const previous = requestCache.get(key);
+    requestCache.delete(key);
+    requestCache.set(key, {
+      payload: structuredClone(payload),
+      datasets: [...new Set(options.datasets || [])].sort(),
+      cachedAt: Date.now(),
+      lastAccessedAt: Date.now(),
+      prefetched: Boolean(options.prefetch || previous?.prefetched),
+      usedAfterNavigation: Boolean(previous?.usedAfterNavigation),
+    });
+    while (requestCache.size > MAX_CACHE_ENTRIES) {
+      const oldestKey = requestCache.keys().next().value;
+      const oldest = requestCache.get(oldestKey);
+      if (oldest?.prefetched && !oldest.usedAfterNavigation) requestMetrics.evictedUnused += 1;
+      requestCache.delete(oldestKey);
+    }
+  }
+
+  function chipRequestMetrics() {
+    return {
+      ...requestMetrics,
+      cacheEntries: requestCache.size,
+      inFlightRequests: requestInFlight.size,
+    };
+  }
+
   function shouldReuseChipPayload({ force = false, payload, payloadRequestKey, requestKey }) {
     return !force && payload !== undefined && payloadRequestKey === requestKey;
   }
 
-  function shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles }) {
+  function shouldPreserveChipPayloadForEmptyContext({ sourceChanged, candles }) {
     return !sourceChanged && Array.isArray(candles) && candles.length === 0;
   }
 
@@ -821,32 +905,64 @@
     });
   }
 
-  async function sharedChipRequest({ symbol, interval, datasets, candles, signal }) {
+  async function sharedChipRequest({ symbol, interval, datasets, candles, signal, prefetch = false, forceRefresh = false, timeoutMs = 0 }) {
     const range = rangeForCandles(candles);
     const sortedDatasets = [...new Set(datasets)].sort();
     const key = chipRequestKey({ symbol, interval, datasets: sortedDatasets, candles });
     if (signal?.aborted) throw createAbortError();
-    if (requestCache.has(key)) return structuredClone(requestCache.get(key));
+    const cached = forceRefresh ? null : readCachedChipRequest({ symbol, interval, datasets: sortedDatasets, candles }, { markUsed: !prefetch });
+    if (cached && !cached.stale) return cached.payload;
     let request = requestInFlight.get(key);
     if (!request) {
       const params = new URLSearchParams({ symbol, interval, start: range.start, end: range.end, datasets: sortedDatasets.join(",") });
-      request = fetch(`/api/taiwan-stock-chip?${params}`)
+      const requestController = new AbortController();
+      requestMetrics.requested += 1;
+      const fetchRequest = fetch(`/api/taiwan-stock-chip?${params}`, { signal: requestController.signal })
         .then(async (response) => {
           const payload = await response.json();
           if (!response.ok) throw new Error(payload.error || "籌碼資料載入失敗");
-          requestCache.set(key, payload);
-          while (requestCache.size > MAX_CACHE_ENTRIES) requestCache.delete(requestCache.keys().next().value);
+          writeCachedChipRequest(key, payload, { datasets: sortedDatasets, prefetch });
           return payload;
+        });
+      let timeout = 0;
+      const boundedRequest = Number(timeoutMs) > 0
+        ? Promise.race([
+          fetchRequest,
+          new Promise((_, reject) => {
+            timeout = setTimeout(() => {
+              requestController.abort();
+              reject(new Error("籌碼資料預載逾時"));
+            }, Number(timeoutMs));
+          }),
+        ])
+        : fetchRequest;
+      request = boundedRequest
+        .catch((error) => {
+          requestMetrics.failed += 1;
+          throw error;
         })
-        .finally(() => requestInFlight.delete(key));
+        .finally(() => {
+          if (timeout) clearTimeout(timeout);
+          requestInFlight.delete(key);
+        });
       requestInFlight.set(key, request);
+    } else {
+      requestMetrics.inFlightJoin += 1;
     }
-    return structuredClone(await waitForSharedRequest(request, signal));
+    const result = structuredClone(await waitForSharedRequest(request, signal));
+    if (!prefetch) markChipCacheUsed(key);
+    return result;
   }
 
   function invalidateChipRequestCache(symbol) {
     const prefix = `${String(symbol || "").toUpperCase()}|`;
     for (const key of requestCache.keys()) if (key.startsWith(prefix)) requestCache.delete(key);
+  }
+
+  function resetChipRequestCacheForTest() {
+    requestCache.clear();
+    requestInFlight.clear();
+    Object.keys(requestMetrics).forEach((key) => { requestMetrics[key] = 0; });
   }
 
   function backfillCoverageState(payload) {
@@ -2895,17 +3011,33 @@
         options.stack.classList.toggle("chip-state-unavailable", Boolean(controllers.size));
         setNotice(controllers.size ? (context.interval !== "1d" ? "籌碼副圖只支援日 K" : "此商品沒有可載入的台股證券籌碼資料") : "");
         for (const controller of controllers.values()) controller.render({ rows: [], distributionRows: [], availability: {} }, context.candles);
+        if (context.candles.length) options.onPayloadRendered?.({ symbol: context.symbol, source: "unavailable", stale: false });
         return;
       }
       const requestKey = chipRequestKey({ ...context, datasets });
       if (shouldReuseChipPayload({ force, payload, payloadRequestKey, requestKey })) return;
+      const cached = force ? null : readCachedChipRequest({ ...context, datasets }, { markUsed: true });
+      if (cached) {
+        payload = cached.payload;
+        payloadRequestKey = requestKey;
+        payloadMaterialSignature = chipPayloadMaterialSignature(payload);
+        const cachedWarnings = warningMessages(payload.warnings);
+        if (!cachedWarnings.length) dismissedNoticeSignature = "";
+        setNotice(
+          cached.stale ? [...cachedWarnings, "籌碼資料背景更新中"] : cachedWarnings,
+          { dismissible: !cached.stale, signature: warningNoticeSignature(context, cachedWarnings) },
+        );
+        for (const controller of controllers.values()) controller.render(payload, context.candles, payloadMaterialSignature);
+        options.onPayloadRendered?.({ symbol: context.symbol, source: "cache", stale: cached.stale });
+        if (!cached.stale) return;
+      }
       const current = ++generation;
       abortController?.abort();
       abortController = new AbortController();
       options.stack.classList.remove("chip-state-unavailable");
-      setNotice("籌碼資料載入中");
+      if (!cached) setNotice("籌碼資料載入中");
       try {
-        const result = await sharedChipRequest({ ...context, datasets, signal: abortController.signal });
+        const result = await sharedChipRequest({ ...context, datasets, signal: abortController.signal, forceRefresh: Boolean(cached) });
         if (current !== generation) return;
         payload = result;
         payloadRequestKey = requestKey;
@@ -2914,6 +3046,7 @@
         if (!warningText.length) dismissedNoticeSignature = "";
         setNotice(warningText, { dismissible: true, signature: warningNoticeSignature(context, warningText) });
         for (const controller of controllers.values()) controller.render(payload, context.candles, payloadMaterialSignature);
+        options.onPayloadRendered?.({ symbol: context.symbol, source: "network", stale: false });
       } catch (error) {
         if (error?.name === "AbortError" || current !== generation) return;
         setNotice(`籌碼資料暫時不可用：${error?.message || "請稍後重試"}`);
@@ -2958,7 +3091,7 @@
         const incomingContext = { ...context, ...next };
         const sourceChanged = context.symbol !== incomingContext.symbol || context.interval !== incomingContext.interval;
         const identityChanged = context.symbol !== incomingContext.symbol || context.tabId !== incomingContext.tabId;
-        const preserveEmptyContext = shouldPreserveChipPayloadForEmptyContext({ identityChanged, sourceChanged, candles: incomingContext.candles });
+        const preserveEmptyContext = shouldPreserveChipPayloadForEmptyContext({ sourceChanged, candles: incomingContext.candles });
         const nextContext = preserveEmptyContext ? { ...incomingContext, candles: context.candles } : incomingContext;
         const previousRange = rangeForCandles(context.candles);
         const nextRange = rangeForCandles(nextContext.candles);
@@ -3054,6 +3187,10 @@
     createChipPaneManager,
     isEligibleContext,
     requestData: sharedChipRequest,
+    requestKey: chipRequestKey,
+    rangeForCandles,
+    selectedDatasetsForContext,
+    cacheMetrics: chipRequestMetrics,
     __test: {
       backfillMenuState,
       backfillCoverageState,
@@ -3068,6 +3205,12 @@
       chipReadoutContentSignature,
       createChipRenderGate,
       shouldPreserveChipPayloadForEmptyContext,
+      chipCacheEntryState,
+      chipCacheFreshnessMs,
+      modeBSelectionDatasets,
+      migrateModeBSelectedPaneIds,
+      readCachedChipRequest,
+      resetChipRequestCacheForTest,
       shouldReuseChipPayload,
       invalidateChipRequestCache,
       movePaneInOrder,

@@ -30,19 +30,19 @@ test("data-only export 只接受固定 table allowlist", () => {
   assert.equal(TABLE_ALLOWLIST.length, 12);
 });
 
-test("staging 套用 22 個 migration 並拒絕 schema drift", () => {
+test("staging 套用 23 個 migration 並拒絕 schema drift", () => {
   const directory = workspace();
   const liveDbPath = resolve(directory, "live.sqlite");
   const stagingDbPath = resolve(directory, "staging.sqlite");
   const exportPath = resolve(directory, "export.sql");
-  assert.equal(applyMigrations(liveDbPath), 22);
+  assert.equal(applyMigrations(liveDbPath), 23);
   writeFileSync(exportPath, [
     "BEGIN TRANSACTION;",
     "INSERT INTO instrument_catalog (symbol,exchange,localized_name,english_name,aliases_json,normalized_search,market,group_name,quote_type,provider,source,active,source_updated_at,updated_at) VALUES ('TEST.TW','TWSE','測試','Test','[]','test','台股','測試','','yfinance','test',1,'2026-08-06','2026-08-06');",
     "COMMIT;",
   ].join("\n"), { mode: 0o600 });
   const result = stageExport({ exportPath, stagingDbPath, liveDbPath });
-  assert.equal(result.migrationCount, 22);
+  assert.equal(result.migrationCount, 23);
   assert.equal(result.integrity, "ok");
   assert.equal(result.tables.instrument_catalog.rowCount, 1);
   assert.doesNotThrow(() => assertAllowlistSchema(stagingDbPath, liveDbPath));

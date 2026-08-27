@@ -5,9 +5,32 @@ import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8");
 const window = { QuoteChartInteractions: {} };
-vm.runInNewContext(source, { window, structuredClone, URLSearchParams, Intl, DOMException, Map, Set });
+let fetchImpl = async () => Response.json({ rows: [], distributionRows: [], availability: {} });
+const localStorageData = new Map();
+const localStorage = {
+  getItem(key) { return localStorageData.get(key) ?? null; },
+  setItem(key, value) { localStorageData.set(key, String(value)); },
+  removeItem(key) { localStorageData.delete(key); },
+};
+vm.runInNewContext(source, {
+  window,
+  structuredClone,
+  URLSearchParams,
+  Intl,
+  DOMException,
+  Map,
+  Set,
+  Date,
+  AbortController,
+  setTimeout,
+  clearTimeout,
+  localStorage,
+  fetch: (...args) => fetchImpl(...args),
+});
 const {
   availabilityLabel,
+  requestData,
+  cacheMetrics,
   __test: {
     backfillCoverageState,
     backfillMenuState,
@@ -26,6 +49,11 @@ const {
     warningNoticeSignature,
     shouldPreserveChipPayloadForEmptyContext,
     shouldReuseChipPayload,
+    chipCacheEntryState,
+    chipCacheFreshnessMs,
+    modeBSelectionDatasets,
+    migrateModeBSelectedPaneIds,
+    resetChipRequestCacheForTest,
   },
 } = window.QuoteChartChipPanes;
 
@@ -43,6 +71,67 @@ test("籌碼 request identity 正規化商品、日期範圍與 dataset 順序",
     chipRequestKey({ ...input, datasets: ["shareholder-distribution", "margin-short", "shareholder-distribution"] }),
     "2330.TW|1d|2026-07-02|2026-07-09|margin-short,shareholder-distribution",
   );
+});
+
+test("mode B selection migration 與 dataset 合併不逐 pane 重複", () => {
+  const migrated = migrateModeBSelectedPaneIds({
+    defaultsVersion: 0,
+    modeBSelectedPaneIds: ["margin", "short", "big-holder", "retail-holder"],
+  });
+  assert.equal(migrated.includes("estimated-margin-maintenance"), true);
+  assert.deepEqual(
+    [...modeBSelectionDatasets({
+      defaultsVersion: 0,
+      modeBSelectedPaneIds: ["margin", "short", "big-holder", "retail-holder"],
+      modeBGroupOrder: ["margin-financing", "shareholders"],
+    })].sort(),
+    ["margin-short", "shareholder-distribution"],
+  );
+});
+
+test("背景預載、in-flight join 與前景 cache 使用共用同一 request", async () => {
+  resetChipRequestCacheForTest();
+  let fetchCalls = 0;
+  let release;
+  fetchImpl = async () => {
+    fetchCalls += 1;
+    return new Promise((resolve) => { release = () => resolve(Response.json({ rows: [{ sessionDate: "2026-08-25" }], distributionRows: [], availability: {} })); });
+  };
+  const input = {
+    symbol: "2330.TW",
+    interval: "1d",
+    datasets: ["margin-short", "shareholder-distribution"],
+    candles: [{ time: "2026-08-01" }, { time: "2026-08-25" }],
+  };
+  const first = requestData({ ...input, prefetch: true });
+  const joined = requestData({ ...input, prefetch: true });
+  await Promise.resolve();
+  assert.equal(fetchCalls, 1);
+  release();
+  await Promise.all([first, joined]);
+  const foreground = await requestData(input);
+  assert.equal(foreground.rows.length, 1);
+  assert.equal(fetchCalls, 1);
+  const metrics = cacheMetrics();
+  assert.equal(metrics.requested, 1);
+  assert.equal(metrics.inFlightJoin, 1);
+  assert.equal(metrics.cacheHit, 1);
+  assert.equal(metrics.usedAfterNavigation, 1);
+});
+
+test("日籌碼與 TDCC cache 使用不同 freshness 並可判定 stale", () => {
+  const dailyFreshness = chipCacheFreshnessMs(["margin-short"]);
+  const tdccFreshness = chipCacheFreshnessMs(["shareholder-distribution"]);
+  assert.ok(tdccFreshness > dailyFreshness);
+  assert.equal(chipCacheEntryState({ cachedAt: 1000, datasets: ["margin-short"] }, ["margin-short"], 1000 + dailyFreshness - 1).stale, false);
+  assert.equal(chipCacheEntryState({ cachedAt: 1000, datasets: ["margin-short"] }, ["margin-short"], 1000 + dailyFreshness).stale, true);
+  assert.equal(chipCacheEntryState({ cachedAt: 1000, datasets: ["shareholder-distribution"] }, ["shareholder-distribution"], 1000 + dailyFreshness).stale, false);
+});
+
+test("SWR foreground 只在沒有最後 payload 時才以空資料清除 pane", () => {
+  assert.match(source, /const cached = force \? null : readCachedChipRequest/);
+  assert.match(source, /options\.onPayloadRendered\?\.\(\{ symbol: context\.symbol, source: "cache", stale: cached\.stale \}\)/);
+  assert.match(source, /if \(payload === undefined\) \{[\s\S]*rows: \[\], distributionRows: \[\]/);
 });
 
 test("同 context 空 candles 與相同 request identity 保留既有籌碼 payload", () => {

@@ -78,6 +78,7 @@ const PREFETCH_ADJACENT_PAGE_DELAY_MS = 1200;
 const PREFETCH_NEIGHBOR_TAB_FIRST_PAGE_DELAY_MS = 4500;
 const MAX_PANEL_PREFETCH_CONCURRENCY = 2;
 const MAX_LOW_PRIORITY_PANEL_PREFETCH_CONCURRENCY = 1;
+const MAX_CHIP_PREFETCH_CONCURRENCY = 1;
 const SINGLE_CHART_OPEN_STREAM_RESUME_DELAY_MS = 3000;
 const PANEL_CANDLE_LOAD_TIMEOUT_MS = 30000;
 const PANEL_PREFETCH_TIMEOUT_MS = 18000;
@@ -246,6 +247,12 @@ const state = {
   panelLowPriorityPrefetchInFlight: new Set(),
   panelLowPriorityPrefetchActiveCount: 0,
   panelLowPriorityPrefetchTimer: 0,
+  chipPrefetchQueue: [],
+  chipPrefetchQueuedKeys: new Set(),
+  chipPrefetchInFlight: new Set(),
+  chipPrefetchActiveCount: 0,
+  panelPrefetchContextKey: "",
+  panelNavigationTiming: undefined,
   singleChartRequest: undefined,
   singleChartView: undefined,
   chartPresentationMode: CHART_PRESENTATION_MODES.single,
@@ -300,6 +307,7 @@ async function init() {
   countSelect.value = state.singleChartRequest ? "1" : CHART_COUNTS.includes(saved) ? String(saved) : "4";
   countSelect.addEventListener("change", () => {
     const nextCount = Number(countSelect.value);
+    cancelPanelPayloadPrefetch();
     if (nextCount > 1) leaveSingleChartViewForGrid(nextCount);
     if (!state.singleChartView) localStorage.setItem("chartCount", countSelect.value);
     updateChipModeControl();
@@ -311,8 +319,10 @@ async function init() {
     if (!nextMode) return;
     state.chartPresentationMode = nextMode;
     writeChartPresentationMode(localStorage, nextMode);
+    cancelPanelPayloadPrefetch();
     updateChipModeControl();
     state.panels.forEach((panel) => panel.refreshChipMode?.());
+    scheduleAdjacentPagePrefetch();
   });
   if (sourceModeSelect) {
     sourceModeSelect.value = state.sourceMode;
@@ -2593,6 +2603,7 @@ function handlePanelReorderKeydown(event, panel) {
 }
 
 function quoteChartDebugMatrix() {
+  const navigation = state.panelNavigationTiming;
   return {
     marketTabs: state.marketTabs.map((tab) => tab.label),
     chartCounts: [...CHART_COUNTS],
@@ -2613,8 +2624,63 @@ function quoteChartDebugMatrix() {
       foregroundRequestCount: state.foregroundPanelRequests,
       prefetchActiveCount: state.panelPrefetchActiveCount + state.panelLowPriorityPrefetchActiveCount,
     },
+    chipPrefetch: {
+      activeCount: state.chipPrefetchActiveCount,
+      queueDepth: state.chipPrefetchQueue.length,
+      ...(window.QuoteChartChipPanes?.cacheMetrics?.() || {}),
+      navigationTiming: navigation ? {
+        expectedKlinePanels: navigation.expectedKlineSymbols.size,
+        paintedKlinePanels: navigation.klineSymbols.size,
+        expectedChipPanels: navigation.expectedChipSymbols.size,
+        paintedChipPanels: navigation.chipSymbols.size,
+        klineAllPaintMs: navigation.klineAllPaintMs,
+        chipAllPaintMs: navigation.chipAllPaintMs,
+      } : null,
+    },
     realtimeConnectionCount: realtimeCoordinator.connectionCount(),
   };
+}
+
+function startPanelNavigationTiming(symbols) {
+  const canonicalSymbols = [...new Set((symbols || []).map(canonicalSymbol).filter(Boolean))];
+  const tabId = tabIdentity(activeMarketTab());
+  const expectedChipSymbols = effectiveChartPresentationMode() === CHART_PRESENTATION_MODES.multi
+    ? canonicalSymbols.filter((symbol) => (window.QuoteChartChipPanes?.selectedDatasetsForContext?.(tabId, symbol) || []).length > 0)
+    : [];
+  state.panelNavigationTiming = {
+    startedAt: Date.now(),
+    expectedKlineSymbols: new Set(canonicalSymbols),
+    expectedChipSymbols: new Set(expectedChipSymbols),
+    klineSymbols: new Set(),
+    chipSymbols: new Set(),
+    klineAllPaintMs: canonicalSymbols.length ? null : 0,
+    chipAllPaintMs: expectedChipSymbols.length ? null : 0,
+  };
+}
+
+function recordPanelNavigationPaint(kind, symbol) {
+  const navigation = state.panelNavigationTiming;
+  if (!navigation) return;
+  const canonical = canonicalSymbol(symbol);
+  const expected = kind === "chip" ? navigation.expectedChipSymbols : navigation.expectedKlineSymbols;
+  if (!expected.has(canonical)) return;
+  const painted = kind === "chip" ? navigation.chipSymbols : navigation.klineSymbols;
+  painted.add(canonical);
+  const timingKey = kind === "chip" ? "chipAllPaintMs" : "klineAllPaintMs";
+  if (navigation[timingKey] === null && painted.size >= expected.size) {
+    navigation[timingKey] = Math.max(0, Date.now() - navigation.startedAt);
+  }
+}
+
+function recordPanelNavigationChipUnavailable(symbol) {
+  const navigation = state.panelNavigationTiming;
+  if (!navigation) return;
+  const canonical = canonicalSymbol(symbol);
+  if (!navigation.expectedChipSymbols.delete(canonical)) return;
+  navigation.chipSymbols.delete(canonical);
+  if (navigation.chipAllPaintMs === null && navigation.chipSymbols.size >= navigation.expectedChipSymbols.size) {
+    navigation.chipAllPaintMs = Math.max(0, Date.now() - navigation.startedAt);
+  }
 }
 
 function exposeQuoteChartDebug() {
@@ -2809,9 +2875,19 @@ function cancelPanelPayloadPrefetch() {
   state.panelLowPriorityPrefetchQueuedKeys.clear();
   state.panelLowPriorityPrefetchInFlight.clear();
   state.panelLowPriorityPrefetchActiveCount = 0;
+  state.chipPrefetchQueue = [];
+  state.chipPrefetchQueuedKeys.clear();
+  state.chipPrefetchInFlight.clear();
+  state.chipPrefetchActiveCount = 0;
+  state.panelPrefetchContextKey = "";
 }
 
 function scheduleAdjacentPagePrefetch() {
+  const contextKey = currentPanelPrefetchContextKey();
+  if (state.panelPrefetchContextKey && state.panelPrefetchContextKey !== contextKey) {
+    cancelPanelPayloadPrefetch();
+  }
+  state.panelPrefetchContextKey = contextKey;
   if (state.panelPrefetchTimer) clearTimeout(state.panelPrefetchTimer);
   const generation = state.panelPrefetchGeneration;
   state.panelPrefetchTimer = window.setTimeout(() => {
@@ -2827,15 +2903,28 @@ function adjacentCategoryPrefetchSymbols() {
   if (current.pageCount <= 1) return [];
   const symbols = symbolsForActiveTab().map((item) => item.symbol);
   const interval = currentPanelPrefetchInterval();
+  const tabId = tabIdentity(activeMarketTab());
   const candidates = [];
   [current.pageIndex + 1, current.pageIndex - 1].forEach((pageIndex) => {
     if (pageIndex < 0 || pageIndex >= current.pageCount) return;
     const page = categoryPaginationState(symbols, currentChartCount(), pageIndex);
     page.visibleSymbols.forEach((symbol) => {
-      candidates.push({ symbol, interval });
+      candidates.push({ symbol, interval, tabId, prefetchChip: pageIndex === current.pageIndex + 1 });
     });
   });
   return candidates;
+}
+
+function currentPanelPrefetchContextKey() {
+  const page = activeCategoryPaginationState();
+  return [
+    tabIdentity(activeMarketTab()),
+    page.pageIndex,
+    currentChartCount(),
+    effectiveChartPresentationMode(),
+    currentPanelPrefetchInterval(),
+    page.visibleSymbols.join(","),
+  ].join("|");
 }
 
 function scheduleNeighborTabFirstPagePrefetch() {
@@ -2873,7 +2962,10 @@ function currentPanelPrefetchInterval() {
 function queuePanelPayloadPrefetch(jobs) {
   jobs.forEach((job) => {
     const key = panelPayloadCacheKey(job.symbol, job.interval);
-    if (hasPanelPayloadCache(job.symbol, job.interval)) return;
+    if (hasPanelPayloadCache(job.symbol, job.interval)) {
+      queueChipPayloadPrefetchFromPanel(job, readPanelPayloadCache(job.symbol, job.interval));
+      return;
+    }
     if (state.panelPrefetchInFlight.has(key)) return;
     if (state.panelPrefetchQueuedKeys.has(key)) return;
     state.panelPrefetchQueue.push({ ...job, key });
@@ -2889,7 +2981,10 @@ function drainPanelPayloadPrefetchQueue() {
   ) {
     const job = state.panelPrefetchQueue.shift();
     state.panelPrefetchQueuedKeys.delete(job.key);
-    if (hasPanelPayloadCache(job.symbol, job.interval)) continue;
+    if (hasPanelPayloadCache(job.symbol, job.interval)) {
+      queueChipPayloadPrefetchFromPanel(job, readPanelPayloadCache(job.symbol, job.interval));
+      continue;
+    }
     state.panelPrefetchActiveCount += 1;
     state.panelPrefetchInFlight.add(job.key);
     const generation = state.panelPrefetchGeneration;
@@ -2945,8 +3040,88 @@ async function prefetchPanelPayload(job, generation) {
     if (generation !== state.panelPrefetchGeneration) return;
     if (!response.ok || payload.error) return;
     writePanelPayloadCache(job.symbol, job.interval, payload);
+    queueChipPayloadPrefetchFromPanel(job, payload);
   } catch {
     // Background prefetch is best-effort and must not disturb the current page.
+  }
+}
+
+function shouldPrefetchAdjacentChipPayload(input) {
+  input = input || {};
+  const chartCount = Number(input.chartCount);
+  const effectiveType = String(input.effectiveType || "").toLowerCase();
+  return input.presentationMode === "multi"
+    && [1, 2, 3, 4].includes(chartCount)
+    && input.interval === "1d"
+    && /\.TW(O)?$/i.test(String(input.symbol || ""))
+    && input.visibilityState !== "hidden"
+    && input.saveData !== true
+    && !["slow-2g", "2g"].includes(effectiveType);
+}
+
+function queueChipPayloadPrefetchFromPanel(job, panelPayload) {
+  if (!job?.prefetchChip) return;
+  const chip = window.QuoteChartChipPanes;
+  const candles = Array.isArray(panelPayload?.candles) ? panelPayload.candles : [];
+  const range = chip?.rangeForCandles?.(candles) || {};
+  const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (!range.start || !range.end || !shouldPrefetchAdjacentChipPayload({
+    presentationMode: effectiveChartPresentationMode(job.symbol),
+    chartCount: currentChartCount(),
+    interval: job.interval,
+    symbol: job.symbol,
+    visibilityState: document.visibilityState,
+    saveData: connection?.saveData,
+    effectiveType: connection?.effectiveType,
+  })) return;
+  const datasets = chip?.selectedDatasetsForContext?.(job.tabId, job.symbol) || [];
+  if (!datasets.length) return;
+  const key = chip.requestKey?.({ symbol: job.symbol, interval: job.interval, datasets, candles });
+  if (!key || state.chipPrefetchQueuedKeys.has(key) || state.chipPrefetchInFlight.has(key)) return;
+  state.chipPrefetchQueue.push({ symbol: job.symbol, interval: job.interval, datasets, candles, key, generation: state.panelPrefetchGeneration });
+  state.chipPrefetchQueuedKeys.add(key);
+  drainChipPayloadPrefetchQueue();
+}
+
+function drainChipPayloadPrefetchQueue() {
+  while (state.chipPrefetchActiveCount < MAX_CHIP_PREFETCH_CONCURRENCY && state.chipPrefetchQueue.length > 0) {
+    const job = state.chipPrefetchQueue.shift();
+    state.chipPrefetchQueuedKeys.delete(job.key);
+    if (job.generation !== state.panelPrefetchGeneration) continue;
+    const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!shouldPrefetchAdjacentChipPayload({
+      presentationMode: effectiveChartPresentationMode(job.symbol),
+      chartCount: currentChartCount(),
+      interval: job.interval,
+      symbol: job.symbol,
+      visibilityState: document.visibilityState,
+      saveData: connection?.saveData,
+      effectiveType: connection?.effectiveType,
+    })) continue;
+    state.chipPrefetchActiveCount += 1;
+    state.chipPrefetchInFlight.add(job.key);
+    const generation = job.generation;
+    prefetchChipPayload(job).finally(() => {
+      if (generation !== state.panelPrefetchGeneration) return;
+      state.chipPrefetchActiveCount = Math.max(0, state.chipPrefetchActiveCount - 1);
+      state.chipPrefetchInFlight.delete(job.key);
+      drainChipPayloadPrefetchQueue();
+    });
+  }
+}
+
+async function prefetchChipPayload(job) {
+  try {
+    await window.QuoteChartChipPanes?.requestData?.({
+      symbol: job.symbol,
+      interval: job.interval,
+      datasets: job.datasets,
+      candles: job.candles,
+      prefetch: true,
+      timeoutMs: PANEL_PREFETCH_TIMEOUT_MS,
+    });
+  } catch {
+    // Offscreen chip prefetch is best-effort and never owns visible UI state.
   }
 }
 
@@ -3397,6 +3572,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     notice: chipPaneNotice,
     emptyStatus: chipPaneEmpty,
     noticeClose: chipPaneNoticeClose,
+    onPayloadRendered: ({ symbol: renderedSymbol } = {}) => recordPanelNavigationPaint("chip", renderedSymbol),
     inputs: chipIndicatorInputs,
     groupInputs: chipGroupInputs,
     getAxisSafeWidth: () => getAxisSafeWidth(),
@@ -4543,6 +4719,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (shioajiOnlyDisplay && latestRealtimeSnapshot) {
         applyRealtimeState({ state: realtimeDisplayState });
       }
+      recordPanelNavigationPaint("kline", symbol);
       scheduleAdjacentPagePrefetch();
     } catch (error) {
       if (destroyed || currentLoadToken !== loadToken) return;
@@ -4745,6 +4922,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       applyPayloadStep("viewport", () => refitTimeScalesToCandles(candles));
     }
     chipPaneManager?.setContext({ symbol: symbolSelect.value, interval: intervalSelect.value, tabId: state.activeMarketTabId, candles });
+    const chipPaneReport = chipPaneManager?.report?.();
+    if (!candles.length || !chipPaneReport?.controllerCount) recordPanelNavigationChipUnavailable(symbolSelect.value);
     renderEstimatedMarginCost(candles, selectedMain.has("estimatedMarginCost"));
     const nextPayloadRenderSignature = window.QuoteChartPayload.renderSignature(payload);
     if (nextPayloadRenderSignature !== lastPayloadRenderSignature) crosshairPayloadRevision += 1;
@@ -9195,6 +9374,14 @@ function categoryPaginationState(symbols, chartCount, pageIndex = 0) {
   };
 }
 
+// Kept pure for source-extracted pagination contract tests.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function nextCategoryPrefetchSymbols(symbols, chartCount, pageIndex = 0) {
+  const current = categoryPaginationState(symbols, chartCount, pageIndex);
+  if (current.pageIndex >= current.pageCount - 1) return [];
+  return categoryPaginationState(symbols, chartCount, current.pageIndex + 1).visibleSymbols;
+}
+
 function activeCategoryPaginationState() {
   const tab = activeMarketTab();
   const tabId = tabIdentity(tab);
@@ -9220,6 +9407,8 @@ function setCategoryPage(direction) {
     : Number(direction) || 0;
   const next = categoryPaginationState(symbolsForActiveTab().map((item) => item.symbol), currentChartCount(), nextIndex);
   if (next.pageIndex === current.pageIndex) return;
+  cancelPanelPayloadPrefetch();
+  startPanelNavigationTiming(next.visibleSymbols);
   state.categoryPageByTabId[tabId] = next.pageIndex;
   renderCategoryPagination();
   renderPanels(currentChartCount());
