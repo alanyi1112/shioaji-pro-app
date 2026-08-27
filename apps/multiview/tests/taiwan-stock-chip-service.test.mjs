@@ -627,6 +627,76 @@ test("D1 過期資料在上游失敗時回 stale_cache，negative cache 阻止�
   assert.equal(failedCalls, 2);
 });
 
+test("TDCC HTTP 200 空快照不會讓 D1 已驗證持股資料與 coverage 退化", async () => {
+  const db = new ChipFakeD1();
+  const saved = parseTdccSnapshot(tdccFixture, new Set(["2330.TW"]))[0];
+  db.distribution.set(`2330.TW|${saved.dataDate}`, {
+    symbol: saved.symbol,
+    data_date: saved.dataDate,
+    levels_json: JSON.stringify(saved.levels),
+    adjustment_json: JSON.stringify(saved.adjustment),
+    total_json: JSON.stringify(saved.total),
+    provider: saved.provenance.provider,
+    frequency: saved.provenance.frequency,
+    source_fetched_at: saved.provenance.fetchedAt,
+  });
+  db.states.set("__MARKET__:tdcc-1-5-v3|shareholder-distribution", {
+    status: "available",
+    coverage_start: saved.dataDate,
+    coverage_end: saved.dataDate,
+    source_date: saved.dataDate,
+    reason_code: "available",
+    last_success_at: "2026-01-01T00:00:00.000Z",
+  });
+  const result = await taiwanStockChipPayload({
+    url: new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-07-01&end=2026-07-10&datasets=shareholder-distribution"),
+    env: { DB: db },
+    eligibility: eligible,
+    fetchImpl: async () => Response.json([]),
+    now: "2026-07-10T12:00:00+08:00",
+  });
+  assert.deepEqual(result.body.distributionRows.map((row) => row.dataDate), [saved.dataDate]);
+  assert.deepEqual(result.body.availability["shareholder-distribution"], { status: "partial", reason: "stale_cache", rowCount: 1 });
+  assert.equal(result.body.coverage[0].end, saved.dataDate);
+  assert.equal(db.distribution.size, 1);
+  assert.ok(result.body.warnings.some((warning) => /保留資料庫最後已驗證資料/.test(warning)));
+});
+
+test("官方最新資料成功補尾時不因 D1 同時保留歷史而誤標 stale_cache", async () => {
+  const db = new ChipFakeD1();
+  const previousDate = "2026-08-04";
+  const today = "2026-08-05";
+  db.daily.set(`2330.TW|${previousDate}`, {
+    symbol: "2330.TW", session_date: previousDate, exchange: "TWSE",
+    margin_short_json: JSON.stringify({ marginTodayBalanceLots: 1030, shortTodayBalanceLots: 12 }),
+    provenance_json: JSON.stringify({
+      "margin-short": { provider: "finmind", dataset: "margin-short", frequency: "daily", sourceDate: previousDate, fetchedAt: "2026-08-04T08:00:00.000Z" },
+    }),
+  });
+  db.states.set("2330.TW|margin-short", {
+    status: "available", coverage_start: previousDate, coverage_end: previousDate, source_date: previousDate,
+    reason_code: "available", last_success_at: "2026-01-01T00:00:00.000Z",
+  });
+  const fields = ["代號", "名稱", "買進", "賣出", "現金償還", "前日餘額", "今日餘額", "次一營業日限額", "買進", "賣出", "現券償還", "前日餘額", "今日餘額", "次一營業日限額", "資券互抵", "註記"];
+  const groups = [{ title: "股票", span: 2 }, { title: "融資", span: 6 }, { title: "融券", span: 6 }, { title: "", span: 1 }, { title: "", span: 1 }];
+  const fetchImpl = async (input) => {
+    const target = new URL(String(input));
+    if (target.hostname === "api.finmindtrade.com") throw new Error("temporary");
+    if (target.hostname === "www.twse.com.tw") return Response.json({
+      stat: "OK", date: "20260805", tables: [{ fields, groups, data: [["2330", "台積電", "20", "10", "0", "1,030", "1,040", "2,000", "2", "1", "0", "12", "13", "100", "1", ""]] }],
+    });
+    throw new Error(`unexpected ${target}`);
+  };
+  const result = await taiwanStockChipPayload({
+    url: new URL(`http://local/api/taiwan-stock-chip?symbol=2330.TW&start=${previousDate}&end=${today}&datasets=margin-short`),
+    env: { DB: db }, eligibility: eligible, fetchImpl, now: `${today}T14:00:00+08:00`,
+  });
+  assert.deepEqual(result.body.rows.map((row) => row.sessionDate), [previousDate, today]);
+  assert.deepEqual(result.body.availability["margin-short"], { status: "available", reason: "available", rowCount: 2 });
+  assert.equal(result.body.coverage[0].end, today);
+  assert.equal(result.body.warnings.some((warning) => /保留資料庫最後已驗證資料/.test(warning)), false);
+});
+
 test("不同 symbol 或 range 不共用 FinMind single-flight", async () => {
   const calls = [];
   const fetchImpl = async (input) => {

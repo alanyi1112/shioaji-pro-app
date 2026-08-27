@@ -345,9 +345,26 @@
   };
   const requestCache = new Map();
   const requestInFlight = new Map();
+  const verifiedSliceStore = new Map();
   const MAX_CACHE_ENTRIES = 80;
+  const MAX_VERIFIED_SLICE_ENTRIES = 320;
+  const VERIFIED_SLICE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const DAILY_CACHE_FRESHNESS_MS = 15 * 60 * 1000;
   const TDCC_CACHE_FRESHNESS_MS = 6 * 60 * 60 * 1000;
+  const CHIP_DATASET_FIELDS = Object.freeze({
+    "institutional-flow": "institutionalFlow",
+    "foreign-holding": "foreignHolding",
+    "margin-short": "marginShort",
+    "securities-lending": "securitiesLending",
+  });
+  const CHIP_DATASETS = Object.freeze([...Object.keys(CHIP_DATASET_FIELDS), "shareholder-distribution"]);
+  const CHIP_DATASET_LABELS = Object.freeze({
+    "institutional-flow": "三大法人買賣超",
+    "foreign-holding": "外資及陸資持股",
+    "margin-short": "融資融券",
+    "securities-lending": "借券成交",
+    "shareholder-distribution": "股權分散",
+  });
   const requestMetrics = {
     requested: 0,
     cacheHit: 0,
@@ -355,6 +372,9 @@
     usedAfterNavigation: 0,
     evictedUnused: 0,
     failed: 0,
+    reconciled: 0,
+    retainedDatasets: 0,
+    verifiedEvicted: 0,
   };
 
   function safeNumber(value) {
@@ -377,6 +397,366 @@
       if (ratio !== null) previousRatio = ratio;
       return { sessionDate: row.sessionDate, ratio, change };
     });
+  }
+
+  function chipDatasetDate(row, dataset) {
+    return String(dataset === "shareholder-distribution" ? row?.dataDate || "" : row?.sessionDate || "");
+  }
+
+  function dateInRange(date, range = {}) {
+    return Boolean(date) && (!range.start || date >= range.start) && (!range.end || date <= range.end);
+  }
+
+  function hasFiniteNumber(value) {
+    if (typeof value === "number") return Number.isFinite(value);
+    if (Array.isArray(value)) return value.some(hasFiniteNumber);
+    if (!value || typeof value !== "object") return false;
+    return Object.values(value).some(hasFiniteNumber);
+  }
+
+  function knownLeafPaths(value, prefix = "", output = new Set()) {
+    if (value === null || value === undefined) return output;
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => knownLeafPaths(item, `${prefix}[${index}]`, output));
+      return output;
+    }
+    if (typeof value !== "object") {
+      output.add(prefix);
+      return output;
+    }
+    for (const [key, nested] of Object.entries(value)) knownLeafPaths(nested, prefix ? `${prefix}.${key}` : key, output);
+    return output;
+  }
+
+  function normalizedChipSymbol(value) {
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function assertChipPayloadIdentity(payload, symbol, interval) {
+    const expectedSymbol = normalizedChipSymbol(symbol);
+    const expectedInterval = String(interval || "");
+    if (!payload || typeof payload !== "object"
+      || normalizedChipSymbol(payload.symbol) !== expectedSymbol
+      || String(payload.interval || "") !== expectedInterval) throw new Error("籌碼資料 identity 不一致");
+    const rows = [...(Array.isArray(payload.rows) ? payload.rows : []), ...(Array.isArray(payload.distributionRows) ? payload.distributionRows : [])];
+    if (rows.some((row) => normalizedChipSymbol(row?.symbol) !== expectedSymbol)) throw new Error("籌碼資料 identity 不一致");
+  }
+
+  function validDailyDatasetRow(row, dataset) {
+    const field = CHIP_DATASET_FIELDS[dataset];
+    const date = chipDatasetDate(row, dataset);
+    const provenance = row?.provenance?.[dataset];
+    return Boolean(field
+      && /^\d{4}-\d{2}-\d{2}$/.test(date)
+      && row?.[field]
+      && typeof row[field] === "object"
+      && hasFiniteNumber(row[field])
+      && provenance
+      && provenance.dataset === dataset
+      && provenance.sourceDate === date
+      && provenance.provider);
+  }
+
+  function validDistributionDatasetRow(row) {
+    const date = chipDatasetDate(row, "shareholder-distribution");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Array.isArray(row?.levels) || row.levels.length !== 15) return false;
+    const provenance = row?.provenance;
+    if (!provenance || provenance.dataset !== "shareholder-distribution" || provenance.sourceDate !== date || !provenance.provider) return false;
+    const levels = new Map();
+    for (const item of row.levels) {
+      const level = Number(item?.level);
+      if (!Number.isInteger(level) || level < 1 || level > 15 || levels.has(level)
+        || [item?.holders, item?.shares, item?.ratioPercent].some((value) => safeNumber(value) === null)) return false;
+      levels.set(level, item);
+    }
+    if ([...Array(15)].some((_, index) => !levels.has(index + 1))) return false;
+    const adjustment = row?.adjustment;
+    const total = row?.total;
+    if (Number(adjustment?.level) !== 16 || Number(total?.level) !== 17
+      || [adjustment?.holders, adjustment?.shares, adjustment?.ratioPercent, total?.holders, total?.shares, total?.ratioPercent]
+        .some((value) => safeNumber(value) === null)) return false;
+    const items = [...levels.values()];
+    const holders = items.reduce((sum, item) => sum + safeNumber(item.holders), 0);
+    const shares = items.reduce((sum, item) => sum + safeNumber(item.shares), 0);
+    const ratio = items.reduce((sum, item) => sum + safeNumber(item.ratioPercent), 0);
+    const adjustmentShares = safeNumber(adjustment.shares);
+    const adjustmentRatio = safeNumber(adjustment.ratioPercent);
+    return holders === safeNumber(total.holders)
+      && [shares + adjustmentShares, shares - adjustmentShares].includes(safeNumber(total.shares))
+      && Math.min(
+        Math.abs(ratio + adjustmentRatio - safeNumber(total.ratioPercent)),
+        Math.abs(ratio - adjustmentRatio - safeNumber(total.ratioPercent)),
+      ) <= 0.5;
+  }
+
+  function validDatasetRows(payload, dataset, range = {}) {
+    const input = dataset === "shareholder-distribution" ? payload?.distributionRows : payload?.rows;
+    return [...(Array.isArray(input) ? input : [])]
+      .filter((row) => dateInRange(chipDatasetDate(row, dataset), range))
+      .filter((row) => dataset === "shareholder-distribution" ? validDistributionDatasetRow(row) : validDailyDatasetRow(row, dataset))
+      .sort((left, right) => chipDatasetDate(left, dataset).localeCompare(chipDatasetDate(right, dataset)))
+      .map((row) => structuredClone(row));
+  }
+
+  function datasetQualitySummary(slice = {}) {
+    const dataset = slice.dataset;
+    const dates = [...new Set((slice.rows || []).map((row) => chipDatasetDate(row, dataset)).filter(Boolean))].sort();
+    const coverage = slice.coverage || {};
+    return {
+      dataset,
+      pointCount: dates.length,
+      dates,
+      start: dates[0] || null,
+      end: dates.at(-1) || null,
+      coverageStart: coverage.start || null,
+      coverageEnd: coverage.end || null,
+      savedCount: Math.max(0, Number(coverage.savedWeeks || coverage.rowCount || dates.length) || 0),
+      drawable: dates.length > 0,
+      availability: slice.availability?.reason || "provider_unavailable",
+    };
+  }
+
+  function extractDatasetSlice(payload, dataset, range = {}) {
+    const coverage = (payload?.coverage || []).find((item) => item?.dataset === dataset) || null;
+    const source = (payload?.sources || []).find((item) => item?.dataset === dataset) || null;
+    const input = dataset === "shareholder-distribution" ? payload?.distributionRows : payload?.rows;
+    const rawRows = (Array.isArray(input) ? input : []).filter((row) => dateInRange(chipDatasetDate(row, dataset), range));
+    const rows = validDatasetRows(payload, dataset, range);
+    const sourceAvailability = structuredClone(payload?.availability?.[dataset] || { status: "unavailable", reason: "provider_unavailable", rowCount: 0 });
+    const availability = rawRows.length > rows.length ? {
+      ...sourceAvailability,
+      status: rows.length ? "partial" : "unavailable",
+      reason: "invalid_response",
+      rowCount: rows.length,
+    } : sourceAvailability;
+    return {
+      dataset,
+      rows,
+      availability,
+      coverage: coverage ? structuredClone(coverage) : null,
+      source: source ? structuredClone(source) : null,
+      backfill: dataset === "shareholder-distribution" && payload?.backfill ? structuredClone(payload.backfill) : null,
+      dispatch: dataset === "shareholder-distribution" && payload?.dispatch ? structuredClone(payload.dispatch) : null,
+    };
+  }
+
+  function projectDatasetSlice(slice, range = {}) {
+    if (!slice) return null;
+    const rows = (slice.rows || []).filter((row) => dateInRange(chipDatasetDate(row, slice.dataset), range));
+    const dates = rows.map((row) => chipDatasetDate(row, slice.dataset));
+    const providers = [...new Set(rows.map((row) => slice.dataset === "shareholder-distribution"
+      ? row?.provenance?.provider
+      : row?.provenance?.[slice.dataset]?.provider).filter(Boolean))];
+    return {
+      ...structuredClone(slice),
+      rows,
+      availability: {
+        ...(slice.availability || {}),
+        rowCount: rows.length,
+        latestDataDate: dates.at(-1) || null,
+      },
+      coverage: slice.coverage ? {
+        ...structuredClone(slice.coverage),
+        start: dates[0] || null,
+        end: dates.at(-1) || null,
+        ...(slice.coverage.savedWeeks !== undefined ? { savedWeeks: dates.length } : {}),
+      } : null,
+      source: slice.source ? {
+        ...structuredClone(slice.source),
+        ...(providers.length ? { providers } : {}),
+      } : providers.length ? {
+        dataset: slice.dataset,
+        providers,
+        frequency: slice.dataset === "shareholder-distribution" ? "weekly" : "daily",
+      } : null,
+    };
+  }
+
+  function verifiedSliceKey(symbol, interval, dataset) {
+    return `${String(symbol || "").trim().toUpperCase()}|${String(interval || "")}|${dataset}`;
+  }
+
+  function evictExpiredVerifiedSlices(nowMs = Date.now()) {
+    for (const [key, entry] of verifiedSliceStore) {
+      if (nowMs - Number(entry.lastAccessedAt || entry.updatedAt || 0) < VERIFIED_SLICE_TTL_MS) continue;
+      verifiedSliceStore.delete(key);
+      requestMetrics.verifiedEvicted += 1;
+    }
+  }
+
+  function readVerifiedSlice(symbol, interval, dataset, nowMs = Date.now()) {
+    evictExpiredVerifiedSlices(nowMs);
+    const key = verifiedSliceKey(symbol, interval, dataset);
+    const entry = verifiedSliceStore.get(key);
+    if (!entry) return null;
+    verifiedSliceStore.delete(key);
+    verifiedSliceStore.set(key, { ...entry, lastAccessedAt: nowMs });
+    return structuredClone(entry.slice);
+  }
+
+  function writeVerifiedSlice(symbol, interval, dataset, slice, nowMs = Date.now()) {
+    if (!slice?.rows?.length) return;
+    const key = verifiedSliceKey(symbol, interval, dataset);
+    verifiedSliceStore.delete(key);
+    verifiedSliceStore.set(key, { slice: structuredClone(slice), updatedAt: nowMs, lastAccessedAt: nowMs });
+    while (verifiedSliceStore.size > MAX_VERIFIED_SLICE_ENTRIES) {
+      verifiedSliceStore.delete(verifiedSliceStore.keys().next().value);
+      requestMetrics.verifiedEvicted += 1;
+    }
+  }
+
+  function coverageRegressed(previous, candidate) {
+    if (!previous?.rows?.length) return false;
+    const before = datasetQualitySummary(previous);
+    const next = datasetQualitySummary(candidate);
+    if (!next.drawable) return true;
+    if (before.coverageEnd && next.coverageEnd && next.coverageEnd < before.coverageEnd) return true;
+    return before.savedCount > 0 && next.savedCount > 0 && next.savedCount < before.savedCount;
+  }
+
+  function mergeDatasetSlices(previous, candidate, range = {}) {
+    const dataset = candidate.dataset;
+    const mergedRows = new Map((previous?.rows || []).map((row) => [chipDatasetDate(row, dataset), structuredClone(row)]));
+    const rejectedDates = [];
+    for (const row of candidate.rows || []) {
+      const date = chipDatasetDate(row, dataset);
+      const before = mergedRows.get(date);
+      if (before && dataset !== "shareholder-distribution") {
+        const field = CHIP_DATASET_FIELDS[dataset];
+        const beforePaths = knownLeafPaths(before?.[field]);
+        const candidatePaths = knownLeafPaths(row?.[field]);
+        if ([...beforePaths].some((path) => !candidatePaths.has(path))) {
+          rejectedDates.push(date);
+          continue;
+        }
+      }
+      mergedRows.set(date, structuredClone(row));
+    }
+    const rows = [...mergedRows.values()].sort((left, right) => chipDatasetDate(left, dataset).localeCompare(chipDatasetDate(right, dataset)));
+    const previousProjected = projectDatasetSlice(previous, range);
+    const candidateDates = new Set((candidate.rows || []).map((row) => chipDatasetDate(row, dataset)));
+    const retainedDates = (previousProjected?.rows || []).map((row) => chipDatasetDate(row, dataset)).filter((date) => !candidateDates.has(date));
+    const retained = retainedDates.length > 0 || rejectedDates.length > 0 || coverageRegressed(previousProjected, candidate);
+    const projectedRows = rows.filter((row) => dateInRange(chipDatasetDate(row, dataset), range));
+    const summary = datasetQualitySummary({ ...candidate, rows: projectedRows });
+    const storedSummary = datasetQualitySummary({ ...candidate, rows });
+    const previousCoverage = previous?.coverage || {};
+    const candidateCoverage = candidate.coverage || {};
+    const coverage = {
+      ...previousCoverage,
+      ...candidateCoverage,
+      dataset,
+      start: storedSummary.start,
+      end: storedSummary.end,
+      requestedStart: range.start || candidateCoverage.requestedStart || previousCoverage.requestedStart || null,
+      requestedEnd: range.end || candidateCoverage.requestedEnd || previousCoverage.requestedEnd || null,
+      ...(Number(previousCoverage.savedWeeks) || Number(candidateCoverage.savedWeeks) ? {
+        savedWeeks: Math.max(Number(previousCoverage.savedWeeks) || 0, Number(candidateCoverage.savedWeeks) || 0, rows.length),
+      } : {}),
+      ...(retained ? { retained: true } : {}),
+    };
+    const sourceAvailability = candidate.availability || {};
+    const availability = retained ? {
+      ...sourceAvailability,
+      status: "partial",
+      reason: "retained_stale",
+      rowCount: rows.length,
+      retained: true,
+      sourceStatus: sourceAvailability.status || "unavailable",
+      sourceReason: sourceAvailability.reason || "provider_unavailable",
+      latestDataDate: summary.end,
+    } : {
+      ...sourceAvailability,
+      rowCount: rows.length,
+      latestDataDate: summary.end,
+    };
+    return {
+      dataset,
+      rows,
+      availability,
+      coverage,
+      source: {
+        ...(retained ? previous?.source || candidate.source || {} : candidate.source || previous?.source || {}),
+        dataset,
+        providers: [...new Set(rows.map((row) => dataset === "shareholder-distribution"
+          ? row?.provenance?.provider
+          : row?.provenance?.[dataset]?.provider).filter(Boolean))],
+        frequency: dataset === "shareholder-distribution" ? "weekly" : "daily",
+      },
+      backfill: candidate.backfill || previous?.backfill || null,
+      dispatch: candidate.dispatch || previous?.dispatch || null,
+      retained,
+      retainedDates,
+      rejectedDates,
+    };
+  }
+
+  function applyDatasetSlices(candidate, slices, range = {}) {
+    const result = structuredClone(candidate || {});
+    const projectedSlices = slices.map((slice) => projectDatasetSlice(slice, range));
+    const dailyByDate = new Map((result.rows || [])
+      .filter((row) => dateInRange(String(row?.sessionDate || ""), range))
+      .map((row) => [row.sessionDate, structuredClone(row)]));
+    for (const slice of projectedSlices) {
+      if (slice.dataset === "shareholder-distribution") continue;
+      const field = CHIP_DATASET_FIELDS[slice.dataset];
+      for (const row of dailyByDate.values()) {
+        row[field] = null;
+        if (row.provenance) delete row.provenance[slice.dataset];
+      }
+      for (const sourceRow of slice.rows || []) {
+        const row = dailyByDate.get(sourceRow.sessionDate) || { symbol: result.symbol, sessionDate: sourceRow.sessionDate, provenance: {} };
+        row[field] = structuredClone(sourceRow[field]);
+        row.provenance = { ...(row.provenance || {}), [slice.dataset]: structuredClone(sourceRow.provenance[slice.dataset]) };
+        dailyByDate.set(sourceRow.sessionDate, row);
+      }
+    }
+    result.rows = [...dailyByDate.values()]
+      .filter((row) => Object.values(CHIP_DATASET_FIELDS).some((field) => row[field]) || Object.keys(row.provenance || {}).length)
+      .sort((left, right) => left.sessionDate.localeCompare(right.sessionDate));
+    const distribution = projectedSlices.find((slice) => slice.dataset === "shareholder-distribution");
+    if (distribution) result.distributionRows = distribution.rows || [];
+    result.availability = { ...(result.availability || {}) };
+    const coverage = new Map((result.coverage || []).map((item) => [item.dataset, item]));
+    const sources = new Map((result.sources || []).map((item) => [item.dataset, item]));
+    for (const slice of projectedSlices) {
+      result.availability[slice.dataset] = structuredClone(slice.availability);
+      if (slice.coverage) coverage.set(slice.dataset, structuredClone(slice.coverage));
+      if (slice.source) sources.set(slice.dataset, structuredClone(slice.source));
+      if (slice.dataset === "shareholder-distribution") {
+        if (slice.backfill) result.backfill = structuredClone(slice.backfill);
+        if (slice.dispatch) result.dispatch = structuredClone(slice.dispatch);
+      }
+    }
+    result.coverage = [...coverage.values()];
+    result.sources = [...sources.values()];
+    const retained = projectedSlices.filter((slice) => slice.retained).map((slice) => ({
+      dataset: slice.dataset,
+      latestDataDate: datasetQualitySummary(slice).end,
+      sourceReason: slice.availability.sourceReason,
+    }));
+    result.retainedDatasets = retained;
+    const retainedWarnings = retained.map((item) => `${CHIP_DATASET_LABELS[item.dataset] || item.dataset}：來源本次回應未改善，保留最後已驗證資料（最新 ${item.latestDataDate || "日期未明"}）`);
+    result.warnings = [...new Set([...(result.warnings || []), ...retainedWarnings])];
+    return result;
+  }
+
+  function reconcileChipPayload({ payload, symbol, interval, datasets, range, nowMs = Date.now() }) {
+    const normalizedSymbol = String(symbol || payload?.symbol || "").trim().toUpperCase();
+    const normalizedInterval = String(interval || payload?.interval || "");
+    assertChipPayloadIdentity(payload, normalizedSymbol, normalizedInterval);
+    const selectedDatasets = [...new Set((datasets || []).filter((dataset) => CHIP_DATASETS.includes(dataset)))];
+    const effectiveSlices = [];
+    for (const dataset of selectedDatasets) {
+      const previous = readVerifiedSlice(normalizedSymbol, normalizedInterval, dataset, nowMs);
+      const candidate = extractDatasetSlice(payload, dataset, range);
+      const effective = mergeDatasetSlices(previous, candidate, range);
+      writeVerifiedSlice(normalizedSymbol, normalizedInterval, dataset, effective, nowMs);
+      effectiveSlices.push(effective);
+    }
+    requestMetrics.reconciled += 1;
+    requestMetrics.retainedDatasets += effectiveSlices.filter((slice) => slice.retained).length;
+    return applyDatasetSlices(payload, effectiveSlices, range);
   }
 
   function formatNumber(value, options = {}) {
@@ -535,6 +915,7 @@
 
   function availabilityLabel(availability, capability, backfill, dispatch) {
     if (capability?.supported === false) return capability.reason === "unsupported_interval" ? "僅支援日 K" : "不適用";
+    if (availability?.reason === "retained_stale") return `保留最後已驗證資料${availability.latestDataDate ? `（${availability.latestDataDate}）` : ""}`;
     if (backfill?.status === "queued" && ["started", "cooldown", "already-running"].includes(dispatch?.status)) return "立即回補啟動中";
     if (backfill?.status === "queued" && dispatch?.status === "unavailable") return "已排入背景回補（非立即）";
     if (backfill?.status === "queued" && dispatch?.status === "failed") return "立即啟動失敗，等待背景回補";
@@ -586,13 +967,25 @@
       : { visible: false, disabled: true, label: "", datasets };
   }
 
+  const TAIPEI_CHART_DATE_FORMATTER = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
   function dateForChartTime(time) {
+    if (time && typeof time === "object" && "year" in time) {
+      return `${String(time.year).padStart(4, "0")}-${String(time.month).padStart(2, "0")}-${String(time.day).padStart(2, "0")}`;
+    }
+    if (typeof time === "string" && /^\d{4}-\d{2}-\d{2}$/.test(time)) return time;
     let date;
     if (typeof time === "number") date = new Date(time * 1000);
     else if (typeof time === "string") date = new Date(time);
-    else if (time && typeof time === "object" && "year" in time) date = new Date(Date.UTC(time.year, time.month - 1, time.day));
     if (!date || Number.isNaN(date.getTime())) return "";
-    return date.toISOString().slice(0, 10);
+    const parts = TAIPEI_CHART_DATE_FORMATTER.formatToParts(date);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
   }
 
   function candleTimeByDate(candles) {
@@ -820,6 +1213,7 @@
       ...requestMetrics,
       cacheEntries: requestCache.size,
       inFlightRequests: requestInFlight.size,
+      verifiedEntries: verifiedSliceStore.size,
     };
   }
 
@@ -921,8 +1315,9 @@
         .then(async (response) => {
           const payload = await response.json();
           if (!response.ok) throw new Error(payload.error || "籌碼資料載入失敗");
-          writeCachedChipRequest(key, payload, { datasets: sortedDatasets, prefetch });
-          return payload;
+          const reconciled = reconcileChipPayload({ payload, symbol, interval, datasets: sortedDatasets, range });
+          writeCachedChipRequest(key, reconciled, { datasets: sortedDatasets, prefetch });
+          return reconciled;
         });
       let timeout = 0;
       const boundedRequest = Number(timeoutMs) > 0
@@ -962,6 +1357,7 @@
   function resetChipRequestCacheForTest() {
     requestCache.clear();
     requestInFlight.clear();
+    verifiedSliceStore.clear();
     Object.keys(requestMetrics).forEach((key) => { requestMetrics[key] = 0; });
   }
 
@@ -1019,10 +1415,26 @@
     return global.QuoteChartInteractions.chartInteractionOptions(mode);
   }
 
-  function chartOptions(interactionMode = "A", axisSafeWidth = 52) {
+  function paneChartInteractionOptions(definition, mode = "A") {
+    const options = chartInteractionOptions(mode);
+    if (!isHolderDefinition(definition)) return options;
+    const axisPressedMouseMove = options?.handleScale?.axisPressedMouseMove;
+    return {
+      ...options,
+      handleScale: {
+        ...(options?.handleScale || {}),
+        axisPressedMouseMove: {
+          time: typeof axisPressedMouseMove === "object" ? axisPressedMouseMove.time !== false : Boolean(axisPressedMouseMove),
+          price: false,
+        },
+      },
+    };
+  }
+
+  function chartOptions(interactionMode = "A", axisSafeWidth = 52, definition) {
     return {
       autoSize: true,
-      ...chartInteractionOptions(interactionMode),
+      ...paneChartInteractionOptions(definition, interactionMode),
       layout: { background: { type: "solid", color: "#111827" }, textColor: "#94a3b8", attributionLogo: false },
       grid: { vertLines: { color: "rgba(148,163,184,.08)" }, horzLines: { color: "rgba(148,163,184,.08)" } },
       crosshair: SHARED_CROSSHAIR_OPTIONS,
@@ -1410,6 +1822,20 @@
     readoutMeasurer.setAttribute("data-export-exclude", "true");
     readoutMeasurer.inert = true;
 
+    function stabilizeHolderPriceScales() {
+      if (!chart || !isHolderDefinition(definition)) return false;
+      const scaleIds = new Set(["right"]);
+      if (definition.kind === "holder") {
+        const selected = selectedSeriesIds();
+        if (selected.has("change")) scaleIds.add(HOLDER_CHANGE_PRICE_SCALE_ID);
+        if (selected.has("holders")) scaleIds.add(HOLDER_COUNT_PRICE_SCALE_ID);
+      }
+      for (const scaleId of scaleIds) {
+        try { chart.priceScale(scaleId).applyOptions({ autoScale: true }); } catch {}
+      }
+      return true;
+    }
+
     function mountChart() {
       if (chart || destroyed) return;
       wheelRoutingCleanup = global.QuoteChartInteractions.bindWheelRouting(surface, () => interactionMode);
@@ -1419,7 +1845,7 @@
         onStart: ({ kind }) => options.onViewportIntent?.({ paneId: definition.id, phase: "start", kind }),
         onEnd: ({ kind }) => options.onViewportIntent?.({ paneId: definition.id, phase: "end", kind }),
       });
-      chart = global.LightweightCharts.createChart(surface, chartOptions(interactionMode, options.axisSafeWidth));
+      chart = global.LightweightCharts.createChart(surface, chartOptions(interactionMode, options.axisSafeWidth, definition));
       anchor = chart.addSeries(global.LightweightCharts.LineSeries, { color: "rgba(0,0,0,0)", lineWidth: 1, priceScaleId: "chip-time-anchor", priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
       chart.priceScale("chip-time-anchor").applyOptions({ visible: false });
       chart.subscribeCrosshairMove((param) => {
@@ -1443,6 +1869,7 @@
       }
       surface.dataset.chartMounted = "true";
       if (lastPayload !== undefined) render(lastPayload, lastCandles);
+      stabilizeHolderPriceScales();
       const mainRange = options.getMainRange?.();
       if (mainRange) chart.timeScale().setVisibleLogicalRange(mainRange);
     }
@@ -2223,6 +2650,7 @@
       renderInlineReadout(resolveReadout(latestReadoutDate()));
       scheduleReadoutReservation({ invalidate: true });
       if (detailsPinnedDate && !holderDetails.hidden) renderDetailTable(detailsPinnedDate);
+      stabilizeHolderPriceScales();
       const mainRange = options.getMainRange?.();
       if (mainRange) chart.timeScale().setVisibleLogicalRange(mainRange);
       options.onLayoutChange?.();
@@ -2250,6 +2678,7 @@
         const previousRange = rangeForCandles(lastCandles);
         const nextRange = rangeForCandles(nextCandles);
         lastCandles = nextCandles;
+        stabilizeHolderPriceScales();
         if (previousRange.start === nextRange.start && previousRange.end === nextRange.end) return;
         if (anchor) anchor.setData(lastCandles.map((row) => ({ time: row.time, value: 1 })));
         const mainRange = options.getMainRange?.();
@@ -3046,7 +3475,7 @@
         if (!warningText.length) dismissedNoticeSignature = "";
         setNotice(warningText, { dismissible: true, signature: warningNoticeSignature(context, warningText) });
         for (const controller of controllers.values()) controller.render(payload, context.candles, payloadMaterialSignature);
-        options.onPayloadRendered?.({ symbol: context.symbol, source: "network", stale: false });
+        options.onPayloadRendered?.({ symbol: context.symbol, source: result.retainedDatasets?.length ? "retained" : "network", stale: Boolean(result.retainedDatasets?.length) });
       } catch (error) {
         if (error?.name === "AbortError" || current !== generation) return;
         setNotice(`籌碼資料暫時不可用：${error?.message || "請稍後重試"}`);
@@ -3114,10 +3543,12 @@
         }
         if (identityChanged || sourceChanged) {
           reconcile();
-        } else if (dataChanged) {
+        } else {
           for (const controller of controllers.values()) controller.setCandles(nextContext.candles);
-          scheduleChipReadoutCohorts();
-          load();
+          if (dataChanged) {
+            scheduleChipReadoutCohorts();
+            load();
+          }
         }
       },
       updateCandles(candles) {
@@ -3126,8 +3557,8 @@
         const previousRange = rangeForCandles(context.candles);
         const nextRange = rangeForCandles(nextCandles);
         context = { ...context, candles: nextCandles };
-        if (previousRange.start === nextRange.start && previousRange.end === nextRange.end) return;
         for (const controller of controllers.values()) controller.setCandles(nextCandles);
+        if (previousRange.start === nextRange.start && previousRange.end === nextRange.end) return;
         scheduleChipReadoutCohorts();
       },
       setMode(nextMode) { const normalized = normalizeChipPaneMode(nextMode); if (mode === normalized) { updateInputs(); return; } cancelPaneDrag(); mode = normalized; reconcile(); },
@@ -3200,13 +3631,21 @@
       groupSelectionState,
       holderAggregate,
       holderDetailModel,
+      paneChartInteractionOptions,
       chipRequestKey,
+      candleTimeByDate,
+      dateForChartTime,
       chipPayloadMaterialSignature,
       chipReadoutContentSignature,
       createChipRenderGate,
       shouldPreserveChipPayloadForEmptyContext,
       chipCacheEntryState,
       chipCacheFreshnessMs,
+      datasetQualitySummary,
+      extractDatasetSlice,
+      projectDatasetSlice,
+      mergeDatasetSlices,
+      reconcileChipPayload,
       modeBSelectionDatasets,
       migrateModeBSelectedPaneIds,
       readCachedChipRequest,

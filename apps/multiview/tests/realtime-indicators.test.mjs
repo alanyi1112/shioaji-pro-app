@@ -49,3 +49,29 @@ test("latest-wins scheduler 僅交付最後 generation", () => {
   for (const callback of timers.values()) callback();
   assert.deepEqual(delivered, ["new"]);
 });
+
+test("開盤新 K 棒加入與同棒修正不會清空 KD、RSI、MACD、ATR", () => {
+  const before = api.compute(rows.slice(0, -1), {}, { volumeAvailable: true });
+  const appended = api.compute(rows, {}, { volumeAvailable: true });
+  const revisedRows = rows.map((row, index) => index === rows.length - 1
+    ? { ...row, close: row.close + 5, high: row.high + 5 }
+    : row);
+  const revised = api.compute(revisedRows, {}, { volumeAvailable: true });
+  const paths = [
+    ["kd", "k"], ["kd", "d"],
+    ["rsi", "short"], ["rsi", "long"],
+    ["macd", "line"], ["macd", "signal"], ["macd", "histogram"],
+    ["atr"],
+  ];
+  for (const path of paths) {
+    const read = (root) => path.reduce((value, key) => value[key], root);
+    const oldSeries = read(before);
+    const appendedSeries = read(appended);
+    const revisedSeries = read(revised);
+    assert.ok(oldSeries.length > 0, `${path.join(".")} 初始資料不可為空`);
+    assert.ok(appendedSeries.length >= oldSeries.length, `${path.join(".")} 加入新 K 棒後不可退化`);
+    assert.equal(revisedSeries.length, appendedSeries.length, `${path.join(".")} 同棒修正不得清空 series`);
+    assert.equal(revisedSeries.at(-1).time, rows.at(-1).time);
+    assert.equal(Number.isFinite(revisedSeries.at(-1).value), true);
+  }
+});

@@ -483,8 +483,8 @@ test("主圖估算融資成本與清單 metadata UI 保留偏好、缺值及無�
   assert.match(appScript, /quoteChart\.estimatedMarginCost\.v1:/);
   assert.match(appScript, /state\.activeMarketTabId/);
   assert.match(appScript, /estimatedMarginAbortController\?\.abort\(\)/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260826-adjacent-chip-prefetch-v4/);
-  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260826-adjacent-chip-prefetch-v4/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260827-holder-scale-v2/);
+  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260827-holder-scale-v2/);
   assert.match(appScript, /requestData\?\.\(\{[\s\S]*datasets: \["margin-short"\]/);
   assert.match(appScript, /加入日期未知/);
   assert.match(indexHtml, /id="watchlist-symbol-recommender"[^>]*maxlength="80"/);
@@ -1909,9 +1909,9 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(styles, /\.chart-panel\.has-no-subchart \.subchart-slot\s*\{[^}]*display: none;/s);
   assert.match(indexHtml, /styles\.css\?v=20260810-interval-label-v1/);
   assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260826-adjacent-chip-prefetch-v4/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260827-holder-scale-v2/);
   assert.match(indexHtml, /panel-image-export\.js\?v=20260826-turnover-readout-v1/);
-  assert.match(indexHtml, /app\.js\?v=20260826-adjacent-chip-prefetch-v4/);
+  assert.match(indexHtml, /app\.js\?v=20260827-holder-scale-v2/);
 });
 
 test("固定範圍 VP 價格標籤無範圍前綴，水平線為 1px 且控制線為 2px", async () => {
@@ -2017,8 +2017,8 @@ test("籌碼刷新保留同 context 已驗證資料且不因重排重抓", async
   assert.match(loadBlock, /if \(context\.candles\.length\) options\.onPayloadRendered\?\.\(\{ symbol: context\.symbol, source: "unavailable", stale: false \}\)/);
   assert.match(contextBlock, /const preserveEmptyContext = shouldPreserveChipPayloadForEmptyContext\(\{ sourceChanged, candles: incomingContext\.candles \}\);\s*const nextContext = preserveEmptyContext \? \{ \.\.\.incomingContext, candles: context\.candles \} : incomingContext;[\s\S]*?context = nextContext;/);
   assert.match(contextBlock, /if \(sourceChanged\)[\s\S]*payload = undefined;[\s\S]*payloadRequestKey = ""/);
-  assert.match(contextBlock, /else if \(dataChanged\)[\s\S]*controller\.setCandles\(nextContext\.candles\);[\s\S]*load\(\)/);
-  assert.doesNotMatch(contextBlock, /else if \(dataChanged\) reconcile\(\)/);
+  assert.match(contextBlock, /else \{\s*for \(const controller of controllers\.values\(\)\) controller\.setCandles\(nextContext\.candles\);\s*if \(dataChanged\) \{[\s\S]*load\(\)/);
+  assert.doesNotMatch(contextBlock, /if \(dataChanged\) reconcile\(\)/);
   assert.match(reconcileBlock, /const createdControllers = \[\]/);
   assert.match(reconcileBlock, /for \(const controller of createdControllers\) controller\.render/);
   assert.doesNotMatch(reconcileBlock, /for \(const controller of controllers\.values\(\)\) controller\.render\(payload/);
@@ -2210,7 +2210,7 @@ test("多層副圖一般 wheel 捲頁且保持圖表範圍，Alt wheel 明確縮
     readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8"),
   ]);
   assert.match(indexHtml, /chart-interactions\.js[^<]*<\/script>[\s\S]*chip-panes\.js[^<]*<\/script>[\s\S]*live-batch-coordinator\.js[^<]*<\/script>[\s\S]*app\.js/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260826-adjacent-chip-prefetch-v4/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260827-holder-scale-v2/);
   assert.match(appScript, /QuoteChartInteractions\.chartInteractionOptions\(mode\)/);
   assert.match(appScript, /bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\)/);
   assert.match(appScript, /mainWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\);[\s\S]*?bindViewportIntent\(surface,[\s\S]*?chart = LightweightCharts\.createChart/s);

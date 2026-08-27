@@ -552,6 +552,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
   const cachedDailyBefore = sanitizeChipDailyRows(await readDaily(env.DB, symbol, start, end), end);
   let distribution = await readDistribution(env.DB, symbol, start, end);
   const freshDailySets: ChipDailyRow[][] = [];
+  const refreshOutcomes: Partial<Record<ChipDataset, "cache" | "deferred" | "accepted" | "empty" | "failed">> = {};
   let fetchedAny = false;
 
   await Promise.all(datasets.map(async (dataset, index) => {
@@ -565,6 +566,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       ? distribution.length > 0 || Boolean(distributionOutsideRequestedRange)
       : Boolean(sourcePending || (cachedDatasetDates.at(-1) && cachedDatasetDates.at(-1)! >= datasetEnd));
     if (cachedStateCovers && cachedDatasetCovers) {
+      refreshOutcomes[dataset] = "cache";
       const count = cachedDatasetDates.length;
       availability[dataset] = dataset === "shareholder-distribution"
         ? { status: count > 1 ? "available" : count ? "partial" : "unavailable", reason: count > 1 ? "available" : "history_not_archived", rowCount: count }
@@ -576,6 +578,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
     }
     const retryAfter = Date.parse(String(states[index]?.retry_after || ""));
     if (Number.isFinite(retryAfter) && retryAfter > Date.now()) {
+      refreshOutcomes[dataset] = "deferred";
       const count = dataset === "shareholder-distribution" ? distribution.length : cachedDailyBefore.filter((row) => Boolean(row.provenance[dataset as keyof typeof row.provenance])).length;
       availability[dataset] = { status: count ? "partial" : "unavailable", reason: count ? "stale_cache" : (states[index]?.reason_code || "provider_unavailable"), rowCount: count };
       warnings.push(`${datasetName(dataset)}：資料來源暫停重試，預計 ${retryTimeLabel(retryAfter)} 後再檢查`);
@@ -596,6 +599,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
           reason: distribution.length > 1 ? "available" : "history_not_archived",
           rowCount: distribution.length,
         };
+        refreshOutcomes[dataset] = distribution.length ? "accepted" : "empty";
         if (distribution.length < 2) warnings.push(backfill.status === "queued"
           ? "股權分散：等待背景回補"
           : backfill.status === "running"
@@ -616,6 +620,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
         }
         const rows = sanitizeChipDailyRows(mergeChipRows(primaryRows, officialRows), datasetEnd);
         if (rows.length) {
+          refreshOutcomes[dataset] = "accepted";
           const actualStart = rows[0].sessionDate;
           const actualEnd = rows.at(-1)!.sessionDate;
           const complete = actualEnd >= datasetEnd;
@@ -630,6 +635,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
         } else {
           const officialRows = sanitizeChipDailyRows(await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl), datasetEnd);
           if (officialRows.length) {
+            refreshOutcomes[dataset] = "accepted";
             const actualEnd = officialRows.at(-1)!.sessionDate;
             const complete = actualEnd >= datasetEnd;
             const reason = complete ? "available" : "partial_data";
@@ -644,14 +650,17 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
           const retryAfter = new Date(Date.now() + 6 * 3600000).toISOString();
           await saveState(env.DB, { symbol: stateSymbol, dataset, start: null, end: null, reason: "not_published", success: false, retryAfter });
           availability[dataset] = { status: "unavailable", reason: "not_published", rowCount: 0 };
+          refreshOutcomes[dataset] = "empty";
         }
       }
       fetchedAny = true;
     } catch (error) {
+      refreshOutcomes[dataset] = "failed";
       if (dataset !== "shareholder-distribution") {
         try {
           const officialRows = sanitizeChipDailyRows(await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl), datasetEnd);
           if (officialRows.length) {
+            refreshOutcomes[dataset] = "accepted";
             const actualEnd = officialRows.at(-1)!.sessionDate;
             const complete = actualEnd >= datasetEnd;
             const reason = complete ? "available" : "partial_data";
@@ -680,6 +689,28 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
   if (env.DB) distribution = await readDistribution(env.DB, symbol, start, end);
   const distributionRows = decorateDistributionRows(distribution);
   const resultRows = decorateEstimatedMarginRows(env.DB ? rows : directRows, await readDailyCloses(env.DB, symbol, start, end));
+  for (const dataset of datasets) {
+    const retainedCount = dataset === "shareholder-distribution"
+      ? distributionRows.length
+      : resultRows.filter((row) => Boolean(row.provenance[dataset as keyof typeof row.provenance])).length;
+    if (!env.DB) continue;
+    const outcome = refreshOutcomes[dataset];
+    const sourceReason = availability[dataset]?.reason || "provider_unavailable";
+    if (["empty", "failed"].includes(String(outcome)) && retainedCount > 0) {
+      availability[dataset] = { status: "partial", reason: "stale_cache", rowCount: retainedCount };
+      warnings.push(`${datasetName(dataset)}：來源本次回應為 ${sourceReason}，保留資料庫最後已驗證資料`);
+      continue;
+    }
+    if (outcome === "accepted" && dataset === "shareholder-distribution") {
+      availability[dataset] = {
+        status: retainedCount > 1 ? "available" : retainedCount ? "partial" : "unavailable",
+        reason: retainedCount > 1 ? "available" : "history_not_archived",
+        rowCount: retainedCount,
+      };
+      continue;
+    }
+    if (availability[dataset]) availability[dataset] = { ...availability[dataset]!, rowCount: retainedCount };
+  }
   for (const row of resultRows) {
     const value = row.marginShort;
     if (!value) continue;

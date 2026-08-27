@@ -4,7 +4,16 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8");
-const window = { QuoteChartInteractions: {} };
+const window = {
+  QuoteChartInteractions: {
+    chartInteractionOptions() {
+      return {
+        handleScroll: { mouseWheel: true, pressedMouseMove: true },
+        handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      };
+    },
+  },
+};
 let fetchImpl = async () => Response.json({ rows: [], distributionRows: [], availability: {} });
 const localStorageData = new Map();
 const localStorage = {
@@ -28,6 +37,7 @@ vm.runInNewContext(source, {
   fetch: (...args) => fetchImpl(...args),
 });
 const {
+  CHIP_PANE_REGISTRY,
   availabilityLabel,
   requestData,
   cacheMetrics,
@@ -37,8 +47,10 @@ const {
     chipPayloadMaterialSignature,
     chipReadoutContentSignature,
     chipRequestKey,
+    candleTimeByDate,
     createChipRenderGate,
     dailyDetailModel,
+    dateForChartTime,
     detailItemsForPane,
     holderDetailModel,
     seriesColorForReadout,
@@ -51,14 +63,99 @@ const {
     shouldReuseChipPayload,
     chipCacheEntryState,
     chipCacheFreshnessMs,
+    datasetQualitySummary,
+    extractDatasetSlice,
+    reconcileChipPayload,
     modeBSelectionDatasets,
     migrateModeBSelectedPaneIds,
+    paneChartInteractionOptions,
     resetChipRequestCacheForTest,
   },
 } = window.QuoteChartChipPanes;
 
+test("Yahoo 與 Shioaji 日 K 都以台北交易日對齊 TDCC", () => {
+  const yahooTime = 1787792400; // 2026-08-27 09:00 Asia/Taipei
+  const shioajiTime = 1787760000; // 2026-08-27 00:00 Asia/Taipei，UTC 仍為前一天
+  assert.equal(dateForChartTime(yahooTime), "2026-08-27");
+  assert.equal(dateForChartTime(shioajiTime), "2026-08-27");
+  assert.equal(dateForChartTime({ year: 2026, month: 8, day: 27 }), "2026-08-27");
+  assert.equal(candleTimeByDate([{ time: shioajiTime }]).get("2026-08-27"), shioajiTime);
+  const common = { symbol: "2330.TW", interval: "1d", datasets: ["shareholder-distribution"] };
+  assert.equal(
+    chipRequestKey({ ...common, candles: [{ time: yahooTime }] }),
+    chipRequestKey({ ...common, candles: [{ time: shioajiTime }] }),
+    "同一台北交易日不得因 provider timestamp 不同而分裂 request identity",
+  );
+});
+
+test("持股 pane 停用價格軸拖曳但保留時間軸手勢", () => {
+  const bigHolder = CHIP_PANE_REGISTRY.find((item) => item.id === "big-holder");
+  const retailHolder = CHIP_PANE_REGISTRY.find((item) => item.id === "retail-holder");
+  const institutional = CHIP_PANE_REGISTRY.find((item) => item.id === "institutional-total-flow");
+  for (const definition of [bigHolder, retailHolder]) {
+    const options = normalized(paneChartInteractionOptions(definition, "B"));
+    assert.deepEqual(options.handleScale.axisPressedMouseMove, { time: true, price: false });
+    assert.equal(options.handleScale.mouseWheel, true);
+    assert.equal(options.handleScroll.pressedMouseMove, true);
+  }
+  assert.equal(paneChartInteractionOptions(institutional, "B").handleScale.axisPressedMouseMove, true);
+});
+
 function normalized(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function provenance(dataset, sourceDate, provider = "finmind") {
+  return { dataset, sourceDate, provider, frequency: dataset === "shareholder-distribution" ? "weekly" : "daily" };
+}
+
+function distributionRow(dataDate, seed = 1) {
+  const level = (value) => ({ level: value, range: String(value), holders: seed + value, shares: (seed + value) * 1000, ratioPercent: 0.5 });
+  const levels = [...Array(15)].map((_, index) => level(index + 1));
+  const holders = levels.reduce((sum, item) => sum + item.holders, 0);
+  const shares = levels.reduce((sum, item) => sum + item.shares, 0);
+  const ratioPercent = levels.reduce((sum, item) => sum + item.ratioPercent, 0);
+  return {
+    symbol: "2330.TW",
+    dataDate,
+    levels,
+    adjustment: { level: 16, range: "調整", holders: 0, shares: 0, ratioPercent: 0 },
+    total: { level: 17, range: "合計", holders, shares, ratioPercent },
+    provenance: provenance("shareholder-distribution", dataDate, "tdcc"),
+  };
+}
+
+function completeDailyRow(sessionDate, seed = 1) {
+  return {
+    symbol: "2330.TW",
+    sessionDate,
+    institutionalFlow: { institutionalTotalNetShares: seed * 1000 },
+    foreignHolding: { heldShares: seed * 10_000, heldRatioPercent: seed },
+    marginShort: { marginTodayBalanceLots: seed * 100, shortTodayBalanceLots: seed },
+    securitiesLending: { transactionShares: seed * 1000 },
+    provenance: Object.fromEntries([
+      "institutional-flow", "foreign-holding", "margin-short", "securities-lending",
+    ].map((dataset) => [dataset, provenance(dataset, sessionDate)])),
+  };
+}
+
+function completePayload({ symbol = "2330.TW", interval = "1d", rows = [], distributionRows = [], availability = {}, coverage = [], warnings = [], sources } = {}) {
+  return {
+    symbol,
+    interval,
+    rows,
+    distributionRows,
+    availability,
+    coverage,
+    sources: sources || [
+      { dataset: "institutional-flow", providers: ["finmind"], frequency: "daily" },
+      { dataset: "foreign-holding", providers: ["finmind"], frequency: "daily" },
+      { dataset: "margin-short", providers: ["finmind"], frequency: "daily" },
+      { dataset: "securities-lending", providers: ["finmind"], frequency: "daily" },
+      { dataset: "shareholder-distribution", providers: ["tdcc"], frequency: "weekly" },
+    ],
+    warnings,
+  };
 }
 
 test("籌碼 request identity 正規化商品、日期範圍與 dataset 順序", () => {
@@ -95,7 +192,7 @@ test("背景預載、in-flight join 與前景 cache 使用共用同一 request",
   let release;
   fetchImpl = async () => {
     fetchCalls += 1;
-    return new Promise((resolve) => { release = () => resolve(Response.json({ rows: [{ sessionDate: "2026-08-25" }], distributionRows: [], availability: {} })); });
+    return new Promise((resolve) => { release = () => resolve(Response.json(completePayload({ rows: [completeDailyRow("2026-08-25")] }))); });
   };
   const input = {
     symbol: "2330.TW",
@@ -117,6 +214,296 @@ test("背景預載、in-flight join 與前景 cache 使用共用同一 request",
   assert.equal(metrics.inFlightJoin, 1);
   assert.equal(metrics.cacheHit, 1);
   assert.equal(metrics.usedAfterNavigation, 1);
+});
+
+test("完成 cache 首繪後 HTTP 200 空 TDCC 回應仍保留最後有效大戶散戶資料", async () => {
+  resetChipRequestCacheForTest();
+  const input = {
+    symbol: "2330.TW",
+    interval: "1d",
+    datasets: ["shareholder-distribution"],
+    candles: [{ time: "2026-08-01" }, { time: "2026-08-25" }],
+  };
+  fetchImpl = async () => Response.json(completePayload({
+    distributionRows: [distributionRow("2026-08-21")],
+    availability: { "shareholder-distribution": { status: "available", reason: "available", rowCount: 1 } },
+    coverage: [{ dataset: "shareholder-distribution", start: "2026-08-21", end: "2026-08-21", savedWeeks: 1 }],
+  }));
+  const first = await requestData(input);
+  assert.equal(first.distributionRows.length, 1);
+
+  fetchImpl = async () => Response.json(completePayload({
+    availability: { "shareholder-distribution": { status: "unavailable", reason: "not_published", rowCount: 0 } },
+    coverage: [{ dataset: "shareholder-distribution", start: null, end: null, savedWeeks: 0 }],
+  }));
+  const retained = await requestData({ ...input, forceRefresh: true });
+  assert.deepEqual(retained.distributionRows.map((row) => row.dataDate), ["2026-08-21"]);
+  assert.equal(retained.availability["shareholder-distribution"].reason, "retained_stale");
+  assert.equal(retained.availability["shareholder-distribution"].sourceReason, "not_published");
+  assert.deepEqual(retained.retainedDatasets.map((item) => item.dataset), ["shareholder-distribution"]);
+  assert.match(retained.warnings.at(-1), /保留最後已驗證資料/);
+
+  const cached = await requestData(input);
+  assert.deepEqual(cached.distributionRows.map((row) => row.dataDate), ["2026-08-21"]);
+  assert.equal(cacheMetrics().retainedDatasets, 1);
+});
+
+test("五類 dataset 逐片合併、同日修正、日期裁切與 identity 隔離", () => {
+  resetChipRequestCacheForTest();
+  const datasets = ["institutional-flow", "foreign-holding", "margin-short", "securities-lending", "shareholder-distribution"];
+  const availability = Object.fromEntries(datasets.map((dataset) => [dataset, { status: "available", reason: "available", rowCount: 2 }]));
+  const coverage = datasets.map((dataset) => ({ dataset, start: "2026-08-20", end: "2026-08-21", ...(dataset === "shareholder-distribution" ? { savedWeeks: 2 } : {}) }));
+  const initial = reconcileChipPayload({
+    payload: completePayload({
+      rows: [completeDailyRow("2026-08-20", 1), completeDailyRow("2026-08-21", 2)],
+      distributionRows: [distributionRow("2026-08-20", 1), distributionRow("2026-08-21", 2)],
+      availability,
+      coverage,
+    }),
+    symbol: "2330.TW", interval: "1d", datasets, range: { start: "2026-08-20", end: "2026-08-21" }, nowMs: 1000,
+  });
+  assert.equal(initial.retainedDatasets.length, 0);
+
+  const corrected = completeDailyRow("2026-08-21", 2);
+  corrected.marginShort.marginTodayBalanceLots = 999;
+  const newInstitutional = completeDailyRow("2026-08-22", 3);
+  const mixed = completePayload({
+    rows: [
+      {
+        symbol: "2330.TW", sessionDate: corrected.sessionDate,
+        marginShort: corrected.marginShort,
+        provenance: { "margin-short": corrected.provenance["margin-short"] },
+      },
+      {
+        symbol: "2330.TW", sessionDate: newInstitutional.sessionDate,
+        institutionalFlow: newInstitutional.institutionalFlow,
+        provenance: { "institutional-flow": newInstitutional.provenance["institutional-flow"] },
+      },
+    ],
+    availability: {
+      "institutional-flow": { status: "available", reason: "available", rowCount: 1 },
+      "foreign-holding": { status: "unavailable", reason: "not_published", rowCount: 0 },
+      "margin-short": { status: "available", reason: "available", rowCount: 1 },
+      "securities-lending": { status: "unavailable", reason: "provider_unavailable", rowCount: 0 },
+      "shareholder-distribution": { status: "unavailable", reason: "history_not_archived", rowCount: 0 },
+    },
+    coverage: datasets.map((dataset) => ({ dataset, start: dataset === "institutional-flow" ? "2026-08-22" : null, end: dataset === "institutional-flow" ? "2026-08-22" : null })),
+  });
+  const result = reconcileChipPayload({
+    payload: mixed, symbol: "2330.TW", interval: "1d", datasets, range: { start: "2026-08-21", end: "2026-08-22" }, nowMs: 2000,
+  });
+  assert.deepEqual(normalized(result.rows.map((row) => row.sessionDate)), ["2026-08-21", "2026-08-22"]);
+  assert.equal(result.rows.find((row) => row.sessionDate === "2026-08-21").marginShort.marginTodayBalanceLots, 999);
+  assert.equal(result.rows.find((row) => row.sessionDate === "2026-08-22").institutionalFlow.institutionalTotalNetShares, 3000);
+  assert.equal(result.rows.find((row) => row.sessionDate === "2026-08-21").foreignHolding.heldRatioPercent, 2);
+  assert.deepEqual(normalized(result.distributionRows.map((row) => row.dataDate)), ["2026-08-21"]);
+  assert.deepEqual(normalized(result.retainedDatasets.map((item) => item.dataset).sort()), ["foreign-holding", "institutional-flow", "securities-lending", "shareholder-distribution"]);
+  for (const definition of CHIP_PANE_REGISTRY) {
+    for (const dataset of definition.datasets || [definition.dataset]) {
+      const slice = extractDatasetSlice(result, dataset, { start: "2026-08-21", end: "2026-08-22" });
+      assert.equal(datasetQualitySummary(slice).drawable, true, `${definition.id} 的 ${dataset} 不得被混合弱回應清空`);
+    }
+  }
+
+  const marginSlice = extractDatasetSlice(result, "margin-short", { start: "2026-08-21", end: "2026-08-22" });
+  assert.deepEqual(normalized(datasetQualitySummary(marginSlice).dates), ["2026-08-21"]);
+
+  const otherSymbol = reconcileChipPayload({
+    payload: completePayload({ symbol: "2317.TW", availability: { "shareholder-distribution": { status: "unavailable", reason: "not_published", rowCount: 0 } } }),
+    symbol: "2317.TW", interval: "1d", datasets: ["shareholder-distribution"], range: { start: "2026-08-20", end: "2026-08-22" }, nowMs: 3000,
+  });
+  assert.equal(otherSymbol.distributionRows.length, 0);
+  assert.equal(otherSymbol.retainedDatasets.length, 0);
+  const otherInterval = reconcileChipPayload({
+    payload: completePayload({ interval: "1wk", availability: { "shareholder-distribution": { status: "unavailable", reason: "unsupported_interval", rowCount: 0 } } }),
+    symbol: "2330.TW", interval: "1wk", datasets: ["shareholder-distribution"], range: { start: "2026-08-20", end: "2026-08-22" }, nowMs: 4000,
+  });
+  assert.equal(otherInterval.distributionRows.length, 0);
+  assert.equal(otherInterval.retainedDatasets.length, 0);
+});
+
+test("payload、日資料與 TDCC identity 不一致時拒絕且不污染 verified slice", () => {
+  resetChipRequestCacheForTest();
+  const input = {
+    symbol: "2330.TW", interval: "1d", datasets: ["margin-short"],
+    range: { start: "2026-08-21", end: "2026-08-21" }, nowMs: 1000,
+  };
+  assert.throws(() => reconcileChipPayload({
+    ...input,
+    payload: completePayload({ symbol: "2317.TW", rows: [{ ...completeDailyRow("2026-08-21"), symbol: "2317.TW" }] }),
+  }), /identity 不一致/);
+  assert.throws(() => reconcileChipPayload({
+    ...input,
+    payload: completePayload({ rows: [{ ...completeDailyRow("2026-08-21"), symbol: "2317.TW" }] }),
+  }), /identity 不一致/);
+  assert.throws(() => reconcileChipPayload({
+    ...input,
+    datasets: ["shareholder-distribution"],
+    payload: completePayload({ distributionRows: [{ ...distributionRow("2026-08-21"), symbol: "2317.TW" }] }),
+  }), /identity 不一致/);
+  const clean = reconcileChipPayload({
+    ...input,
+    payload: completePayload({ availability: { "margin-short": { status: "unavailable", reason: "not_published", rowCount: 0 } } }),
+    nowMs: 2000,
+  });
+  assert.equal(clean.rows.length, 0);
+  assert.equal(clean.retainedDatasets.length, 0);
+});
+
+test("同日稀疏候選保留完整資料，完整合法修正仍可更新", () => {
+  resetChipRequestCacheForTest();
+  const input = {
+    symbol: "2330.TW", interval: "1d", datasets: ["margin-short"],
+    range: { start: "2026-08-21", end: "2026-08-21" },
+  };
+  const original = completeDailyRow("2026-08-21", 1);
+  original.marginShort = { marginTodayBalanceLots: 100, shortTodayBalanceLots: 50, marginUtilizationPercent: 20 };
+  reconcileChipPayload({
+    ...input,
+    payload: completePayload({ rows: [original], availability: { "margin-short": { status: "available", reason: "available", rowCount: 1 } } }),
+    nowMs: 1000,
+  });
+  const sparse = completeDailyRow("2026-08-21", 2);
+  sparse.marginShort = { marginTodayBalanceLots: 999 };
+  const retained = reconcileChipPayload({
+    ...input,
+    payload: completePayload({ rows: [sparse], availability: { "margin-short": { status: "available", reason: "available", rowCount: 1 } } }),
+    nowMs: 2000,
+  });
+  assert.deepEqual(normalized(retained.rows[0].marginShort), normalized(original.marginShort));
+  assert.deepEqual(normalized(retained.retainedDatasets.map((item) => item.dataset)), ["margin-short"]);
+
+  const correction = structuredClone(original);
+  correction.marginShort.marginTodayBalanceLots = 101;
+  const corrected = reconcileChipPayload({
+    ...input,
+    payload: completePayload({ rows: [correction], availability: { "margin-short": { status: "available", reason: "available", rowCount: 1 } } }),
+    nowMs: 3000,
+  });
+  assert.equal(corrected.rows[0].marginShort.marginTodayBalanceLots, 101);
+  assert.equal(corrected.retainedDatasets.length, 0);
+});
+
+test("TDCC 部分級距視為 invalid response 且不得覆寫完整切片", () => {
+  resetChipRequestCacheForTest();
+  const input = {
+    symbol: "2330.TW", interval: "1d", datasets: ["shareholder-distribution"],
+    range: { start: "2026-08-21", end: "2026-08-21" },
+  };
+  const original = distributionRow("2026-08-21");
+  reconcileChipPayload({
+    ...input,
+    payload: completePayload({ distributionRows: [original], availability: { "shareholder-distribution": { status: "available", reason: "available", rowCount: 1 } } }),
+    nowMs: 1000,
+  });
+  const incomplete = { ...structuredClone(original), levels: original.levels.filter((item) => [1, 2, 3, 15].includes(item.level)) };
+  const retained = reconcileChipPayload({
+    ...input,
+    payload: completePayload({ distributionRows: [incomplete], availability: { "shareholder-distribution": { status: "available", reason: "available", rowCount: 1 } } }),
+    nowMs: 2000,
+  });
+  assert.equal(retained.distributionRows[0].levels.length, 15);
+  assert.equal(retained.availability["shareholder-distribution"].sourceReason, "invalid_response");
+  assert.deepEqual(normalized(retained.retainedDatasets.map((item) => item.dataset)), ["shareholder-distribution"]);
+});
+
+test("目前 range 的 rows、coverage 與來源 metadata 保持一致", () => {
+  resetChipRequestCacheForTest();
+  const wideRows = [completeDailyRow("2026-08-20", 1), completeDailyRow("2026-08-21", 2)];
+  wideRows.forEach((row) => { row.provenance["margin-short"].provider = "twse"; });
+  reconcileChipPayload({
+    payload: completePayload({
+      rows: wideRows,
+      availability: { "margin-short": { status: "available", reason: "available", rowCount: 2 } },
+      coverage: [{ dataset: "margin-short", start: "2026-08-20", end: "2026-08-21" }],
+      sources: [{ dataset: "margin-short", providers: ["twse"], frequency: "daily" }],
+    }),
+    symbol: "2330.TW", interval: "1d", datasets: ["margin-short"],
+    range: { start: "2026-08-20", end: "2026-08-21" }, nowMs: 1000,
+  });
+  const narrow = reconcileChipPayload({
+    payload: completePayload({
+      rows: [],
+      availability: { "margin-short": { status: "unavailable", reason: "provider_unavailable", rowCount: 0 } },
+      coverage: [{ dataset: "margin-short", start: null, end: null }],
+      sources: [{ dataset: "margin-short", providers: ["finmind"], frequency: "daily" }],
+    }),
+    symbol: "2330.TW", interval: "1d", datasets: ["margin-short"],
+    range: { start: "2026-08-21", end: "2026-08-21" }, nowMs: 2000,
+  });
+  assert.deepEqual(normalized(narrow.rows.map((row) => row.sessionDate)), ["2026-08-21"]);
+  assert.deepEqual(normalized(narrow.coverage[0]), {
+    dataset: "margin-short", start: "2026-08-21", end: "2026-08-21",
+    requestedStart: "2026-08-21", requestedEnd: "2026-08-21", retained: true,
+  });
+  assert.deepEqual(normalized(narrow.sources[0].providers), ["twse"]);
+  assert.equal(narrow.rows[0].provenance["margin-short"].provider, "twse");
+});
+
+test("verified slice store 採 TTL 與 LRU 上限且 metrics 不揭露商品清單", () => {
+  resetChipRequestCacheForTest();
+  const payloadForSymbol = (symbol) => completePayload({
+    symbol,
+    rows: [{ ...completeDailyRow("2026-08-21"), symbol }],
+    availability: { "margin-short": { status: "available", reason: "available", rowCount: 1 } },
+  });
+  reconcileChipPayload({
+    payload: payloadForSymbol("0001.TW"), symbol: "0001.TW", interval: "1d", datasets: ["margin-short"],
+    range: { start: "2026-08-21", end: "2026-08-21" }, nowMs: 1,
+  });
+  reconcileChipPayload({
+    payload: payloadForSymbol("0002.TW"), symbol: "0002.TW", interval: "1d", datasets: ["margin-short"],
+    range: { start: "2026-08-21", end: "2026-08-21" }, nowMs: 8 * 24 * 60 * 60 * 1000,
+  });
+  assert.equal(cacheMetrics().verifiedEntries, 1, "超過 TTL 的 verified slice 必須清除");
+
+  resetChipRequestCacheForTest();
+  for (let index = 0; index < 321; index += 1) {
+    const symbol = `${String(index).padStart(4, "0")}.TW`;
+    reconcileChipPayload({
+      payload: payloadForSymbol(symbol), symbol, interval: "1d", datasets: ["margin-short"],
+      range: { start: "2026-08-21", end: "2026-08-21" }, nowMs: 1000 + index,
+    });
+  }
+  const metrics = cacheMetrics();
+  assert.equal(metrics.verifiedEntries, 320);
+  assert.equal(metrics.verifiedEvicted, 1);
+  assert.equal(Object.values(metrics).some((value) => Array.isArray(value)), false);
+});
+
+test("逾時、取消與手動 cache invalidation 後 queue 釋放且 verified slice 仍可保護畫面", async () => {
+  resetChipRequestCacheForTest();
+  const input = {
+    symbol: "2330.TW", interval: "1d", datasets: ["margin-short"],
+    candles: [{ time: "2026-08-20" }, { time: "2026-08-21" }],
+  };
+  fetchImpl = async () => new Promise(() => {});
+  await assert.rejects(requestData({ ...input, timeoutMs: 5 }), /預載逾時/);
+  assert.equal(cacheMetrics().inFlightRequests, 0);
+
+  let release;
+  fetchImpl = async () => new Promise((resolve) => {
+    release = () => resolve(Response.json(completePayload({
+      rows: [completeDailyRow("2026-08-21")],
+      availability: { "margin-short": { status: "available", reason: "available", rowCount: 1 } },
+    })));
+  });
+  const abortController = new AbortController();
+  const cancelled = requestData({ ...input, signal: abortController.signal });
+  await Promise.resolve();
+  abortController.abort();
+  await assert.rejects(cancelled, (error) => error?.name === "AbortError");
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(cacheMetrics().inFlightRequests, 0);
+
+  window.QuoteChartChipPanes.__test.invalidateChipRequestCache("2330.TW");
+  fetchImpl = async () => Response.json(completePayload({
+    availability: { "margin-short": { status: "unavailable", reason: "not_published", rowCount: 0 } },
+  }));
+  const retained = await requestData({ ...input, forceRefresh: true });
+  assert.equal(retained.rows[0].marginShort.marginTodayBalanceLots, 100);
+  assert.equal(retained.availability["margin-short"].reason, "retained_stale");
 });
 
 test("日籌碼與 TDCC cache 使用不同 freshness 並可判定 stale", () => {

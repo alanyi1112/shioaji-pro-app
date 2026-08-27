@@ -226,8 +226,31 @@ test("即時日 K 新增日期會同步技術、分日線與籌碼時間錨點�
     chipSource.indexOf("      updateCandles(candles) {"),
     chipSource.indexOf("\n      setMode(nextMode)"),
   );
-  assert.match(updateCandlesBlock, /controller\.setCandles\(nextCandles\)/);
+  assert.match(updateCandlesBlock, /controller\.setCandles\(nextCandles\)[\s\S]*if \(previousRange\.start === nextRange\.start && previousRange\.end === nextRange\.end\) return/);
   assert.doesNotMatch(updateCandlesBlock, /\bload\(\)|sharedChipRequest|fetch\(/);
+});
+
+test("大戶散戶縱軸與同日新價位都會維持 autoscale", () => {
+  const paneOptionsBlock = chipSource.slice(
+    chipSource.indexOf("  function paneChartInteractionOptions("),
+    chipSource.indexOf("\n  function chartOptions", chipSource.indexOf("  function paneChartInteractionOptions(")),
+  );
+  assert.match(paneOptionsBlock, /isHolderDefinition\(definition\)/);
+  assert.match(paneOptionsBlock, /axisPressedMouseMove:\s*\{[\s\S]*time:[\s\S]*price: false/);
+
+  const controllerSetCandlesStart = chipSource.indexOf("      setCandles(candles) {");
+  const controllerSetCandlesBlock = chipSource.slice(
+    controllerSetCandlesStart,
+    chipSource.indexOf("\n      isMounted()", controllerSetCandlesStart),
+  );
+  assert.match(controllerSetCandlesBlock, /lastCandles = nextCandles;\s*stabilizeHolderPriceScales\(\);\s*if \(previousRange\.start === nextRange\.start && previousRange\.end === nextRange\.end\) return/);
+
+  const stabilizeBlock = chipSource.slice(
+    chipSource.indexOf("    function stabilizeHolderPriceScales()"),
+    chipSource.indexOf("\n    function mountChart()", chipSource.indexOf("    function stabilizeHolderPriceScales()")),
+  );
+  assert.match(stabilizeBlock, /priceScale\(scaleId\)\.applyOptions\(\{ autoScale: true \}\)/);
+  assert.match(chipSource, /if \(detailsPinnedDate && !holderDetails\.hidden\) renderDetailTable\(detailsPinnedDate\);\s*stabilizeHolderPriceScales\(\);/);
 });
 
 test("已快取擴充歷史時前景更新沿用相同 K 棒數避免時間軸基準漂移", () => {
