@@ -1,6 +1,6 @@
 // src/components/hud-header.tsx — top status bar with workspace menus
 
-import { Eye, EyeOff, Lock, Unlock, Volume2, VolumeX, X, Zap } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Volume2, VolumeX, Zap } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useStreamStatus } from '../hooks/use-stream';
 import {
@@ -15,7 +15,6 @@ import {
 } from '../lib/risk';
 import { fetchInfo } from '../lib/shioaji';
 import { useRuntimeMode } from '../lib/runtime-mode';
-import { openMultiViewWindow } from '../lib/multiview-window';
 import {
     maskAccountId,
     maskMoney,
@@ -46,9 +45,11 @@ import {
     type FlashTileLayout,
 } from '../lib/tauri';
 import { fmtMoney } from '../lib/utils/format';
-import { LAYOUT_PRESETS, type BlockType } from '../lib/workspace';
+import { type BlockType } from '../lib/workspace';
+import { Menu } from './header-menu';
 import { MarketBar } from './market-bar';
 import { ServerManager } from './server-manager';
+import { ProfilesMenu } from './workspace-layout-menu';
 import * as panel from './panel.css';
 import * as styles from './hud-header.css';
 
@@ -68,37 +69,6 @@ const CONVENTION_OPTIONS: { key: Convention; label: string }[] = [
     { key: 'tw', label: '紅漲綠跌' },
     { key: 'intl', label: '綠漲紅跌' },
 ];
-
-function Menu({
-    label,
-    children,
-}: {
-    label: React.ReactNode;
-    children: (close: () => void) => React.ReactNode;
-}) {
-    const [open, setOpen] = useState(false);
-    return (
-        <div className={styles.settingsWrap}>
-            <button
-                className={styles.resetBtn}
-                onClick={() => setOpen((o) => !o)}
-            >
-                {label}
-            </button>
-            {open && (
-                <>
-                    <div
-                        className={styles.popoverBackdrop}
-                        onClick={() => setOpen(false)}
-                    />
-                    <div className={styles.popover}>
-                        {children(() => setOpen(false))}
-                    </div>
-                </>
-            )}
-        </div>
-    );
-}
 
 function ThemeSettings() {
     const settings = useThemeSettings();
@@ -471,137 +441,6 @@ function AddBlockMenu({
                             {t.disabled && '（已存在）'}
                         </button>
                     ))}
-                </>
-            )}
-        </Menu>
-    );
-}
-
-function ProfilesMenu({
-    profiles,
-    onSaveProfile,
-    onLoadProfile,
-    onDeleteProfile,
-    onResetWorkspace,
-    onLoadPreset,
-}: {
-    profiles: string[];
-    onSaveProfile: (name: string) => void;
-    onLoadProfile: (name: string) => void;
-    onDeleteProfile: (name: string) => void;
-    onResetWorkspace: () => void;
-    onLoadPreset: (name: string) => void;
-}) {
-    const [name, setName] = useState('');
-    return (
-        <Menu label='版面'>
-            {(close) => (
-                <>
-                    <span className={styles.settingLabel}>多圖看盤</span>
-                    <button
-                        className={styles.menuItem}
-                        title='在新分頁開啟本機 MultiView，不變更目前版面'
-                        onClick={() => {
-                            const opened = openMultiViewWindow();
-                            close();
-                            if (!opened) {
-                                window.alert(
-                                    '瀏覽器已阻擋 MultiView 新分頁，請允許彈出視窗後重試。',
-                                );
-                            }
-                        }}
-                    >
-                        MultiView（開新分頁）
-                        <span className={styles.presetDesc}>
-                            1／2／3／4／6／8 圖看盤
-                        </span>
-                    </button>
-                    <span className={styles.settingLabel}>
-                        預設版面 Presets
-                    </span>
-                    {LAYOUT_PRESETS.map((p) => (
-                        <button
-                            key={p.name}
-                            className={styles.menuItem}
-                            title={p.desc}
-                            onClick={() => {
-                                onLoadPreset(p.name);
-                                close();
-                            }}
-                        >
-                            {p.name}
-                            <span className={styles.presetDesc}>
-                                {p.desc}
-                            </span>
-                        </button>
-                    ))}
-                    <span className={styles.settingLabel}>
-                        儲存目前版面 Save Layout
-                    </span>
-                    <div className={styles.saveRow}>
-                        <input
-                            className={styles.saveInput}
-                            placeholder='版面名稱'
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter' && name.trim()) {
-                                    onSaveProfile(name.trim());
-                                    setName('');
-                                }
-                            }}
-                        />
-                        <button
-                            className={styles.resetBtn}
-                            disabled={!name.trim()}
-                            onClick={() => {
-                                if (name.trim()) {
-                                    onSaveProfile(name.trim());
-                                    setName('');
-                                }
-                            }}
-                        >
-                            儲存
-                        </button>
-                    </div>
-                    <span className={styles.settingLabel}>
-                        版面列表 Saved Layouts
-                    </span>
-                    {profiles.length === 0 && (
-                        <span className={styles.emptyHint}>
-                            尚無儲存的版面
-                        </span>
-                    )}
-                    {profiles.map((p) => (
-                        <div key={p} className={styles.profileRow}>
-                            <button
-                                className={styles.menuItem}
-                                style={{ flex: 1 }}
-                                onClick={() => {
-                                    onLoadProfile(p);
-                                    close();
-                                }}
-                            >
-                                {p}
-                            </button>
-                            <button
-                                className={styles.profileDelete}
-                                title='刪除此版面'
-                                onClick={() => onDeleteProfile(p)}
-                            >
-                                <X size={10} />
-                            </button>
-                        </div>
-                    ))}
-                    <button
-                        className={styles.menuItem}
-                        onClick={() => {
-                            onResetWorkspace();
-                            close();
-                        }}
-                    >
-                        ↺ 重設為預設版面
-                    </button>
                 </>
             )}
         </Menu>

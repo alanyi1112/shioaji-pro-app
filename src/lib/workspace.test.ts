@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
     BLOCK_META,
     LAYOUT_PRESETS,
+    loadProfiles,
     loadWorkspace,
+    saveProfiles,
     saveWorkspace,
+    upsertProfile,
+    type Profile,
     type Workspace,
 } from './workspace';
 
@@ -108,5 +112,65 @@ describe('smart-order panel workspace contract', () => {
                 });
             }
         }
+    });
+});
+
+describe('workspace storage compatibility', () => {
+    it('round-trips current and named layouts through the existing storage keys', () => {
+        const stored = new Map<string, string>();
+        const previousLocalStorage = globalThis.localStorage;
+        Object.defineProperty(globalThis, 'localStorage', {
+            configurable: true,
+            value: {
+                getItem: (key: string) => stored.get(key) ?? null,
+                setItem: (key: string, value: string) => stored.set(key, value),
+            },
+        });
+        const workspace = structuredClone(LAYOUT_PRESETS[0]!.workspace);
+        const profiles: Profile[] = [
+            { name: '我的版面', workspace: structuredClone(workspace) },
+        ];
+
+        try {
+            saveWorkspace(workspace);
+            saveProfiles(profiles);
+
+            expect(stored.has('sj-pro-workspace-v2')).toBe(true);
+            expect(stored.has('sj-pro-profiles-v1')).toBe(true);
+            expect(loadWorkspace()).toEqual(workspace);
+            expect(loadProfiles()).toEqual(profiles);
+        } finally {
+            if (previousLocalStorage === undefined) {
+                Reflect.deleteProperty(globalThis, 'localStorage');
+            } else {
+                Object.defineProperty(globalThis, 'localStorage', {
+                    configurable: true,
+                    value: previousLocalStorage,
+                });
+            }
+        }
+    });
+
+    it('updates one exact-name profile with an isolated workspace snapshot', () => {
+        const original = structuredClone(LAYOUT_PRESETS[0]!.workspace);
+        const replacement = structuredClone(LAYOUT_PRESETS[1]!.workspace);
+        const next = upsertProfile(
+            [
+                { name: '既有版面', workspace: original },
+                { name: '其他版面', workspace: original },
+            ],
+            '  既有版面  ',
+            replacement,
+        );
+
+        expect(next.filter((profile) => profile.name === '既有版面')).toHaveLength(
+            1,
+        );
+        expect(next.map((profile) => profile.name)).toEqual([
+            '其他版面',
+            '既有版面',
+        ]);
+        expect(next.at(-1)?.workspace).toEqual(replacement);
+        expect(next.at(-1)?.workspace).not.toBe(replacement);
     });
 });

@@ -10,6 +10,7 @@ export default defineConfig({
             'react',
             'react-dom',
             'react-dom/client',
+            'lucide-react',
             '@tauri-apps/api/window',
         ],
     },

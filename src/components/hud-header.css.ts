@@ -170,6 +170,11 @@ export const popover = style({
     right: 0,
     zIndex: 200,
     width: '15rem',
+    maxHeight: 'calc(100vh - 4rem)',
+    boxSizing: 'border-box',
+    overflowY: 'auto',
+    overscrollBehavior: 'contain',
+    scrollbarGutter: 'stable',
     background: vars.color.panelRaised,
     border: `1px solid ${vars.color.borderBright}`,
     borderRadius: vars.radius.md,
@@ -178,6 +183,11 @@ export const popover = style({
     display: 'flex',
     flexDirection: 'column',
     gap: vars.space.sm,
+    '@supports': {
+        '(height: 100dvh)': {
+            maxHeight: 'calc(100dvh - 4rem)',
+        },
+    },
 });
 
 export const popoverBackdrop = style({
@@ -358,6 +368,14 @@ export const saveInput = style({
     outline: 'none',
     ':focus': { borderColor: vars.color.accent },
     '::placeholder': { color: vars.color.mutedForeground },
+});
+
+export const saveHint = style({
+    minHeight: '1em',
+    fontFamily: vars.font.body,
+    fontSize: '0.6rem',
+    lineHeight: 1.35,
+    color: vars.color.mutedForeground,
 });
 
 export const profileRow = style({

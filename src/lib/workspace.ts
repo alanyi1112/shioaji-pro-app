@@ -604,6 +604,22 @@ export function saveProfiles(profiles: Profile[]) {
     localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
 }
 
+export function upsertProfile(
+    profiles: Profile[],
+    name: string,
+    workspace: Workspace,
+): Profile[] {
+    const normalizedName = name.trim();
+    if (!normalizedName) return profiles;
+    return [
+        ...profiles.filter((profile) => profile.name !== normalizedName),
+        {
+            name: normalizedName,
+            workspace: structuredClone(workspace),
+        },
+    ];
+}
+
 let blockCounter = Date.now() % 100000;
 export function newBlockId(type: BlockType): string {
     blockCounter += 1;

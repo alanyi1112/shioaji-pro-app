@@ -85,6 +85,7 @@ import {
     newBlockId,
     saveProfiles,
     saveWorkspace,
+    upsertProfile,
     type Block,
     type BlockType,
     type PulseSection,
@@ -872,17 +873,17 @@ function TradingApp() {
 
     const saveProfileAs = useCallback(
         (name: string) => {
-            const next = [
-                ...profiles.filter((p) => p.name !== name),
-                { name, workspace: structuredClone(workspace) },
-            ];
+            const updatesExisting = profiles.some((p) => p.name === name);
+            const next = upsertProfile(profiles, name, workspace);
             setProfiles(next);
             saveProfiles(next);
-            trackActivity('存版面', name);
+            trackActivity(updatesExisting ? '更新版面' : '存版面', name);
             notify({
                 kind: 'ok',
-                title: '版面已儲存',
-                body: `「${name}」已加入版面列表`,
+                title: updatesExisting ? '版面已更新' : '版面已另存',
+                body: updatesExisting
+                    ? `「${name}」已更新為目前版面`
+                    : `「${name}」已加入版面列表`,
             });
         },
         [profiles, workspace],
