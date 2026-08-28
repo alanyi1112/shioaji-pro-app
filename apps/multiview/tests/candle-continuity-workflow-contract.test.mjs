@@ -105,7 +105,8 @@ test("Worker 控制面沿用獨立 audit secret、三個 orchestrator action 與
   assert.match(appSource, /preferPersisted === true/);
   assert.match(appSource, /requiredRows: Math\.min\(320, Math\.max\(1, historyRows\.length\)\)/);
   assert.match(appSource, /body\.acceptancePreparation === true \? 320 : 160/);
-  assert.match(appSource, /readCandleHistory\(env\.DB, identity, displayCount\)/);
+  assert.match(appSource, /readCandleHistory\(env\.DB, identity, displayCount \+ 5\)/);
+  assert.match(appSource, /summary\.candleCount < displayCount/);
   assert.match(appSource, /auditCandleContinuitySymbol\(env, symbol, now, 160, body\.preferPersisted === true\)/);
   assert.match(appSource, /claimCandleContinuityItems\(\{ db: env\.DB, runId, owner, limit: 1, now \}\)/);
   assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow, 4\)/);

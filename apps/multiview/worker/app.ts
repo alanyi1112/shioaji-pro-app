@@ -2784,7 +2784,7 @@ async function candleContinuityAcceptanceFromD1(env: Env, symbol: string, reques
   }
   const parameters = indicatorParametersFromSearchParams(new URLSearchParams());
   const snapshot = async (displayCount: number, verification?: CandlePayloadResult["quote"]["verification"]) => {
-    const history = await readCandleHistory(env.DB, identity, displayCount);
+    const history = await readCandleHistory(env.DB, identity, displayCount + 5);
     if (!history.ok || history.rows.length < displayCount) throw new Error("continuity_unverified");
     const payload = candlePayloadFromRows(symbol, "1d", history.rows, "yfinance", displayCount, {
       store: "d1", state: "hit", source: "yfinance", historyStore: "candle_history", persistent: true,
@@ -2793,7 +2793,9 @@ async function candleContinuityAcceptanceFromD1(env: Env, symbol: string, reques
     payload.quote = verification
       ? { ...payload.quote, verification }
       : await verifyMarketQuote(env, symbol, "1d", payload.candles, payload.quote);
-    return { summary: summarizeCandleContinuityAcceptance(payload, { from: "2026-07-31", through: "2026-08-17" }), verification: payload.quote.verification };
+    const summary = summarizeCandleContinuityAcceptance(payload, { from: "2026-07-31", through: "2026-08-17" });
+    if (summary.candleCount < displayCount) throw new Error("continuity_unverified");
+    return { summary, verification: payload.quote.verification };
   };
   const first160 = await snapshot(160);
   const repeat160 = await snapshot(160, first160.verification);
