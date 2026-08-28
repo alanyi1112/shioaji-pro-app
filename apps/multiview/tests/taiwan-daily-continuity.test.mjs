@@ -3,11 +3,15 @@ import test from "node:test";
 import { mergeCandleHistory } from "../worker/candle-history.ts";
 import {
   auditTaiwanDailyContinuity,
+  cacheTaiwanOfficialMonthPayload,
   clearTaiwanDailyContinuityRuntimeState,
+  fetchTaiwanOfficialMonth,
+  officialMonthKey,
   parseTpexOfficialMonth,
   parseTwseOfficialMonth,
   taiwanSessionDate,
 } from "../worker/taiwan-daily-continuity.ts";
+import { SqliteD1 } from "./helpers/sqlite-d1.mjs";
 import {
   LARGAN_AUGUST_2026_MISSING_ROWS,
   larganGapHistoryFixture,
@@ -46,6 +50,45 @@ test("TWSE 與 TPEx 月資料 parser 正規化民國日期、OHLCV 與成交量�
   }, "8069.TWO", "2026-08-28T08:00:00.000Z");
   assert.equal(tpex.length, 1);
   assert.deepEqual({ date: taiwanSessionDate(tpex[0]), volume: tpex[0].volume, source: tpex[0].source }, { date: "2026-08-03", volume: 7399000, source: "tpex-official" });
+});
+
+test("受保護 runner 月資料寫入會重跑 parser、寫入 D1，後續稽核不再呼叫網路", async () => {
+  clearTaiwanDailyContinuityRuntimeState();
+  const db = new SqliteD1();
+  db.exec("CREATE TABLE candle_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+  try {
+    const now = new Date("2026-08-28T08:00:00.000Z");
+    const cached = await cacheTaiwanOfficialMonthPayload({ db, symbol: "3008.TW", month: "2026-08", payload: twseMonthPayload(), now });
+    assert.equal(cached.status, "available");
+    assert.equal(cached.rows.length, 10);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS rows FROM candle_cache WHERE cache_key=?").get(officialMonthKey("3008.TW", "2026-08")).rows, 1);
+
+    clearTaiwanDailyContinuityRuntimeState();
+    let networkCalls = 0;
+    const reused = await fetchTaiwanOfficialMonth("3008.TW", "2026-08", {
+      db,
+      now: new Date("2026-08-28T08:01:00.000Z"),
+      fetchImpl: async () => { networkCalls += 1; throw new Error("network_must_not_run"); },
+    });
+    assert.equal(reused.status, "available");
+    assert.equal(reused.rows.length, 10);
+    assert.equal(networkCalls, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("受保護 runner 月資料拒絕非法商品與月份不符 payload，且不污染 D1", async () => {
+  clearTaiwanDailyContinuityRuntimeState();
+  const db = new SqliteD1();
+  db.exec("CREATE TABLE candle_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+  try {
+    await assert.rejects(() => cacheTaiwanOfficialMonthPayload({ db, symbol: "3008", month: "2026-08", payload: twseMonthPayload() }), /invalid_response/);
+    await assert.rejects(() => cacheTaiwanOfficialMonthPayload({ db, symbol: "3008.TW", month: "2026-07", payload: twseMonthPayload() }), /invalid_response/);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS rows FROM candle_cache").get().rows, 0);
+  } finally {
+    db.close();
+  }
 });
 
 test("大立光 rows 足夠且 full flag 為真時仍找出十個官方交易日缺口，修復後才 complete", async () => {

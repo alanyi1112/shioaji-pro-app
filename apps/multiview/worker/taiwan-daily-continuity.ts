@@ -38,8 +38,40 @@ type FetchOfficialMonthOptions = {
 const officialMonthMemory = new Map<string, { expiresAt: number; value: TaiwanOfficialMonthResult }>();
 const officialMonthInflight = new Map<string, Promise<TaiwanOfficialMonthResult>>();
 
-function officialMonthKey(symbol: string, month: string) {
+export function officialMonthKey(symbol: string, month: string) {
   return `official-candle-month-v1|${symbol.trim().toUpperCase()}|${month}`;
+}
+
+function officialMonthResultFromPayload(symbol: string, month: string, payload: unknown, checkedAt: string): TaiwanOfficialMonthResult {
+  const normalizedSymbol = symbol.trim().toUpperCase();
+  const provider = normalizedSymbol.endsWith(".TWO") ? "tpex" as const : "twse" as const;
+  const object = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+  const stat = String(object?.stat || "").toLowerCase();
+  const rows = provider === "twse" ? parseTwseOfficialMonth(object, normalizedSymbol, checkedAt) : parseTpexOfficialMonth(object, normalizedSymbol, checkedAt);
+  const targetMonth = String(object?.date || "").replace(/\D/g, "").slice(0, 6);
+  const expectedMonth = month.replace("-", "");
+  const notPublished = ["查無資料", "很抱歉，沒有符合條件的資料!"].some((message) => JSON.stringify(object || {}).includes(message));
+  return rows.length && targetMonth === expectedMonth
+    ? { symbol: normalizedSymbol, month, status: "available", rows, sessionDates: rows.map(taiwanSessionDate).filter(validSessionDate), provider, checkedAt, reasonCode: null }
+    : notPublished || stat === "ok" && targetMonth === expectedMonth
+      ? { symbol: normalizedSymbol, month, status: "not_published", rows: [], sessionDates: [], provider, checkedAt, reasonCode: "official_no_rows" }
+      : { symbol: normalizedSymbol, month, status: "invalid_payload", rows: [], sessionDates: [], provider, checkedAt, reasonCode: "invalid_response" };
+}
+
+export async function cacheTaiwanOfficialMonthPayload(input: { db: D1Database; symbol: string; month: string; payload: unknown; now?: Date }) {
+  const symbol = input.symbol.trim().toUpperCase();
+  const month = String(input.month || "");
+  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(symbol) || !/^\d{4}-\d{2}$/.test(month)) throw new Error("invalid_response");
+  const now = input.now ?? new Date();
+  const value = officialMonthResultFromPayload(symbol, month, input.payload, now.toISOString());
+  if (!["available", "not_published"].includes(value.status)) throw new Error("invalid_response");
+  const epoch = Math.floor(now.getTime() / 1000);
+  const ttl = value.status === "available" ? OFFICIAL_SUCCESS_TTL_SECONDS : OFFICIAL_PENDING_TTL_SECONDS;
+  await input.db.prepare(`INSERT INTO candle_cache (cache_key,payload,expires_at) VALUES (?,?,?)
+    ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,expires_at=excluded.expires_at,updated_at=CURRENT_TIMESTAMP`)
+    .bind(officialMonthKey(symbol, month), JSON.stringify(value), epoch + ttl).run();
+  officialMonthMemory.set(officialMonthKey(symbol, month), { expiresAt: epoch + ttl, value });
+  return value;
 }
 
 function validSessionDate(value: unknown): value is string {
@@ -247,17 +279,7 @@ export async function fetchTaiwanOfficialMonth(symbol: string, month: string, op
     if (fetched.reasonCode) {
       value = { symbol: normalizedSymbol, month, status: "unavailable", rows: [], sessionDates: [], provider, checkedAt, reasonCode: fetched.reasonCode };
     } else {
-      const payload = fetched.payload as Record<string, unknown> | null;
-      const stat = String(payload?.stat || "").toLowerCase();
-      const rows = provider === "twse" ? parseTwseOfficialMonth(payload, normalizedSymbol, checkedAt) : parseTpexOfficialMonth(payload, normalizedSymbol, checkedAt);
-      const targetMonth = String(payload?.date || "").replace(/\D/g, "").slice(0, 6);
-      const expectedMonth = month.replace("-", "");
-      const notPublished = ["查無資料", "很抱歉，沒有符合條件的資料!"].some((message) => JSON.stringify(payload || {}).includes(message));
-      value = rows.length && targetMonth === expectedMonth
-        ? { symbol: normalizedSymbol, month, status: "available", rows, sessionDates: rows.map(taiwanSessionDate).filter(validSessionDate), provider, checkedAt, reasonCode: null }
-        : notPublished || ["ok", ""].includes(stat) && targetMonth === expectedMonth
-          ? { symbol: normalizedSymbol, month, status: "not_published", rows: [], sessionDates: [], provider, checkedAt, reasonCode: "official_no_rows" }
-          : { symbol: normalizedSymbol, month, status: "invalid_payload", rows: [], sessionDates: [], provider, checkedAt, reasonCode: "invalid_response" };
+      value = officialMonthResultFromPayload(normalizedSymbol, month, fetched.payload, checkedAt);
     }
     if (value.reasonCode === "audit_request_budget") return value;
     const ttl = value.status === "available" ? OFFICIAL_SUCCESS_TTL_SECONDS : value.status === "not_published" ? OFFICIAL_PENDING_TTL_SECONDS : OFFICIAL_FAILURE_TTL_SECONDS;

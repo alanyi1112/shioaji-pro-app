@@ -6,6 +6,7 @@ const runner = await readFile(new URL("../scripts/candle-continuity-runner.mjs",
 const sites = await readFile(new URL("../.github/workflows/sites-daily-candle-continuity.yml", import.meta.url), "utf8");
 const cloudflare = await readFile(new URL("../.github/workflows/cloudflare-daily-candle-continuity.yml", import.meta.url), "utf8");
 const acceptance = await readFile(new URL("../scripts/verify-daily-candle-continuity.mjs", import.meta.url), "utf8");
+const officialSeed = await readFile(new URL("../scripts/candle-continuity-official-seed.mjs", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../worker/app.ts", import.meta.url), "utf8");
 
 test("共用 runner 固定 start/tick/fail、60 ticks、15 分鐘與 90 秒 timeout", () => {
@@ -15,10 +16,12 @@ test("共用 runner 固定 start/tick/fail、60 ticks、15 分鐘與 90 秒 time
   assert.match(runner, /const maximumTicks = 60/);
   assert.match(runner, /15 \* 60 \* 1000/);
   assert.match(runner, /AbortSignal\.timeout\(90_000\)/);
-  assert.match(runner, /summary\.status === "retry_waiting" \? 60_000 : 250/);
+  assert.match(runner, /summary\.status === "retry_waiting" && !seeded && !auditedItem \? 60_000 : 250/);
   assert.match(runner, /health\?\.continuityAudit\?\.automation/);
   assert.match(runner, /commit_sha_mismatch/);
   assert.match(runner, /health_sla_failed/);
+  assert.match(runner, /seedRetryableOfficialItem/);
+  assert.match(runner, /retryableOfficialReasons/);
   assert.doesNotMatch(runner, /console\.log\([^\n]*(auditSecret|sitesBypassToken|cloudflareClientSecret)/);
 });
 
@@ -63,12 +66,22 @@ test("代表性驗收固定大立光、上櫃、ETF 與新加入商品並核對 
   assert.match(acceptance, /acceptancePreparation: true/);
   assert.match(acceptance, /responseAcceptance = await requestAcceptance\(symbol\)/);
   assert.match(acceptance, /auditItemFromAcceptance\(responseAcceptance\)/);
+  assert.match(acceptance, /seedTaiwanOfficialMonths/);
   assert.match(acceptance, /display160\.first/);
   assert.match(acceptance, /display160\.repeat/);
   assert.match(acceptance, /display320\.first/);
   assert.match(acceptance, /display320\.repeat/);
   assert.match(acceptance, /missingSessionCount/);
   assert.match(acceptance, /verifiedThrough/);
+});
+
+test("GitHub runner 官方月資料 fallback 固定 18 個月、二路並行、六筆分批且由 Worker 重驗 payload", () => {
+  assert.match(officialSeed, /count = 18/);
+  assert.match(officialSeed, /index \+= 2/);
+  assert.match(officialSeed, /index \+= 6/);
+  assert.match(officialSeed, /acceptance-cache-official-months/);
+  assert.match(officialSeed, /AbortSignal\.timeout\(12_000\)/);
+  assert.doesNotMatch(officialSeed, /console\.log/);
 });
 
 test("Worker 控制面沿用獨立 audit secret、三個 orchestrator action 與既有 continuity 核心", () => {
@@ -81,6 +94,9 @@ test("Worker 控制面沿用獨立 audit secret、三個 orchestrator action 與
   assert.match(appSource, /const evidence = item\.display320\.repeat/);
   assert.match(appSource, /candleContinuityAcceptanceFromD1/);
   assert.match(appSource, /body\.acceptancePreparation === true/);
+  assert.match(appSource, /action === "acceptance-cache-official-months"/);
+  assert.match(appSource, /cacheTaiwanOfficialMonthPayload/);
+  assert.match(appSource, /body\.acceptancePreparation === true \? 320 : 160/);
   assert.match(appSource, /readCandleHistory\(env\.DB, identity, displayCount\)/);
   assert.match(appSource, /auditCandleContinuitySymbol\(env, symbol, now\)/);
   assert.match(appSource, /claimCandleContinuityItems\(\{ db: env\.DB, runId, owner, limit: 1, now \}\)/);

@@ -38,6 +38,8 @@ workflow 只送出 `orchestrator-start`、重複 `orchestrator-tick`，必要時
 
 驗收 runner 每檔先執行 D1-only acceptance；已有完整 `candle_history`／`candle_history_state` 時不再依賴當下上游可用性。只有 D1 證據不足並回覆 5xx 時，才以獨立有界 request 執行 `acceptancePreparation` audit／回補後重試 acceptance。此受保護 preparation 最多只接受 4 檔合法台股，允許準備不在當日 target snapshot 的代表商品但不寫入 durable target。acceptance 最新收盤核對每檔只執行一次，再以相同核對結果分別產生 `display160.first/repeat` 與 `display320.first/repeat`；repeat 仍重新讀取 D1 並證明 cache hit。逐商品 item 以 `display320.repeat` 的 continuity 摘要產生。一般 audit 與每日 durable run 的 target 限制不受此驗收模式影響。
 
+Sites／Cloudflare runtime 若因 egress 限制無法直接取得 TWSE／TPEx 官方月資料，GitHub runner 僅在該 tick 回傳可重試的台股 item，或 D1-only acceptance 證據不足時，才直接向既有官方端點取得最近 18 個月 payload。runner 固定最多 2 個官方請求並行、每次最多重試一次、12 秒 timeout，並將 payload 每 6 個月一批送回受保護 action。Worker MUST 以既有 TWSE／TPEx parser 重新驗證 symbol、month、status 與 rows 後才寫入官方月 D1 cache；runner 不可直接寫 D1、不可提供 candle 派生值，也不可擴張 durable target。後續 audit 仍由既有核心從 cache 續跑並決定 complete／unknown／excluded evidence。
+
 1. 新加入或 `continuity_checked_at` 為空。
 2. 已確認缺口或 missing count 大於零。
 3. `partial`／`unknown`、evidence 過期或 coverage 落後 expected session。
@@ -50,7 +52,7 @@ workflow 只送出 `orchestrator-start`、重複 `orchestrator-tick`，必要時
 
 ### 3. 沿用既有限額，另加 run／tick 上限
 
-單次 tick claim 最多 1 個 item、worker concurrency 最大 1；每檔內的官方月份請求仍最多 2 個並行，production automation 每個 HTTP tick 最多新抓 4 個月份，低於核心上限 6，並沿用 8 秒 timeout、單 key 最多一次 retry、月 cache 與 single-flight。超過 4 個月份時以 `audit_request_budget` 跨 tick 利用已寫入月 cache 接續。workflow 最多 60 ticks、15 分鐘，HTTP call 最多 90 秒；到達上限時 run 保持 `running`／`retry_waiting` 與持久化 cursor，由下一次 schedule 或人工 dispatch 接續，不把未完成 item 改成 complete。
+單次 tick claim 最多 1 個 item、worker concurrency 最大 1；每檔內的官方月份請求仍最多 2 個並行，production automation 每個 HTTP tick 最多新抓 4 個月份，低於核心上限 6，並沿用 8 秒 timeout、單 key 最多一次 retry、月 cache 與 single-flight。超過 4 個月份時以 `audit_request_budget` 跨 tick 利用已寫入月 cache 接續。若 runner 已為該 item 補入官方月 cache，下一 tick 可繼續處理其他 queued item；只有沒有 audited item 可 claim、run 仍為 `retry_waiting` 時才等待 60 秒，避免因逐 item 等待超出 15 分鐘總上限。workflow 最多 60 ticks、15 分鐘，HTTP call 最多 90 秒；到達上限時 run 保持 `running`／`retry_waiting` 與持久化 cursor，由下一次 schedule 或人工 dispatch 接續，不把未完成 item 改成 complete。
 
 Sites 與 Cloudflare 排程錯開，避免同時對官方來源形成雙倍尖峰；預設在既有 22:30 台北每日籌碼作業後執行，Sites 23:00、Cloudflare 23:30。台灣沒有日光節約時間，因此 GitHub cron 可分別使用固定 UTC；仍保留 `workflow_dispatch` 供驗收與續跑。
 

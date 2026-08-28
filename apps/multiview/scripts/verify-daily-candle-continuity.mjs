@@ -1,3 +1,5 @@
+import { seedTaiwanOfficialMonths } from "./candle-continuity-official-seed.mjs";
+
 const REQUIRED_DATES = [
   "2026-07-31",
   "2026-08-03",
@@ -72,6 +74,7 @@ async function auditRepresentatives() {
       items.push(auditItemFromAcceptance(responseAcceptance));
       continue;
     }
+    await seedTaiwanOfficialMonths({ symbol, requestJson: protectedRequestJson });
     let last = null;
     for (let attempt = 1; attempt <= 6; attempt += 1) {
       const response = await requestJson("/api/internal/candle-continuity-audit", {
@@ -98,6 +101,13 @@ async function auditRepresentatives() {
     acceptance.push(responseAcceptance);
   }
   return { items, acceptance };
+}
+
+function protectedRequestJson(path, init = {}) {
+  return requestJson(path, {
+    ...init,
+    headers: { Authorization: `Bearer ${auditSecret}`, "Content-Type": "application/json", ...(init.headers || {}) },
+  });
 }
 
 async function requestAcceptance(symbol) {

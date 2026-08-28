@@ -129,7 +129,7 @@ import { readCandleCacheMaintenance } from "./cache-maintenance";
 import { recordCacheEvent, runtimeUsageSummary } from "./runtime-usage";
 import { localShioajiAdapterHealth } from "./local-shioaji-adapter";
 import { notifyRealtimeWatchlistSymbols, readRealtimeHealth, realtimeViewerCapability, type RealtimeEnv } from "./realtime-routing";
-import { auditTaiwanDailyContinuity } from "./taiwan-daily-continuity";
+import { auditTaiwanDailyContinuity, cacheTaiwanOfficialMonthPayload } from "./taiwan-daily-continuity";
 
 type ImagesBinding = {
   input(stream: ReadableStream): {
@@ -2729,14 +2729,14 @@ async function candleContinuityTargetCandidates(request: Request, env: Env) {
   });
 }
 
-async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow: Date) {
+async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow: Date, displayCount = 160) {
   if (!env.DB) throw new Error("d1_unavailable");
   const history = await acquireCandleHistory({
     db: env.DB,
     provider: providerForCandleSymbol(symbol),
     symbol,
     interval: "1d",
-    displayCount: 160,
+    displayCount,
     fetcher: async ({ mode, startTime }) => {
       const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
       return { rows: fetched.rows, source: fetched.provider };
@@ -2799,6 +2799,25 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
   await ensureDb(env.DB);
   const action = String(body.action || "");
   if (action) {
+    if (action === "acceptance-cache-official-months") {
+      const symbols = normalizeCandleContinuityAcceptanceSymbols([body.symbol]);
+      const months = Array.isArray(body.months) ? body.months : [];
+      if (symbols.length !== 1 || months.length < 1 || months.length > 18) return json({ ok: false, reasonCode: "invalid_payload" }, 400);
+      const uniqueMonths = new Set<string>();
+      try {
+        const cached = [];
+        for (const entry of months) {
+          const item = jsonObject(entry);
+          const month = String(item.month || "");
+          if (!/^\d{4}-\d{2}$/.test(month) || uniqueMonths.has(month) || !item.payload || typeof item.payload !== "object") throw new Error("invalid_response");
+          uniqueMonths.add(month);
+          cached.push(await cacheTaiwanOfficialMonthPayload({ db: env.DB, symbol: symbols[0], month, payload: item.payload, now: new Date() }));
+        }
+        return json({ ok: true, done: true, symbol: symbols[0], cached: cached.length, available: cached.filter((item) => item.status === "available").length, notPublished: cached.filter((item) => item.status === "not_published").length });
+      } catch {
+        return json({ ok: false, reasonCode: "invalid_payload" }, 400);
+      }
+    }
     const runId = String(body.runId || "");
     const now = new Date();
     try {
@@ -2882,7 +2901,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
           reasonCode: status === "complete" ? null : "continuity_unverified",
         };
       })
-    : await runCandleContinuityAuditBatch(planned.symbols, async (symbol) => auditCandleContinuitySymbol(env, symbol, requestNow));
+    : await runCandleContinuityAuditBatch(planned.symbols, async (symbol) => auditCandleContinuitySymbol(env, symbol, requestNow, body.acceptancePreparation === true ? 320 : 160));
   const acceptance = acceptanceItems && acceptanceItems.length === 1 ? acceptanceItems[0] : acceptanceItems;
   return json({
     ok: true,

@@ -31,6 +31,8 @@
 - Sites v195 雖綁定 `f1aedbe96eaffdb335ca5a55c6006946fd64747d`，首次封裝卻沿用修正前的既有 `dist`；該 saved version 為 immutable，不能以相同 commit 覆蓋。已在重新執行 `npm run build`、確認 `dist/server/index.js` 含 acceptance normalization 後建立新 commit 與新 saved version，避免把環境變數中的 SHA 誤當成 bundle 證據。
 - Sites v196 的 4 檔 acceptance 已通過 payload eligibility，但同一 HTTP request 同時稽核 4 檔並建立 160／320 首次與重複快照，於 90 秒硬 timeout 中止。驗收 runner 已改為逐檔 request；每檔仍核對完整 acceptance contract 與 cache reuse，並保留單次 request 的 90 秒上限。
 - 正式 D1 已完整的代表商品不應再被上游暫時不可用阻擋；runner 因此先做 D1-only acceptance，只有 D1 證據不足的 5xx 才啟動 preparation 回補，並在回補後重新執行相同嚴格 acceptance。
+- Sites runtime 對部分 TPEx 月端點持續 timeout／provider unavailable，但相同 TPEx URL 從本機可在約 0.1 秒取得合法 payload；因此新增 GitHub runner 有界官方月 fallback。fallback 只在 durable tick 的可重試 item 或 D1-only acceptance 不足時啟動，最近 18 個月最多 2 路並行、12 秒 timeout、最多重試一次，並以每批 6 個月送回 protected action。Worker 使用既有 parser 重新驗證後才寫 `candle_cache`；非法 symbol、月份不符或 malformed payload 均拒絕且不污染 D1。
+- `acceptancePreparation` 使用 320 rows 範圍，確保首次缺資料的代表商品可建立與正式 `display320` 相同的歷史深度；一般 durable audit 仍維持 160 rows 與每 tick 最多 4 個新月份。
 - Sites v197、v198 進一步證明即使逐檔，若同一 request 同時負責回補與 stale payload 刷新，第一檔仍可能超過 90 秒。最終路徑把普通 audit 與 D1-only acceptance 分成兩個 request，避免 acceptance 再觸發 history 網路刷新；不足 320 rows 或 continuity 非 complete 時直接 fail closed。
 
 ## 自動驗證

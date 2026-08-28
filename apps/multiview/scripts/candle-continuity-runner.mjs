@@ -1,3 +1,5 @@
+import { seedTaiwanOfficialMonths } from "./candle-continuity-official-seed.mjs";
+
 const siteUrl = String(process.env.SITE_URL || "").replace(/\/$/, "");
 const deploymentTarget = String(process.env.DEPLOYMENT_TARGET || "");
 const auditSecret = String(process.env.CANDLE_CONTINUITY_AUDIT_SECRET || "");
@@ -64,6 +66,19 @@ async function orchestrator(action, reasonCode) {
   });
 }
 
+const seededSymbols = new Set();
+const retryableOfficialReasons = new Set(["audit_request_budget", "provider_unavailable", "rate_limited", "reference_not_published", "timeout"]);
+
+async function seedRetryableOfficialItem(payload) {
+  const item = Array.isArray(payload?.items) ? payload.items[0] : null;
+  const symbol = String(item?.symbol || "").trim().toUpperCase();
+  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(symbol) || !retryableOfficialReasons.has(String(item?.reasonCode || "")) || seededSymbols.has(symbol)) return false;
+  await seedTaiwanOfficialMonths({ symbol, requestJson: (path, init) => requestJson(path, { ...init, headers: protectedHeaders }) });
+  seededSymbols.add(symbol);
+  console.log(`candle-continuity official-seed target=${deploymentTarget} status=complete months=18`);
+  return true;
+}
+
 function safeFailure(error) {
   const raw = String(error instanceof Error ? error.message : error || "");
   if (/429|rate.?limit/.test(raw)) return "rate_limited";
@@ -83,8 +98,10 @@ try {
     const response = await orchestrator("orchestrator-tick");
     summary = validateSummary(response);
     console.log(safeLine(summary, tick));
+    const seeded = await seedRetryableOfficialItem(response);
     done = response.done;
-    if (!done) await new Promise((resolve) => setTimeout(resolve, summary.status === "retry_waiting" ? 60_000 : 250));
+    const auditedItem = Array.isArray(response.items) && response.items.length > 0;
+    if (!done) await new Promise((resolve) => setTimeout(resolve, summary.status === "retry_waiting" && !seeded && !auditedItem ? 60_000 : 250));
   }
   if (!done) throw new Error("tick_limit_exceeded");
   if (summary.status !== "completed" || summary.counts.remaining !== 0 || summary.counts.failed !== 0 || summary.counts.overdue !== 0) throw new Error("invalid_response");
