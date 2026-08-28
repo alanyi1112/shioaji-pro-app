@@ -4,7 +4,7 @@
 
 系統 MUST 先以 D1 或已載入 history 判斷 requested display window、warmup、台股 raw buffer、最新已完成交易日與範圍內 session continuity 是否足夠，再決定是否呼叫上游；provider 無法精準指定缺口時，系統 MUST 使用其支援且足以涵蓋最早缺口的最小合理範圍並保存合併結果。總根數足夠、coverage end 已到齊或曾完成 full fetch，均 MUST NOT 單獨證明台股日 K history 完整。
 
-#### Scenario: D1 已有足夠且連續的歷史
+#### Scenario: D1 已有足夠歷史
 - **WHEN** D1 已保存足以支援 requested display window、warmup 與必要 raw buffer 的資料
 - **AND** 該 requested scope 的 continuity 為 complete、最新已完成交易日已到齊且該 key 尚未到 interval refresh 時點
 - **THEN** API MUST 直接使用 D1 history 產生 payload
@@ -37,7 +37,7 @@
 
 系統 MUST 依 interval 使用不同 freshness／refresh 規則；持久化資料足夠不得永久阻止最新尾端刷新，D1 hit 也不得自動等同報價 fresh、verified 或 session-continuous。台股日 K 的 refresh 決策 MUST 同時考慮最早缺口、最新已完成交易日與 continuity evidence。
 
-#### Scenario: History 仍新鮮、足夠且連續
+#### Scenario: History 仍新鮮且足夠
 - **WHEN** history 在該 interval 的有效期限內、rows 足夠、requested scope continuity complete 且最新已完成交易日已到齊
 - **THEN** 系統 MUST 可直接使用快取產生回應
 - **AND** cache metadata MUST 表示 `hit` 或等效狀態

@@ -63,4 +63,4 @@
 - [x] 8.1 在未部署前整理精準變更 scope、migration 順序、request budget、rollback 與尚未授權的正式環境操作，不主動 commit、push 或部署。
 - [x] 8.2 取得使用者另行明確授權後，才依序執行 commit／push、Sites 保留站與 Cloudflare 正式站部署，不將各階段視為同一份授權。
 - [x] 8.3 以既有已授權 session 在 Sites 保留站與 Cloudflare 正式站逐項驗證 `3008.TW` 連續性、逐商品健康摘要、cache lifecycle、核對 scope、canvas 與 console；匿名存取邊界不得冒充 application health。
-- [ ] 8.4 正式驗收完成後更新對應正式 spec、OpenSpec tasks 與證據，再另行進入 archive／收工流程；未取得授權或未完成證據時保持 change active。
+- [x] 8.4 正式驗收完成後更新對應正式 spec、OpenSpec tasks 與證據，再另行進入 archive／收工流程；未取得授權或未完成證據時保持 change active。

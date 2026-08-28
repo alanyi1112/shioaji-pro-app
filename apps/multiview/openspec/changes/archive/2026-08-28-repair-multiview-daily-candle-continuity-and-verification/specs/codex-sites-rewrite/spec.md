@@ -102,7 +102,7 @@
 - **AND** 只有鏡像另具合法同日 OHLCV 且全部相符時才能標示 `scope: "ohlcv"`
 - **AND** 此流程 MUST NOT 依賴 Render 服務
 
-#### Scenario: Candles 與 stream 讀取同一商品
+#### Scenario: candles 與 stream 讀取同一商品
 
 - **WHEN** `/api/candles` 與 `/api/stream` 讀取相同台股商品與日 K
 - **THEN** 兩者 MUST 共用相同的正規化與核對流程
