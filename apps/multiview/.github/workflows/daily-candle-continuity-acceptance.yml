@@ -1,0 +1,52 @@
+name: Daily candle continuity acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_URL: https://quote-chart-multiview.alanyi1112.chatgpt.site
+      DEPLOYMENT_TARGET: sites
+      SITES_BYPASS_TOKEN: ${{ secrets.SITES_BYPASS_TOKEN }}
+      CANDLE_CONTINUITY_AUDIT_SECRET: ${{ secrets.SITES_CANDLE_CONTINUITY_AUDIT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify protected configuration
+        run: |
+          test -n "$SITES_BYPASS_TOKEN"
+          test -n "$CANDLE_CONTINUITY_AUDIT_SECRET"
+      - name: Verify Sites daily candle continuity
+        run: node scripts/verify-daily-candle-continuity.mjs
+
+  cloudflare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: cloudflare-production
+    env:
+      SITE_URL: ${{ vars.CLOUDFLARE_SITE_URL }}
+      DEPLOYMENT_TARGET: cloudflare
+      CLOUDFLARE_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
+      CLOUDFLARE_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
+      CANDLE_CONTINUITY_AUDIT_SECRET: ${{ secrets.CLOUDFLARE_CANDLE_CONTINUITY_AUDIT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify protected configuration
+        run: |
+          test -n "$SITE_URL"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_ID"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_SECRET"
+          test -n "$CANDLE_CONTINUITY_AUDIT_SECRET"
+      - name: Verify Cloudflare daily candle continuity
+        run: node scripts/verify-daily-candle-continuity.mjs

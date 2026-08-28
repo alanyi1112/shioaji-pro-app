@@ -2,7 +2,7 @@ import { acquireCandleHistory, clearCandleHistoryRuntimeState, mergeCandleHistor
 import { runD1Batch } from "./d1-batch.ts";
 import { candlePayloadFromRows, fetchCandles, providerForCandleSymbol } from "./market-data";
 import { normalizeTaiwanStockVolume } from "./taiwan-stock-volume";
-import { planCandleContinuityAuditBatch, runCandleContinuityAuditBatch } from "./candle-continuity-maintenance";
+import { planCandleContinuityAuditBatch, runCandleContinuityAuditBatch, summarizeCandleContinuityAcceptance } from "./candle-continuity-maintenance";
 import { ensureCandleContinuityColumns } from "./candle-continuity-schema";
 import {
   indicatorParameterSignature,
@@ -2696,6 +2696,21 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
       reasonCode: continuity?.reasonCode || history.cache.reason || null,
     };
   });
+  const acceptance = body.acceptance === true && planned.symbols.length === 1
+    ? await (async () => {
+        const symbol = planned.symbols[0];
+        const parameters = indicatorParametersFromSearchParams(new URLSearchParams());
+        const snapshot = async (displayCount: number) => summarizeCandleContinuityAcceptance(
+          await cachedCandlePayload(env, symbol, "1d", displayCount, parameters),
+          { from: "2026-07-31", through: "2026-08-17" },
+        );
+        return {
+          symbol,
+          display160: { first: await snapshot(160), repeat: await snapshot(160) },
+          display320: { first: await snapshot(320), repeat: await snapshot(320) },
+        };
+      })()
+    : null;
   return json({
     ok: true,
     bounds: { limit: 8, concurrency: 2, candidateRows: 128 },
@@ -2710,6 +2725,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
       failed: items.filter((item) => item.status === "failed").length,
     },
     items,
+    acceptance,
   });
 }
 

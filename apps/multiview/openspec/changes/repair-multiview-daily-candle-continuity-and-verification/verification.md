@@ -29,7 +29,7 @@
 
 - `npm run lint -- --quiet`：通過。
 - `npm run build`：通過；只有既有 Vite native config loader 與 Node deprecation warning。
-- `npm test`：582／582 通過。
+- canonical repo `npm test`：597／597 通過；發布 repo `npm test`：595／595 通過。
 - focused continuity／history／UI tests：101／101 通過。
 - `git diff --check`：通過。
 - `npx openspec validate --all --strict`：37／37 通過。
@@ -49,8 +49,17 @@
 - 若官方來源異常，停用新程式路徑或回退程式即可；continuity 維持 `unknown`，不刪除 history、不補假資料。
 - payload cache 使用版本化 key；回退後舊版會使用自己的 key，無須大量刪除其他商品／interval cache。
 
-## 尚未授權與未完成
+## 正式發布與雙環境驗收
 
-- 未 commit、未 push、未部署 Sites 保留站或 Cloudflare 正式站、未套用正式 D1 migration、未 archive、未收工。
-- 本機受控批次未設定 secret；若要讓目前 48 檔 unknown 全數取得官方 continuity 終態，仍需另行授權配置與執行批次。
-- Sites 保留站與 Cloudflare 正式站的 protected health、3008、cache、canvas 與 console 驗收尚未執行；每一階段都需要使用者另行明確授權。
+- 使用者於 2026-08-28 明確授權完成剩餘 commit／push、Sites 保留站、Cloudflare 正式站、正式驗收與 archive。
+- 發布 repo 以 `8033515fef52a140fa39747eb04c207285d0eaaa` 部署 Cloudflare；GitHub Actions run `33167246404` 成功，包含 lint、完整測試、strict OpenSpec、migration、精確 Worker 部署及保護存取 smoke。
+- Sites 保留站來源以保留既有 `a341ecf` 歷史的整合提交 `04f4179ec4a3fbacd9788a41a21d66756b6120a2` 發布；該提交 tree 與 `8033515` 完全相同。Sites version 189、deployment `appgdep_6a9171f917148191b889b817a645cb66`、environment revision 14 均成功，正式 URL 為 `https://quote-chart-multiview.alanyi1112.chatgpt.site`。
+- 雙環境 protected acceptance workflow run `33167625607` 成功；Sites 與 Cloudflare 皆回報 `3008.TW`：audit `complete`、missing `0`、verified through `2026-08-28`、指定 12 個日期完整、160／320 根重讀皆為 D1 hit、核對 scope `close`、逐商品 health `complete`。
+- 驗收 route 只輸出有界日期、根數、continuity、cache 與 verification scope；測試確認不含 candles 或 OHLCV 明細。Sites 使用其保護存取與獨立 audit secret，Cloudflare 使用既有 Access service principal 與獨立 audit secret；秘密值不進 repo、log 或驗證文件。
+- Sites 實際 DOM：`3008.TW / 日 已載入`、`data-continuity-status=complete`、顯示「08/28 收盤已核對」，沒有「日 K 資料不完整」提示。頁面共有 77 個 canvas、56 個可見 canvas，0 個可見 canvas 尺寸無效；console error 為 0。
+
+## 保留邊界
+
+- 本機其餘未按需開啟商品仍保守維持既有 continuity 狀態，不以大立光成功冒充所有商品皆已核對；正式環境可透過有界批次與逐商品 health 持續建立證據。
+- 本次未啟用 production 交易、未停止 simulation API、watchdog、5173／5174、盤後 pipeline 或行情連線。
+- `add-mainforce-chip-subcharts` 為獨立 deferred change，沒有納入、修改或歸檔。
