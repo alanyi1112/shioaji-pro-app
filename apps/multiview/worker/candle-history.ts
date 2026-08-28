@@ -448,6 +448,25 @@ export async function upsertCandleHistory(
   }
 }
 
+export async function persistCandleHistoryContinuity(
+  db: D1Database | undefined,
+  identity: CandleHistoryIdentity,
+  rows: HistoryCandle[],
+  continuity: CandleHistoryContinuityMetadata,
+  now = new Date(),
+) {
+  const previous = await readCandleHistoryState(db, identity);
+  const saved = await saveCandleHistoryState(db, identity, rows, "audit", previous, now, continuity);
+  if (saved) writeMemoryEntry(
+    `${CANDLE_HISTORY_MEMORY_CONTRACT_VERSION}|${candleHistoryKey(identity.provider, identity.symbol, identity.interval)}`,
+    rows,
+    "official-month-seed",
+    Math.floor(now.getTime() / 1000),
+    continuity,
+  );
+  return saved;
+}
+
 function memoryEntry(key: string) {
   const entry = memoryHistory.get(key);
   return entry ? { ...entry, rows: mergeCandleHistory([], entry.rows) } : undefined;

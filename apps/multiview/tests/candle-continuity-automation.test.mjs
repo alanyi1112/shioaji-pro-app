@@ -8,6 +8,7 @@ import {
   completeCandleContinuityItem,
   failCandleContinuityRun,
   heartbeatCandleContinuityItems,
+  peekCandleContinuityItem,
   planCandleContinuityTargets,
   readCandleContinuityAutomationHealth,
   safeCandleContinuityReason,
@@ -97,6 +98,24 @@ test("claim 限制 8 檔、穩定分頁、fresh 不被 claim 且 51 檔以上無
   assert.equal(seen.size, 54);
   assert.deepEqual(summary.counts, { target: 55, processed: 55, remaining: 0, complete: 55, partial: 0, unknown: 0, failed: 0, overdue: 0 });
   assert.equal(summary.status, "completed");
+});
+
+test("peek 只回下一個 symbol 且不 claim、不增加 attempts 或改 lease", async (t) => {
+  const db = automationDb();
+  t.after(() => db.close());
+  await startCandleContinuityRun({
+    db,
+    runId: "sites-peek",
+    deploymentTarget: "sites",
+    trigger: "workflow_dispatch",
+    expectedSession: "2026-08-28",
+    targets: [target("4768.TWO", 20), target("3008.TW", 10)],
+    now: "2026-08-28T15:00:00Z",
+  });
+  assert.equal(await peekCandleContinuityItem({ db, runId: "sites-peek", now: "2026-08-28T15:00:01Z" }), "3008.TW");
+  assert.equal(await peekCandleContinuityItem({ db, runId: "sites-peek", now: "2026-08-28T15:00:02Z" }), "3008.TW");
+  const row = await db.prepare("SELECT status,attempts,lease_owner FROM candle_continuity_run_items WHERE run_id='sites-peek' AND symbol='3008.TW'").first();
+  assert.deepEqual({ ...row }, { status: "queued", attempts: 0, lease_owner: null });
 });
 
 test("lease 過期可接手，過期 owner 與舊結果不能覆寫", async (t) => {

@@ -43,9 +43,10 @@ export async function seedTaiwanOfficialMonths({ symbol, requestJson, fetchImpl 
   let cached = 0;
   for (let index = 0; index < entries.length; index += 6) {
     const batch = entries.slice(index, index + 6);
+    const finalize = index + batch.length >= entries.length;
     const response = await requestJson("/api/internal/candle-continuity-audit", {
       method: "POST",
-      body: JSON.stringify({ action: "acceptance-cache-official-months", symbol: normalizedSymbol, months: batch }),
+      body: JSON.stringify({ action: "acceptance-cache-official-months", symbol: normalizedSymbol, months: batch, finalize }),
     });
     if (response.ok !== true || response.symbol !== normalizedSymbol || Number(response.cached) !== batch.length) {
       throw new Error("official_seed_failed");

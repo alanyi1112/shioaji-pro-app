@@ -12,6 +12,7 @@ const appSource = await readFile(new URL("../worker/app.ts", import.meta.url), "
 test("共用 runner 固定 start/tick/fail、60 ticks、15 分鐘與 90 秒 timeout", () => {
   assert.match(runner, /orchestrator-start/);
   assert.match(runner, /orchestrator-tick/);
+  assert.match(runner, /orchestrator-peek/);
   assert.match(runner, /orchestrator-fail/);
   assert.match(runner, /const maximumTicks = 60/);
   assert.match(runner, /15 \* 60 \* 1000/);
@@ -79,6 +80,7 @@ test("GitHub runner 官方月資料 fallback 固定 18 個月、二路並行、�
   assert.match(officialSeed, /count = 18/);
   assert.match(officialSeed, /index \+= 2/);
   assert.match(officialSeed, /index \+= 6/);
+  assert.match(officialSeed, /finalize = index \+ batch\.length >= entries\.length/);
   assert.match(officialSeed, /acceptance-cache-official-months/);
   assert.match(officialSeed, /AbortSignal\.timeout\(12_000\)/);
   assert.doesNotMatch(officialSeed, /console\.log/);
@@ -88,6 +90,7 @@ test("Worker 控制面沿用獨立 audit secret、三個 orchestrator action 與
   assert.match(appSource, /env\.CANDLE_CONTINUITY_AUDIT_SECRET/);
   assert.match(appSource, /action === "orchestrator-start"/);
   assert.match(appSource, /action === "orchestrator-tick"/);
+  assert.match(appSource, /action === "orchestrator-peek"/);
   assert.match(appSource, /action === "orchestrator-fail"/);
   assert.match(appSource, /candleContinuityTargetCandidates\(request, env\)/);
   assert.match(appSource, /const items = acceptanceItems/);
@@ -96,9 +99,14 @@ test("Worker 控制面沿用獨立 audit secret、三個 orchestrator action 與
   assert.match(appSource, /body\.acceptancePreparation === true/);
   assert.match(appSource, /action === "acceptance-cache-official-months"/);
   assert.match(appSource, /cacheTaiwanOfficialMonthPayload/);
+  assert.match(appSource, /upsertCandleHistory\(env\.DB, identity, seededRows, "official-month-seed", now\)/);
+  assert.match(appSource, /body\.finalize !== true/);
+  assert.match(appSource, /persistCandleHistoryContinuity/);
+  assert.match(appSource, /preferPersisted === true/);
+  assert.match(appSource, /requiredRows: Math\.min\(320, Math\.max\(1, historyRows\.length\)\)/);
   assert.match(appSource, /body\.acceptancePreparation === true \? 320 : 160/);
   assert.match(appSource, /readCandleHistory\(env\.DB, identity, displayCount\)/);
-  assert.match(appSource, /auditCandleContinuitySymbol\(env, symbol, now\)/);
+  assert.match(appSource, /auditCandleContinuitySymbol\(env, symbol, now, 160, body\.preferPersisted === true\)/);
   assert.match(appSource, /claimCandleContinuityItems\(\{ db: env\.DB, runId, owner, limit: 1, now \}\)/);
   assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow, 4\)/);
   assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow\)/);

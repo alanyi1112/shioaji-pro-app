@@ -58,11 +58,11 @@ function safeLine(summary, tick) {
   return `candle-continuity tick=${tick} target=${summary.deploymentTarget} run=${summary.runId} session=${summary.expectedSession} status=${summary.status} processed=${counts.processed} remaining=${counts.remaining} complete=${counts.complete} partial=${counts.partial} unknown=${counts.unknown} failed=${counts.failed} overdue=${counts.overdue} reason=${reason}`;
 }
 
-async function orchestrator(action, reasonCode) {
+async function orchestrator(action, reasonCode, extra = {}) {
   return requestJson("/api/internal/candle-continuity-audit", {
     method: "POST",
     headers: protectedHeaders,
-    body: JSON.stringify({ action, runId, trigger, owner: `${runId.slice(0, 100)}:gha`, ...(reasonCode ? { reasonCode } : {}) }),
+    body: JSON.stringify({ action, runId, trigger, owner: `${runId.slice(0, 100)}:gha`, ...extra, ...(reasonCode ? { reasonCode } : {}) }),
   });
 }
 
@@ -70,9 +70,10 @@ const seededSymbols = new Set();
 const retryableOfficialReasons = new Set(["audit_request_budget", "provider_unavailable", "rate_limited", "reference_not_published", "timeout"]);
 
 async function seedRetryableOfficialItem(payload) {
-  const item = Array.isArray(payload?.items) ? payload.items[0] : null;
+  const item = payload?.item || (Array.isArray(payload?.items) ? payload.items[0] : null);
   const symbol = String(item?.symbol || "").trim().toUpperCase();
-  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(symbol) || !retryableOfficialReasons.has(String(item?.reasonCode || "")) || seededSymbols.has(symbol)) return false;
+  const retryable = !item?.reasonCode || retryableOfficialReasons.has(String(item.reasonCode));
+  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(symbol) || !retryable || seededSymbols.has(symbol)) return false;
   await seedTaiwanOfficialMonths({ symbol, requestJson: (path, init) => requestJson(path, { ...init, headers: protectedHeaders }) });
   seededSymbols.add(symbol);
   console.log(`candle-continuity official-seed target=${deploymentTarget} status=complete months=18`);
@@ -95,10 +96,13 @@ try {
   console.log(safeLine(summary, "start"));
   let done = started.done;
   for (let tick = 1; !done && tick <= maximumTicks && Date.now() < deadline; tick += 1) {
-    const response = await orchestrator("orchestrator-tick");
+    const peeked = await orchestrator("orchestrator-peek");
+    validateSummary(peeked);
+    const seededBeforeTick = await seedRetryableOfficialItem(peeked);
+    const response = await orchestrator("orchestrator-tick", undefined, { preferPersisted: seededBeforeTick });
     summary = validateSummary(response);
     console.log(safeLine(summary, tick));
-    const seeded = await seedRetryableOfficialItem(response);
+    const seeded = seededBeforeTick || await seedRetryableOfficialItem(response);
     done = response.done;
     const auditedItem = Array.isArray(response.items) && response.items.length > 0;
     if (!done) await new Promise((resolve) => setTimeout(resolve, summary.status === "retry_waiting" && !seeded && !auditedItem ? 60_000 : 250));

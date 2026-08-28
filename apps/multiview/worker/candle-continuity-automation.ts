@@ -309,6 +309,17 @@ export async function claimCandleContinuityItems(input: { db: D1Database; runId:
   return claimed;
 }
 
+export async function peekCandleContinuityItem(input: { db: D1Database; runId: string; now?: Date | string }) {
+  const runId = validatedRunId(input.runId);
+  const now = iso(input.now);
+  const run = await readRun(input.db, runId);
+  if (!run || !["running", "retry_waiting"].includes(String(run.status))) return null;
+  const row = await input.db.prepare(`SELECT symbol FROM candle_continuity_run_items WHERE run_id=? AND
+    (status='queued' OR (status='retry_waiting' AND retry_after<=?) OR (status='running' AND lease_expires_at<=?))
+    ORDER BY priority,ordinal LIMIT 1`).bind(runId, now, now).first<{ symbol?: string }>();
+  return row?.symbol ? normalizedSymbol(row.symbol) : null;
+}
+
 export async function heartbeatCandleContinuityItems(input: { db: D1Database; runId: string; owner: string; symbols: string[]; now?: Date | string; leaseSeconds?: number }) {
   const runId = validatedRunId(input.runId);
   const owner = validatedOwner(input.owner);

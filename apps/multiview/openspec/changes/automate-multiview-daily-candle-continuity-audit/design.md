@@ -26,7 +26,7 @@
 
 新增 additive D1 tables：`candle_continuity_runs` 保存 run 級狀態，`candle_continuity_run_items` 保存目標快照與逐商品 item。run 至少保存 `run_id`、`trigger`、`expected_session`、`status`、`phase`、`cursor`、各狀態計數、owner／lease、heartbeat、開始／完成時間與 allowlist reason；item 以 `run_id + symbol` 唯一，保存 priority、status、attempt、claim owner／lease、continuity before／after 摘要與時間。
 
-workflow 只送出 `orchestrator-start`、重複 `orchestrator-tick`，必要時送 `orchestrator-fail`；server 回傳固定安全摘要與 `done`。這讓重試與 restart 由 D1 狀態決定，而非依賴 GitHub runner 記憶體。
+workflow 先送出 `orchestrator-start`，每輪以受保護的 `orchestrator-peek` 讀取下一個可 claim symbol、再重複 `orchestrator-tick`，必要時送出 `orchestrator-fail`；peek 只回單一 symbol 與固定安全摘要，不 claim、不改 lease，也不回傳完整 target list。這讓 runner 可在 hosted request 進入長時間 provider timeout 前先準備官方月 cache，而重試與 restart 仍由 D1 狀態決定，不依賴 GitHub runner 記憶體。
 
 替代方案是直接沿用 `/api/internal/candle-continuity-audit` 的 lexicographic cursor。該方式較少 migration，但清單在 run 中變動、cursor 後插入新商品、runner 中斷或同 run 重送時無法提供固定目標快照與逐商品終態，因此不採用。既有 audit endpoint 保留作為 orchestrator 的單批執行核心與人工診斷入口。
 
@@ -38,7 +38,7 @@ workflow 只送出 `orchestrator-start`、重複 `orchestrator-tick`，必要時
 
 驗收 runner 每檔先執行 D1-only acceptance；已有完整 `candle_history`／`candle_history_state` 時不再依賴當下上游可用性。只有 D1 證據不足並回覆 5xx 時，才以獨立有界 request 執行 `acceptancePreparation` audit／回補後重試 acceptance。此受保護 preparation 最多只接受 4 檔合法台股，允許準備不在當日 target snapshot 的代表商品但不寫入 durable target。acceptance 最新收盤核對每檔只執行一次，再以相同核對結果分別產生 `display160.first/repeat` 與 `display320.first/repeat`；repeat 仍重新讀取 D1 並證明 cache hit。逐商品 item 以 `display320.repeat` 的 continuity 摘要產生。一般 audit 與每日 durable run 的 target 限制不受此驗收模式影響。
 
-Sites／Cloudflare runtime 若因 egress 限制無法直接取得 TWSE／TPEx 官方月資料，GitHub runner 僅在該 tick 回傳可重試的台股 item，或 D1-only acceptance 證據不足時，才直接向既有官方端點取得最近 18 個月 payload。runner 固定最多 2 個官方請求並行、每次最多重試一次、12 秒 timeout，並將 payload 每 6 個月一批送回受保護 action。Worker MUST 以既有 TWSE／TPEx parser 重新驗證 symbol、month、status 與 rows 後才寫入官方月 D1 cache；runner 不可直接寫 D1、不可提供 candle 派生值，也不可擴張 durable target。後續 audit 仍由既有核心從 cache 續跑並決定 complete／unknown／excluded evidence。
+Sites／Cloudflare runtime 若因 egress 限制無法直接取得 TWSE／TPEx 官方月資料，GitHub runner 僅在該 tick 回傳可重試的台股 item，或 D1-only acceptance 證據不足時，才直接向既有官方端點取得最近 18 個月 payload。runner 固定最多 2 個官方請求並行、每次最多重試一次、12 秒 timeout，並將 payload 每 6 個月一批送回受保護 action。Worker MUST 以既有 TWSE／TPEx parser 重新驗證 symbol、month、status 與 rows 後才寫入官方月 D1 cache；合法官方 rows 另以既有 `candle_history` repository 合併寫入，再由既有 continuity audit 讀取 D1 月 cache 重算並保存 state，讓缺少 320 rows 的首次驗收不必再等待 hosted Yahoo refresh。runner 不可直接寫 D1、不可提供 candle 派生值，也不可擴張 durable target。後續 audit 仍由既有核心從 cache 續跑並決定 complete／unknown／excluded evidence。
 
 1. 新加入或 `continuity_checked_at` 為空。
 2. 已確認缺口或 missing count 大於零。

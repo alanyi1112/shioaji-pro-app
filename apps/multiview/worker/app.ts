@@ -1,13 +1,15 @@
-import { acquireCandleHistory, clearCandleHistoryRuntimeState, mergeCandleHistory, readCandleHistory, readCandleHistoryState, type HistoryCandle } from "./candle-history";
+import { acquireCandleHistory, candleHistoryIdentity, clearCandleHistoryRuntimeState, mergeCandleHistory, persistCandleHistoryContinuity, readCandleHistory, readCandleHistoryState, upsertCandleHistory, type HistoryCandle } from "./candle-history";
 import { runD1Batch } from "./d1-batch.ts";
 import { candlePayloadFromRows, fetchCandles, providerForCandleSymbol } from "./market-data";
 import { normalizeTaiwanStockVolume } from "./taiwan-stock-volume";
 import { normalizeCandleContinuityAcceptanceSymbols, planCandleContinuityAuditBatch, runCandleContinuityAuditBatch, summarizeCandleContinuityAcceptance } from "./candle-continuity-maintenance";
 import {
   CANDLE_CONTINUITY_AUTOMATION_CONTRACT,
+  aggregateCandleContinuityRun,
   claimCandleContinuityItems,
   completeCandleContinuityItem,
   failCandleContinuityRun,
+  peekCandleContinuityItem,
   planCandleContinuityTargets,
   readCandleContinuityAutomationHealth,
   safeCandleContinuityReason,
@@ -2729,8 +2731,22 @@ async function candleContinuityTargetCandidates(request: Request, env: Env) {
   });
 }
 
-async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow: Date, displayCount = 160) {
+async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow: Date, displayCount = 160, preferPersisted = false) {
   if (!env.DB) throw new Error("d1_unavailable");
+  if (preferPersisted) {
+    const identity = candleHistoryIdentity(providerForCandleSymbol(symbol), symbol, "1d");
+    const [persisted, state] = await Promise.all([readCandleHistory(env.DB, identity, displayCount), readCandleHistoryState(env.DB, identity)]);
+    if (persisted.ok && persisted.rows.length > 0 && state) {
+      return {
+        status: state.continuity.status,
+        coverageEnd: state.coverageEnd == null ? null : sessionDateForCandle({ time: state.coverageEnd, open: 1, high: 1, low: 1, close: 1, volume: 0, sourceTimeZone: "Asia/Taipei" }),
+        missingSessionCount: state.continuity.missingSessionCount,
+        verifiedThrough: state.continuity.verifiedThrough,
+        checkedAt: state.continuity.checkedAt,
+        reasonCode: state.continuity.reasonCode,
+      };
+    }
+  }
   const history = await acquireCandleHistory({
     db: env.DB,
     provider: providerForCandleSymbol(symbol),
@@ -2813,7 +2829,40 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
           uniqueMonths.add(month);
           cached.push(await cacheTaiwanOfficialMonthPayload({ db: env.DB, symbol: symbols[0], month, payload: item.payload, now: new Date() }));
         }
-        return json({ ok: true, done: true, symbol: symbols[0], cached: cached.length, available: cached.filter((item) => item.status === "available").length, notPublished: cached.filter((item) => item.status === "not_published").length });
+        const now = new Date();
+        const identity = candleHistoryIdentity(providerForCandleSymbol(symbols[0]), symbols[0], "1d");
+        const seededRows = cached.flatMap((item) => item.status === "available" ? item.rows : []);
+        if (seededRows.length) {
+          const write = await upsertCandleHistory(env.DB, identity, seededRows, "official-month-seed", now);
+          if (!write.ok) throw new Error("d1_unavailable");
+        }
+        if (body.finalize !== true) return json({ ok: true, done: false, symbol: symbols[0], cached: cached.length });
+        const existing = await readCandleHistory(env.DB, identity, 1600);
+        let historyRows = existing.ok ? existing.rows : [];
+        const continuity = await auditTaiwanDailyContinuity({
+          db: env.DB,
+          symbol: symbols[0],
+          rows: historyRows,
+          requiredRows: Math.min(320, Math.max(1, historyRows.length)),
+          expectedThrough: stableTaiwanDailyCoverageEnd(now),
+          now,
+        });
+        if (continuity.repairRows.length) {
+          const repair = await upsertCandleHistory(env.DB, identity, continuity.repairRows, "official-month-seed", now);
+          if (!repair.ok) throw new Error("d1_unavailable");
+          historyRows = mergeCandleHistory(historyRows, continuity.repairRows);
+        }
+        if (!await persistCandleHistoryContinuity(env.DB, identity, historyRows, continuity, now)) throw new Error("d1_unavailable");
+        return json({
+          ok: true,
+          done: true,
+          symbol: symbols[0],
+          cached: cached.length,
+          available: cached.filter((item) => item.status === "available").length,
+          notPublished: cached.filter((item) => item.status === "not_published").length,
+          historyRows: historyRows.length,
+          continuityStatus: continuity.status,
+        });
       } catch {
         return json({ ok: false, reasonCode: "invalid_payload" }, 400);
       }
@@ -2839,7 +2888,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
       if (action === "orchestrator-tick") {
         const owner = typeof body.owner === "string" && body.owner ? body.owner : `${runId.slice(0, 100)}:worker`;
         const symbols = await claimCandleContinuityItems({ db: env.DB, runId, owner, limit: 1, now });
-        const audited = await runCandleContinuityAuditBatch(symbols, async (symbol) => auditCandleContinuitySymbol(env, symbol, now));
+        const audited = await runCandleContinuityAuditBatch(symbols, async (symbol) => auditCandleContinuitySymbol(env, symbol, now, 160, body.preferPersisted === true));
         let summary = null;
         for (const item of audited) {
           const reasonCode = item.reasonCode ? safeCandleContinuityReason(item.reasonCode) : null;
@@ -2855,6 +2904,13 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
           summary = health.latestRun;
         }
         return json({ ok: true, done: summary?.status === "completed" || summary?.status === "failed", summary, items: audited });
+      }
+      if (action === "orchestrator-peek") {
+        const [symbol, summary] = await Promise.all([
+          peekCandleContinuityItem({ db: env.DB, runId, now }),
+          aggregateCandleContinuityRun(env.DB, runId, now),
+        ]);
+        return json({ ok: true, done: summary?.status === "completed" || summary?.status === "failed", summary, item: symbol ? { symbol } : null });
       }
       if (action === "orchestrator-fail") {
         const summary = await failCandleContinuityRun({ db: env.DB, runId, reason: body.reasonCode, now });

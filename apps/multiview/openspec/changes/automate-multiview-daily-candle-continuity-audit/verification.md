@@ -16,6 +16,7 @@
 ## Workflow 與安全邊界
 
 - 共用 runner 執行 protected start／tick／fail，固定最多 60 ticks／15 分鐘、HTTP 90 秒 timeout、schema 驗證、錯誤 cleanup、exact target／commit SHA／run ID／expected session／SLA health gate 與安全單行摘要。
+- 正式 fallback 實測顯示事後處理 tick response 不足：某個 Sites item 回補後下一 tick 已由 40 增為 41 complete，但下一個 hosted audit 在回傳 symbol 前耗盡 90 秒。runner 因此在每個 tick 前先以 protected `orchestrator-peek` 取得單一下一商品，先完成官方月準備，再讓 tick 以剛保存的 D1 continuity state 收尾；peek 不 claim、不改 lease、不輸出完整 target list。
 - 首次 Sites 正式 run 揭露 active catalog 語意與冷 cache latency：修正後 target 由 2,382 檔回到 51 檔啟用商品。每 tick 2 檔在 Sites 冷尾端仍曾超過 90 秒 HTTP 上限，因此 production 最終固定每次只 claim 1 檔；其餘 item 透過 D1 cursor 由同輪後續 tick 或下一輪接續。
 - 單檔 6 個冷月份完全串行時在「8 秒 timeout＋一次 retry」最壞情況可達 96 秒；月份查詢因此固定最多 2 個並行，production automation 每個 HTTP tick 再限制為最多 4 個月、兩波最多約 32 秒的 provider 等待。超過 4 個月份時，`audit_request_budget` 跨 tick 利用月 cache 續跑，仍保留 160 日稽核範圍。
 - Sites workflow 預定每日台北 23:00，Cloudflare workflow 預定每日台北 23:30；各自使用獨立 concurrency、run prefix、secret 與 Access context。schedule job 另以 target-specific repository／environment variable 明確 gate，未設定 `true` 時只有 `workflow_dispatch` 可執行。
@@ -31,7 +32,7 @@
 - Sites v195 雖綁定 `f1aedbe96eaffdb335ca5a55c6006946fd64747d`，首次封裝卻沿用修正前的既有 `dist`；該 saved version 為 immutable，不能以相同 commit 覆蓋。已在重新執行 `npm run build`、確認 `dist/server/index.js` 含 acceptance normalization 後建立新 commit 與新 saved version，避免把環境變數中的 SHA 誤當成 bundle 證據。
 - Sites v196 的 4 檔 acceptance 已通過 payload eligibility，但同一 HTTP request 同時稽核 4 檔並建立 160／320 首次與重複快照，於 90 秒硬 timeout 中止。驗收 runner 已改為逐檔 request；每檔仍核對完整 acceptance contract 與 cache reuse，並保留單次 request 的 90 秒上限。
 - 正式 D1 已完整的代表商品不應再被上游暫時不可用阻擋；runner 因此先做 D1-only acceptance，只有 D1 證據不足的 5xx 才啟動 preparation 回補，並在回補後重新執行相同嚴格 acceptance。
-- Sites runtime 對部分 TPEx 月端點持續 timeout／provider unavailable，但相同 TPEx URL 從本機可在約 0.1 秒取得合法 payload；因此新增 GitHub runner 有界官方月 fallback。fallback 只在 durable tick 的可重試 item 或 D1-only acceptance 不足時啟動，最近 18 個月最多 2 路並行、12 秒 timeout、最多重試一次，並以每批 6 個月送回 protected action。Worker 使用既有 parser 重新驗證後才寫 `candle_cache`；非法 symbol、月份不符或 malformed payload 均拒絕且不污染 D1。
+- Sites runtime 對部分 TPEx 月端點持續 timeout／provider unavailable，但相同 TPEx URL 從本機可在約 0.1 秒取得合法 payload；因此新增 GitHub runner 有界官方月 fallback。fallback 只在 durable tick 的可重試 item 或 D1-only acceptance 不足時啟動，最近 18 個月最多 2 路並行、12 秒 timeout、最多重試一次，並以每批 6 個月送回 protected action。Worker 使用既有 parser 重新驗證後才寫 `candle_cache` 與合法官方 `candle_history` rows，再以相同 continuity 核心重算並保存 state；非法 symbol、月份不符或 malformed payload 均拒絕且不污染 D1。
 - `acceptancePreparation` 使用 320 rows 範圍，確保首次缺資料的代表商品可建立與正式 `display320` 相同的歷史深度；一般 durable audit 仍維持 160 rows 與每 tick 最多 4 個新月份。
 - Sites v197、v198 進一步證明即使逐檔，若同一 request 同時負責回補與 stale payload 刷新，第一檔仍可能超過 90 秒。最終路徑把普通 audit 與 D1-only acceptance 分成兩個 request，避免 acceptance 再觸發 history 網路刷新；不足 320 rows 或 continuity 非 complete 時直接 fail closed。
 
