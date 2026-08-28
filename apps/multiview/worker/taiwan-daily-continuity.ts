@@ -42,6 +42,14 @@ export function officialMonthKey(symbol: string, month: string) {
   return `official-candle-month-v1|${symbol.trim().toUpperCase()}|${month}`;
 }
 
+function officialPayloadMatchesSymbol(payload: unknown, symbol: string) {
+  const object = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const code = symbol.split(".")[0];
+  return symbol.endsWith(".TWO")
+    ? String(object.code || "").trim().toUpperCase() === code
+    : new RegExp(`(?:^|\\D)${code}(?:\\D|$)`).test(String(object.title || "").toUpperCase());
+}
+
 function officialMonthResultFromPayload(symbol: string, month: string, payload: unknown, checkedAt: string): TaiwanOfficialMonthResult {
   const normalizedSymbol = symbol.trim().toUpperCase();
   const provider = normalizedSymbol.endsWith(".TWO") ? "tpex" as const : "twse" as const;
@@ -61,10 +69,14 @@ function officialMonthResultFromPayload(symbol: string, month: string, payload: 
 export async function cacheTaiwanOfficialMonthPayload(input: { db: D1Database; symbol: string; month: string; payload: unknown; now?: Date }) {
   const symbol = input.symbol.trim().toUpperCase();
   const month = String(input.month || "");
-  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(symbol) || !/^\d{4}-\d{2}$/.test(month)) throw new Error("invalid_response");
+  if (!/^\d{4,6}[A-Z]?\.(?:TW|TWO)$/.test(symbol) || !/^\d{4}-\d{2}$/.test(month)) throw new Error("invalid_response");
+  const payloadObject = input.payload && typeof input.payload === "object" ? input.payload as Record<string, unknown> : {};
+  const hasIdentity = symbol.endsWith(".TWO") ? Boolean(String(payloadObject.code || "").trim()) : Boolean(String(payloadObject.title || "").trim());
+  if (hasIdentity && !officialPayloadMatchesSymbol(input.payload, symbol)) throw new Error("invalid_response");
   const now = input.now ?? new Date();
   const value = officialMonthResultFromPayload(symbol, month, input.payload, now.toISOString());
   if (!["available", "not_published"].includes(value.status)) throw new Error("invalid_response");
+  if (value.status === "available" && !officialPayloadMatchesSymbol(input.payload, symbol)) throw new Error("invalid_response");
   const epoch = Math.floor(now.getTime() / 1000);
   const ttl = value.status === "available" ? OFFICIAL_SUCCESS_TTL_SECONDS : OFFICIAL_PENDING_TTL_SECONDS;
   await input.db.prepare(`INSERT INTO candle_cache (cache_key,payload,expires_at) VALUES (?,?,?)
@@ -161,7 +173,7 @@ function fieldRows(payload: unknown) {
 
 export function parseTwseOfficialMonth(payload: unknown, symbol: string, checkedAt = new Date().toISOString()): HistoryCandle[] {
   const normalizedSymbol = symbol.trim().toUpperCase();
-  if (!/^\d{4,8}\.TW$/.test(normalizedSymbol)) return [];
+  if (!/^\d{4,6}[A-Z]?\.TW$/.test(normalizedSymbol)) return [];
   const rows = fieldRows(payload).find((table) => ["日期", "成交股數", "開盤價", "最高價", "最低價", "收盤價"].every((field) => table.fields.includes(field)));
   if (!rows) return [];
   return rows.data.flatMap((values) => {
@@ -177,7 +189,7 @@ export function parseTwseOfficialMonth(payload: unknown, symbol: string, checked
 
 export function parseTpexOfficialMonth(payload: unknown, symbol: string, checkedAt = new Date().toISOString()): HistoryCandle[] {
   const normalizedSymbol = symbol.trim().toUpperCase();
-  if (!/^\d{4,8}\.TWO$/.test(normalizedSymbol)) return [];
+  if (!/^\d{4,6}[A-Z]?\.TWO$/.test(normalizedSymbol)) return [];
   const rows = fieldRows(payload).find((table) => ["日期", "成交張數", "開盤", "最高", "最低", "收盤"].every((field) => table.fields.includes(field)));
   if (!rows) return [];
   return rows.data.flatMap((values) => {
@@ -201,7 +213,7 @@ function officialMonthUrl(symbol: string, month: string) {
 function safeOfficialResult(value: unknown): TaiwanOfficialMonthResult | null {
   if (!value || typeof value !== "object") return null;
   const result = value as TaiwanOfficialMonthResult;
-  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(String(result.symbol)) || !/^\d{4}-\d{2}$/.test(String(result.month))) return null;
+  if (!/^\d{4,6}[A-Z]?\.(?:TW|TWO)$/.test(String(result.symbol)) || !/^\d{4}-\d{2}$/.test(String(result.month))) return null;
   if (!["available", "not_published", "unavailable", "invalid_payload"].includes(String(result.status))) return null;
   return {
     ...result,

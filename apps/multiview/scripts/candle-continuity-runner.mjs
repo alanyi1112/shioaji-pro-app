@@ -73,7 +73,7 @@ async function seedRetryableOfficialItem(payload) {
   const item = payload?.item || (Array.isArray(payload?.items) ? payload.items[0] : null);
   const symbol = String(item?.symbol || "").trim().toUpperCase();
   const retryable = !item?.reasonCode || retryableOfficialReasons.has(String(item.reasonCode));
-  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(symbol) || !retryable || seededSymbols.has(symbol)) return false;
+  if (!/^\d{4,6}[A-Z]?\.(?:TW|TWO)$/.test(symbol) || !retryable || seededSymbols.has(symbol)) return false;
   await seedTaiwanOfficialMonths({ symbol, requestJson: (path, init) => requestJson(path, { ...init, headers: protectedHeaders }) });
   seededSymbols.add(symbol);
   console.log(`candle-continuity official-seed target=${deploymentTarget} status=complete months=18`);

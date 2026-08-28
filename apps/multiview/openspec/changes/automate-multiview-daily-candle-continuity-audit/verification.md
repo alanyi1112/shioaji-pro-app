@@ -29,6 +29,7 @@
 - 該頁 DOM 可見大戶、散戶副圖各 3 組；可見 canvas 69 個，0 尺寸 0 個；console error／warning 皆為 0。
 - Sites 保留站另核對 `3008.TW`、`.TWO` 商品與 ETF panel loaded；可見 canvas 56 個，0 尺寸 0 個，console error／warning 皆為 0。正式自動化尚未部署，因此此項只證明既有 UI／資料呈現沒有被本機實作破壞。
 - Sites workflow run `33180278323` 已完成 durable 稽核：`target=51`、`processed=51`、`remaining=0`、`complete=40`、`unknown=11`、`failed=0`、`overdue=0`，protected health 並回報精確 commit `17df78844c166c1a46b65fdf657ba7eac7d83028`。後續代表性 acceptance 的首個請求因 `5483.TWO`、`4768.TWO` 不在 Sites 當日 target snapshot 而被舊驗證規則以 `HTTP 400` 拒絕；已將 acceptance 與 durable target eligibility 分離，普通稽核仍不得擴張 target set。
+- exact SHA `04a813f0d2a26c1d5b899da67d2ce9710fae5dcd` 的 Sites durable run `33189974249` 已完成 target 51、complete 48、unknown 3、failed／overdue／remaining 皆 0；3 個 unknown 精準對應 `00981A.TW`、`00982A.TW`、`00984A.TW`。本機逐檔讀取同月 TWSE 官方端點皆為 `stat=OK` 且各 20 rows，確認是 runner／ingest regex 未接受單一字母尾碼，而非官方未發布；regex 已與既有 eligibility 對齊為 4–6 位數字加可選 1 個大寫字母。
 - Sites v195 雖綁定 `f1aedbe96eaffdb335ca5a55c6006946fd64747d`，首次封裝卻沿用修正前的既有 `dist`；該 saved version 為 immutable，不能以相同 commit 覆蓋。已在重新執行 `npm run build`、確認 `dist/server/index.js` 含 acceptance normalization 後建立新 commit 與新 saved version，避免把環境變數中的 SHA 誤當成 bundle 證據。
 - Sites v196 的 4 檔 acceptance 已通過 payload eligibility，但同一 HTTP request 同時稽核 4 檔並建立 160／320 首次與重複快照，於 90 秒硬 timeout 中止。驗收 runner 已改為逐檔 request；每檔仍核對完整 acceptance contract 與 cache reuse，並保留單次 request 的 90 秒上限。
 - 正式 D1 已完整的代表商品不應再被上游暫時不可用阻擋；runner 因此先做 D1-only acceptance，只有 D1 證據不足的 5xx 才啟動 preparation 回補，並在回補後重新執行相同嚴格 acceptance。

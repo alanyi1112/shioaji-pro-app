@@ -22,6 +22,7 @@ function twseMonthPayload(rows = LARGAN_AUGUST_2026_MISSING_ROWS) {
   return {
     stat: "OK",
     date: "20260801",
+    title: "115年08月 3008 大立光 各日成交資訊",
     fields: ["日期", "成交股數", "成交金額", "開盤價", "最高價", "最低價", "收盤價", "漲跌價差", "成交筆數", "註記"],
     data: rows.map((row) => [
       `${Number(row.sessionDate.slice(0, 4)) - 1911}/${row.sessionDate.slice(5, 7)}/${row.sessionDate.slice(8, 10)}`,
@@ -85,7 +86,22 @@ test("受保護 runner 月資料拒絕非法商品與月份不符 payload，且�
   try {
     await assert.rejects(() => cacheTaiwanOfficialMonthPayload({ db, symbol: "3008", month: "2026-08", payload: twseMonthPayload() }), /invalid_response/);
     await assert.rejects(() => cacheTaiwanOfficialMonthPayload({ db, symbol: "3008.TW", month: "2026-07", payload: twseMonthPayload() }), /invalid_response/);
+    await assert.rejects(() => cacheTaiwanOfficialMonthPayload({ db, symbol: "00981A.TW", month: "2026-08", payload: twseMonthPayload() }), /invalid_response/);
     assert.equal(db.database.prepare("SELECT COUNT(*) AS rows FROM candle_cache").get().rows, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test("受保護 runner 月資料接受含單一字母尾碼的新 ETF", async () => {
+  clearTaiwanDailyContinuityRuntimeState();
+  const db = new SqliteD1();
+  db.exec("CREATE TABLE candle_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+  try {
+    const payload = { ...twseMonthPayload(), title: "115年08月 00981A 主動統一台股增長 各日成交資訊" };
+    const cached = await cacheTaiwanOfficialMonthPayload({ db, symbol: "00981A.TW", month: "2026-08", payload });
+    assert.equal(cached.status, "available");
+    assert.equal(cached.symbol, "00981A.TW");
   } finally {
     db.close();
   }

@@ -29,7 +29,7 @@ async function officialPayload(symbol, month, fetchImpl = fetch) {
 export async function seedTaiwanOfficialMonths({ symbol, requestJson, fetchImpl = fetch, months = recentOfficialMonths() }) {
   const normalizedSymbol = String(symbol || "").trim().toUpperCase();
   const uniqueMonths = [...new Set(months)];
-  if (!/^\d{4,8}\.(?:TW|TWO)$/.test(normalizedSymbol) || uniqueMonths.length < 1 || uniqueMonths.length > 18) {
+  if (!/^\d{4,6}[A-Z]?\.(?:TW|TWO)$/.test(normalizedSymbol) || uniqueMonths.length < 1 || uniqueMonths.length > 18) {
     throw new Error("official_seed_invalid");
   }
   const entries = [];
