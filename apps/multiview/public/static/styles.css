@@ -3330,7 +3330,8 @@ select {
   inset: 0;
 }
 
-.volume-availability-note {
+.volume-availability-note,
+.candle-continuity-note {
   position: absolute;
   left: 8px;
   bottom: 28px;
@@ -3346,7 +3347,13 @@ select {
   pointer-events: none;
 }
 
-.volume-availability-note[hidden] {
+.candle-continuity-note {
+  bottom: 48px;
+  color: #fcd34d;
+}
+
+.volume-availability-note[hidden],
+.candle-continuity-note[hidden] {
   display: none;
 }
 

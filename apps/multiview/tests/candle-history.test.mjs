@@ -11,15 +11,19 @@ import {
   isStructurallyValidCandle,
   mergeCandleHistory,
   readCandleHistory,
+  readCandleHistoryState,
   requiredCandleHistoryRows,
   shouldPersistCandleHistory,
   upsertCandleHistory,
   withCandleHistorySingleFlight,
 } from "../worker/candle-history.ts";
 import { SqliteD1, applyDrizzleSql } from "./helpers/sqlite-d1.mjs";
+import { auditTaiwanDailyContinuity } from "../worker/taiwan-daily-continuity.ts";
+import { larganGapHistoryFixture } from "./fixtures/daily-candle-continuity.mjs";
 
 const migration = await readFile(new URL("../drizzle/0009_gorgeous_rachel_grey.sql", import.meta.url), "utf8");
 const stateMigration = await readFile(new URL("../drizzle/0021_bumpy_bruce_banner.sql", import.meta.url), "utf8");
+const continuityMigration = await readFile(new URL("../drizzle/0023_gorgeous_sleeper.sql", import.meta.url), "utf8");
 const indexHtml = await readFile(new URL("../public/static/index.html", import.meta.url), "utf8");
 const stockSetup = await readFile(new URL("../public/data/stock_setup.md", import.meta.url), "utf8");
 
@@ -101,10 +105,131 @@ test("candle_history migration 建立必要欄位、唯一鍵與 lookup index，
   }
 });
 
+test("continuity migration 保留 candle rows，並將舊 full state 重設為待稽核", async () => {
+  const db = new SqliteD1();
+  try {
+    applyDrizzleSql(db, migration);
+    applyDrizzleSql(db, stateMigration);
+    db.database.prepare("INSERT INTO candle_history (provider,symbol,interval,time,open,high,low,close,volume,source) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run("yfinance", "3008.TW", "1d", 1, 1, 2, 0.5, 1.5, 10, "yahoo-chart");
+    db.database.prepare("INSERT INTO candle_history_state (provider,symbol,interval,full_window_complete,status,reason_code) VALUES (?,?,?,?,?,?)")
+      .run("yfinance", "3008.TW", "1d", 1, "complete", "ok");
+
+    applyDrizzleSql(db, continuityMigration);
+
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS rows FROM candle_history").get().rows, 1);
+    const state = db.database.prepare("SELECT full_window_complete,status,reason_code,continuity_status,missing_session_dates_json FROM candle_history_state").get();
+    assert.deepEqual({ ...state }, {
+      full_window_complete: 0,
+      status: "unknown",
+      reason_code: "continuity_unverified",
+      continuity_status: "unknown",
+      missing_session_dates_json: "[]",
+    });
+  } finally {
+    db.close();
+  }
+});
+
+test("continuity state 對異常 JSON 與未知狀態 fail closed", async () => {
+  const db = new SqliteD1();
+  try {
+    applyDrizzleSql(db, stateMigration);
+    applyDrizzleSql(db, continuityMigration);
+    db.database.prepare(`INSERT INTO candle_history_state
+      (provider,symbol,interval,full_window_complete,continuity_status,continuity_from,continuity_through,continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+      .run("yfinance", "3008.TW", "1d", 1, "bogus", "2026-07-01", "2026-08-28", "2026-08-28T08:00:00.000Z", 9, "not-json", "[\"2026-08-08\"]");
+
+    const state = await readCandleHistoryState(db, candleHistoryIdentity("yfinance", "3008.TW", "1d"));
+    assert.equal(state.fullWindowComplete, false);
+    assert.equal(state.continuity.status, "unknown");
+    assert.equal(state.continuity.reasonCode, "invalid_state_json");
+    assert.deepEqual(state.continuity.missingSessionDates, []);
+    assert.deepEqual(state.continuity.excludedSessionDates, ["2026-08-08"]);
+  } finally {
+    db.close();
+  }
+});
+
+test("acquisition 不被足夠 rows／舊 full flag 欺騙，動態 full 後以官方 rows 修復大立光十日缺口", async () => {
+  const db = new SqliteD1();
+  const fixture = larganGapHistoryFixture();
+  const identity = candleHistoryIdentity("yfinance", fixture.symbol, "1d");
+  clearCandleHistoryRuntimeState();
+  applyDrizzleSql(db, migration);
+  applyDrizzleSql(db, stateMigration);
+  applyDrizzleSql(db, continuityMigration);
+  await upsertCandleHistory(db, identity, fixture.rows, "yahoo-chart", new Date("2026-08-28T07:00:00Z"));
+  db.database.prepare(`INSERT INTO candle_history_state
+    (provider,symbol,interval,full_window_complete,coverage_start,coverage_end,available_rows,status,reason_code,continuity_status,continuity_from,continuity_through,continuity_checked_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run("yfinance", fixture.symbol, "1d", 1, fixture.rows[0].time, fixture.rows.at(-1).time, fixture.rows.length, "complete", "ok", "complete", "2025-01-01", "2026-08-28", "2026-08-28T07:00:00.000Z");
+  let upstreamCalls = 0;
+  let invalidations = 0;
+  const modes = [];
+  const starts = [];
+  const officialPayload = {
+    stat: "OK", date: "20260801",
+    fields: ["日期", "成交股數", "成交金額", "開盤價", "最高價", "最低價", "收盤價", "漲跌價差", "成交筆數", "註記"],
+    data: fixture.officialRows.map((row) => {
+      const sessionDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(row.time * 1000));
+      return [`${Number(sessionDate.slice(0, 4)) - 1911}/${sessionDate.slice(5, 7)}/${sessionDate.slice(8, 10)}`, row.volume.toLocaleString("en-US"), "1", row.open.toFixed(2), row.high.toFixed(2), row.low.toFixed(2), row.close.toFixed(2), "0", "1", ""];
+    }),
+  };
+  try {
+    const result = await acquireCandleHistory({
+      db,
+      provider: "yfinance",
+      symbol: fixture.symbol,
+      interval: "1d",
+      displayCount: 160,
+      fetcher: async ({ mode, startTime }) => {
+        upstreamCalls += 1;
+        modes.push(mode);
+        starts.push(startTime);
+        return { rows: fixture.rows, source: "yahoo-chart" };
+      },
+      coverageComplete: () => true,
+      continuityAudit: (rows, requiredRows) => auditTaiwanDailyContinuity({
+        db, symbol: fixture.symbol, rows, requiredRows, expectedThrough: "2026-08-28", now: new Date("2026-08-28T08:00:00Z"), fetchImpl: async () => Response.json(officialPayload),
+      }),
+      invalidatePayloadCache: async () => { invalidations += 1; return true; },
+      now: new Date("2026-08-28T08:00:00Z"),
+    });
+    assert.deepEqual(modes, ["full"]);
+    assert.equal(starts[0] < Date.parse("2026-08-03T00:00:00Z") / 1000, true);
+    assert.equal(upstreamCalls, 1);
+    assert.equal(invalidations, 1);
+    assert.equal(result.cache.state, "backfilled");
+    assert.equal(result.cache.continuity.status, "complete");
+    assert.equal(result.cache.continuity.missingSessionCount, 0);
+    assert.equal("repairRows" in result.cache.continuity, false);
+    assert.equal("candidateMonths" in result.cache.continuity, false);
+    assert.equal("officialRequests" in result.cache.continuity, false);
+    assert.equal(result.cache.fullWindowComplete, true);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS rows FROM candle_history WHERE symbol='3008.TW'").get().rows, 330);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS rows FROM candle_history WHERE symbol='3008.TW' AND source='twse-official'").get().rows, 10);
+    const repairedWindow = result.rows.filter((row) => row.time >= Date.parse("2026-07-31T00:00:00Z") / 1000 && row.time <= Date.parse("2026-08-17T23:59:59Z") / 1000);
+    assert.deepEqual(repairedWindow.map((row) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Taipei" }).format(new Date(row.time * 1000))), [
+      "2026-07-31", "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07",
+      "2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-17",
+    ]);
+    assert.equal(repairedWindow.every(isStructurallyValidCandle), true);
+    const state = await readCandleHistoryState(db, identity);
+    assert.equal(state.fullWindowComplete, true);
+    assert.equal(state.continuity.status, "complete");
+  } finally {
+    db.close();
+    clearCandleHistoryRuntimeState();
+  }
+});
+
 test("candle_history_state 記住短歷史已完成 full window，跨帳戶只做共享 tail／coverage hit", async () => {
   const db = new SqliteD1();
   applyDrizzleSql(db, migration);
   applyDrizzleSql(db, stateMigration);
+  applyDrizzleSql(db, continuityMigration);
   clearCandleHistoryRuntimeState();
   let calls = 0;
   const modes = [];
@@ -113,10 +238,14 @@ test("candle_history_state 記住短歷史已完成 full window，跨帳戶只�
     modes.push(mode);
     return { rows: candles(77), source: "yahoo-chart" };
   };
+  const continuityAudit = async () => ({
+    status: "complete", checkedFrom: "2026-01-01", checkedThrough: "2026-07-31", checkedAt: "2026-07-31T06:00:00.000Z", verifiedThrough: "2026-07-31",
+    missingSessionCount: 0, missingSessionDates: [], excludedSessionDates: [], reasonCode: null, repairRows: [],
+  });
   try {
     const first = await acquireCandleHistory({
       db, provider: "yfinance", symbol: "009819.TW", interval: "1d", displayCount: 160,
-      fetcher, coverageComplete: () => false, now: new Date("2026-07-31T06:00:00Z"),
+      fetcher, coverageComplete: () => false, continuityAudit, now: new Date("2026-07-31T06:00:00Z"),
     });
     assert.equal(first.rows.length, 77);
     assert.equal(first.cache.fullWindowComplete, true);
@@ -125,7 +254,7 @@ test("candle_history_state 記住短歷史已完成 full window，跨帳戶只�
     clearCandleHistoryRuntimeState();
     const sharedComplete = await acquireCandleHistory({
       db, provider: "yfinance", symbol: "009819.TW", interval: "1d", displayCount: 160,
-      fetcher, coverageComplete: () => true, now: new Date("2026-07-31T07:00:00Z"),
+      fetcher, coverageComplete: () => true, continuityAudit, now: new Date("2026-07-31T07:00:00Z"),
     });
     assert.equal(sharedComplete.cache.state, "hit");
     assert.equal(sharedComplete.cache.store, "d1");
@@ -134,7 +263,7 @@ test("candle_history_state 記住短歷史已完成 full window，跨帳戶只�
     clearCandleHistoryRuntimeState();
     const tailOnly = await acquireCandleHistory({
       db, provider: "yfinance", symbol: "009819.TW", interval: "1d", displayCount: 160,
-      fetcher, coverageComplete: () => false, now: new Date("2026-07-31T08:00:00Z"),
+      fetcher, coverageComplete: () => false, continuityAudit, now: new Date("2026-07-31T08:00:00Z"),
     });
     assert.equal(tailOnly.cache.state, "refreshed");
     assert.deepEqual(modes, ["full", "tail"]);
@@ -147,8 +276,8 @@ test("candle_history_state 記住短歷史已完成 full window，跨帳戶只�
 test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，下一帳戶不重抓", async () => {
   const db = new SqliteD1();
   const originalFetch = globalThis.fetch;
-  const priorTime = Date.parse("2026-07-30T01:00:00Z") / 1000;
-  const sourceQuoteTime = Date.parse("2026-07-31T05:30:00Z") / 1000;
+  const priorTime = Date.parse("2026-08-27T01:00:00Z") / 1000;
+  const sourceQuoteTime = Date.parse("2026-08-28T05:30:00Z") / 1000;
   let yahooCalls = 0;
   let officialCalls = 0;
   globalThis.fetch = async (input) => {
@@ -156,16 +285,16 @@ test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，�
     if (url.hostname === "query1.finance.yahoo.com") {
       yahooCalls += 1;
       return Response.json({ chart: { result: [{
-        timestamp: [priorTime, Date.parse("2026-07-31T01:00:00Z") / 1000],
+        timestamp: [priorTime, Date.parse("2026-08-28T01:00:00Z") / 1000],
         meta: { regularMarketTime: sourceQuoteTime, marketState: "CLOSED", exchangeTimezoneName: "Asia/Taipei" },
         indicators: { quote: [{ open: [3865, 4000], high: [4030, 4080], low: [3670, 3880], close: [3715, null], volume: [2728418, 2970845] }] },
       }] } });
     }
     if (url.hostname === "www.twse.com.tw") {
       officialCalls += 1;
-      assert.equal(url.searchParams.get("date"), "20260731");
+      assert.equal(url.searchParams.get("date"), "20260828");
       return Response.json({
-        date: "20260731", stat: "OK",
+        date: "20260828", stat: "OK",
         tables: [{
           fields: ["證券代號", "證券名稱", "成交股數", "開盤價", "最高價", "最低價", "收盤價"],
           data: [["3008", "大立光", "2,970,845", "4,000.00", "4,080.00", "3,880.00", "4,035.00"]],
@@ -178,7 +307,7 @@ test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，�
     const env = workerEnvironment(db);
     const firstService = await builtWorker("official-tail-first-account");
     const first = await (await firstService.fetch(new Request("http://localhost/api/candles?symbol=3008.TW&interval=1d&display_count=20"), env, workerContext)).json();
-    assert.equal(first.quote.sessionDate, "2026-07-31");
+    assert.equal(first.quote.sessionDate, "2026-08-28");
     assert.equal(first.candles.at(-1).close, 4035);
     assert.equal(first.candles.at(-1).volume, 2970.845);
     assert.equal(first.volumeContract.canonicalVolumeUnit, "common_lot");
@@ -189,7 +318,7 @@ test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，�
     clearCandleHistoryRuntimeState();
     const secondService = await builtWorker("official-tail-second-account");
     const second = await (await secondService.fetch(new Request("http://localhost/api/candles?symbol=3008.TW&interval=1d&display_count=21"), env, workerContext)).json();
-    assert.equal(second.quote.sessionDate, "2026-07-31");
+    assert.equal(second.quote.sessionDate, "2026-08-28");
     assert.equal(second.candles.at(-1).close, 4035);
     assert.equal(second.dataWindow.cache.store, "d1");
     assert.deepEqual({ yahooCalls, officialCalls }, { yahooCalls: 1, officialCalls: 1 });
@@ -424,6 +553,28 @@ test("D1 write failure 不阻斷合法上游資料並回 write_failed", async ()
   clearCandleHistoryRuntimeState();
 });
 
+test("history 寫入成功但 payload cache 失效失敗時保留新資料並回安全 reason", async () => {
+  const db = new SqliteD1();
+  applyDrizzleSql(db, migration);
+  applyDrizzleSql(db, stateMigration);
+  applyDrizzleSql(db, continuityMigration);
+  clearCandleHistoryRuntimeState();
+  try {
+    const result = await acquireCandleHistory({
+      db, provider: "yfinance", symbol: "AAPL", interval: "1d", displayCount: 20,
+      fetcher: async () => ({ rows: candles(160), source: "yahoo-chart" }),
+      invalidatePayloadCache: async () => false,
+      now: new Date("2026-08-28T08:00:00Z"),
+    });
+    assert.equal(result.rows.length, 160);
+    assert.equal(result.cache.state, "write_failed");
+    assert.equal(result.cache.reason, "cache_invalidation_failed");
+  } finally {
+    db.close();
+    clearCandleHistoryRuntimeState();
+  }
+});
+
 test("Worker `/api/candles` 跨 display_count 共用 history，重新載入 Worker 後命中 D1", async () => {
   const db = new SqliteD1();
   const originalFetch = globalThis.fetch;
@@ -481,6 +632,44 @@ test("Worker `/api/candles` 跨 display_count 共用 history，重新載入 Work
     assert.equal(yahooCalls, 1);
   } finally {
     globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
+
+test("health 分開呈現 D1 schema 與逐商品 continuity，舊 coverage 不會算入 latest session", async () => {
+  const db = new SqliteD1();
+  try {
+    const service = await builtWorker("continuity-health");
+    const env = workerEnvironment(db);
+    assert.equal((await service.fetch(new Request("http://localhost/api/health"), env, workerContext)).status, 200);
+    const insertInstrument = db.database.prepare("INSERT INTO user_instruments (user_id,item_id,symbol,name,provider,tab_label,group_name,market,enabled) VALUES (?,?,?,?,?,?,?,?,1)");
+    insertInstrument.run("owner", "one", "2330.TW", "台積電", "yfinance", "台股", "上市", "台灣股市");
+    insertInstrument.run("owner", "two", "3008.TW", "大立光", "yfinance", "台股", "上市", "台灣股市");
+    db.database.prepare(`INSERT INTO candle_history_state (
+      provider,symbol,interval,coverage_end,available_rows,status,continuity_status,continuity_through,
+      continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "yfinance", "2330.TW", "1d", Date.parse("2026-08-28T01:00:00Z") / 1000, 320, "complete", "complete", "2026-08-28",
+      "2026-08-28T08:00:00.000Z", 0, "[]", "[]",
+    );
+    db.database.prepare(`INSERT INTO candle_history_state (
+      provider,symbol,interval,coverage_end,available_rows,status,continuity_status,continuity_through,
+      continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json,continuity_reason_code
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "yfinance", "3008.TW", "1d", Date.parse("2026-07-31T01:00:00Z") / 1000, 320, "partial", "partial", "2026-08-28",
+      "2026-08-28T08:00:00.000Z", 10, "[]", "[]", "missing_traded_session",
+    );
+
+    const payload = await (await service.fetch(new Request("http://localhost/api/health"), env, workerContext)).json();
+    assert.deepEqual(payload.dailyCandleContinuity.global, { d1: "available", schema: "current" });
+    assert.deepEqual(payload.dailyCandleContinuity.counts, {
+      enabledSymbols: 2, complete: 1, partial: 1, unknown: 0, notAudited: 0, latestSessionCoverage: 1,
+    });
+    assert.deepEqual(payload.dailyCandleContinuity.items.map((item) => [item.symbol, item.continuityStatus, item.missingSessionCount, item.latestSessionCovered]), [
+      ["2330.TW", "complete", 0, true],
+      ["3008.TW", "partial", 10, false],
+    ]);
+  } finally {
     db.close();
   }
 });

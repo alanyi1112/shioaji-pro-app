@@ -495,9 +495,16 @@ export async function runBackfill(options) {
 export async function runContinuousBackfill(options) {
   const startedAt = Date.now();
   const control = await continuousRequest(options.siteUrl);
-  if (!options.historyOnly) await continuousRequest(options.siteUrl, { action: "start-run", runId: options.runId, trigger: options.trigger });
   let activeSymbol = null;
   try {
+    if (options.historyOnly) {
+      const probe = await continuousRequest(options.siteUrl, { action: "queue-probe" });
+      if (!probe.queue?.shouldRun) {
+        process.stdout.write(`${JSON.stringify({ event: "runner-noop", reason: "queue_empty" })}\n`);
+        return { runId: options.runId, completedSymbols: 0, completedWeeks: 0, noOp: true };
+      }
+    }
+    await continuousRequest(options.siteUrl, { action: "start-run", runId: options.runId, trigger: options.trigger });
     if (!options.historyOnly) {
       const latest = await continuousRequest(options.siteUrl, { action: "refresh-latest", runId: options.runId });
       process.stdout.write(`${JSON.stringify({ event: "latest-refreshed", dataDate: latest.dataDates?.[0] || null, symbols: latest.symbols || 0 })}\n`);
@@ -512,14 +519,18 @@ export async function runContinuousBackfill(options) {
       await continuousRequest(options.siteUrl, { action: "finish-run", runId: options.runId });
       return { runId: options.runId, completedSymbols: 0, completedWeeks: 0, historySkipped: "history_automation_not_permitted" };
     }
+    let claimed = await continuousRequest(options.siteUrl, { action: "claim", runId: options.runId, owner: options.runId, limit: options.claimLimit });
+    if (!claimed.claims?.length) {
+      await continuousRequest(options.siteUrl, { action: "finish-run", runId: options.runId });
+      process.stdout.write(`${JSON.stringify({ event: "runner-noop", reason: "claim_empty" })}\n`);
+      return { runId: options.runId, completedSymbols: 0, completedWeeks: 0, noOp: true };
+    }
     const session = createTdccHistorySession();
     const dateValues = await session.refresh();
     const officialDates = selectOfficialDates(dateValues, { startDate: options.startDate, endDate: options.endDate, maxWeeks: options.maxWeeks || 60 });
     let completedSymbols = 0;
     let completedWeeks = 0;
-    while (Date.now() - startedAt < options.maxRunMs - 45000) {
-      const claimed = await continuousRequest(options.siteUrl, { action: "claim", runId: options.runId, owner: options.runId, limit: options.claimLimit });
-      if (!claimed.claims?.length) break;
+    while (claimed.claims?.length && Date.now() - startedAt < options.maxRunMs - 45000) {
       for (const claim of claimed.claims) {
         activeSymbol = claim.symbol;
         const preListingDates = officialDates.filter((date) => TDCC_LISTING_METADATA[claim.symbol]?.listingDate > date);
@@ -544,6 +555,9 @@ export async function runContinuousBackfill(options) {
         await continuousRequest(options.siteUrl, { action: "complete-symbol", runId: options.runId, owner: options.runId, symbol: claim.symbol, partial });
         activeSymbol = null;
         completedSymbols += partial ? 0 : 1;
+      }
+      if (Date.now() - startedAt < options.maxRunMs - 45000) {
+        claimed = await continuousRequest(options.siteUrl, { action: "claim", runId: options.runId, owner: options.runId, limit: options.claimLimit });
       }
     }
     await continuousRequest(options.siteUrl, { action: "finish-run", runId: options.runId });

@@ -3381,6 +3381,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   const mainReadout = element.querySelector(".main-readout");
   const pivotPointReset = element.querySelector(".pivot-point-reset");
   const volumeAvailabilityNote = element.querySelector(".volume-availability-note");
+  const candleContinuityNote = element.querySelector(".candle-continuity-note");
   const subReadout = element.querySelector(".sub-readout");
   const panelCrosshairLine = element.querySelector(".panel-crosshair-line");
   const panelCrosshairDate = element.querySelector(".panel-crosshair-date");
@@ -4872,6 +4873,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       volumeMovingAverageSeries[2]?.setData(selectedMain.has("volume") ? compactSeries(indicators.volume_moving_average?.ma20 || []) : []);
     });
     updateVolumeAvailability(payload, selectedMain.has("volume"));
+    updateCandleContinuity(payload);
     applyPayloadStep("moving-average", () => {
       if (selectedMain.has("ma")) drawMovingAverage(indicators.moving_average || {});
       else clearMovingAverage();
@@ -4967,6 +4969,31 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     volumeAvailabilityNote.hidden = !message;
   }
 
+  function updateCandleContinuity(payload) {
+    if (!candleContinuityNote) return;
+    const continuity = payload?.dataQuality?.continuity
+      || payload?.dataWindow?.continuity
+      || payload?.quote?.dataQuality?.continuity;
+    const continuityStatus = String(continuity?.status || "unknown").toLowerCase();
+    element.dataset.continuityStatus = continuityStatus;
+    const candles = Array.isArray(payload?.candles) ? payload.candles : [];
+    const displayFrom = candles[0]?.time ? new Date(Number(candles[0].time) * 1000).toISOString().slice(0, 10) : "";
+    const displayThrough = candles.at(-1)?.time ? new Date(Number(candles.at(-1).time) * 1000).toISOString().slice(0, 10) : "";
+    const missingDates = Array.isArray(continuity?.missingSessionDates)
+      ? continuity.missingSessionDates.map(String).filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+      : [];
+    const visibleMissingDates = displayFrom && displayThrough
+      ? missingDates.filter((date) => date >= displayFrom && date <= displayThrough)
+      : [];
+    const message = continuityStatus === "partial" && visibleMissingDates.length
+      ? `日 K 資料不完整（缺 ${visibleMissingDates.length} 個交易日）`
+      : "";
+    candleContinuityNote.textContent = message;
+    candleContinuityNote.title = message;
+    candleContinuityNote.setAttribute("aria-label", message);
+    candleContinuityNote.hidden = !message;
+  }
+
   function armHistoryInteraction() {
     historyInteractionArmed = true;
     cancelScheduledTimeScaleRefit();
@@ -4982,6 +5009,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     priceChangePercent.textContent = "--";
     updateQuoteDataTime(undefined);
     updateVolumeAvailability(undefined, false);
+    updateCandleContinuity(undefined);
     priceStrip.classList.remove(
       "trend-up",
       "trend-down",
@@ -8452,6 +8480,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     scheduleRenderedAxisSafeWidthSync();
     if (state.mainReadoutMode === MAIN_READOUT_MODES.fixed) restoreLatestMainReadout();
     updateVolumeAvailability({ quote: event.quote }, selectedMain.has("volume"));
+    updateCandleContinuity({
+      candles: lastPayload?.candles,
+      dataQuality: event.quote?.dataQuality || lastPayload?.dataQuality,
+      dataWindow: lastPayload?.dataWindow,
+      quote: event.quote,
+    });
     updateQuoteDataTime(lastPayload?.quote, quoteTimeForLatestCandle(lastPayload, latest));
     updateLatestPriceLabel(lastPayload);
     updateLatestPriceState(latest.close, previous?.close, lastPayload);
@@ -9805,6 +9839,9 @@ function formatQuoteDataState(quote, fallbackTime) {
   }
   const value = quote && typeof quote === "object" ? quote : {};
   const verification = String(value.verification?.status || value.verification || "unverified").toLowerCase();
+  const verificationScopeLabel = String(value.verification?.scope || "close").toLowerCase() === "ohlcv"
+    ? "OHLCV 已核對"
+    : "收盤已核對";
   const verificationTitle = formatQuoteVerificationTitle(value.verification, value.dataQuality);
   const freshness = String(value.freshness || "fresh").toLowerCase();
   const sessionDate = formatQuoteSessionDate(value.sessionDate);
@@ -9834,8 +9871,8 @@ function formatQuoteDataState(quote, fallbackTime) {
   }
   if (marketClosed) {
     return {
-      full: `${base}・休市`,
-      compact: `${sessionDate || compact} 休市`,
+      full: verification === "verified" ? `${base}・${verificationScopeLabel}・休市` : `${base}・休市`,
+      compact: verification === "verified" ? `${sessionDate || compact} ${verificationScopeLabel} 休市` : `${sessionDate || compact} 休市`,
       status: verification === "verified" ? "verified" : "closed",
       title: verification === "verified" ? `${verificationTitle}；目前休市` : `目前休市；${verificationTitle}`,
     };
@@ -9852,7 +9889,7 @@ function formatQuoteDataState(quote, fallbackTime) {
   if (verification !== "verified") {
     return { full: `${base}・未驗證`, compact: `${sessionDate || compact} 未驗證`, status: "unverified", title: verificationTitle };
   }
-  return { full: `${base}・已核對`, compact: `${sessionDate || compact} 已核對`, status: "verified", title: verificationTitle };
+  return { full: `${base}・${verificationScopeLabel}`, compact: `${sessionDate || compact} ${verificationScopeLabel}`, status: "verified", title: verificationTitle };
 }
 
 function formatQuoteVerificationTitle(verification, dataQuality) {
@@ -9872,7 +9909,8 @@ function formatQuoteVerificationTitle(verification, dataQuality) {
   if (invalidDates.length) qualityMessages.push(`已忽略 ${invalidDates[invalidDates.length - 1]} 不完整 K 線`);
   const normalizedPrefix = qualityMessages.length ? `${qualityMessages.join("；")}；` : "";
   if (String(value.status || verification || "").toLowerCase() === "verified") {
-    return `${normalizedPrefix}報價已由${provider}核對${referenceDate ? `（${referenceDate}）` : ""}`;
+    const scopeLabel = String(value.scope || "close").toLowerCase() === "ohlcv" ? "OHLCV" : "收盤價";
+    return `${normalizedPrefix}${scopeLabel}已由${provider}核對${referenceDate ? `（${referenceDate}）` : ""}`;
   }
   const reasons = {
     reference_not_published: "第二來源尚未發布目標交易日資料",

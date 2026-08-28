@@ -19,6 +19,7 @@ export type TdccWorkflowDeploymentTarget = "sites" | "cloudflare";
 type DispatchRow = {
   symbol?: string | null;
   status?: string | null;
+  deployment_target?: string | null;
   requested_at?: string | null;
   cooldown_until?: string | null;
   last_error_code?: string | null;
@@ -50,16 +51,17 @@ async function saveDispatch(input: {
   db: D1Database;
   symbol: string;
   status: string;
+  deploymentTarget: TdccWorkflowDeploymentTarget;
   requestedAt: string;
   cooldownUntil: string | null;
   errorCode?: string | null;
 }) {
   await input.db.prepare(`INSERT INTO tdcc_backfill_dispatches
-    (symbol,status,requested_at,cooldown_until,last_error_code,updated_at)
-    VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(symbol) DO UPDATE SET status=excluded.status,requested_at=excluded.requested_at,
+    (symbol,status,deployment_target,requested_at,cooldown_until,last_error_code,updated_at)
+    VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(symbol) DO UPDATE SET status=excluded.status,deployment_target=excluded.deployment_target,requested_at=excluded.requested_at,
       cooldown_until=excluded.cooldown_until,last_error_code=excluded.last_error_code,updated_at=CURRENT_TIMESTAMP`)
-    .bind(input.symbol, input.status, input.requestedAt, input.cooldownUntil, input.errorCode || null).run();
+    .bind(input.symbol, input.status, input.deploymentTarget, input.requestedAt, input.cooldownUntil, input.errorCode || null).run();
 }
 
 export async function dispatchTdccContinuousWorkflow(input: {
@@ -73,30 +75,30 @@ export async function dispatchTdccContinuousWorkflow(input: {
   const symbol = normalizedSymbol(input.symbol);
   const requestedAt = iso(input.now);
   const nowMs = Date.parse(requestedAt);
+  const deploymentTarget = input.deploymentTarget || "sites";
+  if (!["sites", "cloudflare"].includes(deploymentTarget)) throw new Error("invalid_response");
   const runningAfter = new Date(nowMs - RUN_HEARTBEAT_FRESH_MS).toISOString();
   const running = await input.db.prepare(`SELECT run_id,heartbeat_at FROM tdcc_continuous_runs
     WHERE status='running' AND heartbeat_at>=? ORDER BY heartbeat_at DESC LIMIT 1`).bind(runningAfter).first<RunningRow>();
   if (running?.run_id) {
     const cooldownUntil = new Date(nowMs + DISPATCH_COOLDOWN_MS).toISOString();
-    await saveDispatch({ db: input.db, symbol, status: "already-running", requestedAt, cooldownUntil });
-    return { status: "already-running" as const, requestedAt, cooldownUntil };
+    await saveDispatch({ db: input.db, symbol, status: "already-running", deploymentTarget, requestedAt, cooldownUntil });
+    return { status: "already-running" as const, deploymentTarget, requestedAt, cooldownUntil };
   }
 
-  const existing = await input.db.prepare("SELECT symbol,status,requested_at,cooldown_until,last_error_code FROM tdcc_backfill_dispatches WHERE symbol=?")
+  const existing = await input.db.prepare("SELECT symbol,status,deployment_target,requested_at,cooldown_until,last_error_code FROM tdcc_backfill_dispatches WHERE symbol=?")
     .bind(symbol).first<DispatchRow>();
   const existingCooldown = Date.parse(String(existing?.cooldown_until || ""));
   if (Number.isFinite(existingCooldown) && existingCooldown > nowMs && ["dispatching", "started", "already-running"].includes(String(existing?.status || ""))) {
-    return { status: "cooldown" as const, requestedAt: existing?.requested_at || requestedAt, cooldownUntil: existing?.cooldown_until || null };
+    return { status: "cooldown" as const, deploymentTarget: String(existing?.deployment_target || deploymentTarget), requestedAt: existing?.requested_at || requestedAt, cooldownUntil: existing?.cooldown_until || null };
   }
 
   const cooldownUntil = new Date(nowMs + DISPATCH_COOLDOWN_MS).toISOString();
-  await saveDispatch({ db: input.db, symbol, status: "dispatching", requestedAt, cooldownUntil });
+  await saveDispatch({ db: input.db, symbol, status: "dispatching", deploymentTarget, requestedAt, cooldownUntil });
   const token = String(input.token || "").trim();
-  const deploymentTarget = input.deploymentTarget || "sites";
-  if (!["sites", "cloudflare"].includes(deploymentTarget)) throw new Error("invalid_response");
   if (!token) {
-    await saveDispatch({ db: input.db, symbol, status: "unavailable", requestedAt, cooldownUntil: null, errorCode: "dispatch_not_configured" });
-    return { status: "unavailable" as const, requestedAt, cooldownUntil: null, errorCode: "dispatch_not_configured" };
+    await saveDispatch({ db: input.db, symbol, status: "unavailable", deploymentTarget, requestedAt, cooldownUntil: null, errorCode: "dispatch_not_configured" });
+    return { status: "unavailable" as const, deploymentTarget, requestedAt, cooldownUntil: null, errorCode: "dispatch_not_configured" };
   }
 
   try {
@@ -113,28 +115,29 @@ export async function dispatchTdccContinuousWorkflow(input: {
       signal: AbortSignal.timeout(10000),
     });
     if (response.status === 204) {
-      await saveDispatch({ db: input.db, symbol, status: "started", requestedAt, cooldownUntil });
-      return { status: "started" as const, requestedAt, cooldownUntil };
+      await saveDispatch({ db: input.db, symbol, status: "started", deploymentTarget, requestedAt, cooldownUntil });
+      return { status: "started" as const, deploymentTarget, requestedAt, cooldownUntil };
     }
     const errorCode = safeDispatchError(response.status);
-    await saveDispatch({ db: input.db, symbol, status: "failed", requestedAt, cooldownUntil: null, errorCode });
-    return { status: "failed" as const, requestedAt, cooldownUntil: null, errorCode };
+    await saveDispatch({ db: input.db, symbol, status: "failed", deploymentTarget, requestedAt, cooldownUntil: null, errorCode });
+    return { status: "failed" as const, deploymentTarget, requestedAt, cooldownUntil: null, errorCode };
   } catch (error) {
     const errorCode = safeDispatchError(undefined, error);
-    await saveDispatch({ db: input.db, symbol, status: "failed", requestedAt, cooldownUntil: null, errorCode });
-    return { status: "failed" as const, requestedAt, cooldownUntil: null, errorCode };
+    await saveDispatch({ db: input.db, symbol, status: "failed", deploymentTarget, requestedAt, cooldownUntil: null, errorCode });
+    return { status: "failed" as const, deploymentTarget, requestedAt, cooldownUntil: null, errorCode };
   }
 }
 
 export async function readTdccWorkflowDispatch(db: D1Database | undefined, symbol: string) {
   if (!db) return null;
   const normalized = normalizedSymbol(symbol);
-  const row = await db.prepare("SELECT symbol,status,requested_at,cooldown_until,last_error_code FROM tdcc_backfill_dispatches WHERE symbol=?")
+  const row = await db.prepare("SELECT symbol,status,deployment_target,requested_at,cooldown_until,last_error_code FROM tdcc_backfill_dispatches WHERE symbol=?")
     .bind(normalized).first<DispatchRow>();
   if (!row) return null;
   return {
     symbol: normalized,
     status: String(row.status || "failed") as TdccWorkflowDispatchStatus,
+    deploymentTarget: String(row.deployment_target || "unknown"),
     requestedAt: row.requested_at || null,
     cooldownUntil: row.cooldown_until || null,
     lastErrorCode: row.last_error_code || null,

@@ -440,6 +440,35 @@ ensure_private_app_support_root`,
     expect(block).not.toMatch(/production|SJ_CA|API_KEY|SECRET/i);
   });
 
+  it("TDCC queue watcher 在登入後與每五分鐘喚醒，週末主同步與隔日重試仍獨立保留", async () => {
+    const source = await readFile(runtimePath, "utf8");
+    const watcherBlock = source.match(/cat > "\$\{MULTIVIEW_TDCC_WATCHER_PLIST\}" <<EOF([\s\S]*?)\nEOF/)?.[1] || "";
+    const weeklyBlock = source.match(/cat > "\$\{MULTIVIEW_TDCC_PLIST\}" <<EOF([\s\S]*?)\nEOF/)?.[1] || "";
+    const watcherService = source.match(/service_multiview_tdcc_watcher\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+    expect(watcherBlock).toContain("<key>RunAtLoad</key><true/>");
+    expect(watcherBlock).toContain("<key>StartInterval</key><integer>300</integer>");
+    expect(watcherBlock).not.toContain("<key>KeepAlive</key>");
+    expect(weeklyBlock).toContain("<key>Weekday</key><integer>7</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer>");
+    expect(weeklyBlock).toContain("<key>Weekday</key><integer>1</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer>");
+    expect(watcherService).toContain("queue-probe");
+    expect(watcherService).toContain('Authorization: Bearer ${pipeline_secret}');
+    expect(watcherService).not.toContain("X-MultiView-Local-Authorization");
+    expect(watcherService).toContain("tdcc-watcher-noop");
+    expect(watcherService).toContain("single_flight_active");
+    expect(watcherService).toContain("--history-only");
+    expect(watcherService).not.toMatch(/openapi\.tdcc|qryStock/);
+  });
+
+  it("MultiView restart 安裝 exact working tree 並載入 watcher，但不重設 5173 或 8080", async () => {
+    const source = await readFile(runtimePath, "utf8");
+    const restartBlock = source.match(/restart_multiview\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+    expect(restartBlock).toContain('install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"');
+    expect(restartBlock).toContain("write_multiview_tdcc_watcher_plist");
+    expect(restartBlock).toContain('bootstrap_job "${MULTIVIEW_TDCC_WATCHER_LABEL}"');
+    expect(restartBlock).not.toContain('bootout_job "${SIM_LABEL}"');
+    expect(restartBlock).not.toContain('bootout_job "${WEB_LABEL}"');
+  });
+
   it("產生只允許 simulation 的智慧下單 observe-only sidecar LaunchAgent", async () => {
     const source = await readFile(runtimePath, "utf8");
     const block = await readFile(launchAgentInstallerPath, "utf8");
@@ -478,6 +507,7 @@ ensure_private_app_support_root`,
     const multiviewService = source.match(/service_multiview\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
     const dailyService = source.match(/service_multiview_daily_pipeline\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
     const tdccService = source.match(/service_multiview_tdcc_pipeline\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+    const tdccWatcherService = source.match(/service_multiview_tdcc_watcher\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
 
     expect(source).toContain('APP_NODE_BIN="${REALTIME_STOCK_APP_NODE_BIN:-}"');
     expect(source).toContain('APP_NODE_BIN="$(command -v node 2>/dev/null || true)"');
@@ -486,6 +516,7 @@ ensure_private_app_support_root`,
     expect(multiviewService).toContain('"${APP_NODE_BIN}" "${MULTIVIEW_CLI}"');
     expect(dailyService).toContain('"${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs');
     expect(tdccService).toContain('"${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs');
+    expect(tdccWatcherService).toContain('"${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs');
     expect(sidecarService).toContain('persisted_node="${NODE_BIN}"');
     expect(sidecarService).not.toContain("APP_NODE_BIN");
   });

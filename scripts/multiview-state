@@ -10,7 +10,7 @@ PERSIST_DIR="${STATE_DIR}/state"
 BACKUP_DIR="${STATE_DIR}/backups"
 METADATA_DIR="${STATE_DIR}/metadata"
 REPORT_DIR="${STATE_DIR}/reports"
-SCHEMA_REVISION="0021"
+SCHEMA_REVISION="0025"
 WRANGLER_BIN="${REPO_DIR}/apps/multiview/node_modules/.bin/wrangler"
 WRANGLER_CONFIG="${REPO_DIR}/apps/multiview/wrangler.local.jsonc"
 
@@ -39,7 +39,7 @@ coverage_gate() {
     [[ -n "${db_file}" && -f "${db_file}" ]] || { print 'not-initialized'; return 0; }
     table_count="$(sqlite3 "${db_file}" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('user_tabs','user_instruments','candle_history','taiwan_stock_chip_daily','taiwan_stock_pe_valuation_daily','runtime_metadata');" 2>/dev/null || print 0)"
     migration_count="$(sqlite3 "${db_file}" 'SELECT count(*) FROM d1_migrations;' 2>/dev/null || print 0)"
-    [[ "${table_count}" == '6' && "${migration_count}" -ge 22 ]] && print 'ok' || print "incomplete:${table_count}:6:${migration_count}:22"
+    [[ "${table_count}" == '6' && "${migration_count}" -ge 26 ]] && print 'ok' || print "incomplete:${table_count}:6:${migration_count}:26"
 }
 
 backup_database() {

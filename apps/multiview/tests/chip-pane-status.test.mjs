@@ -139,7 +139,7 @@ function completeDailyRow(sessionDate, seed = 1) {
   };
 }
 
-function completePayload({ symbol = "2330.TW", interval = "1d", rows = [], distributionRows = [], availability = {}, coverage = [], warnings = [], sources } = {}) {
+function completePayload({ symbol = "2330.TW", interval = "1d", rows = [], distributionRows = [], availability = {}, coverage = [], warnings = [], sources, backfill = null, dispatch = null } = {}) {
   return {
     symbol,
     interval,
@@ -154,6 +154,8 @@ function completePayload({ symbol = "2330.TW", interval = "1d", rows = [], distr
       { dataset: "securities-lending", providers: ["finmind"], frequency: "daily" },
       { dataset: "shareholder-distribution", providers: ["tdcc"], frequency: "weekly" },
     ],
+    ...(backfill ? { backfill } : {}),
+    ...(dispatch ? { dispatch } : {}),
     warnings,
   };
 }
@@ -246,6 +248,47 @@ test("完成 cache 首繪後 HTTP 200 空 TDCC 回應仍保留最後有效大戶
   const cached = await requestData(input);
   assert.deepEqual(cached.distributionRows.map((row) => row.dataDate), ["2026-08-21"]);
   assert.equal(cacheMetrics().retainedDatasets, 1);
+});
+
+test("TDCC rows 與日期 evidence 共同採非退化 reconcile，新 verified evidence 才更新三種 holder 共用狀態", () => {
+  resetChipRequestCacheForTest();
+  const common = { symbol: "2330.TW", interval: "1d", datasets: ["shareholder-distribution"], range: { start: "2026-08-01", end: "2026-08-31" } };
+  const first = reconcileChipPayload({
+    ...common,
+    payload: completePayload({
+      distributionRows: [distributionRow("2026-08-14"), distributionRow("2026-08-21")],
+      availability: { "shareholder-distribution": { status: "partial", reason: "history_not_archived", rowCount: 2 } },
+      coverage: [{ dataset: "shareholder-distribution", savedWeeks: 49 }],
+      backfill: { status: "partial", expectedWeeks: 51, completedWeeks: 49, missingWeeks: 2, missingDates: ["2026-08-07", "2026-08-14"], officialPlanThrough: "2026-08-21", coverageVerifiedAt: "2026-08-22T00:00:00Z" },
+    }),
+    nowMs: 1000,
+  });
+  assert.equal(first.backfill.completedWeeks, 49);
+  const regressed = reconcileChipPayload({
+    ...common,
+    payload: completePayload({
+      distributionRows: [distributionRow("2026-08-14")],
+      availability: { "shareholder-distribution": { status: "partial", reason: "stale_cache", rowCount: 1 } },
+      coverage: [{ dataset: "shareholder-distribution", savedWeeks: 48 }],
+      backfill: { status: "partial", expectedWeeks: 51, completedWeeks: 48, missingWeeks: 3, missingDates: ["2026-08-01", "2026-08-07", "2026-08-14"], officialPlanThrough: "2026-08-14", coverageVerifiedAt: "2026-08-15T00:00:00Z" },
+    }),
+    nowMs: 2000,
+  });
+  assert.deepEqual(normalized(regressed.distributionRows.map((row) => row.dataDate)), ["2026-08-14", "2026-08-21"]);
+  assert.equal(regressed.backfill.completedWeeks, 49);
+  assert.deepEqual(normalized(regressed.backfill.missingDates), ["2026-08-07", "2026-08-14"]);
+  const improved = reconcileChipPayload({
+    ...common,
+    payload: completePayload({
+      distributionRows: [distributionRow("2026-08-07"), distributionRow("2026-08-14"), distributionRow("2026-08-21")],
+      availability: { "shareholder-distribution": { status: "partial", reason: "available", rowCount: 3 } },
+      coverage: [{ dataset: "shareholder-distribution", savedWeeks: 50 }],
+      backfill: { status: "partial", expectedWeeks: 51, completedWeeks: 50, missingWeeks: 1, missingDates: ["2026-08-14"], officialPlanThrough: "2026-08-21", coverageVerifiedAt: "2026-08-22T01:00:00Z" },
+    }),
+    nowMs: 3000,
+  });
+  assert.equal(improved.backfill.completedWeeks, 50);
+  assert.deepEqual(normalized(improved.backfill.missingDates), ["2026-08-14"]);
 });
 
 test("五類 dataset 逐片合併、同日修正、日期裁切與 identity 隔離", () => {
@@ -752,7 +795,12 @@ test("普通股與 ETF 的 queued、running、completed、partial、blocked 狀�
     availabilityLabel(available, { supported: true }, { status: "running", completedWeeks: 3, expectedWeeks: 12 }),
   );
   assert.equal(availabilityLabel(available, { supported: true }, { status: "queued" }, { status: "started" }), "立即回補啟動中");
-  assert.equal(availabilityLabel(available, { supported: true }, { status: "queued" }, { status: "unavailable" }), "已排入背景回補（非立即）");
+  assert.equal(availabilityLabel(available, { supported: true }, { status: "queued" }, { status: "unavailable" }), "背景交接退化，資料仍在排隊");
+  assert.equal(availabilityLabel(available, { supported: true }, {
+    status: "completed", expectedWeeks: 55, completedWeeks: 55, missingWeeks: 0, missingDates: [],
+  }, { status: "unavailable" }), "歷史已更新");
+  assert.equal(availabilityLabel(available, { supported: true }, { status: "queued", completedWeeks: 1, expectedWeeks: 51 }), "等待背景回補（1/51 週）");
+  assert.equal(availabilityLabel(available, { supported: true }, { status: "partial", completedWeeks: 49, expectedWeeks: 51, missingWeeks: 2 }), "缺少 2 週（49/51 週）");
 });
 
 test("scheduler stale 與可及性不只靠顏色，holder 缺值仍有文字", () => {
@@ -803,7 +851,11 @@ test("立即回補輪詢以個別 symbol coverage 判定進度與停止條件", 
     coverage: [{ dataset: "shareholder-distribution", savedWeeks: 2, expectedWeeks: 51, missingWeeks: 49 }],
     backfill: { status: "running", completedWeeks: 2, expectedWeeks: 51, missingDates: Array(49).fill("2026-01-01") },
   });
-  assert.deepEqual(JSON.parse(JSON.stringify(state)), { status: "running", savedWeeks: 2, completedWeeks: 2, expectedWeeks: 51, missingWeeks: 49 });
+  assert.deepEqual(JSON.parse(JSON.stringify(state)), {
+    status: "running", savedWeeks: 2, completedWeeks: 2, expectedWeeks: 51, missingWeeks: 49,
+    missingDates: Array(12).fill("2026-01-01"), officialPlanThrough: null, coverageVerifiedAt: null,
+    queuedSince: null, handoff: null,
+  });
   assert.equal(shouldContinueBackfillPolling(state), true);
   assert.equal(shouldContinueBackfillPolling({ status: "completed", savedWeeks: 51, completedWeeks: 51, expectedWeeks: 51, missingWeeks: 0 }), false);
   assert.equal(shouldContinueBackfillPolling({ status: "blocked", savedWeeks: 2, completedWeeks: 2, expectedWeeks: 51, missingWeeks: 49 }), false);

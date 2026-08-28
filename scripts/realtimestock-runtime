@@ -44,6 +44,7 @@ WEB_LABEL="com.alanyi.realtimestock.web"
 MULTIVIEW_LABEL="com.alanyi.realtimestock.multiview"
 MULTIVIEW_DAILY_LABEL="com.alanyi.realtimestock.multiview-daily-pipeline"
 MULTIVIEW_TDCC_LABEL="com.alanyi.realtimestock.multiview-tdcc-pipeline"
+MULTIVIEW_TDCC_WATCHER_LABEL="com.alanyi.realtimestock.multiview-tdcc-watcher"
 PROD_LABEL="com.alanyi.realtimestock.production-readonly-api"
 SMART_ORDER_LABEL="com.alanyi.realtimestock.smart-order-sidecar"
 
@@ -64,6 +65,7 @@ WEB_PLIST="${USER_LAUNCH_AGENTS}/${WEB_LABEL}.plist"
 MULTIVIEW_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_LABEL}.plist"
 MULTIVIEW_DAILY_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_DAILY_LABEL}.plist"
 MULTIVIEW_TDCC_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_TDCC_LABEL}.plist"
+MULTIVIEW_TDCC_WATCHER_PLIST="${USER_LAUNCH_AGENTS}/${MULTIVIEW_TDCC_WATCHER_LABEL}.plist"
 PROD_PLIST="${GENERATED_DIR}/${PROD_LABEL}.plist"
 SMART_ORDER_PLIST="${USER_LAUNCH_AGENTS}/${SMART_ORDER_LABEL}.plist"
 
@@ -712,6 +714,27 @@ verify_smart_order_plist_binding() {
     fi
 }
 
+write_multiview_tdcc_watcher_plist() {
+    mkdir -p "${MULTIVIEW_STATE_DIR}/logs"
+    chmod 700 "${MULTIVIEW_STATE_DIR}/logs"
+    cat > "${MULTIVIEW_TDCC_WATCHER_PLIST}" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>${MULTIVIEW_TDCC_WATCHER_LABEL}</string>
+<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-multiview-tdcc-watcher</string></array>
+<key>WorkingDirectory</key><string>${REPO_DIR}/apps/multiview</string>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>${HOME}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>300</integer>
+<key>ThrottleInterval</key><integer>30</integer>
+<key>StandardOutPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-watcher.log</string>
+<key>StandardErrorPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-watcher.log</string>
+</dict></plist>
+EOF
+    chmod 600 "${MULTIVIEW_TDCC_WATCHER_PLIST}"
+}
+
 write_plists() {
     ensure_private_app_support_root
     mkdir -p "${GENERATED_DIR}" "${USER_LAUNCH_AGENTS}"
@@ -847,6 +870,8 @@ EOF
 </dict></plist>
 EOF
 
+    write_multiview_tdcc_watcher_plist
+
     cat > "${PROD_PLIST}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -869,7 +894,7 @@ EOF
 
     mkdir -p "${MULTIVIEW_STATE_DIR}/logs"
     chmod 700 "${MULTIVIEW_STATE_DIR}/logs"
-    chmod 600 "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    chmod 600 "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${MULTIVIEW_TDCC_WATCHER_PLIST}" "${PROD_PLIST}"
     if smart_order_platform_supported && [[ -f "${SMART_ORDER_PLIST}" ]]; then
         chmod 600 "${SMART_ORDER_PLIST}"
     fi
@@ -1461,7 +1486,10 @@ restart_multiview() {
         print -u2 'MultiView 本階段只支援 simulation；請先執行 pnpm local-runtime simulation'
         return 1
     fi
+    mkdir -p "${INSTALLED_BIN_DIR}"
+    install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"
     [[ -f "${MULTIVIEW_PLIST}" ]] || write_plists
+    write_multiview_tdcc_watcher_plist
     bootout_job "${MULTIVIEW_LABEL}"
     wait_port_free 5174
     ensure_multiview_job
@@ -1469,6 +1497,7 @@ restart_multiview() {
         print -u2 'MultiView 未能在 30 秒內通過獨立健康檢查；5173 與 8080 未受影響'
         return 1
     fi
+    bootstrap_job "${MULTIVIEW_TDCC_WATCHER_LABEL}" "${MULTIVIEW_TDCC_WATCHER_PLIST}"
     print 'MultiView 已重新啟動'
 }
 
@@ -1735,6 +1764,7 @@ switch_simulation() {
     restart_multiview || true
     bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
     bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
+    bootstrap_job "${MULTIVIEW_TDCC_WATCHER_LABEL}" "${MULTIVIEW_TDCC_WATCHER_PLIST}"
     if smart_order_platform_supported; then
         [[ -f "${SMART_ORDER_PLIST}" ]] || write_smart_order_plist
         start_smart_order_sidecar
@@ -1759,6 +1789,7 @@ switch_production_readonly() {
     bootout_job "${MULTIVIEW_LABEL}"
     bootout_job "${MULTIVIEW_DAILY_LABEL}"
     bootout_job "${MULTIVIEW_TDCC_LABEL}"
+    bootout_job "${MULTIVIEW_TDCC_WATCHER_LABEL}"
     wait_port_free 8080
     write_api_generation production-readonly
     write_mode production-readonly
@@ -1799,6 +1830,7 @@ runtime_status() {
     print "multiview_job=$(job_loaded "${MULTIVIEW_LABEL}" && print loaded || print stopped)"
     print "multiview_daily_pipeline_job=$(job_loaded "${MULTIVIEW_DAILY_LABEL}" && print loaded || print stopped)"
     print "multiview_tdcc_pipeline_job=$(job_loaded "${MULTIVIEW_TDCC_LABEL}" && print loaded || print stopped)"
+    print "multiview_tdcc_watcher_job=$(job_loaded "${MULTIVIEW_TDCC_WATCHER_LABEL}" && print loaded || print stopped)"
     watchdog_status
 
     info="$(curl -fsS --max-time 3 http://127.0.0.1:8080/api/v1/info 2>/dev/null || true)"
@@ -1863,6 +1895,7 @@ install_runtime() {
     bootout_job "${MULTIVIEW_LABEL}"
     bootout_job "${MULTIVIEW_DAILY_LABEL}"
     bootout_job "${MULTIVIEW_TDCC_LABEL}"
+    bootout_job "${MULTIVIEW_TDCC_WATCHER_LABEL}"
     wait_port_free 8080
     wait_port_free 5173
     wait_port_free 5174
@@ -1893,6 +1926,7 @@ install_runtime() {
     bootstrap_job "${MULTIVIEW_LABEL}" "${MULTIVIEW_PLIST}"
     bootstrap_job "${MULTIVIEW_DAILY_LABEL}" "${MULTIVIEW_DAILY_PLIST}"
     bootstrap_job "${MULTIVIEW_TDCC_LABEL}" "${MULTIVIEW_TDCC_PLIST}"
+    bootstrap_job "${MULTIVIEW_TDCC_WATCHER_LABEL}" "${MULTIVIEW_TDCC_WATCHER_PLIST}"
 
     if ! wait_multiview; then
         print -u2 '安裝完成，但 MultiView 尚未通過健康檢查；simulation API 與本機 Web 維持執行'
@@ -1917,8 +1951,9 @@ uninstall_runtime() {
     bootout_job "${MULTIVIEW_LABEL}"
     bootout_job "${MULTIVIEW_DAILY_LABEL}"
     bootout_job "${MULTIVIEW_TDCC_LABEL}"
+    bootout_job "${MULTIVIEW_TDCC_WATCHER_LABEL}"
     bootout_job "${SMART_ORDER_LABEL}"
-    command rm -f "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${SMART_ORDER_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${PROD_PLIST}"
+    command rm -f "${SIM_PLIST}" "${WATCHDOG_PLIST}" "${WEB_PLIST}" "${SMART_ORDER_PLIST}" "${MULTIVIEW_PLIST}" "${MULTIVIEW_DAILY_PLIST}" "${MULTIVIEW_TDCC_PLIST}" "${MULTIVIEW_TDCC_WATCHER_PLIST}" "${PROD_PLIST}"
     command rm -f "${WATCHDOG_STATE_DIR}/state.json" "${WATCHDOG_STATE_DIR}/watchdog-once.lock"
     command rmdir "${WATCHDOG_STATE_DIR}" 2>/dev/null || true
     command rm -f "${INSTALLED_SCRIPT}"
@@ -2083,6 +2118,37 @@ service_multiview_tdcc_pipeline() {
         --checkpoint="${checkpoint_dir}/continuous.json" --claim-limit=2 --max-run-ms=1200000
 }
 
+service_multiview_tdcc_watcher() {
+    local pipeline_secret probe lock_dir run_id exit_code
+    pipeline_secret="$(read_multiview_pipeline_secret)"
+    wait_multiview
+    probe="$(curl -fsS --max-time 30 -X POST http://127.0.0.1:5174/api/internal/tdcc-continuous-backfill \
+        -H 'Content-Type: application/json' \
+        -H "Authorization: Bearer ${pipeline_secret}" \
+        --data '{"action":"queue-probe"}')"
+    print -r -- "${probe}" | jq -e '.ok == true and (.queue.shouldRun | type == "boolean")' >/dev/null
+    if [[ "$(print -r -- "${probe}" | jq -r '.queue.shouldRun')" != 'true' ]]; then
+        print '{"event":"tdcc-watcher-noop","reason":"queue_empty"}'
+        return 0
+    fi
+    lock_dir="${MULTIVIEW_STATE_DIR}/locks/tdcc-watcher"
+    mkdir -p "${MULTIVIEW_STATE_DIR}/locks"
+    chmod 700 "${MULTIVIEW_STATE_DIR}/locks"
+    if ! mkdir "${lock_dir}" 2>/dev/null; then
+        print '{"event":"tdcc-watcher-noop","reason":"single_flight_active"}'
+        return 0
+    fi
+    run_id="local-tdcc-watch-$(date +%Y%m%d-%H%M)"
+    exit_code=0
+    cd "${REPO_DIR}/apps/multiview"
+    env TDCC_CONTINUOUS_BACKFILL_SECRET="${pipeline_secret}" TDCC_HISTORY_INGEST_SECRET="${pipeline_secret}" \
+        "${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs --continuous --history-only \
+        --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="${run_id}" \
+        --checkpoint="${MULTIVIEW_STATE_DIR}/checkpoints/tdcc/continuous.json" --claim-limit=2 --max-run-ms=1200000 || exit_code=$?
+    command rmdir "${lock_dir}" 2>/dev/null || true
+    return "${exit_code}"
+}
+
 command_name="${1:-}"
 case "${command_name}" in
     install) install_runtime ;;
@@ -2092,6 +2158,7 @@ case "${command_name}" in
     restart) restart_multiview ;;
     multiview-daily) service_multiview_daily_pipeline ;;
     multiview-tdcc) service_multiview_tdcc_pipeline ;;
+    multiview-tdcc-watcher) service_multiview_tdcc_watcher ;;
     status) runtime_status ;;
     node-sqlite-probe) probe_smart_order_node_sqlite ;;
     node-sqlite-host-public)
@@ -2140,5 +2207,6 @@ case "${command_name}" in
     service-multiview) service_multiview ;;
     service-multiview-daily-pipeline) service_multiview_daily_pipeline ;;
     service-multiview-tdcc-pipeline) service_multiview_tdcc_pipeline ;;
+    service-multiview-tdcc-watcher) service_multiview_tdcc_watcher ;;
     *) usage; exit 2 ;;
 esac

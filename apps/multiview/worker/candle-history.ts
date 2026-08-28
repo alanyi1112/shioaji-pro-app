@@ -3,6 +3,7 @@ import type { Candle } from "./indicators";
 export const CANDLE_HISTORY_WARMUP_ROWS = 120;
 export const CANDLE_HISTORY_MAX_DISPLAY_ROWS = 1600;
 export const CANDLE_HISTORY_WRITE_BATCH = 80;
+export const CANDLE_HISTORY_DIAGNOSTIC_DATE_LIMIT = 32;
 export const PERSISTENT_CANDLE_INTERVALS = new Set(["1d", "1wk", "1mo"]);
 
 export type HistoryCandle = Candle & {
@@ -17,6 +18,19 @@ export type CandleHistoryIdentity = {
 };
 
 export type CandleHistoryCacheState = "hit" | "miss" | "backfilled" | "refreshed" | "stale" | "disabled" | "write_failed";
+export type CandleHistoryContinuityStatus = "complete" | "partial" | "unknown";
+
+export type CandleHistoryContinuityMetadata = {
+  status: CandleHistoryContinuityStatus;
+  checkedFrom: string | null;
+  checkedThrough: string | null;
+  checkedAt: string | null;
+  verifiedThrough: string | null;
+  missingSessionCount: number;
+  missingSessionDates: string[];
+  excludedSessionDates: string[];
+  reasonCode: string | null;
+};
 
 export type CandleHistoryCacheMetadata = {
   store: "d1" | "worker-memory";
@@ -27,7 +41,8 @@ export type CandleHistoryCacheMetadata = {
   rows: number;
   tailRefresh?: "success" | "failed" | "not_needed";
   fullWindowComplete?: boolean;
-  reason?: "d1_unavailable" | "provider_unavailable";
+  continuity?: CandleHistoryContinuityMetadata;
+  reason?: "d1_unavailable" | "provider_unavailable" | "cache_invalidation_failed";
 };
 
 export type AcquiredCandleHistory = {
@@ -62,21 +77,31 @@ type CandleHistoryStateRow = {
   available_rows?: number | null;
   last_full_fetch_at?: string | null;
   last_tail_fetch_at?: string | null;
+  continuity_status?: string | null;
+  continuity_from?: string | null;
+  continuity_through?: string | null;
+  continuity_checked_at?: string | null;
+  missing_session_count?: number | null;
+  missing_session_dates_json?: string | null;
+  excluded_session_dates_json?: string | null;
+  continuity_reason_code?: string | null;
 };
 
-type CandleHistoryState = {
+export type CandleHistoryState = {
   fullWindowComplete: boolean;
   coverageStart: number | null;
   coverageEnd: number | null;
   availableRows: number;
   lastFullFetchAt: string | null;
   lastTailFetchAt: string | null;
+  continuity: CandleHistoryContinuityMetadata;
 };
 
 type MemoryHistoryEntry = {
   rows: HistoryCandle[];
   provider: string;
   fetchedAt: number;
+  continuity?: CandleHistoryContinuityMetadata;
 };
 
 type InflightHistoryEntry<T> = {
@@ -86,6 +111,56 @@ type InflightHistoryEntry<T> = {
 
 const memoryHistory = new Map<string, MemoryHistoryEntry>();
 const historyInflight = new Map<string, InflightHistoryEntry<AcquiredCandleHistory>>();
+const CANDLE_HISTORY_MEMORY_CONTRACT_VERSION = "daily-continuity-v2";
+
+function validSessionDate(value: unknown): value is string {
+  const text = String(value ?? "");
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) && !Number.isNaN(Date.parse(`${text}T00:00:00Z`));
+}
+
+function boundedSessionDates(value: unknown) {
+  const source = Array.isArray(value) ? value : [];
+  return [...new Set(source.filter(validSessionDate))].sort().slice(0, CANDLE_HISTORY_DIAGNOSTIC_DATE_LIMIT);
+}
+
+function parseSessionDatesJson(value: unknown) {
+  if (typeof value !== "string") return { dates: [] as string[], valid: value == null };
+  try {
+    const parsed = JSON.parse(value);
+    return { dates: boundedSessionDates(parsed), valid: Array.isArray(parsed) };
+  } catch {
+    return { dates: [] as string[], valid: false };
+  }
+}
+
+function normalizeContinuityMetadata(value?: Partial<CandleHistoryContinuityMetadata> | null): CandleHistoryContinuityMetadata {
+  const status = ["complete", "partial", "unknown"].includes(String(value?.status))
+    ? value!.status as CandleHistoryContinuityStatus
+    : "unknown";
+  const checkedFrom = validSessionDate(value?.checkedFrom) ? value!.checkedFrom! : null;
+  const checkedThrough = validSessionDate(value?.checkedThrough) ? value!.checkedThrough! : null;
+  const missingSessionDates = boundedSessionDates(value?.missingSessionDates);
+  const excludedSessionDates = boundedSessionDates(value?.excludedSessionDates);
+  const missingSessionCount = Math.max(missingSessionDates.length, Math.max(0, Math.floor(Number(value?.missingSessionCount) || 0)));
+  return {
+    status,
+    checkedFrom,
+    checkedThrough,
+    checkedAt: value?.checkedAt && Number.isFinite(Date.parse(value.checkedAt)) ? value.checkedAt : null,
+    verifiedThrough: status === "complete" && checkedThrough ? checkedThrough : validSessionDate(value?.verifiedThrough) ? value!.verifiedThrough! : null,
+    missingSessionCount,
+    missingSessionDates,
+    excludedSessionDates,
+    reasonCode: value?.reasonCode ? String(value.reasonCode).slice(0, 80) : null,
+  };
+}
+
+function continuityMetadataChanged(
+  current: CandleHistoryContinuityMetadata,
+  previous?: CandleHistoryContinuityMetadata | null,
+) {
+  return JSON.stringify(current) !== JSON.stringify(normalizeContinuityMetadata(previous));
+}
 
 function normalizedProvider(provider: string) {
   return provider === "yahoo-chart" ? "yfinance" : String(provider || "").trim().toLowerCase();
@@ -242,23 +317,52 @@ export async function readCandleHistory(db: D1Database | undefined, identity: Ca
   }
 }
 
-async function readCandleHistoryState(db: D1Database | undefined, identity: CandleHistoryIdentity): Promise<CandleHistoryState | null> {
+function candleHistoryStateFromRow(row: CandleHistoryStateRow): CandleHistoryState {
+  const missing = parseSessionDatesJson(row.missing_session_dates_json);
+  const excluded = parseSessionDatesJson(row.excluded_session_dates_json);
+  const parsedStatus = ["complete", "partial", "unknown"].includes(String(row.continuity_status))
+    ? row.continuity_status as CandleHistoryContinuityStatus
+    : "unknown";
+  const continuity = normalizeContinuityMetadata({
+    status: missing.valid && excluded.valid ? parsedStatus : "unknown",
+    checkedFrom: row.continuity_from,
+    checkedThrough: row.continuity_through,
+    checkedAt: row.continuity_checked_at,
+    missingSessionCount: Number(row.missing_session_count || 0),
+    missingSessionDates: missing.dates,
+    excludedSessionDates: excluded.dates,
+    reasonCode: missing.valid && excluded.valid ? row.continuity_reason_code : "invalid_state_json",
+  });
+  return {
+    fullWindowComplete: Number(row.full_window_complete || 0) === 1 && continuity.status === "complete",
+    coverageStart: row.coverage_start == null ? null : Number(row.coverage_start),
+    coverageEnd: row.coverage_end == null ? null : Number(row.coverage_end),
+    availableRows: Number(row.available_rows || 0),
+    lastFullFetchAt: row.last_full_fetch_at || null,
+    lastTailFetchAt: row.last_tail_fetch_at || null,
+    continuity,
+  };
+}
+
+export async function readCandleHistoryState(db: D1Database | undefined, identity: CandleHistoryIdentity): Promise<CandleHistoryState | null> {
   if (!db) return null;
   try {
-    const row = await db.prepare(`SELECT full_window_complete,coverage_start,coverage_end,available_rows,last_full_fetch_at,last_tail_fetch_at
+    const row = await db.prepare(`SELECT full_window_complete,coverage_start,coverage_end,available_rows,last_full_fetch_at,last_tail_fetch_at,
+      continuity_status,continuity_from,continuity_through,continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json,continuity_reason_code
       FROM candle_history_state WHERE provider=? AND symbol=? AND interval=?`)
       .bind(identity.provider, identity.symbol, identity.interval).first<CandleHistoryStateRow>();
     if (!row) return null;
-    return {
-      fullWindowComplete: Number(row.full_window_complete || 0) === 1,
-      coverageStart: row.coverage_start == null ? null : Number(row.coverage_start),
-      coverageEnd: row.coverage_end == null ? null : Number(row.coverage_end),
-      availableRows: Number(row.available_rows || 0),
-      lastFullFetchAt: row.last_full_fetch_at || null,
-      lastTailFetchAt: row.last_tail_fetch_at || null,
-    };
+    return candleHistoryStateFromRow(row);
   } catch {
-    return null;
+    try {
+      const legacy = await db.prepare(`SELECT full_window_complete,coverage_start,coverage_end,available_rows,last_full_fetch_at,last_tail_fetch_at
+        FROM candle_history_state WHERE provider=? AND symbol=? AND interval=?`)
+        .bind(identity.provider, identity.symbol, identity.interval).first<CandleHistoryStateRow>();
+      if (!legacy) return null;
+      return candleHistoryStateFromRow({ ...legacy, full_window_complete: 0, continuity_status: "unknown", continuity_reason_code: "continuity_not_migrated" });
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -266,29 +370,50 @@ async function saveCandleHistoryState(
   db: D1Database | undefined,
   identity: CandleHistoryIdentity,
   rows: HistoryCandle[],
-  mode: "full" | "tail",
+  mode: "full" | "tail" | "audit",
   previous: CandleHistoryState | null,
   now: Date,
+  continuity?: CandleHistoryContinuityMetadata,
 ) {
   if (!db) return false;
   const normalized = mergeCandleHistory([], rows);
   const nowText = now.toISOString();
+  const normalizedContinuity = normalizeContinuityMetadata(continuity);
+  const isTaiwanDaily = identity.interval === "1d" && /\.(TW|TWO)$/i.test(identity.symbol);
+  const fullWindowComplete = isTaiwanDaily
+    ? normalizedContinuity.status === "complete"
+    : mode === "full" || Boolean(previous?.fullWindowComplete);
   try {
     await db.prepare(`INSERT INTO candle_history_state
-      (provider,symbol,interval,full_window_complete,coverage_start,coverage_end,available_rows,status,reason_code,last_full_fetch_at,last_tail_fetch_at,retry_after)
-      VALUES (?,?,?,?,?,?,?,'complete','ok',?,?,NULL)
+      (provider,symbol,interval,full_window_complete,coverage_start,coverage_end,available_rows,status,reason_code,last_full_fetch_at,last_tail_fetch_at,
+       continuity_status,continuity_from,continuity_through,continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json,continuity_reason_code,retry_after)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
       ON CONFLICT(provider,symbol,interval) DO UPDATE SET
-        full_window_complete=MAX(candle_history_state.full_window_complete,excluded.full_window_complete),
+        full_window_complete=excluded.full_window_complete,
         coverage_start=CASE WHEN candle_history_state.coverage_start IS NULL OR excluded.coverage_start<candle_history_state.coverage_start THEN excluded.coverage_start ELSE candle_history_state.coverage_start END,
         coverage_end=CASE WHEN candle_history_state.coverage_end IS NULL OR excluded.coverage_end>candle_history_state.coverage_end THEN excluded.coverage_end ELSE candle_history_state.coverage_end END,
-        available_rows=MAX(candle_history_state.available_rows,excluded.available_rows),status='complete',reason_code='ok',
+        available_rows=MAX(candle_history_state.available_rows,excluded.available_rows),status=excluded.status,reason_code=excluded.reason_code,
         last_full_fetch_at=COALESCE(excluded.last_full_fetch_at,candle_history_state.last_full_fetch_at),
-        last_tail_fetch_at=COALESCE(excluded.last_tail_fetch_at,candle_history_state.last_tail_fetch_at),retry_after=NULL,updated_at=CURRENT_TIMESTAMP`)
+        last_tail_fetch_at=COALESCE(excluded.last_tail_fetch_at,candle_history_state.last_tail_fetch_at),
+        continuity_status=excluded.continuity_status,continuity_from=excluded.continuity_from,continuity_through=excluded.continuity_through,
+        continuity_checked_at=excluded.continuity_checked_at,missing_session_count=excluded.missing_session_count,
+        missing_session_dates_json=excluded.missing_session_dates_json,excluded_session_dates_json=excluded.excluded_session_dates_json,
+        continuity_reason_code=excluded.continuity_reason_code,retry_after=NULL,updated_at=CURRENT_TIMESTAMP`)
       .bind(
         identity.provider, identity.symbol, identity.interval,
-        mode === "full" || previous?.fullWindowComplete ? 1 : 0,
+        fullWindowComplete ? 1 : 0,
         normalized[0]?.time ?? null, normalized.at(-1)?.time ?? null, normalized.length,
+        normalizedContinuity.status === "complete" || !isTaiwanDaily ? "complete" : normalizedContinuity.status,
+        normalizedContinuity.reasonCode || (normalizedContinuity.status === "complete" || !isTaiwanDaily ? "ok" : "continuity_unverified"),
         mode === "full" ? nowText : null, mode === "tail" ? nowText : null,
+        isTaiwanDaily ? normalizedContinuity.status : "complete",
+        isTaiwanDaily ? normalizedContinuity.checkedFrom : null,
+        isTaiwanDaily ? normalizedContinuity.checkedThrough : null,
+        isTaiwanDaily ? normalizedContinuity.checkedAt : nowText,
+        isTaiwanDaily ? normalizedContinuity.missingSessionCount : 0,
+        JSON.stringify(isTaiwanDaily ? normalizedContinuity.missingSessionDates : []),
+        JSON.stringify(isTaiwanDaily ? normalizedContinuity.excludedSessionDates : []),
+        isTaiwanDaily ? normalizedContinuity.reasonCode : null,
       ).run();
     return true;
   } catch {
@@ -328,8 +453,8 @@ function memoryEntry(key: string) {
   return entry ? { ...entry, rows: mergeCandleHistory([], entry.rows) } : undefined;
 }
 
-function writeMemoryEntry(key: string, rows: HistoryCandle[], provider: string, fetchedAt: number) {
-  memoryHistory.set(key, { rows: mergeCandleHistory([], rows), provider, fetchedAt });
+function writeMemoryEntry(key: string, rows: HistoryCandle[], provider: string, fetchedAt: number, continuity?: CandleHistoryContinuityMetadata) {
+  memoryHistory.set(key, { rows: mergeCandleHistory([], rows), provider, fetchedAt, ...(continuity ? { continuity: normalizeContinuityMetadata(continuity) } : {}) });
 }
 
 export function clearCandleHistoryRuntimeState() {
@@ -359,11 +484,16 @@ export async function withCandleHistorySingleFlight<T>(
 export type CandleHistoryFetchRequest = {
   mode: "full" | "tail";
   requiredRows: number;
+  startTime?: number;
 };
 
 export type CandleHistoryFetchResult = {
   rows: HistoryCandle[];
   source: string;
+};
+
+export type CandleHistoryContinuityAuditResult = CandleHistoryContinuityMetadata & {
+  repairRows?: HistoryCandle[];
 };
 
 export async function acquireCandleHistory(options: {
@@ -374,21 +504,24 @@ export async function acquireCandleHistory(options: {
   displayCount: number;
   fetcher: (request: CandleHistoryFetchRequest) => Promise<CandleHistoryFetchResult>;
   coverageComplete?: (rows: HistoryCandle[]) => boolean;
+  continuityAudit?: (rows: HistoryCandle[], requiredRows: number) => Promise<CandleHistoryContinuityAuditResult>;
+  invalidatePayloadCache?: () => Promise<boolean>;
   now?: Date;
 }): Promise<AcquiredCandleHistory> {
   const identity = candleHistoryIdentity(options.provider, options.symbol, options.interval);
-  const key = candleHistoryKey(identity.provider, identity.symbol, identity.interval);
+  const key = `${CANDLE_HISTORY_MEMORY_CONTRACT_VERSION}|${candleHistoryKey(identity.provider, identity.symbol, identity.interval)}`;
   const requestedRows = requiredCandleHistoryRows(identity.symbol, identity.interval, options.displayCount);
   const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
   const ttl = candleHistoryTtlSeconds(identity.interval);
   const persistent = shouldPersistCandleHistory(identity.provider, identity.interval) && Boolean(options.db);
   const currentMemory = memoryEntry(key);
-  if (currentMemory && currentMemory.rows.length >= requestedRows && nowSeconds - currentMemory.fetchedAt <= ttl) {
+  if (currentMemory && currentMemory.rows.length >= requestedRows && nowSeconds - currentMemory.fetchedAt <= ttl
+    && (!options.continuityAudit || currentMemory.continuity?.status === "complete")) {
     return {
       rows: currentMemory.rows,
       provider: currentMemory.provider,
       freshness: "fresh",
-      cache: { store: "worker-memory", state: "hit", source: currentMemory.provider, historyStore: "worker-memory", persistent, rows: currentMemory.rows.length, tailRefresh: "not_needed" },
+      cache: { store: "worker-memory", state: "hit", source: currentMemory.provider, historyStore: "worker-memory", persistent, rows: currentMemory.rows.length, tailRefresh: "not_needed", ...(currentMemory.continuity ? { continuity: currentMemory.continuity, fullWindowComplete: currentMemory.continuity.status === "complete" } : {}) },
     };
   }
 
@@ -401,32 +534,55 @@ export async function acquireCandleHistory(options: {
       : [{ ok: false as const, rows: [] as HistoryCandle[], fetchedAt: 0, reason: "d1_unavailable" as const }, null] as const;
     const existingRows = mergeCandleHistory(persisted.rows, latestMemory?.rows ?? []);
     const existingFetchedAt = Math.max(persisted.fetchedAt, latestMemory?.fetchedAt ?? 0);
-    const enoughHistory = existingRows.length >= requiredRows || Boolean(historyState?.fullWindowComplete);
-    const stableCoverageComplete = Boolean(historyState?.fullWindowComplete && options.coverageComplete?.(existingRows));
+    const continuityAudit = options.continuityAudit
+      ? await options.continuityAudit(existingRows, requiredRows)
+      : historyState?.continuity;
+    const continuity = continuityAudit ? normalizeContinuityMetadata(continuityAudit) : undefined;
+    const continuityComplete = !options.continuityAudit || continuity?.status === "complete";
+    const enoughHistory = (existingRows.length >= requiredRows || Boolean(historyState?.fullWindowComplete)) && continuityComplete;
+    const stableCoverageComplete = Boolean(enoughHistory && options.coverageComplete?.(existingRows));
     if (enoughHistory && (nowSeconds - existingFetchedAt <= ttl || stableCoverageComplete)) {
-      writeMemoryEntry(key, existingRows, identity.provider, existingFetchedAt);
+      if (persistent && continuity && continuityMetadataChanged(continuity, historyState?.continuity)) {
+        await saveCandleHistoryState(options.db, identity, existingRows, "audit", historyState, options.now ?? new Date(), continuity);
+      }
+      writeMemoryEntry(key, existingRows, identity.provider, existingFetchedAt, continuity);
       return {
         rows: existingRows,
         provider: identity.provider,
         freshness: "fresh",
-        cache: { store: persisted.ok ? "d1" : "worker-memory", state: "hit", source: identity.provider, historyStore: persisted.ok ? "candle_history" : "worker-memory", persistent, rows: existingRows.length, tailRefresh: "not_needed", fullWindowComplete: Boolean(historyState?.fullWindowComplete) },
+        cache: { store: persisted.ok ? "d1" : "worker-memory", state: "hit", source: identity.provider, historyStore: persisted.ok ? "candle_history" : "worker-memory", persistent, rows: existingRows.length, tailRefresh: "not_needed", fullWindowComplete: continuityComplete && Boolean(historyState?.fullWindowComplete || continuity?.status === "complete"), ...(continuity ? { continuity } : {}) },
       };
     }
 
     const mode = enoughHistory ? "tail" : "full";
     try {
-      const fetched = await options.fetcher({ mode, requiredRows });
-      const merged = mergeCandleHistory(existingRows, fetched.rows);
+      const earliestMissing = continuity?.missingSessionDates?.[0];
+      const startTime = earliestMissing ? Math.floor(Date.parse(`${earliestMissing}T00:00:00Z`) / 1000) - 7 * 86400 : undefined;
+      const fetched = await options.fetcher({ mode, requiredRows, ...(startTime ? { startTime } : {}) });
+      let merged = mergeCandleHistory(existingRows, fetched.rows);
       if (!merged.length) throw new Error("provider_unavailable");
+      let finalAudit = options.continuityAudit ? await options.continuityAudit(merged, requiredRows) : continuity;
+      const officialRepairRows = finalAudit?.repairRows ?? [];
+      if (officialRepairRows.length) {
+        merged = mergeCandleHistory(merged, officialRepairRows);
+        finalAudit = options.continuityAudit ? await options.continuityAudit(merged, requiredRows) : finalAudit;
+      }
+      const finalContinuity = finalAudit ? normalizeContinuityMetadata(finalAudit) : undefined;
       let state: CandleHistoryCacheState = existingRows.length ? (mode === "tail" ? "refreshed" : "backfilled") : "backfilled";
       let reason: CandleHistoryCacheMetadata["reason"];
       if (persistent) {
-        const writeRows = changedCandleHistoryTail(existingRows, fetched.rows);
+        const writeRows = changedCandleHistoryTail(existingRows, [...fetched.rows, ...officialRepairRows]);
         const write = await upsertCandleHistory(options.db, identity, writeRows, fetched.source, options.now ?? new Date());
         if (!write.ok) { state = "write_failed"; reason = "d1_unavailable"; }
-        else await saveCandleHistoryState(options.db, identity, merged, mode, historyState, options.now ?? new Date());
+        else {
+          await saveCandleHistoryState(options.db, identity, merged, mode, historyState, options.now ?? new Date(), finalContinuity);
+          if (writeRows.length && options.invalidatePayloadCache && !(await options.invalidatePayloadCache())) {
+            state = "write_failed";
+            reason = "cache_invalidation_failed";
+          }
+        }
       }
-      writeMemoryEntry(key, merged, fetched.source, nowSeconds);
+      writeMemoryEntry(key, merged, fetched.source, nowSeconds, finalContinuity);
       return {
         rows: merged,
         provider: fetched.source,
@@ -439,18 +595,19 @@ export async function acquireCandleHistory(options: {
           persistent,
           rows: merged.length,
           tailRefresh: mode === "tail" ? "success" : "not_needed",
-          fullWindowComplete: mode === "full" || Boolean(historyState?.fullWindowComplete),
+          fullWindowComplete: options.continuityAudit ? finalContinuity?.status === "complete" : mode === "full" || Boolean(historyState?.fullWindowComplete),
+          ...(finalContinuity ? { continuity: normalizeContinuityMetadata(finalContinuity) } : {}),
           ...(reason ? { reason } : {}),
         },
       };
     } catch {
       if (!existingRows.length) throw new Error("provider_unavailable");
-      writeMemoryEntry(key, existingRows, identity.provider, existingFetchedAt || nowSeconds - ttl - 1);
+      writeMemoryEntry(key, existingRows, identity.provider, existingFetchedAt || nowSeconds - ttl - 1, continuity);
       return {
         rows: existingRows,
         provider: identity.provider,
         freshness: "stale",
-        cache: { store: persisted.ok ? "d1" : "worker-memory", state: "stale", source: identity.provider, historyStore: persisted.ok ? "candle_history" : "worker-memory", persistent, rows: existingRows.length, tailRefresh: "failed", reason: "provider_unavailable" },
+        cache: { store: persisted.ok ? "d1" : "worker-memory", state: "stale", source: identity.provider, historyStore: persisted.ok ? "candle_history" : "worker-memory", persistent, rows: existingRows.length, tailRefresh: "failed", reason: "provider_unavailable", ...(continuity ? { continuity: normalizeContinuityMetadata(continuity), fullWindowComplete: continuity.status === "complete" } : {}) },
       };
     }
   });

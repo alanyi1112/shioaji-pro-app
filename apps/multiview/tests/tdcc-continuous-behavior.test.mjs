@@ -6,6 +6,7 @@ import {
   completeTdccContinuousWeek,
   failTdccContinuousWork,
   planTdccContinuousDates,
+  probeTdccContinuousQueue,
   readTdccContinuousHealth,
   readTdccContinuousSymbolStatus,
   recordTdccLatestSnapshot,
@@ -13,11 +14,13 @@ import {
   syncTdccContinuousTargets,
 } from "../worker/tdcc-continuous-backfill.ts";
 import { applyDrizzleSql, SqliteD1 } from "./helpers/sqlite-d1.mjs";
+import { AEMC_SAVED_DATES, LARGAN_SAVED_DATES, OFFICIAL_TDCC_DATES, savedDateRows } from "./fixtures/tdcc-holder-continuity.mjs";
 
 const migration3 = await readFile(new URL("../drizzle/0003_mute_sprite.sql", import.meta.url), "utf8");
 const migration6 = await readFile(new URL("../drizzle/0006_thin_mentor.sql", import.meta.url), "utf8");
 const migration7 = await readFile(new URL("../drizzle/0007_clever_mach_iv.sql", import.meta.url), "utf8");
 const migration8 = await readFile(new URL("../drizzle/0008_dazzling_rafael_vega.sql", import.meta.url), "utf8");
+const migration24 = await readFile(new URL("../drizzle/0024_gifted_thunderbolt_ross.sql", import.meta.url), "utf8");
 
 function continuousDb() {
   const db = new SqliteD1();
@@ -25,6 +28,7 @@ function continuousDb() {
   applyDrizzleSql(db, migration6);
   applyDrizzleSql(db, migration7);
   applyDrizzleSql(db, migration8);
+  applyDrizzleSql(db, migration24);
   return db;
 }
 
@@ -44,6 +48,7 @@ test("continuous migrations 保留既有 TDCC rows，並補上 baseline 與 retr
   applyDrizzleSql(db, migration6);
   applyDrizzleSql(db, migration7);
   applyDrizzleSql(db, migration8);
+  applyDrizzleSql(db, migration24);
   assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM taiwan_stock_shareholder_distribution").first("rows"), 1);
   assert.equal((await db.prepare("PRAGMA table_info(tdcc_continuous_symbols)").all()).results.some((row) => row.name === "official_baseline"), true);
   assert.equal((await db.prepare("PRAGMA table_info(tdcc_continuous_runs)").all()).results.some((row) => row.name === "next_retry_at"), true);
@@ -96,7 +101,7 @@ test("claim 原子隔離 owner、優先新上市與 oldest-first，過期 lease 
   assert.equal((await readTdccContinuousSymbolStatus(db, "0056.TW")).status, "running");
 });
 
-test("清單 target 只有兩週資料時同步後仍能被 durable runner claim", async (t) => {
+test("清單 target 只有兩週資料時同步後保持未核對，仍能被 durable runner claim", async (t) => {
   const db = continuousDb();
   t.after(() => db.close());
   await db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution
@@ -114,7 +119,8 @@ test("清單 target 只有兩週資料時同步後仍能被 durable runner claim
 
   const beforeClaim = await readTdccContinuousSymbolStatus(db, "3481.TW");
   assert.equal(beforeClaim.status, "partial");
-  assert.equal(beforeClaim.completedWeeks, 2);
+  assert.equal(beforeClaim.completedWeeks, 0);
+  assert.equal(beforeClaim.officialPlanThrough, null);
   const claims = await claimTdccContinuousSymbols({ db, owner: "run-short-history", limit: 1, now: "2026-07-19T09:31:00Z" });
   assert.deepEqual(claims.map((item) => item.symbol), ["3481.TW"]);
 });
@@ -176,7 +182,7 @@ function tdccRows(symbols, dataDate = "20260710") {
 }
 
 test("latest-refresh endpoint 無前端流量也保存新週、同週重跑冪等且共用 single-flight", async (t) => {
-  const db = new SqliteD1();
+  const db = continuousDb();
   t.after(() => db.close());
   const setup = `| 頁籤 | 分組 | 預設排序 | 代號 | 名稱 | 資料源 | 啟用 |\n|---|---|---|---|---|---|---|\n| 台股 | 個股 | 1 | 2330.TW | 台積電 | yfinance | yes |\n| 台股 | ETF | 2 | 00919.TW | 群益台灣精選高息 | yfinance | yes |`;
   const env = {
@@ -232,4 +238,91 @@ test("record latest snapshot 只更新已返回 targets，且 latest 優先 hear
   assert.equal(health.lastRunStatus, "running");
   assert.equal(health.latestDataDate, "2026-07-10");
   assert.equal(health.lastHeartbeatAt, "2026-07-17T00:01:00.000Z");
+});
+
+test("latest snapshot 晚於官方計畫時撤銷錯誤完成狀態，但保護 running／blocked 且不倒退日期", async (t) => {
+  const db = continuousDb();
+  t.after(() => db.close());
+  for (const [symbol, status] of [["3008.TW", "completed"], ["2330.TW", "running"], ["2317.TW", "blocked"]]) {
+    await insertSymbol(db, { symbol, status, firstSeenAt: "2026-08-01T00:00:00Z", leaseOwner: status === "running" ? "active-owner" : null, leaseExpiresAt: status === "running" ? "2026-08-30T00:00:00Z" : null });
+    await db.prepare("UPDATE tdcc_continuous_symbols SET official_plan_through='2026-08-14',latest_snapshot_date='2026-08-14',expected_weeks=51,completed_weeks=51 WHERE symbol=?").bind(symbol).run();
+    await db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution
+      (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at)
+      VALUES (?,'2026-08-21','[]','{}','{}','tdcc','weekly','2026-08-22T00:00:00Z')`).bind(symbol).run();
+  }
+  await recordTdccLatestSnapshot({ db, dataDate: "2026-08-21", symbols: ["3008.TW", "2330.TW", "2317.TW"], now: "2026-08-22T00:01:00Z" });
+  assert.equal((await readTdccContinuousSymbolStatus(db, "3008.TW")).status, "partial");
+  assert.equal((await readTdccContinuousSymbolStatus(db, "2330.TW")).status, "running");
+  assert.equal((await readTdccContinuousSymbolStatus(db, "2317.TW")).status, "blocked");
+  await recordTdccLatestSnapshot({ db, dataDate: "2026-08-07", symbols: ["3008.TW"], now: "2026-08-22T00:02:00Z" });
+  assert.equal((await readTdccContinuousSymbolStatus(db, "3008.TW")).latestSnapshotDate, "2026-08-21");
+});
+
+test("reconcile 以官方 51 日期重建大立光 ledger，重跑不增加 item 且只留下兩個真缺週", async (t) => {
+  const db = continuousDb();
+  t.after(() => db.close());
+  await insertSymbol(db, { symbol: "3008.TW", status: "running", firstSeenAt: "2025-08-01T00:00:00Z", leaseOwner: "largan-run", leaseExpiresAt: "2026-08-30T00:00:00Z" });
+  for (const row of savedDateRows(LARGAN_SAVED_DATES)) {
+    await db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution
+      (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at)
+      VALUES ('3008.TW',?, '[]','{}','{}','tdcc','weekly','2026-08-22T00:00:00Z')`).bind(row.data_date).run();
+  }
+  const first = await planTdccContinuousDates({ db, symbol: "3008.TW", owner: "largan-run", officialDates: OFFICIAL_TDCC_DATES, now: "2026-08-22T00:01:00Z" });
+  assert.deepEqual(first.missingDates, ["2026-08-07", "2026-08-14"]);
+  assert.equal(first.completedWeeks, 49);
+  assert.equal(first.officialPlanThrough, "2026-08-21");
+  await db.prepare("UPDATE tdcc_continuous_items SET updated_at='2000-01-01 00:00:00' WHERE symbol='3008.TW'").run();
+  const repeated = await planTdccContinuousDates({ db, symbol: "3008.TW", owner: "largan-run", officialDates: OFFICIAL_TDCC_DATES, now: "2026-08-22T00:02:00Z" });
+  assert.deepEqual(repeated.missingDates, first.missingDates);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM tdcc_continuous_items WHERE symbol='3008.TW'").first("rows"), 51);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM tdcc_continuous_items WHERE symbol='3008.TW' AND updated_at!='2000-01-01 00:00:00'").first("rows"), 0);
+});
+
+test("晶呈科技只有最新一週時 reconcile 建立完整 51 週 ledger 並保留 50 個可續跑缺週", async (t) => {
+  const db = continuousDb();
+  t.after(() => db.close());
+  await insertSymbol(db, { symbol: "4768.TWO", status: "running", firstSeenAt: "2026-08-21T00:00:00Z", leaseOwner: "aemc-run", leaseExpiresAt: "2026-08-30T00:00:00Z" });
+  await db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution
+    (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at)
+    VALUES ('4768.TWO',?, '[]','{}','{}','tdcc','weekly','2026-08-22T00:00:00Z')`).bind(AEMC_SAVED_DATES[0]).run();
+  const plan = await planTdccContinuousDates({ db, symbol: "4768.TWO", owner: "aemc-run", officialDates: OFFICIAL_TDCC_DATES, now: "2026-08-22T00:01:00Z" });
+  assert.equal(plan.expectedWeeks, 51);
+  assert.equal(plan.completedWeeks, 1);
+  assert.equal(plan.missingDates.length, 50);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM tdcc_continuous_items WHERE symbol='4768.TWO'").first("rows"), 51);
+});
+
+test("逐 symbol evidence bounded，且 fresh global run 不掩蓋 missing／reconcile／handoff overdue", async (t) => {
+  const db = continuousDb();
+  t.after(() => db.close());
+  await insertSymbol(db, { symbol: "4768.TWO", status: "queued", firstSeenAt: "2026-08-28T00:00:00Z" });
+  const missing = OFFICIAL_TDCC_DATES.slice(0, 13).sort();
+  await db.prepare(`UPDATE tdcc_continuous_symbols SET expected_weeks=51,completed_weeks=1,missing_dates_json=?,official_plan_through='2026-08-14',latest_snapshot_date='2026-08-21',coverage_verified_at='2026-08-28T00:00:00Z' WHERE symbol='4768.TWO'`).bind(JSON.stringify(missing)).run();
+  await startTdccContinuousRun({ db, runId: "fresh-run", trigger: "schedule", now: "2026-08-28T01:00:00Z" });
+  const symbol = await readTdccContinuousSymbolStatus(db, "4768.TWO");
+  assert.equal(symbol.missingWeeks, 13);
+  assert.equal(symbol.missingDates.length, 12);
+  assert.equal(symbol.queuedSince, "2026-08-28T00:00:00Z");
+  assert.equal(symbol.handoff.status, "pending");
+  const health = await readTdccContinuousHealth(db, new Date("2026-08-28T01:00:30Z"));
+  assert.equal(health.status, "degraded");
+  assert.equal(health.missingTargetSymbols, 1);
+  assert.equal(health.reconciliationRequiredSymbols, 1);
+  assert.equal(health.handoffOverdueSymbols, 1);
+});
+
+test("queue-only probe 無工作安全 no-op，且只計入可重試、lease 已到期的 target", async (t) => {
+  const db = continuousDb();
+  t.after(() => db.close());
+  const empty = await probeTdccContinuousQueue({ db, now: "2026-08-28T01:00:00Z" });
+  assert.deepEqual(empty, { checkedAt: "2026-08-28T01:00:00.000Z", handoffSeconds: 300, runnableTargets: 0, overdueTargets: 0, oldestQueuedAt: null, shouldRun: false });
+  await insertSymbol(db, { symbol: "4768.TWO", status: "queued", firstSeenAt: "2026-08-28T00:50:00Z" });
+  await insertSymbol(db, { symbol: "2330.TW", status: "running", firstSeenAt: "2026-08-28T00:00:00Z", leaseOwner: "live", leaseExpiresAt: "2026-08-28T02:00:00Z" });
+  await insertSymbol(db, { symbol: "2317.TW", status: "failed", firstSeenAt: "2026-08-28T00:00:00Z" });
+  await db.prepare("UPDATE tdcc_continuous_symbols SET next_retry_at='2026-08-28T02:00:00Z' WHERE symbol='2317.TW'").run();
+  const queued = await probeTdccContinuousQueue({ db, now: "2026-08-28T01:00:00Z" });
+  assert.equal(queued.shouldRun, true);
+  assert.equal(queued.runnableTargets, 1);
+  assert.equal(queued.overdueTargets, 1);
+  assert.equal(queued.oldestQueuedAt, "2026-08-28T00:00:00Z");
 });

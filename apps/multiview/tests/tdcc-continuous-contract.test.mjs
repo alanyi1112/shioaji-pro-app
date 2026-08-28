@@ -159,6 +159,7 @@ class TargetStatement {
     if (this.sql.includes("FROM tdcc_continuous_symbols") && this.sql.includes("WHERE symbol")) return this.db.rows.get(symbol) || null;
     return null;
   }
+  async all() { return { results: [] }; }
   async run() {
     if (this.sql.startsWith("UPDATE tdcc_continuous_symbols SET status='queued'")) {
       const [lastSeenAt, symbol] = this.args;
@@ -170,7 +171,7 @@ class TargetStatement {
       return { success: true };
     }
     if (!this.sql.startsWith("INSERT INTO tdcc_continuous_symbols")) return { success: true };
-    const [symbol, source, revision, active, status, targetStart, targetEnd, expectedWeeks, completedWeeks, checkpointDate, latestSnapshotDate, historySuccessAt, firstSeenAt, lastSeenAt] = this.args;
+    const [symbol, source, revision, active, status, targetStart, targetEnd, expectedWeeks, completedWeeks, failedWeeks, missingDatesJson, checkpointDate, latestSnapshotDate, officialPlanThrough, coverageVerifiedAt, historySuccessAt, firstSeenAt, lastSeenAt] = this.args;
     const existing = this.db.rows.get(symbol) || {};
     this.db.rows.set(symbol, {
       ...existing,
@@ -179,14 +180,17 @@ class TargetStatement {
       catalog_revision: revision || existing.catalog_revision || "",
       active,
       status,
-      target_start: existing.target_start || targetStart,
-      target_end: targetEnd || existing.target_end,
-      expected_weeks: Math.max(Number(existing.expected_weeks || 0), Number(expectedWeeks || 0)),
-      completed_weeks: Math.max(Number(existing.completed_weeks || 0), Number(completedWeeks || 0)),
-      missing_dates_json: existing.missing_dates_json || "[]",
-      checkpoint_date: existing.checkpoint_date || checkpointDate,
+      target_start: targetStart,
+      target_end: targetEnd,
+      expected_weeks: Number(expectedWeeks || 0),
+      completed_weeks: Number(completedWeeks || 0),
+      failed_weeks: Number(failedWeeks || 0),
+      missing_dates_json: missingDatesJson,
+      checkpoint_date: checkpointDate,
       latest_snapshot_date: latestSnapshotDate || existing.latest_snapshot_date,
-      history_success_at: existing.history_success_at || historySuccessAt,
+      official_plan_through: officialPlanThrough,
+      coverage_verified_at: coverageVerifiedAt,
+      history_success_at: historySuccessAt || existing.history_success_at,
       first_seen_at: existing.first_seen_at || firstSeenAt,
       last_seen_at: lastSeenAt,
     });
@@ -200,7 +204,7 @@ class TargetDb {
   prepare(sql) { return new TargetStatement(this, sql); }
 }
 
-test("單一 target upsert 冪等保留狀態與 revision，且不改寫其他 symbol", async () => {
+test("單一 target upsert 對無 ledger 的舊 completed 保守降級，保留 running／blocked、revision 與其他 symbol", async () => {
   const untouched = { symbol: "2317.TW", source: "setup", active: 1, status: "completed", catalog_revision: "catalog-v1", expected_weeks: 52, completed_weeks: 52, missing_dates_json: "[]" };
   const rows = new Map([
     ["2317.TW", { ...untouched }],
@@ -221,7 +225,8 @@ test("單一 target upsert 冪等保留狀態與 revision，且不改寫其他 s
   await upsertTdccContinuousTarget({ db, target: { symbol: "8069.TWO", source: "user" }, now: "2026-07-19T00:03:00Z" });
 
   assert.equal(rows.size, 4);
-  assert.equal(rows.get("2330.TW").status, "completed");
+  assert.equal(rows.get("2330.TW").status, "partial");
+  assert.equal(rows.get("2330.TW").completed_weeks, 0);
   assert.equal(rows.get("2330.TW").source, "setup");
   assert.equal(rows.get("2330.TW").catalog_revision, "catalog-v2");
   assert.equal(rows.get("00919.TW").status, "blocked");
@@ -241,8 +246,8 @@ test("少量 TDCC 週資料在 target refresh 後仍可排隊，不會被誤判�
 
   await upsertTdccContinuousTarget({ db, target: { symbol: "3481.TW", source: "user" }, now: "2026-07-19T09:30:00Z" });
 
-  assert.equal(rows.get("3481.TW").status, "queued");
-  assert.equal(rows.get("3481.TW").completed_weeks, 2);
+  assert.equal(rows.get("3481.TW").status, "partial");
+  assert.equal(rows.get("3481.TW").completed_weeks, 0);
 });
 
 test("使用者要求只將可重試單一 TDCC target 排入，保留 running、blocked 與其他 symbol", async () => {

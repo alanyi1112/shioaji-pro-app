@@ -2,7 +2,9 @@
 
 ## 執行契約
 
-- GitHub Actions 每日 `02:15 UTC` 檢查一次；TDCC 股權分散表本身是週資料，不是每日資料。
+- 本機週六 22:30 執行主要同步、週日 22:30 執行有限隔日重試；另有 `RunAtLoad` 且每 300 秒檢查一次的 queue watcher，讓新增商品最晚五分鐘內交給既有 runner。
+- Sites 保留站與 Cloudflare 正式站各自使用受保護 workflow／scheduled dispatch；兩個 deployment 的 D1、run 與 handoff 證據不可互相代替。TDCC 股權分散表本身是週資料，不是每日資料。
+- queue watcher 先呼叫受保護 `queue-probe`；沒有 runnable target 時成功 no-op，不建立 run、TDCC 歷史 session 或來源 request。存在工作時才取得 host single-flight 並以 `--history-only` 啟動 runner；D1 lease 仍是最終 owner 權威。
 - 每次工作先保存最新 OpenAPI 快照，再從 D1 動態 claim 新增或缺週的台股普通股／ETF。
 - 單次最多 claim 4 檔、每檔最多處理 12 個缺週、請求至少間隔 1 秒，總執行時間不超過 20 分鐘。
 - CAPTCHA、來源封鎖、候選證券不一致或頁面結構漂移會停止該檔並標示 `blocked`；不得規避來源保護機制。
@@ -33,12 +35,14 @@ GitHub repository secrets 需設定：
 
 ## 啟用、停用與診斷
 
-1. 確認正式 `/api/health` 的 `shareholderDistributionContinuous` 已顯示目標數與 scheduler heartbeat。
+1. 確認各 deployment 自身 `/api/health` 的 `shareholderDistributionContinuous` 已顯示 target、missing、reconciliation-required、handoff-overdue 與 scheduler heartbeat。
 2. 手動執行 `TDCC continuous backfill` workflow，確認 latest refresh、claim、heartbeat、ingest、complete 均成功。
 3. 驗證一檔普通股與一檔 ETF 的個股籌碼 API，coverage 與 missing weeks 必須各自獨立。
-4. 驗收完成後保留每日 schedule。
+4. 本機確認週末主同步、隔日重試與五分鐘 watcher 均已載入；遠端則逐 deployment 確認其受保護排程與 dispatch。
 
 緊急停用時可停用 GitHub Actions workflow，或把 Sites 的 `TDCC_HISTORY_AUTOMATION_ENABLED` 改為 `false`。後者會讓歷史工作固定回傳 `history_automation_not_permitted`，最新官方 OpenAPI 快照仍可獨立執行。
+
+本機如需安全停用 queue watcher，必須透過 `pnpm local-runtime uninstall` 移除本工具建立的 LaunchAgent，或在取得 runtime 變更授權後針對 `com.alanyi.realtimestock.multiview-tdcc-watcher` 操作；普通驗收、開工或收工不得自行 bootout。手動主同步仍使用 `pnpm local-runtime multiview-tdcc`，只檢查 queue 可使用 `queue-probe` control action，且兩者都需要本機受保護 pipeline secret。
 
 ## Cloudflare 首次歷史復原
 

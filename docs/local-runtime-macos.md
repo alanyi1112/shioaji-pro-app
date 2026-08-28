@@ -136,6 +136,8 @@ pnpm local-runtime status
 - `business_watchdog_state`：`startup-grace`、`healthy`、`suspect`、`recovering`、`backoff`、`circuit-open` 或 `idle-non-simulation`。
 - `business_watchdog_consecutive_failures`、`business_watchdog_restart_count`、`business_watchdog_last_reason`、`business_watchdog_next_eligible_at`：固定 allowlist 診斷欄位，不含 response body、商品清單、帳戶或秘密。
 - `multiview_listener`：5174 是否存在。
+- `multiview_tdcc_pipeline_job`：週六 22:30 主同步與週日 22:30 隔日重試的 TDCC LaunchAgent 是否載入。
+- `multiview_tdcc_watcher_job`：登入即執行且每 300 秒 queue-only 檢查的 TDCC watcher 是否載入；無 runnable target 時不得連線 TDCC 歷史來源。
 - `multiview_after_hours_market／chip／tdcc／pe`：最近一次安全 seed report 的資料族群結果。
 
 市場收盤只代表即時 SSE 不再出現新的成交，不應讓 5173 或 8080 listener 消失。Shioaji HTTP server 與外部行情 session 是兩層生命週期：8080 可能先完成監聽，Solace／paper session 才在背景登入。盤後維護、上游暫時不可用或登入尚在進行時可能回傳 `SessionNotEstablished`；此時不能只用 listener 或 health 取代業務判斷。

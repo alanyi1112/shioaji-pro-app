@@ -126,11 +126,20 @@ export function aggregateMonthlyCandles(rows: HistoryCandle[], timeZone = "UTC")
   });
 }
 
-async function yahooCandles(symbol: string, interval: string, mode: "full" | "tail" = "full"): Promise<HistoryCandle[]> {
+async function yahooCandles(symbol: string, interval: string, mode: "full" | "tail" = "full", startTime?: number): Promise<HistoryCandle[]> {
   const yahooInterval = interval === "4h" ? "1h" : ["1wk", "1mo"].includes(interval) ? "1d" : interval;
   const range = mode === "tail" ? (YAHOO_TAIL_RANGE[interval] ?? YAHOO_RANGE[interval] ?? "3mo") : (YAHOO_RANGE[interval] ?? "3mo");
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${encodeURIComponent(yahooInterval)}&range=${encodeURIComponent(range)}&includePrePost=true&events=div%2Csplits`;
-  const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0 CodexSites MultiChart" } });
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+  url.searchParams.set("interval", yahooInterval);
+  if (mode === "full" && Number.isFinite(startTime) && Number(startTime) > 0) {
+    url.searchParams.set("period1", String(Math.floor(Number(startTime))));
+    url.searchParams.set("period2", String(Math.floor(Date.now() / 1000) + 86400));
+  } else {
+    url.searchParams.set("range", range);
+  }
+  url.searchParams.set("includePrePost", "true");
+  url.searchParams.set("events", "div,splits");
+  const response = await fetch(url.toString(), { headers: { "user-agent": "Mozilla/5.0 CodexSites MultiChart" } });
   if (!response.ok) throw new Error("市場資料暫時不可用。");
   const payload = await response.json() as YahooChartPayload;
   const result = payload?.chart?.result?.[0];
@@ -174,14 +183,14 @@ export function providerForCandleSymbol(symbol: string) {
   return "yfinance";
 }
 
-export async function fetchCandles(symbol: string, interval: string, options: { mode?: "full" | "tail" } = {}): Promise<{ rows: HistoryCandle[]; provider: string }> {
+export async function fetchCandles(symbol: string, interval: string, options: { mode?: "full" | "tail"; startTime?: number } = {}): Promise<{ rows: HistoryCandle[]; provider: string }> {
   const normalized = symbol.trim().toUpperCase();
   if (normalized === "SAMPLE") return { rows: sampleCandles(normalized, interval), provider: "sample" };
   if (["BTC", "ETH", "SOL"].includes(normalized)) {
     try { return { rows: await hyperliquidCandles(normalized, interval), provider: "hyperliquid" }; }
     catch { return { rows: sampleCandles(normalized, interval), provider: "sample" }; }
   }
-  return { rows: await yahooCandles(normalized, interval, options.mode), provider: "yahoo-chart" };
+  return { rows: await yahooCandles(normalized, interval, options.mode, options.startTime), provider: "yahoo-chart" };
 }
 
 export async function candlePayload(symbol: string, interval: string, displayCount = 160) {
@@ -302,6 +311,11 @@ export function candlePayloadFromRows(
   indicators.val = displayProfile.val;
   const dataQuality = {
     ignoredSessionDates,
+    ...(cache?.continuity ? {
+      continuity: cache.continuity,
+      missingSessionDates: cache.continuity.missingSessionDates,
+      excludedSessionDates: cache.continuity.excludedSessionDates,
+    } : {}),
     ...(invalidCandleSessionDates.length ? { invalidCandleSessionDates } : {}),
     ...(invalidCandleSessionDates.length && ignoredSessionDates.length
       ? { reason: "invalid_ohlc_and_zero_volume_flat_carry_forward" }
@@ -341,6 +355,6 @@ export function candlePayloadFromRows(
     },
     dataQuality,
     marketSession, indicators,
-    dataWindow: { rawCandles: normalizedRows.length, displayCandles: displayRows.length, requestedDisplayCandles: requested, hasMoreBefore: normalizedRows.length > displayRows.length, warmupCandles: 120, availableWarmupCandles: Math.max(0, normalizedRows.length - displayRows.length), insufficientWarmup: normalizedRows.length - displayRows.length < 120, warmupStatus: normalizedRows.length - displayRows.length < 120 ? "insufficient" : "sufficient", displayFrom: displayRows[0]?.time ?? null, displayTo: latest?.time ?? null, sourceFingerprint: taiwanStockVolume?.contract.sourceFingerprint ?? provider, cache: cache ?? { store: "worker-memory", state: "miss", source: provider, historyStore: "worker-memory", persistent: false, rows: normalizedRows.length } },
+    dataWindow: { rawCandles: normalizedRows.length, displayCandles: displayRows.length, requestedDisplayCandles: requested, hasMoreBefore: normalizedRows.length > displayRows.length, warmupCandles: 120, availableWarmupCandles: Math.max(0, normalizedRows.length - displayRows.length), insufficientWarmup: normalizedRows.length - displayRows.length < 120, warmupStatus: normalizedRows.length - displayRows.length < 120 ? "insufficient" : "sufficient", displayFrom: displayRows[0]?.time ?? null, displayTo: latest?.time ?? null, sourceFingerprint: taiwanStockVolume?.contract.sourceFingerprint ?? provider, ...(cache?.continuity ? { continuity: cache.continuity } : {}), cache: cache ?? { store: "worker-memory", state: "miss", source: provider, historyStore: "worker-memory", persistent: false, rows: normalizedRows.length } },
   };
 }

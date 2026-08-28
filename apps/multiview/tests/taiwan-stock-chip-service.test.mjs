@@ -27,6 +27,8 @@ class ChipStatement {
   }
   async first() {
     if (this.sql.includes("FROM taiwan_stock_chip_fetch_state")) return this.db.states.get(`${this.args[0]}|${this.args[1]}`) || null;
+    if (this.sql.includes("FROM tdcc_continuous_symbols")) return this.db.continuous.get(this.args[0]) || null;
+    if (this.sql.includes("FROM tdcc_backfill_dispatches")) return this.db.dispatches.get(this.args[0]) || null;
     return null;
   }
   async run() {
@@ -68,7 +70,7 @@ class ChipStatement {
 }
 
 class ChipFakeD1 {
-  constructor() { this.daily = new Map(); this.distribution = new Map(); this.states = new Map(); this.candles = []; this.dailyWrites = 0; this.queries = []; }
+  constructor() { this.daily = new Map(); this.distribution = new Map(); this.states = new Map(); this.continuous = new Map(); this.dispatches = new Map(); this.candles = []; this.dailyWrites = 0; this.queries = []; }
   prepare(sql) { this.queries.push(sql); return new ChipStatement(this, sql); }
   async batch(statements) { return Promise.all(statements.map((statement) => statement.run())); }
 }
@@ -125,6 +127,37 @@ test("TDCC response 以實際前一期 dataDate 回傳總戶數與級距人數�
   assert.equal(decorated[1].holderMetrics.totalHoldersChange, 15);
   assert.equal(decorated[1].holderMetrics.largeHolder.holdersChange, 1);
   assert.deepEqual(decorated[1].largeHolder400.levelIds, [12, 13, 14, 15]);
+});
+
+test("TDCC coverage 安全回傳官方計畫、完整缺週數、bounded dates 與 handoff evidence", async () => {
+  const db = new ChipFakeD1();
+  const missingDates = Array.from({ length: 13 }, (_, index) => `2026-${String(6 - Math.floor(index / 4)).padStart(2, "0")}-${String(27 - (index % 4) * 7).padStart(2, "0")}`).sort();
+  db.continuous.set("2330.TW", {
+    symbol: "2330.TW", source: "user", active: 1, status: "queued",
+    expected_weeks: 51, completed_weeks: 1, failed_weeks: 0,
+    missing_dates_json: JSON.stringify(missingDates), latest_snapshot_date: "2026-07-09",
+    official_plan_through: "2026-07-09", coverage_verified_at: "2026-07-10T00:00:00Z",
+    first_seen_at: "2026-07-10T00:00:00Z",
+  });
+  db.dispatches.set("2330.TW", { symbol: "2330.TW", status: "unavailable", deployment_target: "sites", requested_at: "2026-07-10T00:01:00Z", last_error_code: "dispatch_not_configured" });
+  const result = await taiwanStockChipPayload({
+    url: new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&interval=1d&start=2025-07-01&end=2026-07-10&datasets=shareholder-distribution"),
+    env: { DB: db }, eligibility: eligible, fetchImpl: async () => Response.json(tdccFixture), now: "2026-07-10T12:00:00Z",
+  });
+  const coverage = result.body.coverage[0];
+  assert.equal(coverage.savedWeeks, 1);
+  assert.equal(coverage.completedWeeks, 1);
+  assert.equal(coverage.expectedWeeks, 51);
+  assert.equal(coverage.missingWeeks, 13);
+  assert.equal(coverage.missingDates.length, 12);
+  assert.equal(coverage.officialPlanThrough, "2026-07-09");
+  assert.equal(coverage.coverageVerifiedAt, "2026-07-10T00:00:00Z");
+  assert.equal(coverage.queuedSince, "2026-07-10T00:00:00Z");
+  assert.deepEqual(coverage.handoff, {
+    status: "pending", overdue: true, queuedSince: "2026-07-10T00:00:00Z", leaseExpiresAt: null,
+    dispatchStatus: "unavailable", dispatchDeploymentTarget: "sites", dispatchRequestedAt: "2026-07-10T00:01:00Z", dispatchErrorCode: "dispatch_not_configured",
+  });
+  assert.equal(JSON.stringify(result.body).includes("token"), false);
 });
 
 test("籌碼 API 拒絕錯誤日期、過長範圍與未知 datasets", async () => {
@@ -726,7 +759,7 @@ test("TDCC 只有較新合法快照時明確回傳 history_not_archived", async 
     requestedStart: "2026-06-01", requestedEnd: "2026-06-30",
     frequency: "weekly", status: "history_not_archived",
     frequencyLabel: "週資料／當週最後營業日", savedWeeks: 0,
-    expectedWeeks: 0, backfillStatus: "idle", lastSuccessAt: null,
+    expectedWeeks: 0, completedWeeks: 0, failedWeeks: 0, backfillStatus: "idle", lastSuccessAt: null,
   });
   assert.equal(result.body.backfill.status, "idle");
 });

@@ -14,6 +14,7 @@ const migrations = await Promise.all([
   "0007_clever_mach_iv.sql",
   "0008_dazzling_rafael_vega.sql",
   "0010_panoramic_silk_fever.sql",
+  "0025_sharp_callisto.sql",
 ].map((name) => readFile(new URL(`../drizzle/${name}`, import.meta.url), "utf8")));
 
 function dispatchDb() {
@@ -28,6 +29,7 @@ test("未設定 workflow dispatch secret 時 fail closed 且 durable queue 可�
   const result = await dispatchTdccContinuousWorkflow({ db, symbol: "3481.TW", now: "2026-07-19T09:30:00Z" });
   assert.deepEqual(result, {
     status: "unavailable",
+    deploymentTarget: "sites",
     requestedAt: "2026-07-19T09:30:00.000Z",
     cooldownUntil: null,
     errorCode: "dispatch_not_configured",
@@ -35,6 +37,7 @@ test("未設定 workflow dispatch secret 時 fail closed 且 durable queue 可�
   const stored = await readTdccWorkflowDispatch(db, "3481.TW");
   assert.equal(stored.status, "unavailable");
   assert.equal(stored.lastErrorCode, "dispatch_not_configured");
+  assert.equal(stored.deploymentTarget, "sites");
 });
 
 test("立即 dispatch 固定 private repo workflow 與 main ref，冷卻內不重複啟動", async (t) => {
@@ -69,6 +72,8 @@ test("Cloudflare 新商品只 dispatch Cloudflare TDCC workflow", async (t) => {
     fetchImpl: async (url) => { calls.push(String(url)); return new Response(null, { status: 204 }); },
   });
   assert.equal(result.status, "started");
+  assert.equal(result.deploymentTarget, "cloudflare");
+  assert.equal((await readTdccWorkflowDispatch(db, "2330.TW")).deploymentTarget, "cloudflare");
   assert.deepEqual(calls, [TDCC_WORKFLOW_DISPATCH_CONTRACT.urls.cloudflare]);
 });
 
@@ -98,6 +103,7 @@ test("新鮮 runner heartbeat 會去重，GitHub 失敗只保存 allowlist 錯�
   });
   assert.deepEqual(failed, {
     status: "failed",
+    deploymentTarget: "sites",
     requestedAt: "2026-07-19T09:33:00.000Z",
     cooldownUntil: null,
     errorCode: "dispatch_unauthorized",

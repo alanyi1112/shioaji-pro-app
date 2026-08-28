@@ -559,7 +559,6 @@
         ...structuredClone(slice.coverage),
         start: dates[0] || null,
         end: dates.at(-1) || null,
-        ...(slice.coverage.savedWeeks !== undefined ? { savedWeeks: dates.length } : {}),
       } : null,
       source: slice.source ? {
         ...structuredClone(slice.source),
@@ -614,6 +613,39 @@
     return before.savedCount > 0 && next.savedCount > 0 && next.savedCount < before.savedCount;
   }
 
+  function backfillMissingWeeks(value) {
+    if (Number.isFinite(Number(value?.missingWeeks))) return Math.max(0, Number(value.missingWeeks));
+    return Array.isArray(value?.missingDates) ? value.missingDates.length : 0;
+  }
+
+  function mergeBackfillEvidence(previous, candidate) {
+    if (!previous) return candidate ? structuredClone(candidate) : null;
+    if (!candidate) return structuredClone(previous);
+    const previousPlan = String(previous.officialPlanThrough || "");
+    const candidatePlan = String(candidate.officialPlanThrough || "");
+    const previousVerified = String(previous.coverageVerifiedAt || "");
+    const candidateVerified = String(candidate.coverageVerifiedAt || "");
+    const planAdvanced = candidatePlan && (!previousPlan || candidatePlan > previousPlan);
+    const verificationAdvanced = candidateVerified && (!previousVerified || candidateVerified > previousVerified);
+    const evidenceRegressed = (previousPlan && (!candidatePlan || candidatePlan < previousPlan))
+      || (!planAdvanced && !verificationAdvanced && (
+        Number(candidate.completedWeeks || 0) < Number(previous.completedWeeks || 0)
+        || backfillMissingWeeks(candidate) > backfillMissingWeeks(previous)
+      ));
+    if (!evidenceRegressed) return structuredClone(candidate);
+    const operationalStatus = ["blocked", "failed", "running"].includes(candidate.status) ? candidate.status : previous.status;
+    return {
+      ...structuredClone(previous),
+      status: operationalStatus,
+      ...(operationalStatus !== previous.status ? {
+        lastErrorCode: candidate.lastErrorCode || previous.lastErrorCode || null,
+        nextRetryAt: candidate.nextRetryAt || previous.nextRetryAt || null,
+        leaseExpiresAt: candidate.leaseExpiresAt || previous.leaseExpiresAt || null,
+        handoff: candidate.handoff || previous.handoff || null,
+      } : {}),
+    };
+  }
+
   function mergeDatasetSlices(previous, candidate, range = {}) {
     const dataset = candidate.dataset;
     const mergedRows = new Map((previous?.rows || []).map((row) => [chipDatasetDate(row, dataset), structuredClone(row)]));
@@ -642,6 +674,9 @@
     const storedSummary = datasetQualitySummary({ ...candidate, rows });
     const previousCoverage = previous?.coverage || {};
     const candidateCoverage = candidate.coverage || {};
+    const backfill = dataset === "shareholder-distribution"
+      ? mergeBackfillEvidence(previous?.backfill, candidate.backfill)
+      : null;
     const coverage = {
       ...previousCoverage,
       ...candidateCoverage,
@@ -654,6 +689,18 @@
         savedWeeks: Math.max(Number(previousCoverage.savedWeeks) || 0, Number(candidateCoverage.savedWeeks) || 0, rows.length),
       } : {}),
       ...(retained ? { retained: true } : {}),
+      ...(dataset === "shareholder-distribution" && backfill ? {
+        expectedWeeks: backfill.expectedWeeks,
+        completedWeeks: backfill.completedWeeks,
+        failedWeeks: backfill.failedWeeks,
+        missingWeeks: backfillMissingWeeks(backfill),
+        missingDates: backfill.missingDates || [],
+        backfillStatus: backfill.status,
+        officialPlanThrough: backfill.officialPlanThrough || null,
+        coverageVerifiedAt: backfill.coverageVerifiedAt || null,
+        queuedSince: backfill.queuedSince || null,
+        handoff: backfill.handoff || null,
+      } : {}),
     };
     const sourceAvailability = candidate.availability || {};
     const availability = retained ? {
@@ -683,7 +730,7 @@
           : row?.provenance?.[dataset]?.provider).filter(Boolean))],
         frequency: dataset === "shareholder-distribution" ? "weekly" : "daily",
       },
-      backfill: candidate.backfill || previous?.backfill || null,
+      backfill,
       dispatch: candidate.dispatch || previous?.dispatch || null,
       retained,
       retainedDates,
@@ -915,17 +962,23 @@
 
   function availabilityLabel(availability, capability, backfill, dispatch) {
     if (capability?.supported === false) return capability.reason === "unsupported_interval" ? "僅支援日 K" : "不適用";
-    if (availability?.reason === "retained_stale") return `保留最後已驗證資料${availability.latestDataDate ? `（${availability.latestDataDate}）` : ""}`;
-    if (backfill?.status === "queued" && ["started", "cooldown", "already-running"].includes(dispatch?.status)) return "立即回補啟動中";
-    if (backfill?.status === "queued" && dispatch?.status === "unavailable") return "已排入背景回補（非立即）";
-    if (backfill?.status === "queued" && dispatch?.status === "failed") return "立即啟動失敗，等待背景回補";
-    if (backfill?.status === "queued") return "等待背景回補";
-    if (backfill?.status === "running") return `背景歷史回補中（${backfill.completedWeeks || 0}/${backfill.expectedWeeks || 0} 週）`;
-    if (["partial", "failed"].includes(backfill?.status)) return `回補未完成（${backfill.completedWeeks || 0}/${backfill.expectedWeeks || MINIMUM_TDCC_HISTORY_WEEKS} 週）`;
     if (backfill?.status === "blocked") return "來源阻擋";
+    if (backfill?.status === "failed") return backfillMissingWeeks(backfill) > 0 ? `回補失敗，缺少 ${backfillMissingWeeks(backfill)} 週` : "背景回補失敗";
+    if (backfill?.status === "running") return `背景歷史回補中（${backfill.completedWeeks || 0}/${backfill.expectedWeeks || 0} 週）`;
     if (backfill?.status === "completed"
       && Number(backfill?.expectedWeeks || 0) >= MINIMUM_TDCC_HISTORY_WEEKS
-      && Number(backfill?.completedWeeks || 0) >= Number(backfill?.expectedWeeks || 0)) return "歷史已更新";
+      && Number(backfill?.completedWeeks || 0) >= Number(backfill?.expectedWeeks || 0)
+      && backfillMissingWeeks(backfill) === 0) return "歷史已更新";
+    if (backfill?.status === "queued" && ["started", "cooldown", "already-running"].includes(dispatch?.status)) return "立即回補啟動中";
+    if (["queued", "partial"].includes(backfill?.status)
+      && (["unavailable", "failed"].includes(dispatch?.status) || backfill?.handoff?.status === "degraded" || backfill?.handoff?.overdue)) return "背景交接退化，資料仍在排隊";
+    if (backfill?.status === "queued") return Number(backfill?.expectedWeeks || 0) > 0
+      ? `等待背景回補（${backfill.completedWeeks || 0}/${backfill.expectedWeeks} 週）`
+      : "等待背景回補";
+    if (backfill?.status === "partial") return backfillMissingWeeks(backfill) > 0
+      ? `缺少 ${backfillMissingWeeks(backfill)} 週（${backfill.completedWeeks || 0}/${backfill.expectedWeeks || MINIMUM_TDCC_HISTORY_WEEKS} 週）`
+      : `回補未完成（${backfill.completedWeeks || 0}/${backfill.expectedWeeks || MINIMUM_TDCC_HISTORY_WEEKS} 週）`;
+    if (availability?.reason === "retained_stale") return `保留最後已驗證資料${availability.latestDataDate ? `（${availability.latestDataDate}）` : ""}`;
     if (availability?.status === "available") return "";
     if (availability?.reason === "stale_cache") return "資料可能過期";
     if (availability?.reason === "history_not_archived") return availability.rowCount ? "目前僅 1 期／尚無前週比較" : "較早週資料未保存";
@@ -1367,9 +1420,14 @@
     return {
       status: String(backfill.status || coverage.backfillStatus || "idle"),
       savedWeeks: Math.max(0, Number(coverage.savedWeeks || payload?.distributionRows?.length || 0)),
-      completedWeeks: Math.max(0, Number(backfill.completedWeeks || coverage.savedWeeks || 0)),
+      completedWeeks: Math.max(0, Number(backfill.completedWeeks ?? coverage.completedWeeks ?? coverage.savedWeeks ?? 0)),
       expectedWeeks: Math.max(0, Number(backfill.expectedWeeks || coverage.expectedWeeks || 0)),
-      missingWeeks: Array.isArray(backfill.missingDates) ? backfill.missingDates.length : Math.max(0, Number(coverage.missingWeeks || 0)),
+      missingWeeks: Math.max(0, Number(backfill.missingWeeks ?? coverage.missingWeeks ?? (Array.isArray(backfill.missingDates) ? backfill.missingDates.length : 0))),
+      missingDates: (Array.isArray(backfill.missingDates) ? backfill.missingDates : Array.isArray(coverage.missingDates) ? coverage.missingDates : []).slice(0, 12),
+      officialPlanThrough: backfill.officialPlanThrough || coverage.officialPlanThrough || null,
+      coverageVerifiedAt: backfill.coverageVerifiedAt || coverage.coverageVerifiedAt || null,
+      queuedSince: backfill.queuedSince || coverage.queuedSince || null,
+      handoff: backfill.handoff || coverage.handoff || null,
     };
   }
 

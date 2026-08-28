@@ -581,7 +581,7 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       refreshOutcomes[dataset] = "deferred";
       const count = dataset === "shareholder-distribution" ? distribution.length : cachedDailyBefore.filter((row) => Boolean(row.provenance[dataset as keyof typeof row.provenance])).length;
       availability[dataset] = { status: count ? "partial" : "unavailable", reason: count ? "stale_cache" : (states[index]?.reason_code || "provider_unavailable"), rowCount: count };
-      warnings.push(`${datasetName(dataset)}：資料來源暫停重試，預計 ${retryTimeLabel(retryAfter)} 後再檢查`);
+      warnings.push(`${datasetName(dataset)}：資料來源暫停重試，預計 ${retryTimeLabel(String(states[index]?.retry_after || ""))} 後再檢查`);
       return;
     }
     try {
@@ -738,13 +738,25 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       status: availability[dataset]?.reason || "provider_unavailable",
       ...(dataset === "shareholder-distribution" ? {
         frequencyLabel: "週資料／當週最後營業日",
-        savedWeeks: Math.max(backfill.completedWeeks || 0, new Set(dates).size),
+        savedWeeks: new Set(dates).size,
         expectedWeeks: backfill.expectedWeeks,
+        completedWeeks: backfill.completedWeeks,
+        failedWeeks: backfill.failedWeeks,
         backfillStatus: backfill.status,
         ...(env.DB ? {
-          missingWeeks: backfill.missingDates?.length || 0,
+          missingWeeks: backfill.missingWeeks || 0,
           missingDates: backfill.missingDates || [],
           latestSnapshotDate: backfill.latestSnapshotDate || null,
+          officialPlanThrough: backfill.officialPlanThrough || null,
+          coverageVerifiedAt: backfill.coverageVerifiedAt || null,
+          queuedSince: backfill.queuedSince || null,
+          handoff: {
+            ...backfill.handoff,
+            dispatchStatus: dispatch?.status || null,
+            dispatchDeploymentTarget: dispatch?.deploymentTarget || null,
+            dispatchRequestedAt: dispatch?.requestedAt || null,
+            dispatchErrorCode: dispatch?.lastErrorCode || null,
+          },
           checkpoint: backfill.checkpoint || null,
           lastErrorCode: backfill.lastErrorCode || null,
         } : {}),

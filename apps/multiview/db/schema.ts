@@ -118,6 +118,14 @@ export const candleHistoryState = sqliteTable("candle_history_state", {
   reasonCode: text("reason_code"),
   lastFullFetchAt: text("last_full_fetch_at"),
   lastTailFetchAt: text("last_tail_fetch_at"),
+  continuityStatus: text("continuity_status").notNull().default("unknown"),
+  continuityFrom: text("continuity_from"),
+  continuityThrough: text("continuity_through"),
+  continuityCheckedAt: text("continuity_checked_at"),
+  missingSessionCount: integer("missing_session_count").notNull().default(0),
+  missingSessionDatesJson: text("missing_session_dates_json").notNull().default("[]"),
+  excludedSessionDatesJson: text("excluded_session_dates_json").notNull().default("[]"),
+  continuityReasonCode: text("continuity_reason_code"),
   retryAfter: text("retry_after"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
@@ -272,6 +280,7 @@ export const chipBackfillOrchestratorRuns = sqliteTable("chip_backfill_orchestra
 export const tdccBackfillDispatches = sqliteTable("tdcc_backfill_dispatches", {
   symbol: text("symbol").primaryKey(),
   status: text("status").notNull(),
+  deploymentTarget: text("deployment_target").notNull().default("unknown"),
   requestedAt: text("requested_at").notNull(),
   cooldownUntil: text("cooldown_until"),
   lastErrorCode: text("last_error_code"),
@@ -294,6 +303,8 @@ export const tdccContinuousSymbols = sqliteTable("tdcc_continuous_symbols", {
   missingDatesJson: text("missing_dates_json").notNull().default("[]"),
   checkpointDate: text("checkpoint_date"),
   latestSnapshotDate: text("latest_snapshot_date"),
+  officialPlanThrough: text("official_plan_through"),
+  coverageVerifiedAt: text("coverage_verified_at"),
   historySuccessAt: text("history_success_at"),
   nextRetryAt: text("next_retry_at"),
   lastErrorCode: text("last_error_code"),
@@ -304,6 +315,7 @@ export const tdccContinuousSymbols = sqliteTable("tdcc_continuous_symbols", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   index("tdcc_continuous_symbols_queue_idx").on(table.active, table.status, table.nextRetryAt, table.firstSeenAt),
+  index("tdcc_continuous_symbols_handoff_idx").on(table.active, table.status, table.firstSeenAt, table.leaseExpiresAt),
   index("tdcc_continuous_symbols_lease_idx").on(table.leaseExpiresAt),
 ]);
 

@@ -145,14 +145,16 @@ history，也不取代既有 TWSE／TPEx 收盤核定流程。
 - 平日 16:45：daily cache／台股籌碼及有界 PE backfill。
 - 週六 22:30：有界 TDCC latest／continuous backfill 主要同步。
 - 週日 22:30：TDCC latest／continuous backfill 有限隔日重試。
-- 登入時也會觸發一次可重入的 overdue 檢查；run id、checkpoint、lease、retry
-  與 changed-only write 避免重複寫入。
+- 登入時及其後每 300 秒執行 TDCC queue-only watcher；沒有 runnable target 時
+  不建立 run、歷史 session 或來源 request，有工作時才取得 host single-flight 並啟動
+  history-only runner。run id、checkpoint、D1 lease、retry 與 changed-only write 避免重複寫入。
 
 可手動執行：
 
 ```sh
 pnpm local-runtime multiview-daily
 pnpm local-runtime multiview-tdcc
+pnpm local-runtime multiview-tdcc-watcher
 ```
 
 排程授權值只存於權限 `0600` 的

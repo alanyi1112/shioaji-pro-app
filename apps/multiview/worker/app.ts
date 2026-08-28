@@ -1,6 +1,9 @@
-import { acquireCandleHistory, mergeCandleHistory, type HistoryCandle } from "./candle-history";
+import { acquireCandleHistory, clearCandleHistoryRuntimeState, mergeCandleHistory, type HistoryCandle } from "./candle-history";
 import { runD1Batch } from "./d1-batch.ts";
 import { candlePayloadFromRows, fetchCandles, providerForCandleSymbol } from "./market-data";
+import { normalizeTaiwanStockVolume } from "./taiwan-stock-volume";
+import { planCandleContinuityAuditBatch, runCandleContinuityAuditBatch } from "./candle-continuity-maintenance";
+import { ensureCandleContinuityColumns } from "./candle-continuity-schema";
 import {
   indicatorParameterSignature,
   indicatorParametersFromSearchParams,
@@ -40,6 +43,7 @@ import {
   heartbeatTdccContinuousLease,
   heartbeatTdccContinuousRun,
   planTdccContinuousDates,
+  probeTdccContinuousQueue,
   queueTdccContinuousSymbolBackfill,
   readTdccContinuousHealth,
   readTdccContinuousSymbolStatus,
@@ -114,6 +118,7 @@ import { readCandleCacheMaintenance } from "./cache-maintenance";
 import { recordCacheEvent, runtimeUsageSummary } from "./runtime-usage";
 import { localShioajiAdapterHealth } from "./local-shioaji-adapter";
 import { notifyRealtimeWatchlistSymbols, readRealtimeHealth, realtimeViewerCapability, type RealtimeEnv } from "./realtime-routing";
+import { auditTaiwanDailyContinuity } from "./taiwan-daily-continuity";
 
 type ImagesBinding = {
   input(stream: ReadableStream): {
@@ -122,7 +127,7 @@ type ImagesBinding = {
     };
   };
 };
-export type Env = RealtimeEnv & { ASSETS: Fetcher; DB?: D1Database; IMAGES?: ImagesBinding; APP_COMMIT_SHA?: string; ACCESS_TEAM_DOMAIN?: string; ACCESS_AUD?: string; ACCESS_OWNER_EMAIL?: string; MASSIVE_API_KEY?: string; TPEX_MIRROR_INGEST_SECRET?: string; TDCC_HISTORY_INGEST_SECRET?: string; TDCC_CONTINUOUS_BACKFILL_SECRET?: string; TDCC_HISTORY_AUTOMATION_ENABLED?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string; FINMIND_API_TOKEN?: string; PE_RIVER_INGEST_SECRET?: string; PE_RIVER_BACKFILL_SECRET?: string; PE_RIVER_ACCESS_MODE?: string; PE_RIVER_COMMERCIAL_USE?: string; PE_RIVER_PROVISIONAL_LATEST_ENABLED?: string; SHIOAJI_API_TARGET?: string; MULTIVIEW_STATE_DIR?: string; MULTIVIEW_SCHEMA_REVISION?: string; REALTIME_STOCK_WEB_URL?: string; LOCAL_PIPELINE_SECRET?: string };
+export type Env = RealtimeEnv & { ASSETS: Fetcher; DB?: D1Database; IMAGES?: ImagesBinding; APP_COMMIT_SHA?: string; ACCESS_TEAM_DOMAIN?: string; ACCESS_AUD?: string; ACCESS_OWNER_EMAIL?: string; MASSIVE_API_KEY?: string; TPEX_MIRROR_INGEST_SECRET?: string; TDCC_HISTORY_INGEST_SECRET?: string; TDCC_CONTINUOUS_BACKFILL_SECRET?: string; CANDLE_CONTINUITY_AUDIT_SECRET?: string; TDCC_HISTORY_AUTOMATION_ENABLED?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string; FINMIND_API_TOKEN?: string; PE_RIVER_INGEST_SECRET?: string; PE_RIVER_BACKFILL_SECRET?: string; PE_RIVER_ACCESS_MODE?: string; PE_RIVER_COMMERCIAL_USE?: string; PE_RIVER_PROVISIONAL_LATEST_ENABLED?: string; SHIOAJI_API_TARGET?: string; MULTIVIEW_STATE_DIR?: string; MULTIVIEW_SCHEMA_REVISION?: string; REALTIME_STOCK_WEB_URL?: string; LOCAL_PIPELINE_SECRET?: string };
 type Instrument = {
   symbol: string;
   name: string;
@@ -174,7 +179,13 @@ type OfficialCatalogRow = {
 };
 type CandlePayloadResult = ReturnType<typeof candlePayloadFromRows> & {
   realtimeDailyHistory?: Candle[];
-  realtimeCanonicalHandoff?: { sessionDate: string | null; verificationStatus: string };
+  realtimeCanonicalHandoff?: {
+    sessionDate: string | null;
+    verificationStatus: string;
+    verificationScope: string | null;
+    sourceProvider: string | null;
+    verificationProvider: string | null;
+  };
 };
 type QuoteState = CandlePayloadResult["quote"];
 type CandleCacheRow = { payload?: string | null; expires_at?: number | null };
@@ -203,7 +214,7 @@ const intervalsForRequest = (request: Request) =>
   deploymentTargetForRequest(request) === "local" ? LOCAL_INTERVALS : INTERVALS;
 const TAB_IDS: Record<string, string> = { "台股": "taiwan-stocks", "美股": "us-stocks", "匯率債券": "fx-bonds", "期貨期指": "index-futures" };
 const TAB_MARKETS: Record<string, string> = { "台股": "台灣股市", "美股": "美股", "匯率債券": "匯率債券", "期貨期指": "美國指數期貨", "其他": "其他" };
-const CANDLE_CACHE_CONTRACT_VERSION = "quote-state-v19-taiwan-overnight-close-v1";
+const CANDLE_CACHE_CONTRACT_VERSION = "quote-state-v24-daily-continuity-v1";
 const databaseReady = new WeakMap<object, Promise<void>>();
 const migrationManagedDatabases = new WeakSet<object>();
 const MANUAL_CHIP_BACKFILL_DATASETS = ["institutional-flow", "foreign-holding", "margin-short", "securities-lending", "shareholder-distribution"] as const;
@@ -322,7 +333,7 @@ async function ensureDb(db?: D1Database) {
     db.prepare(`CREATE TABLE IF NOT EXISTS cache_maintenance_state (maintenance_key TEXT PRIMARY KEY NOT NULL, last_run_at TEXT, deleted_rows INTEGER NOT NULL DEFAULT 0, remaining_rows INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'not_run', reason_code TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS candle_history (provider TEXT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL, time INTEGER NOT NULL, open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, volume REAL NOT NULL DEFAULT 0, quote_time INTEGER, source TEXT NOT NULL, source_updated_at TEXT, market_session TEXT, source_time_zone TEXT, fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (provider,symbol,interval,time))`),
     db.prepare(`CREATE INDEX IF NOT EXISTS candle_history_lookup_idx ON candle_history (provider,symbol,interval,time)`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS candle_history_state (provider TEXT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL, full_window_complete INTEGER NOT NULL DEFAULT 0, coverage_start INTEGER, coverage_end INTEGER, available_rows INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'unknown', reason_code TEXT, last_full_fetch_at TEXT, last_tail_fetch_at TEXT, retry_after TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (provider,symbol,interval))`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS candle_history_state (provider TEXT NOT NULL, symbol TEXT NOT NULL, interval TEXT NOT NULL, full_window_complete INTEGER NOT NULL DEFAULT 0, coverage_start INTEGER, coverage_end INTEGER, available_rows INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'unknown', reason_code TEXT, last_full_fetch_at TEXT, last_tail_fetch_at TEXT, continuity_status TEXT NOT NULL DEFAULT 'unknown', continuity_from TEXT, continuity_through TEXT, continuity_checked_at TEXT, missing_session_count INTEGER NOT NULL DEFAULT 0, missing_session_dates_json TEXT NOT NULL DEFAULT '[]', excluded_session_dates_json TEXT NOT NULL DEFAULT '[]', continuity_reason_code TEXT, retry_after TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (provider,symbol,interval))`),
     db.prepare(`CREATE INDEX IF NOT EXISTS candle_history_state_retry_idx ON candle_history_state (status,retry_after)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS tpex_market_mirror (session_date TEXT PRIMARY KEY, payload TEXT NOT NULL, source_fetched_at TEXT NOT NULL, ingested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS instrument_catalog (symbol TEXT NOT NULL, exchange TEXT NOT NULL, localized_name TEXT NOT NULL, english_name TEXT NOT NULL DEFAULT '', aliases_json TEXT NOT NULL DEFAULT '[]', normalized_search TEXT NOT NULL, market TEXT NOT NULL, group_name TEXT NOT NULL, quote_type TEXT NOT NULL DEFAULT '', provider TEXT NOT NULL DEFAULT 'yfinance', source TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, source_updated_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (symbol, exchange))`),
@@ -343,10 +354,11 @@ async function ensureDb(db?: D1Database) {
     db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_continuous_runs_status_idx ON tdcc_continuous_runs (status, updated_at)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS chip_backfill_orchestrator_runs (run_id TEXT PRIMARY KEY, scope TEXT NOT NULL DEFAULT 'combined', trigger TEXT NOT NULL, status TEXT NOT NULL, phase TEXT NOT NULL, expected_session_date TEXT NOT NULL, latest_data_date TEXT, processed_symbols_json TEXT NOT NULL DEFAULT '[]', processed_symbols INTEGER NOT NULL DEFAULT 0, remaining_symbols INTEGER NOT NULL DEFAULT 0, pending_symbols INTEGER NOT NULL DEFAULT 0, last_symbol TEXT, last_reason_code TEXT, heartbeat_at TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS chip_backfill_orchestrator_runs_status_idx ON chip_backfill_orchestrator_runs (status, updated_at)`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_backfill_dispatches (symbol TEXT PRIMARY KEY, status TEXT NOT NULL, requested_at TEXT NOT NULL, cooldown_until TEXT, last_error_code TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_backfill_dispatches (symbol TEXT PRIMARY KEY, status TEXT NOT NULL, deployment_target TEXT NOT NULL DEFAULT 'unknown', requested_at TEXT NOT NULL, cooldown_until TEXT, last_error_code TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_backfill_dispatches_status_idx ON tdcc_backfill_dispatches (status, cooldown_until)`),
-    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_continuous_symbols (symbol TEXT PRIMARY KEY, source TEXT NOT NULL, official_baseline INTEGER NOT NULL DEFAULT 0, catalog_revision TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, target_start TEXT, target_end TEXT, expected_weeks INTEGER NOT NULL DEFAULT 0, completed_weeks INTEGER NOT NULL DEFAULT 0, failed_weeks INTEGER NOT NULL DEFAULT 0, missing_dates_json TEXT NOT NULL DEFAULT '[]', checkpoint_date TEXT, latest_snapshot_date TEXT, history_success_at TEXT, next_retry_at TEXT, last_error_code TEXT, lease_owner TEXT, lease_expires_at TEXT, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_continuous_symbols (symbol TEXT PRIMARY KEY, source TEXT NOT NULL, official_baseline INTEGER NOT NULL DEFAULT 0, catalog_revision TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, target_start TEXT, target_end TEXT, expected_weeks INTEGER NOT NULL DEFAULT 0, completed_weeks INTEGER NOT NULL DEFAULT 0, failed_weeks INTEGER NOT NULL DEFAULT 0, missing_dates_json TEXT NOT NULL DEFAULT '[]', checkpoint_date TEXT, latest_snapshot_date TEXT, official_plan_through TEXT, coverage_verified_at TEXT, history_success_at TEXT, next_retry_at TEXT, last_error_code TEXT, lease_owner TEXT, lease_expires_at TEXT, first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_continuous_symbols_queue_idx ON tdcc_continuous_symbols (active, status, next_retry_at, first_seen_at)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_continuous_symbols_handoff_idx ON tdcc_continuous_symbols (active, status, first_seen_at, lease_expires_at)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_continuous_symbols_lease_idx ON tdcc_continuous_symbols (lease_expires_at)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_continuous_items (symbol TEXT NOT NULL, data_date TEXT NOT NULL, status TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 100, attempts INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, next_retry_at TEXT, error_code TEXT, completed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (symbol, data_date))`),
     db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_continuous_items_queue_idx ON tdcc_continuous_items (status, next_retry_at, priority, created_at)`),
@@ -362,6 +374,12 @@ async function ensureDb(db?: D1Database) {
         db.prepare(`CREATE INDEX IF NOT EXISTS taiwan_stock_pe_month_queue_idx ON taiwan_stock_pe_backfill_month (status,retry_after,lease_expires_at)`),
         db.prepare(`CREATE TABLE IF NOT EXISTS taiwan_stock_pe_control (control_key TEXT PRIMARY KEY NOT NULL, scheduler_heartbeat_at TEXT, last_latest_run_at TEXT, last_history_run_at TEXT, latest_twse_source_date TEXT, latest_tpex_source_date TEXT, budget_window_start TEXT, budget_used INTEGER NOT NULL DEFAULT 0, budget_limit INTEGER NOT NULL DEFAULT 240, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
       ]);
+      const continuitySchema = await ensureCandleContinuityColumns(db);
+      if (continuitySchema.upgraded) {
+        clearCandleHistoryRuntimeState();
+        await db.prepare("DELETE FROM candle_cache WHERE cache_key LIKE ? OR cache_key LIKE 'candle-batch-v1|%'")
+          .bind(`${CANDLE_CACHE_CONTRACT_VERSION}|%`).run();
+      }
       await ensureWatchlistMetadataColumns(db);
       await ensurePeRiverPipelineColumns(db);
       await seedLocalizedCatalog(db);
@@ -603,6 +621,18 @@ function cacheTtl(interval: string) {
   return ["1d", "1wk", "1mo"].includes(interval) ? 300 : 20;
 }
 
+function needsContinuityResume(value: unknown) {
+  const payload = jsonObject(value);
+  const dataQuality = jsonObject(payload.dataQuality);
+  const continuity = jsonObject(dataQuality.continuity);
+  return continuity.reasonCode === "audit_request_budget";
+}
+
+function batchNeedsContinuityResume(value: unknown) {
+  const payload = jsonObject(value);
+  return Array.isArray(payload.items) && payload.items.some((item) => needsContinuityResume(jsonObject(item).payload));
+}
+
 function taipeiClock(now: Date) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
@@ -651,6 +681,32 @@ function taiwanDailyCoverageComplete(symbol: string, interval: string, rows: His
   const expected = stableTaiwanDailyCoverageEnd(now);
   const actual = sessionDateForCandle(rows.at(-1));
   return Boolean(expected && actual && actual >= expected);
+}
+
+async function invalidateCandlePayloadCache(db: D1Database | undefined, symbol: string, interval: string) {
+  if (!db) return true;
+  try {
+    await db.prepare("DELETE FROM candle_cache WHERE cache_key LIKE ?")
+      .bind(`${CANDLE_CACHE_CONTRACT_VERSION}|${symbol.trim().toUpperCase()}|${interval}|%`).run();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function taiwanDailyContinuityOptions(env: Env, symbol: string, interval: string, now: Date) {
+  if (interval !== "1d" || !/\.(TW|TWO)$/i.test(symbol)) return {};
+  return {
+    continuityAudit: (rows: HistoryCandle[], requiredRows: number) => auditTaiwanDailyContinuity({
+      db: env.DB,
+      symbol,
+      rows,
+      requiredRows,
+      expectedThrough: stableTaiwanDailyCoverageEnd(now),
+      now,
+    }),
+    invalidatePayloadCache: () => invalidateCandlePayloadCache(env.DB, symbol, interval),
+  };
 }
 
 function marketNumber(value: unknown, allowZero = false) {
@@ -704,8 +760,8 @@ async function fetchTaiwanDailyTail(env: Env, symbol: string, sessionDate: strin
   return fallback.referenceSessionDate === sessionDate ? fallback.candle || null : null;
 }
 
-async function fetchHistoryCandles(env: Env, symbol: string, interval: string, mode: "full" | "tail", now: Date) {
-  const fetched = await fetchCandles(symbol, interval, { mode });
+async function fetchHistoryCandles(env: Env, symbol: string, interval: string, mode: "full" | "tail", now: Date, startTime?: number) {
+  const fetched = await fetchCandles(symbol, interval, { mode, startTime });
   if (interval !== "1d" || !/\.(TW|TWO)$/i.test(symbol)) return fetched;
   const latest = fetched.rows.at(-1);
   const sourceQuoteTime = Number(latest?.quoteTime);
@@ -741,7 +797,7 @@ async function cachedCandlePayload(
       const cached = await env.DB.prepare("SELECT payload, expires_at FROM candle_cache WHERE cache_key = ?").bind(key).first<CandleCacheRow>();
       if (cached?.payload) {
         const payload = JSON.parse(cached.payload) as CandlePayloadResult;
-        if (Number(cached.expires_at) > now) {
+        if (Number(cached.expires_at) > now && !needsContinuityResume(payload)) {
           recordCacheEvent("hit");
           payload.dataWindow = { ...payload.dataWindow, cache: { ...payload.dataWindow.cache, store: "d1", state: "hit", source: payload.quote?.sourceProvider } };
           return payload;
@@ -768,11 +824,12 @@ async function cachedCandlePayload(
       symbol,
       interval,
       displayCount,
-      fetcher: async ({ mode }) => {
-        const fetched = await fetchHistoryCandles(env, symbol, interval, mode, requestNow);
+      fetcher: async ({ mode, startTime }) => {
+        const fetched = await fetchHistoryCandles(env, symbol, interval, mode, requestNow, startTime);
         return { rows: fetched.rows, source: fetched.provider };
       },
       coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, interval, rows, requestNow),
+      ...taiwanDailyContinuityOptions(env, symbol, interval, requestNow),
       now: requestNow,
     });
     let pivotReferenceRows: Candle[] = [];
@@ -789,11 +846,12 @@ async function cachedCandlePayload(
             symbol,
             interval: "1d",
             displayCount: 500,
-            fetcher: async ({ mode }) => {
-              const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow);
+            fetcher: async ({ mode, startTime }) => {
+              const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
               return { rows: fetched.rows, source: fetched.provider };
             },
             coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
+            ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow),
             now: requestNow,
           });
           pivotReferenceRows = dailyHistory.rows;
@@ -822,11 +880,12 @@ async function cachedCandlePayload(
         symbol,
         interval: "1d",
         displayCount: 45,
-        fetcher: async ({ mode }) => {
-        const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow);
+        fetcher: async ({ mode, startTime }) => {
+        const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
         return { rows: fetched.rows, source: fetched.provider };
       },
       coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
+      ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow),
       now: requestNow,
       });
       const dailyPayload = candlePayloadFromRows(
@@ -838,9 +897,17 @@ async function cachedCandlePayload(
       payload.realtimeCanonicalHandoff = {
         sessionDate: verifiedDailyQuote.sessionDate || null,
         verificationStatus: String(verifiedDailyQuote.verification?.status || "unverified"),
+        verificationScope: verifiedDailyQuote.verification?.scope ? String(verifiedDailyQuote.verification.scope) : null,
+        sourceProvider: verifiedDailyQuote.sourceProvider ? String(verifiedDailyQuote.sourceProvider) : null,
+        verificationProvider: verifiedDailyQuote.verification?.provider ? String(verifiedDailyQuote.verification.provider) : null,
       };
     }
     payload.quote = await verifyMarketQuote(env, symbol, interval, payload.candles, payload.quote);
+    const verificationMismatchFields = payload.quote?.verification?.mismatchFields;
+    if (Array.isArray(verificationMismatchFields) && verificationMismatchFields.length) {
+      payload.dataQuality = { ...payload.dataQuality, verificationMismatchFields: verificationMismatchFields.slice(0, 5) };
+      payload.quote = { ...payload.quote, dataQuality: payload.dataQuality };
+    }
     if (env.DB) {
       try {
         await env.DB.prepare(`INSERT INTO candle_cache (cache_key,payload,expires_at) VALUES (?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,expires_at=excluded.expires_at,updated_at=CURRENT_TIMESTAMP`).bind(key, JSON.stringify(payload), now + cacheTtl(interval)).run();
@@ -1277,6 +1344,10 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       const failure = await finalizeChipBackfillOrchestratorFailure({ db: env.DB, runId, trigger: orchestratorTrigger, scope: orchestratorScope, reason: body?.reason });
       return json({ ok: true, ...failure });
     }
+    if (action === "queue-probe") {
+      const queue = await probeTdccContinuousQueue({ db: env.DB });
+      return json({ ok: true, queue });
+    }
     if (action === "start-run") {
       await refreshTdccContinuousTargets(request, env);
       const run = await startTdccContinuousRun({ db: env.DB, runId, trigger: body?.trigger === "schedule" ? "schedule" : "workflow_dispatch" });
@@ -1560,10 +1631,21 @@ async function verifyTaiwanQuote(env: Env, symbol: string, candles: Candle[], cu
   const provider: TaiwanProvider = symbol.toUpperCase().endsWith(".TWO") ? "tpex" : "twse";
   const base = { provider, referenceSessionDate: null as string | null };
   const primarySessionDate = String(current?.sessionDate || "");
-  const primaryClose = Number(candles[candles.length - 1]?.close);
-  const primarySource = String((candles[candles.length - 1] as HistoryCandle | undefined)?.source || "");
+  const primaryCandle = candles[candles.length - 1] as HistoryCandle | undefined;
+  const primaryClose = Number(primaryCandle?.close);
+  const primarySource = String(primaryCandle?.source || "");
   if (/^(?:twse|tpex)-official$/i.test(primarySource) && /^\d{4}-\d{2}-\d{2}$/.test(primarySessionDate) && Number.isFinite(primaryClose) && primaryClose > 0) {
-    return { ...current, verification: { status: "verified", provider, referenceSessionDate: primarySessionDate, checkedAt: (candles[candles.length - 1] as HistoryCandle).sourceUpdatedAt } };
+    return {
+      ...current,
+      verification: {
+        status: "verified",
+        scope: "ohlcv",
+        provider,
+        referenceSessionDate: primarySessionDate,
+        checkedAt: primaryCandle?.sourceUpdatedAt,
+        fieldResults: { open: "match", high: "match", low: "match", close: "match", volume: "match" },
+      },
+    };
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(primarySessionDate) || !Number.isFinite(primaryClose) || primaryClose <= 0) {
     return { ...current, verification: { status: "unverified", ...base, reason: "invalid_reference_data" } };
@@ -1581,8 +1663,15 @@ async function verifyTaiwanQuote(env: Env, symbol: string, candles: Candle[], cu
         if (!fallback.reason && Number.isFinite(fallback.close) && fallback.referenceSessionDate) {
           if (fallback.referenceSessionDate < primarySessionDate) return { ...current, verification: { status: "pending", provider: fallback.provider, referenceSessionDate: fallback.referenceSessionDate, reason: "reference_not_published", checkedAt: fallback.checkedAt } };
           if (fallback.referenceSessionDate !== primarySessionDate) return { ...current, verification: { status: "unverified", provider: fallback.provider, referenceSessionDate: fallback.referenceSessionDate, reason: "session_mismatch", checkedAt: fallback.checkedAt } };
-          const matches = Math.round(primaryClose * 100) === Math.round(Number(fallback.close) * 100);
-          return { ...current, verification: { status: matches ? "verified" : "mismatch", provider: fallback.provider, referenceSessionDate: fallback.referenceSessionDate, checkedAt: fallback.checkedAt, ...(matches ? {} : { reason: "close_mismatch" }) } };
+          return {
+            ...current,
+            verification: compareTaiwanOfficialCandle(primaryCandle!, fallback.candle, {
+              provider: fallback.provider,
+              referenceSessionDate: fallback.referenceSessionDate,
+              checkedAt: fallback.checkedAt,
+              referenceClose: Number(fallback.close),
+            }),
+          };
         }
         return { ...current, verification: { status: "unverified", ...base, provider: fallback.provider, reason: fallback.reason || market.reason || "provider_unavailable", checkedAt: fallback.checkedAt } };
       }
@@ -1595,8 +1684,15 @@ async function verifyTaiwanQuote(env: Env, symbol: string, candles: Candle[], cu
       if (!fallback.reason && Number.isFinite(fallback.close) && fallback.referenceSessionDate) {
         if (fallback.referenceSessionDate < primarySessionDate) return { ...current, verification: { status: "pending", provider: fallback.provider, referenceSessionDate: fallback.referenceSessionDate, reason: "reference_not_published", checkedAt: fallback.checkedAt } };
         if (fallback.referenceSessionDate !== primarySessionDate) return { ...current, verification: { status: "unverified", provider: fallback.provider, referenceSessionDate: fallback.referenceSessionDate, reason: "session_mismatch", checkedAt: fallback.checkedAt } };
-        const matches = Math.round(primaryClose * 100) === Math.round(Number(fallback.close) * 100);
-        return { ...current, verification: { status: matches ? "verified" : "mismatch", provider: fallback.provider, referenceSessionDate: fallback.referenceSessionDate, checkedAt: fallback.checkedAt, ...(matches ? {} : { reason: "close_mismatch" }) } };
+        return {
+          ...current,
+          verification: compareTaiwanOfficialCandle(primaryCandle!, fallback.candle, {
+            provider: fallback.provider,
+            referenceSessionDate: fallback.referenceSessionDate,
+            checkedAt: fallback.checkedAt,
+            referenceClose: Number(fallback.close),
+          }),
+        };
       }
       market = await fetchTaiwanMarket("twse-openapi", primarySessionDate);
       verificationProvider = "twse";
@@ -1623,10 +1719,53 @@ async function verifyTaiwanQuote(env: Env, symbol: string, candles: Candle[], cu
   if (referenceSessionDate !== primarySessionDate) {
     return { ...current, verification: { status: "unverified", provider: verificationProvider, referenceSessionDate, reason: "session_mismatch", checkedAt: market.checkedAt } };
   }
-  const decimals = Math.min(6, Math.max(0, parsedReference.raw.split(".")[1]?.length ?? 0));
-  const scale = 10 ** decimals;
-  const matches = Math.round(primaryClose * scale) === Math.round(parsedReference.close * scale);
-  return { ...current, verification: { status: matches ? "verified" : "mismatch", provider: verificationProvider, referenceSessionDate, checkedAt: market.checkedAt, ...(matches ? {} : { reason: "close_mismatch" }) } };
+  const officialCandle = officialCandleFromMarketRow(symbol, row, market.checkedAt);
+  return {
+    ...current,
+    verification: compareTaiwanOfficialCandle(primaryCandle!, officialCandle || undefined, {
+      provider: verificationProvider,
+      referenceSessionDate,
+      checkedAt: market.checkedAt,
+      referenceClose: parsedReference.close,
+    }),
+  };
+}
+
+type TaiwanVerificationField = "open" | "high" | "low" | "close" | "volume";
+
+function compareTaiwanOfficialCandle(
+  primary: HistoryCandle,
+  official: HistoryCandle | undefined,
+  reference: { provider: string; referenceSessionDate: string; checkedAt: string; referenceClose: number },
+) {
+  const fields: TaiwanVerificationField[] = ["open", "high", "low", "close", "volume"];
+  const officialValues: Partial<Record<TaiwanVerificationField, number>> = official
+    ? {
+      open: Number(official.open),
+      high: Number(official.high),
+      low: Number(official.low),
+      close: Number(official.close),
+      volume: normalizeTaiwanStockVolume(Number(official.volume), String(official.source || reference.provider)),
+    }
+    : { close: reference.referenceClose };
+  const fieldResults = Object.fromEntries(fields.map((field) => {
+    const primaryValue = Number(primary[field]);
+    const officialValue = officialValues[field];
+    if (!Number.isFinite(primaryValue) || !Number.isFinite(officialValue)) return [field, "unavailable"];
+    const tolerance = field === "volume" ? 1e-9 : 1e-6;
+    return [field, Math.abs(primaryValue - Number(officialValue)) <= tolerance ? "match" : "mismatch"];
+  })) as Record<TaiwanVerificationField, "match" | "mismatch" | "unavailable">;
+  const mismatchFields = fields.filter((field) => fieldResults[field] === "mismatch");
+  const closeMatches = fieldResults.close === "match";
+  const ohlcvMatches = fields.every((field) => fieldResults[field] === "match");
+  return {
+    status: closeMatches ? "verified" : "mismatch",
+    scope: ohlcvMatches ? "ohlcv" : "close",
+    ...reference,
+    fieldResults,
+    ...(mismatchFields.length ? { mismatchFields } : {}),
+    ...(!closeMatches ? { reason: "close_mismatch" } : {}),
+  };
 }
 
 const MASSIVE_INDEX_SYMBOLS: Record<string, string> = { "^DJI": "I:DJI", "^IXIC": "I:COMP", "^SOX": "I:SOX", "^GSPC": "I:SPX", "^RUT": "I:RUT" };
@@ -2369,8 +2508,11 @@ async function batchCandleResponse(request: Request, env: Env) {
       await ensureDb(env.DB);
       const cached = await env.DB.prepare("SELECT payload FROM candle_cache WHERE cache_key = ? AND expires_at > ?").bind(batchCacheKey, now).first<CandleCacheRow>();
       if (cached?.payload) {
-        recordCacheEvent("hit");
-        return new Response(cached.payload, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+        const parsed = JSON.parse(cached.payload) as unknown;
+        if (!batchNeedsContinuityResume(parsed)) {
+          recordCacheEvent("hit");
+          return new Response(cached.payload, { headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } });
+        }
       }
       recordCacheEvent("miss");
     } catch {
@@ -2447,6 +2589,130 @@ async function accessAdminResponse(request: Request, env: Env, path: string) {
   }
 }
 
+type DailyContinuityHealthRow = {
+  symbol?: string | null;
+  coverage_end?: number | null;
+  continuity_status?: string | null;
+  missing_session_count?: number | null;
+  continuity_through?: string | null;
+  continuity_checked_at?: string | null;
+  continuity_reason_code?: string | null;
+};
+
+async function readDailyContinuityHealth(db: D1Database | undefined, now = new Date()) {
+  const empty = {
+    global: { d1: db ? "available" : "unavailable", schema: db ? "unknown" : "unavailable" },
+    counts: { enabledSymbols: 0, complete: 0, partial: 0, unknown: 0, notAudited: 0, latestSessionCoverage: 0 },
+    expectedCompletedSession: stableTaiwanDailyCoverageEnd(now),
+    items: [] as Array<Record<string, unknown>>,
+  };
+  if (!db) return empty;
+  try {
+    const result = await db.prepare(`
+      SELECT enabled.symbol, state.coverage_end, state.continuity_status, state.missing_session_count,
+        state.continuity_through, state.continuity_checked_at, state.continuity_reason_code
+      FROM (
+        SELECT DISTINCT UPPER(symbol) AS symbol
+        FROM user_instruments
+        WHERE enabled=1 AND (UPPER(symbol) LIKE '%.TW' OR UPPER(symbol) LIKE '%.TWO')
+      ) enabled
+      LEFT JOIN candle_history_state state
+        ON state.provider='yfinance' AND state.interval='1d' AND state.symbol=enabled.symbol
+      ORDER BY enabled.symbol
+      LIMIT 200
+    `).all<DailyContinuityHealthRow>();
+    const expectedCompletedSession = stableTaiwanDailyCoverageEnd(now);
+    const items = (result.results || []).map((row) => {
+      const status = ["complete", "partial", "unknown"].includes(String(row.continuity_status))
+        ? String(row.continuity_status) as "complete" | "partial" | "unknown"
+        : "unknown";
+      const coverageEnd = Number(row.coverage_end);
+      const coverageEndDate = Number.isFinite(coverageEnd)
+        ? sessionDateForCandle({ time: coverageEnd, open: 1, high: 1, low: 1, close: 1, volume: 0, sourceTimeZone: "Asia/Taipei" })
+        : null;
+      return {
+        symbol: String(row.symbol || ""),
+        coverageEnd: coverageEndDate,
+        continuityStatus: status,
+        missingSessionCount: Math.max(0, Number(row.missing_session_count) || 0),
+        verifiedThrough: row.continuity_through || null,
+        lastChecked: row.continuity_checked_at || null,
+        reasonCode: row.continuity_reason_code || (row.continuity_checked_at ? null : "continuity_not_audited"),
+        latestSessionCovered: Boolean(expectedCompletedSession && coverageEndDate && coverageEndDate >= expectedCompletedSession),
+      };
+    });
+    return {
+      global: { d1: "available", schema: "current" },
+      counts: {
+        enabledSymbols: items.length,
+        complete: items.filter((item) => item.continuityStatus === "complete").length,
+        partial: items.filter((item) => item.continuityStatus === "partial").length,
+        unknown: items.filter((item) => item.continuityStatus === "unknown").length,
+        notAudited: items.filter((item) => !item.lastChecked).length,
+        latestSessionCoverage: items.filter((item) => item.latestSessionCovered).length,
+      },
+      expectedCompletedSession,
+      items,
+    };
+  } catch {
+    return { ...empty, global: { d1: "available", schema: "migration_required" } };
+  }
+}
+
+async function candleContinuityAuditResponse(request: Request, env: Env) {
+  if (!env.DB || !env.CANDLE_CONTINUITY_AUDIT_SECRET) return json({ ok: false, reasonCode: "not_configured" }, 503);
+  if (internalAuthorization(request) !== `Bearer ${env.CANDLE_CONTINUITY_AUDIT_SECRET}`) return json({ ok: false, reasonCode: "unauthorized" }, 401);
+  let body: JsonObject = {};
+  try { body = jsonObject(await request.json()); }
+  catch { return json({ ok: false, reasonCode: "invalid_payload" }, 400); }
+  await ensureDb(env.DB);
+  const enabled = await env.DB.prepare(`SELECT DISTINCT UPPER(symbol) AS symbol FROM user_instruments WHERE enabled=1 ORDER BY symbol LIMIT 128`).all<{ symbol?: string }>();
+  const planned = planCandleContinuityAuditBatch((enabled.results || []).map((row) => row.symbol), {
+    cursor: typeof body.cursor === "string" ? body.cursor : null,
+    limit: Number(body.limit),
+  });
+  const requestNow = new Date();
+  const items = await runCandleContinuityAuditBatch(planned.symbols, async (symbol) => {
+    const history = await acquireCandleHistory({
+      db: env.DB,
+      provider: providerForCandleSymbol(symbol),
+      symbol,
+      interval: "1d",
+      displayCount: 160,
+      fetcher: async ({ mode, startTime }) => {
+        const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
+        return { rows: fetched.rows, source: fetched.provider };
+      },
+      coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
+      ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow),
+      now: requestNow,
+    });
+    const continuity = history.cache.continuity;
+    return {
+      status: continuity?.status || "unknown",
+      missingSessionCount: continuity?.missingSessionCount || 0,
+      verifiedThrough: continuity?.verifiedThrough || null,
+      checkedAt: continuity?.checkedAt || null,
+      reasonCode: continuity?.reasonCode || history.cache.reason || null,
+    };
+  });
+  return json({
+    ok: true,
+    bounds: { limit: 8, concurrency: 2, candidateRows: 128 },
+    cursor: typeof body.cursor === "string" ? body.cursor : null,
+    nextCursor: planned.nextCursor,
+    remaining: planned.remaining,
+    counts: {
+      attempted: items.length,
+      complete: items.filter((item) => item.status === "complete").length,
+      partial: items.filter((item) => item.status === "partial").length,
+      unknown: items.filter((item) => item.status === "unknown").length,
+      failed: items.filter((item) => item.status === "failed").length,
+    },
+    items,
+  });
+}
+
 export async function handleAppRequest(request: Request, env: Env, context?: AppExecutionContext): Promise<Response | null> {
   const url = new URL(request.url); const path = url.pathname;
   const personalPath = path === "/api/instruments"
@@ -2468,8 +2734,9 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
     if (env.DB) await ensureDb(env.DB);
     const river = await peRiverHealth(env.DB);
     const deploymentTarget = deploymentTargetForRequest(request);
-    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: await taiwanStockChipHealth(env), taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
+    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB), continuityAudit: { configured: Boolean(env.DB && env.CANDLE_CONTINUITY_AUDIT_SECRET), batchLimit: 8, concurrency: 2 }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: await taiwanStockChipHealth(env), taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
   }
+  if (path === "/api/internal/candle-continuity-audit" && request.method === "POST") return candleContinuityAuditResponse(request, env);
   if (path === "/api/internal/taiwan-stock-pe-river" && request.method === "POST") return ingestPeRiverMonth(request, env);
   if (path === "/api/internal/pe-river-continuous-backfill" && ["GET", "POST"].includes(request.method)) return peRiverContinuousBackfill(request, env);
   if (path === "/api/internal/tpex-mirror" && request.method === "POST") return ingestTpexMirror(request, env);

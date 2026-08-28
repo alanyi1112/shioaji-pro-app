@@ -7,6 +7,7 @@ import {
   parseTdccHistoryForm,
   parseTdccHistoryResult,
   parseRunnerArgs,
+  runContinuousBackfill,
   safeChipWarmReason,
   safeContinuousRunnerError,
   selectOfficialDates,
@@ -111,6 +112,31 @@ test("continuous runner 不接受固定 symbol，並限制 claim 與總時間", 
   assert.throws(() => parseRunnerArgs(["--continuous", "--claim-limit=5"]), /claim-limit/);
   assert.throws(() => parseRunnerArgs(["--continuous", "--chip-warm-limit=41"]), /chip-warm-limit/);
   assert.throws(() => parseRunnerArgs(["--continuous", "--max-run-ms=30000"]), /max-run-ms/);
+});
+
+test("history-only runner 在 queue probe 無工作時不建立 run、claim 或 TDCC 歷史 session", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSecret = process.env.TDCC_CONTINUOUS_BACKFILL_SECRET;
+  process.env.TDCC_CONTINUOUS_BACKFILL_SECRET = "test-only-secret";
+  const calls = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = String(input);
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    calls.push({ url, body });
+    if (url.endsWith("/api/internal/tdcc-continuous-backfill") && !body) return Response.json({ ok: true, historyAutomationEnabled: true });
+    if (body?.action === "queue-probe") return Response.json({ ok: true, queue: { shouldRun: false, runnableTargets: 0 } });
+    throw new Error("unexpected_source_request");
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalSecret === undefined) delete process.env.TDCC_CONTINUOUS_BACKFILL_SECRET;
+    else process.env.TDCC_CONTINUOUS_BACKFILL_SECRET = originalSecret;
+  });
+  const options = parseRunnerArgs(["--continuous", "--history-only", "--site-url=http://127.0.0.1:5174", "--run-id=noop-run"]);
+  const result = await runContinuousBackfill(options);
+  assert.equal(result.noOp, true);
+  assert.deepEqual(calls.map((call) => call.body?.action || "control"), ["control", "queue-probe"]);
+  assert.equal(calls.some((call) => call.url.includes("www.tdcc.com.tw")), false);
 });
 
 test("continuous runner log error 只保留 allowlist，不外洩秘密或頁面內容", () => {

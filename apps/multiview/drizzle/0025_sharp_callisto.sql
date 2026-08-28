@@ -1,0 +1,1 @@
+ALTER TABLE `tdcc_backfill_dispatches` ADD `deployment_target` text DEFAULT 'unknown' NOT NULL;

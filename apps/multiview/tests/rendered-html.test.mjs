@@ -1298,17 +1298,22 @@ test("台股官方核對會對齊交易日、重用全市場資料並保持 stre
         }] },
       }] } });
     }
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "很抱歉，沒有符合條件的資料!" });
     if (url.hostname === "www.twse.com.tw") {
       officialCalls.twse += 1;
       assert.equal(url.searchParams.get("date"), "20260709");
       assert.equal(url.searchParams.get("type"), "ALLBUT0999");
       await new Promise((resolve) => setTimeout(resolve, 20));
       return Response.json(twseMiIndexFixture({
-        fields: ["收盤價", "證券名稱", "證券代號"],
-        rows: [["100.00", "台積電", "2330"], ["50.00", "鴻海", "2317"]],
+        fields: ["證券代號", "證券名稱", "成交股數", "開盤價", "最高價", "最低價", "收盤價"],
+        rows: [
+          ["2330", "台積電", "1,200", "100.00", "100.00", "100.00", "100.00"],
+          ["2317", "鴻海", "1,300", "50.00", "50.00", "50.00", "50.00"],
+        ],
       }));
     }
     if (url.hostname === "openapi.twse.com.tw") throw new Error(`unexpected TWSE OpenAPI fallback ${url}`);
+    if (url.pathname.endsWith("/afterTrading/tradingStock")) return Response.json({ tables: [] });
     if (url.hostname === "www.tpex.org.tw") {
       officialCalls.tpex += 1;
       return new Response("unavailable", { status: 503 });
@@ -1331,11 +1336,18 @@ test("台股官方核對會對齊交易日、重用全市場資料並保持 stre
     const [tsmc, honHai] = await Promise.all([requestCandles("2330.TW"), requestCandles("2317.TW")]);
     assert.equal(officialCalls.twse, 1);
     assert.equal(tsmc.quote.verification.status, "verified");
+    assert.equal(tsmc.quote.verification.scope, "ohlcv");
+    assert.deepEqual(tsmc.quote.verification.fieldResults, { open: "match", high: "match", low: "match", close: "match", volume: "match" });
     assert.equal(tsmc.quote.verification.provider, "twse");
     assert.equal(tsmc.quote.verification.referenceSessionDate, "2026-07-09");
     assert.match(tsmc.quote.verification.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(honHai.quote.verification.status, "verified");
-    assert.deepEqual(tsmc.dataQuality, { ignoredSessionDates: ["2026-07-10"], reason: "zero_volume_flat_carry_forward" });
+    assert.equal(honHai.quote.verification.scope, "close");
+    assert.deepEqual(honHai.quote.verification.mismatchFields, ["volume"]);
+    assert.deepEqual(honHai.dataQuality.verificationMismatchFields, ["volume"]);
+    assert.deepEqual(tsmc.dataQuality.ignoredSessionDates, ["2026-07-10"]);
+    assert.equal(tsmc.dataQuality.reason, "zero_volume_flat_carry_forward");
+    assert.equal(tsmc.dataQuality.continuity.status, "unknown");
     assert.deepEqual(tsmc.quote.dataQuality, tsmc.dataQuality);
     assert.equal(new Date(tsmc.candles.at(-1).time * 1000).toISOString().slice(0, 10), "2026-07-09");
 
@@ -1390,6 +1402,7 @@ test("TWSE MI_INDEX 尚未發布時維持 pending，且共用 negative cache、�
         indicators: { quote: [{ open: [close - 1, close, close], high: [close, close, close], low: [close - 1, close, close], close: [close - 0.5, close, close], volume: [1000, 1200, 0] }] },
       }] } });
     }
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "很抱歉，沒有符合條件的資料!" });
     if (url.hostname === "www.twse.com.tw") {
       calls.miIndex += 1;
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1431,6 +1444,7 @@ test("TWSE MI_INDEX HTTP 失敗時先使用 tse MIS，不會越級呼叫 STOCK_D
         indicators: { quote: [{ open: [99, 100, 100], high: [100, 100, 100], low: [99, 100, 100], close: [99.5, 100, 100], volume: [1000, 1200, 0] }] },
       }] } });
     }
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "很抱歉，沒有符合條件的資料!" });
     if (url.hostname === "www.twse.com.tw") {
       calls.miIndex += 1;
       return new Response("unavailable", { status: 503 });
@@ -1468,6 +1482,7 @@ test("TWSE MI_INDEX 回傳日期不同時不得直接比較", async () => {
         indicators: { quote: [{ open: [99, 100, 100], high: [100, 100, 100], low: [99, 100, 100], close: [99.5, 100, 100], volume: [1000, 1200, 0] }] },
       }] } });
     }
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "很抱歉，沒有符合條件的資料!" });
     if (url.hostname === "www.twse.com.tw") {
       return Response.json(twseMiIndexFixture({ date: "20260708", rows: [["2330", "100.00"]] }));
     }
@@ -1500,6 +1515,7 @@ test("TWSE MI_INDEX 格式錯誤且 MIS 失敗時，最後以 STOCK_DAY_ALL 保�
         indicators: { quote: [{ open: [49, 50, 50], high: [50, 50, 50], low: [49, 50, 50], close: [49.5, 50, 50], volume: [1000, 1200, 0] }] },
       }] } });
     }
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "很抱歉，沒有符合條件的資料!" });
     if (url.hostname === "www.twse.com.tw") {
       calls.miIndex += 1;
       return Response.json({ stat: "OK", date: "20260709", tables: "malformed" });
@@ -1542,6 +1558,7 @@ test("TWSE 無成交、空值與非有限收盤價不會誤報 mismatch", async 
         indicators: { quote: [{ open: [close - 1, close, close], high: [close, close, close], low: [close - 1, close, close], close: [close - 0.5, close, close], volume: [1000, 1200, 0] }] },
       }] } });
     }
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "很抱歉，沒有符合條件的資料!" });
     if (url.hostname === "www.twse.com.tw") {
       miIndexCalls += 1;
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1572,16 +1589,17 @@ test("TWSE 無成交、空值與非有限收盤價不會誤報 mismatch", async 
   }
 });
 
-test("報價狀態會直接顯示已核對並套用 verified 樣式", async () => {
+test("報價狀態會依 scope 顯示收盤或 OHLCV 已核對並套用 verified 樣式", async () => {
   const [appScript, styles] = await Promise.all([
     readFile(new URL("../public/static/app.js", import.meta.url), "utf8"),
     readFile(new URL("../public/static/styles.css", import.meta.url), "utf8"),
   ]);
-  assert.match(appScript, /`\$\{base\}・已核對`/);
+  assert.match(appScript, /"OHLCV 已核對"/);
+  assert.match(appScript, /"收盤已核對"/);
   assert.match(appScript, /盤中顯示主來源資料時間，收盤後才進行第二來源核對/);
   assert.match(appScript, /盤中・時間待確認/);
   assert.match(appScript, /MultiChartQuoteDisplayState\?\.isTaiwanMarketClosedDay\(value\)/);
-  assert.match(appScript, /full: `\$\{base\}・休市`/);
+  assert.match(appScript, /verification === "verified" \? `\$\{base\}・\$\{verificationScopeLabel\}・休市`/);
   assert.match(appScript, /verification === "verified" \? "verified" : "closed"/);
   const quoteStateBlock = appScript.slice(appScript.indexOf("function formatQuoteDataState"), appScript.indexOf("function formatQuoteVerificationTitle"));
   assert.equal(quoteStateBlock.indexOf('freshness === "stale"') < quoteStateBlock.indexOf("if (marketClosed)"), true);
@@ -1663,6 +1681,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(indexHtml, /<option value="3">3<\/option>/);
   assert.match(indexHtml, /<span>主副圖<\/span>[\s\S]*?<option value="main">主圖<\/option>[\s\S]*?<option value="single" selected>單一副圖<\/option>[\s\S]*?<option value="multi">多層副圖<\/option>/);
   assert.match(indexHtml, /<div class="volume-availability-note" role="note" hidden><\/div>/);
+  assert.match(indexHtml, /<div class="candle-continuity-note" role="note" hidden><\/div>/);
   assert.doesNotMatch(indexHtml, /A 單一副圖|B 多層副圖|chip-mode-note|1～3 圖可/);
   assert.match(appScript, /CHART_COUNTS = \[1, 2, 3, 4, 6, 8\]/);
   assert.match(appScript, /3: "grid-3"/);
@@ -1688,7 +1707,8 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(appScript, /6／8 圖固定使用單一副圖/);
   assert.match(appScript, /availability\?\.reason === "source_not_provided"/);
   assert.match(appScript, /updateVolumeAvailability\(\{ quote: event\.quote \}, selectedMain\.has\("volume"\)\)/);
-  assert.match(styles, /\.volume-availability-note\s*\{[^}]*bottom: 28px;[^}]*z-index: 8;[^}]*pointer-events: none;/s);
+  assert.match(styles, /\.volume-availability-note,\s*\.candle-continuity-note\s*\{[^}]*bottom: 28px;[^}]*z-index: 8;[^}]*pointer-events: none;/s);
+  assert.match(appScript, /日 K 資料不完整（缺 \$\{visibleMissingDates\.length\} 個交易日）/);
   assert.match(styles, /\.chip-mode-control select:disabled\s*\{[^}]*color: #64748b;[^}]*cursor: not-allowed;[^}]*opacity: 0\.72;/s);
   assert.match(indexHtml, /<details class="indicator-menu sub-indicator-menu">[\s\S]*?<legend><span>技術指標<\/span>[\s\S]*?<legend>籌碼資料<\/legend>[\s\S]*?<\/details>/);
   assert.doesNotMatch(indexHtml, /chip-indicator-menu|<summary>籌碼<\/summary>/);
