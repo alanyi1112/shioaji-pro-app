@@ -61,6 +61,17 @@ async function auditRepresentatives() {
   const items = [];
   const acceptance = [];
   for (const symbol of representativeSymbols) {
+    let responseAcceptance = null;
+    try {
+      responseAcceptance = await requestAcceptance(symbol);
+    } catch (error) {
+      if (!/^http_5\d\d_/.test(String(error instanceof Error ? error.message : error))) throw error;
+    }
+    if (responseAcceptance) {
+      acceptance.push(responseAcceptance);
+      items.push(auditItemFromAcceptance(responseAcceptance));
+      continue;
+    }
     let last = null;
     for (let attempt = 1; attempt <= 6; attempt += 1) {
       const response = await requestJson("/api/internal/candle-continuity-audit", {
@@ -83,19 +94,36 @@ async function auditRepresentatives() {
       await new Promise((resolve) => setTimeout(resolve, 3_000));
     }
     if (items.at(-1)?.symbol !== symbol) throw new Error(`audit_incomplete_${String(last?.reasonCode || "unknown")}`);
-    const response = await requestJson("/api/internal/candle-continuity-audit", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${auditSecret}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ symbols: [symbol], limit: 1, acceptance: true }),
-    });
-    const responseAcceptance = Array.isArray(response.acceptance) ? response.acceptance : response.acceptance ? [response.acceptance] : [];
-    if (!response.ok || responseAcceptance.length !== 1 || responseAcceptance[0].symbol !== symbol) throw new Error("acceptance_contract_failed");
-    acceptance.push(responseAcceptance[0]);
+    responseAcceptance = await requestAcceptance(symbol);
+    acceptance.push(responseAcceptance);
   }
   return { items, acceptance };
+}
+
+async function requestAcceptance(symbol) {
+  const response = await requestJson("/api/internal/candle-continuity-audit", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${auditSecret}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ symbols: [symbol], limit: 1, acceptance: true }),
+  });
+  const values = Array.isArray(response.acceptance) ? response.acceptance : response.acceptance ? [response.acceptance] : [];
+  if (!response.ok || values.length !== 1 || values[0].symbol !== symbol) throw new Error("acceptance_contract_failed");
+  return values[0];
+}
+
+function auditItemFromAcceptance(acceptance) {
+  const evidence = acceptance?.display320?.repeat;
+  return {
+    symbol: acceptance?.symbol,
+    status: evidence?.continuityStatus,
+    missingSessionCount: Number(evidence?.missingSessionCount) || 0,
+    verifiedThrough: evidence?.verifiedThrough || null,
+    checkedAt: evidence?.checkedAt || null,
+    reasonCode: evidence?.continuityStatus === "complete" ? null : "continuity_unverified",
+  };
 }
 
 function assertCandleEvidence(evidence, displayCount) {

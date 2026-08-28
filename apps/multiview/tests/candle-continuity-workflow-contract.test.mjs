@@ -61,6 +61,8 @@ test("代表性驗收固定大立光、上櫃、ETF 與新加入商品並核對 
   assert.match(acceptance, /for \(const symbol of representativeSymbols\)/);
   assert.match(acceptance, /symbols: \[symbol\], limit: 1/);
   assert.match(acceptance, /acceptancePreparation: true/);
+  assert.match(acceptance, /responseAcceptance = await requestAcceptance\(symbol\)/);
+  assert.match(acceptance, /auditItemFromAcceptance\(responseAcceptance\)/);
   assert.match(acceptance, /display160\.first/);
   assert.match(acceptance, /display160\.repeat/);
   assert.match(acceptance, /display320\.first/);

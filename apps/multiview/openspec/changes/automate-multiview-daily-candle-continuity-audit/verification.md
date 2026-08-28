@@ -30,6 +30,7 @@
 - Sites workflow run `33180278323` 已完成 durable 稽核：`target=51`、`processed=51`、`remaining=0`、`complete=40`、`unknown=11`、`failed=0`、`overdue=0`，protected health 並回報精確 commit `17df78844c166c1a46b65fdf657ba7eac7d83028`。後續代表性 acceptance 的首個請求因 `5483.TWO`、`4768.TWO` 不在 Sites 當日 target snapshot 而被舊驗證規則以 `HTTP 400` 拒絕；已將 acceptance 與 durable target eligibility 分離，普通稽核仍不得擴張 target set。
 - Sites v195 雖綁定 `f1aedbe96eaffdb335ca5a55c6006946fd64747d`，首次封裝卻沿用修正前的既有 `dist`；該 saved version 為 immutable，不能以相同 commit 覆蓋。已在重新執行 `npm run build`、確認 `dist/server/index.js` 含 acceptance normalization 後建立新 commit 與新 saved version，避免把環境變數中的 SHA 誤當成 bundle 證據。
 - Sites v196 的 4 檔 acceptance 已通過 payload eligibility，但同一 HTTP request 同時稽核 4 檔並建立 160／320 首次與重複快照，於 90 秒硬 timeout 中止。驗收 runner 已改為逐檔 request；每檔仍核對完整 acceptance contract 與 cache reuse，並保留單次 request 的 90 秒上限。
+- 正式 D1 已完整的代表商品不應再被上游暫時不可用阻擋；runner 因此先做 D1-only acceptance，只有 D1 證據不足的 5xx 才啟動 preparation 回補，並在回補後重新執行相同嚴格 acceptance。
 - Sites v197、v198 進一步證明即使逐檔，若同一 request 同時負責回補與 stale payload 刷新，第一檔仍可能超過 90 秒。最終路徑把普通 audit 與 D1-only acceptance 分成兩個 request，避免 acceptance 再觸發 history 網路刷新；不足 320 rows 或 continuity 非 complete 時直接 fail closed。
 
 ## 自動驗證

@@ -36,7 +36,7 @@ workflow 只送出 `orchestrator-start`、重複 `orchestrator-tick`，必要時
 
 代表性 acceptance 是獨立、已授權的內部驗收路徑：最多可指定 4 檔格式合法的台股上市／上櫃 symbol，即使其中某檔不在該環境當日 target snapshot，仍可核對新加入商品情境；此例外不得寫入或擴張 durable target set，普通批次稽核仍只能接受當日已啟用商品。
 
-驗收 runner 將每檔 `acceptancePreparation` audit／回補與 acceptance 拆成兩個有界 request。此受保護 preparation 最多只接受 4 檔合法台股，允許準備不在當日 target snapshot 的代表商品但不寫入 durable target。acceptance 只讀已持久化的 `candle_history`／`candle_history_state`，最新收盤核對每檔只執行一次，再以相同核對結果分別產生 `display160.first/repeat` 與 `display320.first/repeat`；repeat 仍重新讀取 D1 並證明 cache hit。逐商品 item 以 `display320.repeat` 的 continuity 摘要產生。一般 audit 與每日 durable run 的 target 限制不受此驗收模式影響。
+驗收 runner 每檔先執行 D1-only acceptance；已有完整 `candle_history`／`candle_history_state` 時不再依賴當下上游可用性。只有 D1 證據不足並回覆 5xx 時，才以獨立有界 request 執行 `acceptancePreparation` audit／回補後重試 acceptance。此受保護 preparation 最多只接受 4 檔合法台股，允許準備不在當日 target snapshot 的代表商品但不寫入 durable target。acceptance 最新收盤核對每檔只執行一次，再以相同核對結果分別產生 `display160.first/repeat` 與 `display320.first/repeat`；repeat 仍重新讀取 D1 並證明 cache hit。逐商品 item 以 `display320.repeat` 的 continuity 摘要產生。一般 audit 與每日 durable run 的 target 限制不受此驗收模式影響。
 
 1. 新加入或 `continuity_checked_at` 為空。
 2. 已確認缺口或 missing count 大於零。
