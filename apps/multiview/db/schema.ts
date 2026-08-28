@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const userTabs = sqliteTable("user_tabs", {
@@ -131,6 +131,65 @@ export const candleHistoryState = sqliteTable("candle_history_state", {
 }, (table) => [
   primaryKey({ columns: [table.provider, table.symbol, table.interval] }),
   index("candle_history_state_retry_idx").on(table.status, table.retryAfter),
+]);
+
+export const candleContinuityRuns = sqliteTable("candle_continuity_runs", {
+  runId: text("run_id").primaryKey(),
+  deploymentTarget: text("deployment_target", { enum: ["sites", "cloudflare", "local"] }).notNull(),
+  trigger: text("trigger", { enum: ["schedule", "workflow_dispatch", "local"] }).notNull(),
+  commitSha: text("commit_sha"),
+  expectedSession: text("expected_session").notNull(),
+  slaCheckpoint: text("sla_checkpoint").notNull(),
+  status: text("status", { enum: ["running", "retry_waiting", "completed", "failed"] }).notNull().default("running"),
+  phase: text("phase", { enum: ["audit", "waiting", "completed", "failed"] }).notNull().default("audit"),
+  cursor: integer("cursor").notNull().default(0),
+  targetCount: integer("target_count").notNull().default(0),
+  processedCount: integer("processed_count").notNull().default(0),
+  remainingCount: integer("remaining_count").notNull().default(0),
+  completeCount: integer("complete_count").notNull().default(0),
+  partialCount: integer("partial_count").notNull().default(0),
+  unknownCount: integer("unknown_count").notNull().default(0),
+  failedCount: integer("failed_count").notNull().default(0),
+  overdueCount: integer("overdue_count").notNull().default(0),
+  heartbeatAt: text("heartbeat_at").notNull(),
+  reasonCode: text("reason_code"),
+  startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("candle_continuity_runs_target_recent_idx").on(table.deploymentTarget, table.updatedAt),
+  index("candle_continuity_runs_status_idx").on(table.status, table.heartbeatAt),
+  check("candle_continuity_runs_target_check", sql`${table.deploymentTarget} in ('sites','cloudflare','local')`),
+  check("candle_continuity_runs_trigger_check", sql`${table.trigger} in ('schedule','workflow_dispatch','local')`),
+  check("candle_continuity_runs_status_check", sql`${table.status} in ('running','retry_waiting','completed','failed')`),
+  check("candle_continuity_runs_phase_check", sql`${table.phase} in ('audit','waiting','completed','failed')`),
+]);
+
+export const candleContinuityRunItems = sqliteTable("candle_continuity_run_items", {
+  runId: text("run_id").notNull().references(() => candleContinuityRuns.runId, { onDelete: "cascade" }),
+  symbol: text("symbol").notNull(),
+  ordinal: integer("ordinal").notNull(),
+  priority: integer("priority").notNull(),
+  status: text("status", { enum: ["queued", "running", "retry_waiting", "fresh", "complete", "partial", "unknown", "failed", "overdue"] }).notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  leaseOwner: text("lease_owner"),
+  leaseExpiresAt: text("lease_expires_at"),
+  retryAfter: text("retry_after"),
+  coverageEnd: text("coverage_end"),
+  verifiedThrough: text("verified_through"),
+  missingSessionCount: integer("missing_session_count").notNull().default(0),
+  checkedAt: text("checked_at"),
+  reasonCode: text("reason_code"),
+  completedAt: text("completed_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.symbol] }),
+  uniqueIndex("candle_continuity_run_items_ordinal_idx").on(table.runId, table.ordinal),
+  index("candle_continuity_run_items_queue_idx").on(table.runId, table.status, table.priority, table.ordinal, table.retryAfter, table.leaseExpiresAt),
+  index("candle_continuity_run_items_anomaly_idx").on(table.runId, table.status, table.priority, table.symbol),
+  check("candle_continuity_run_items_status_check", sql`${table.status} in ('queued','running','retry_waiting','fresh','complete','partial','unknown','failed','overdue')`),
 ]);
 
 export const instrumentCatalog = sqliteTable("instrument_catalog", {

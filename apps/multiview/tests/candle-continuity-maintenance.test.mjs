@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  normalizeCandleContinuityAcceptanceSymbols,
   CANDLE_CONTINUITY_AUDIT_BATCH_LIMIT,
   planCandleContinuityAuditBatch,
   runCandleContinuityAuditBatch,
   summarizeCandleContinuityAcceptance,
 } from "../worker/candle-continuity-maintenance.ts";
+
+test("正式 acceptance 可驗證未列入當日 target 的有效台股代表商品，但拒絕重複或非台股 symbol", () => {
+  assert.deepEqual(normalizeCandleContinuityAcceptanceSymbols(["3008.tw", "5483.TWO", "0050.TW", "4768.TWO"]), ["3008.TW", "5483.TWO", "0050.TW", "4768.TWO"]);
+  assert.deepEqual(normalizeCandleContinuityAcceptanceSymbols(["3008.TW", "3008.TW"]), []);
+  assert.deepEqual(normalizeCandleContinuityAcceptanceSymbols(["AAPL"]), []);
+});
 
 test("批次稽核只接受啟用台股、去重、排序並限制每輪八檔", () => {
   const planned = planCandleContinuityAuditBatch([
@@ -58,7 +65,7 @@ test("正式驗收摘要只公開有界日期、continuity、cache 與核對 sco
       { time: Date.parse("2026-08-03T01:00:00Z") / 1000, open: 2, high: 3, low: 2, close: 3, volume: 20 },
       { time: Date.parse("2026-08-17T01:00:00Z") / 1000, open: 3, high: 4, low: 3, close: 4, volume: 30 },
     ],
-    dataWindow: { cache: { state: "hit", store: "d1", continuity: { status: "complete", missingSessionCount: 0, verifiedThrough: "2026-08-17" } } },
+    dataWindow: { cache: { state: "hit", store: "d1", continuity: { status: "complete", missingSessionCount: 0, verifiedThrough: "2026-08-17", checkedAt: "2026-08-17T08:00:00.000Z" } } },
     quote: { verification: { status: "verified", scope: "ohlcv" } },
   }, { from: "2026-08-01", through: "2026-08-16" });
   assert.deepEqual(summary, {
@@ -72,6 +79,7 @@ test("正式驗收摘要只公開有界日期、continuity、cache 與核對 sco
     continuityStatus: "complete",
     missingSessionCount: 0,
     verifiedThrough: "2026-08-17",
+    checkedAt: "2026-08-17T08:00:00.000Z",
     verificationStatus: "verified",
     verificationScope: "ohlcv",
   });

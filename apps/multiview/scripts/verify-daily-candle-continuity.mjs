@@ -19,6 +19,8 @@ const auditSecret = String(process.env.CANDLE_CONTINUITY_AUDIT_SECRET || "");
 const sitesBypassToken = String(process.env.SITES_BYPASS_TOKEN || "");
 const cloudflareClientId = String(process.env.CLOUDFLARE_ACCESS_CLIENT_ID || "");
 const cloudflareClientSecret = String(process.env.CLOUDFLARE_ACCESS_CLIENT_SECRET || "");
+const representativeSymbols = String(process.env.CANDLE_CONTINUITY_REPRESENTATIVE_SYMBOLS || "3008.TW,5483.TWO,0050.TW,4768.TWO")
+  .split(",").map((value) => value.trim().toUpperCase()).filter(Boolean);
 
 if (!siteUrl || !["sites", "cloudflare"].includes(target) || !auditSecret) {
   throw new Error("protected_configuration_missing");
@@ -41,32 +43,59 @@ async function requestJson(path, init = {}) {
     headers: { ...accessHeaders, ...(init.headers || {}) },
     signal: AbortSignal.timeout(90_000),
   });
-  if (!response.ok) throw new Error(`http_${response.status}`);
+  if (!response.ok) {
+    const failure = await response.json().catch(() => ({}));
+    const reason = typeof failure?.reasonCode === "string" ? failure.reasonCode : "unknown";
+    throw new Error(`http_${response.status}_${reason}`);
+  }
   const payload = await response.json();
   if (!payload || typeof payload !== "object") throw new Error("invalid_payload");
   return payload;
 }
 
-async function auditLargan() {
-  let last = null;
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
+if (representativeSymbols.length !== 4 || !representativeSymbols.includes("3008.TW") || !representativeSymbols.some((symbol) => symbol.endsWith(".TWO"))) {
+  throw new Error("representative_symbols_invalid");
+}
+
+async function auditRepresentatives() {
+  const items = [];
+  const acceptance = [];
+  for (const symbol of representativeSymbols) {
+    let last = null;
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      const response = await requestJson("/api/internal/candle-continuity-audit", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${auditSecret}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ symbols: [symbol], limit: 1, acceptancePreparation: true }),
+      });
+      const responseItems = Array.isArray(response.items) ? response.items : [];
+      if (!response.ok || responseItems.length !== 1 || responseItems[0].symbol !== symbol) {
+        throw new Error("audit_contract_failed");
+      }
+      last = responseItems[0];
+      if (last.status === "complete" && Number(last.missingSessionCount) === 0) {
+        items.push(last);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+    if (items.at(-1)?.symbol !== symbol) throw new Error(`audit_incomplete_${String(last?.reasonCode || "unknown")}`);
     const response = await requestJson("/api/internal/candle-continuity-audit", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${auditSecret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ cursor: "3007.TW", limit: 1, acceptance: true }),
+      body: JSON.stringify({ symbols: [symbol], limit: 1, acceptance: true }),
     });
-    const item = Array.isArray(response.items) ? response.items[0] : null;
-    if (!response.ok || item?.symbol !== "3008.TW") throw new Error("audit_contract_failed");
-    last = item;
-    if (item.status === "complete" && Number(item.missingSessionCount) === 0 && response.acceptance?.symbol === "3008.TW") {
-      return { item, acceptance: response.acceptance };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    const responseAcceptance = Array.isArray(response.acceptance) ? response.acceptance : response.acceptance ? [response.acceptance] : [];
+    if (!response.ok || responseAcceptance.length !== 1 || responseAcceptance[0].symbol !== symbol) throw new Error("acceptance_contract_failed");
+    acceptance.push(responseAcceptance[0]);
   }
-  throw new Error(`audit_incomplete_${String(last?.reasonCode || last?.status || "unknown")}`);
+  return { items, acceptance };
 }
 
 function assertCandleEvidence(evidence, displayCount) {
@@ -89,12 +118,18 @@ function assertCandleEvidence(evidence, displayCount) {
   };
 }
 
-const audit = await auditLargan();
-const summary160 = assertCandleEvidence(audit.acceptance.display160.first, 160);
-const reused160 = assertCandleEvidence(audit.acceptance.display160.repeat, 160);
-const summary320 = assertCandleEvidence(audit.acceptance.display320.first, 320);
-const reused320 = assertCandleEvidence(audit.acceptance.display320.repeat, 320);
-if (reused160.cacheState !== "hit" || reused320.cacheState !== "hit") throw new Error("cache_not_reused");
+const audit = await auditRepresentatives();
+const evidenceBySymbol = new Map();
+for (const acceptance of audit.acceptance) {
+  const summary160 = assertCandleEvidence(acceptance.display160.first, 160);
+  const reused160 = assertCandleEvidence(acceptance.display160.repeat, 160);
+  const summary320 = assertCandleEvidence(acceptance.display320.first, 320);
+  const reused320 = assertCandleEvidence(acceptance.display320.repeat, 320);
+  if (reused160.cacheState !== "hit" || reused320.cacheState !== "hit") throw new Error(`cache_not_reused_${acceptance.symbol}`);
+  evidenceBySymbol.set(acceptance.symbol, { summary160, reused160, summary320, reused320 });
+}
+const largan = audit.items.find((item) => item.symbol === "3008.TW");
+const larganEvidence = evidenceBySymbol.get("3008.TW");
 
 const health = await requestJson("/api/health");
 const expectedHealthTarget = target === "sites" ? "codex-sites" : "cloudflare";
@@ -108,15 +143,15 @@ if (healthItem?.continuityStatus !== "complete" || Number(healthItem?.missingSes
 
 console.log([
   `daily-candle-acceptance target=${target}`,
-  `symbol=3008.TW`,
-  `audit=${audit.item.status}`,
-  `missing=${audit.item.missingSessionCount}`,
-  `verifiedThrough=${audit.item.verifiedThrough}`,
+  `symbols=${representativeSymbols.join(",")}`,
+  `audit=${audit.items.map((item) => `${item.symbol}:${item.status}`).join(",")}`,
+  `missing=${audit.items.reduce((sum, item) => sum + Number(item.missingSessionCount || 0), 0)}`,
+  `verifiedThrough=${largan?.verifiedThrough}`,
   `dates=${REQUIRED_DATES.length}`,
-  `range160=${summary160.first}:${summary160.last}:${summary160.count}`,
-  `cache160=${reused160.cacheState}/${reused160.cacheStore}`,
-  `range320=${summary320.first}:${summary320.last}:${summary320.count}`,
-  `cache320=${reused320.cacheState}/${reused320.cacheStore}`,
-  `verification=${reused320.verificationScope}`,
+  `range160=${larganEvidence.summary160.first}:${larganEvidence.summary160.last}:${larganEvidence.summary160.count}`,
+  `cache160=${larganEvidence.reused160.cacheState}/${larganEvidence.reused160.cacheStore}`,
+  `range320=${larganEvidence.summary320.first}:${larganEvidence.summary320.last}:${larganEvidence.summary320.count}`,
+  `cache320=${larganEvidence.reused320.cacheState}/${larganEvidence.reused320.cacheStore}`,
+  `verification=${larganEvidence.reused320.verificationScope}`,
   `health=${healthItem.continuityStatus}`,
 ].join(" "));

@@ -27,6 +27,7 @@
     "sites:prepare-archive": "node scripts/prepare-sites-archive.mjs",
     "tdcc:backfill": "node scripts/tdcc-history-backfill.mjs",
     "tdcc:continuous": "node scripts/tdcc-history-backfill.mjs --continuous",
+    "candle-continuity:run": "node scripts/candle-continuity-runner.mjs",
     "pe-river:continuous": "node scripts/pe-river-continuous-backfill.mjs",
     "personal-data:migrate": "node scripts/migrate-personal-data.mjs",
     "gateway:test": "cd gateway && PYTHONPATH=src uv run --frozen python -m unittest discover -s tests -v",

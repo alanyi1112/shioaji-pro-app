@@ -162,8 +162,14 @@ test("長區間每次最多六個官方網路請求，後續稽核利用月快�
   ];
   const rows = monthRows.flatMap((dates) => dates.map((date) => historyRow(date)));
   let calls = 0;
+  let activeCalls = 0;
+  let maximumActiveCalls = 0;
   const fetchImpl = async (url) => {
     calls += 1;
+    activeCalls += 1;
+    maximumActiveCalls = Math.max(maximumActiveCalls, activeCalls);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    activeCalls -= 1;
     const month = new URL(url).searchParams.get("date").slice(0, 6);
     const dates = monthRows[Number(month.slice(4, 6)) - 1];
     return Response.json({
@@ -190,10 +196,25 @@ test("長區間每次最多六個官方網路請求，後續稽核利用月快�
   assert.equal(first.reasonCode, "audit_request_budget");
   assert.equal(first.officialRequests, 6);
   assert.equal(calls, 6);
+  assert.equal(maximumActiveCalls, 2);
 
   const second = await auditTaiwanDailyContinuity({ ...input, now: new Date("2026-07-08T08:01:00Z") });
   assert.equal(second.status, "complete");
   assert.equal(second.verifiedThrough, "2026-07-08");
   assert.equal(second.officialRequests, 1);
   assert.equal(calls, 7);
+
+  clearTaiwanDailyContinuityRuntimeState();
+  calls = 0;
+  maximumActiveCalls = 0;
+  const boundedFirst = await auditTaiwanDailyContinuity({ ...input, maxOfficialMonths: 4 });
+  assert.equal(boundedFirst.status, "unknown");
+  assert.equal(boundedFirst.reasonCode, "audit_request_budget");
+  assert.equal(boundedFirst.officialRequests, 4);
+  assert.equal(calls, 4);
+  const boundedSecond = await auditTaiwanDailyContinuity({ ...input, maxOfficialMonths: 4, now: new Date("2026-07-08T08:01:00Z") });
+  assert.equal(boundedSecond.status, "complete");
+  assert.equal(boundedSecond.officialRequests, 3);
+  assert.equal(calls, 7);
+  assert.equal(maximumActiveCalls, 2);
 });

@@ -1,0 +1,39 @@
+name: Sites daily candle continuity
+
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sites-daily-candle-continuity
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    if: github.event_name == 'workflow_dispatch' || vars.SITES_CANDLE_CONTINUITY_SCHEDULE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_URL: https://quote-chart-multiview.alanyi1112.chatgpt.site
+      DEPLOYMENT_TARGET: sites
+      RUN_ID: sites-gha-${{ github.run_id }}-${{ github.run_attempt }}
+      SITES_BYPASS_TOKEN: ${{ secrets.SITES_BYPASS_TOKEN }}
+      CANDLE_CONTINUITY_AUDIT_SECRET: ${{ secrets.SITES_CANDLE_CONTINUITY_AUDIT_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify protected configuration
+        shell: bash
+        run: |
+          test -n "$SITES_BYPASS_TOKEN"
+          test -n "$CANDLE_CONTINUITY_AUDIT_SECRET"
+      - name: Run durable continuity audit
+        run: node scripts/candle-continuity-runner.mjs
+      - name: Verify representative candle evidence
+        run: node scripts/verify-daily-candle-continuity.mjs

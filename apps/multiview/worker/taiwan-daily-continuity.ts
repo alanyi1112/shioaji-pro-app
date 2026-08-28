@@ -300,6 +300,7 @@ export async function auditTaiwanDailyContinuity(input: {
   expectedThrough: string | null;
   now?: Date;
   fetchImpl?: typeof fetch;
+  maxOfficialMonths?: number;
 }): Promise<TaiwanContinuityAudit> {
   const now = input.now ?? new Date();
   const normalizedRows = [...input.rows].sort((left, right) => left.time - right.time);
@@ -317,17 +318,20 @@ export async function auditTaiwanDailyContinuity(input: {
     return { ...base, status: "complete", verifiedThrough: checkedThrough, repairRows: [], candidateMonths: [], officialRequests: 0 };
   }
   const allMonths = [...new Set(candidateDates.map((date) => date.slice(0, 7)))].sort();
-  const requestBudget = { remaining: TAIWAN_CONTINUITY_MAX_MONTHS_PER_REQUEST, used: 0 };
+  const requestBudget = {
+    remaining: Math.max(1, Math.min(TAIWAN_CONTINUITY_MAX_MONTHS_PER_REQUEST, Math.floor(Number(input.maxOfficialMonths) || TAIWAN_CONTINUITY_MAX_MONTHS_PER_REQUEST))),
+    used: 0,
+  };
   const official: TaiwanOfficialMonthResult[] = [];
-  for (const month of allMonths) {
-    const result = await fetchTaiwanOfficialMonth(input.symbol, month, {
+  for (let index = 0; index < allMonths.length; index += 2) {
+    const batch = await Promise.all(allMonths.slice(index, index + 2).map((month) => fetchTaiwanOfficialMonth(input.symbol, month, {
       db: input.db,
       fetchImpl: input.fetchImpl,
       now,
       requestBudget,
-    });
-    official.push(result);
-    if (result.reasonCode === "audit_request_budget") break;
+    })));
+    official.push(...batch);
+    if (batch.some((result) => result.reasonCode === "audit_request_budget")) break;
   }
   const candidateMonths = official.map((result) => result.month);
   const officialRowsByDate = new Map<string, HistoryCandle>();

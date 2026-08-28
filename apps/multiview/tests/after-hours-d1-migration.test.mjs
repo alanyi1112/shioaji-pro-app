@@ -31,23 +31,25 @@ test("data-only export 只接受固定 table allowlist", () => {
   assert.equal(TABLE_ALLOWLIST.length, 12);
 });
 
-test("staging 套用 26 個 migration 並拒絕 schema drift", () => {
+test("staging 套用 27 個 migration 並拒絕 schema drift", () => {
   const directory = workspace();
   const liveDbPath = resolve(directory, "live.sqlite");
   const stagingDbPath = resolve(directory, "staging.sqlite");
   const exportPath = resolve(directory, "export.sql");
-  assert.equal(applyMigrations(liveDbPath), 26);
+  assert.equal(applyMigrations(liveDbPath), 27);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_continuous_symbols');"), /official_plan_through/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_continuous_symbols');"), /coverage_verified_at/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_index_list('tdcc_continuous_symbols');"), /tdcc_continuous_symbols_handoff_idx/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_backfill_dispatches');"), /deployment_target/);
+  assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('candle_continuity_runs');"), /sla_checkpoint/);
+  assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_index_list('candle_continuity_run_items');"), /candle_continuity_run_items_queue_idx/);
   writeFileSync(exportPath, [
     "BEGIN TRANSACTION;",
     "INSERT INTO instrument_catalog (symbol,exchange,localized_name,english_name,aliases_json,normalized_search,market,group_name,quote_type,provider,source,active,source_updated_at,updated_at) VALUES ('TEST.TW','TWSE','測試','Test','[]','test','台股','測試','','yfinance','test',1,'2026-08-06','2026-08-06');",
     "COMMIT;",
   ].join("\n"), { mode: 0o600 });
   const result = stageExport({ exportPath, stagingDbPath, liveDbPath });
-  assert.equal(result.migrationCount, 26);
+  assert.equal(result.migrationCount, 27);
   assert.equal(result.integrity, "ok");
   assert.equal(result.tables.instrument_catalog.rowCount, 1);
   assert.doesNotThrow(() => assertAllowlistSchema(stagingDbPath, liveDbPath));

@@ -45,6 +45,7 @@ export function summarizeCandleContinuityAcceptance(value: unknown, options: Acc
     continuityStatus: String(continuity.status || "unknown"),
     missingSessionCount: Math.max(0, Number(continuity.missingSessionCount) || 0),
     verifiedThrough: typeof continuity.verifiedThrough === "string" ? continuity.verifiedThrough : null,
+    checkedAt: typeof continuity.checkedAt === "string" ? continuity.checkedAt : null,
     verificationStatus: String(verification.status || "unverified"),
     verificationScope: typeof verification.scope === "string" ? verification.scope : null,
   };
@@ -53,6 +54,12 @@ export function summarizeCandleContinuityAcceptance(value: unknown, options: Acc
 function eligibleSymbol(value: unknown) {
   const symbol = String(value || "").trim().toUpperCase();
   return /^\d{4,6}[A-Z]?\.(TW|TWO)$/.test(symbol) ? symbol : "";
+}
+
+export function normalizeCandleContinuityAcceptanceSymbols(values: unknown[]) {
+  const symbols = values.map(eligibleSymbol).filter(Boolean);
+  if (symbols.length < 1 || symbols.length > 4 || new Set(symbols).size !== symbols.length) return [];
+  return symbols;
 }
 
 export function planCandleContinuityAuditBatch(
