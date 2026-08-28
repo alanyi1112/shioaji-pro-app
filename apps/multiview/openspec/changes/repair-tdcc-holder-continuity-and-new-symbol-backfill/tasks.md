@@ -55,4 +55,6 @@
 - [x] 7.1 執行 TDCC schema／behavior／runner、watchlist prewarm、chip panes、local runtime focused tests，並保留逐案例失敗證據。
 - [x] 7.2 執行 `npm test`、`npm run lint`、`npm run build`、OpenSpec strict validation 與 `git diff --check`，確認既有日 K 線 change 與其他 dirty work 未被混入本 change。
 - [x] 7.3 以本機 exact working tree 重啟或重新載入 runtime 前先取得對應授權，確認 watcher／週末 jobs、5174 listener 與既有 simulation-only 邊界；普通驗收不得停止行情或其他服務。
-- [ ] 7.4 Sites 保留站與 Cloudflare 正式站部署、migration、workflow dispatch、D1 repair 及 protected health 必須分別取得授權與逐環境驗證，不以本機或另一個 deployment 的成功代替。
+- [x] 7.4 Sites 保留站與 Cloudflare 正式站部署、migration、workflow dispatch、D1 repair 及 protected health 必須分別取得授權與逐環境驗證，不以本機或另一個 deployment 的成功代替。
+  - Sites 保留站：version 188／deployment `appgdep_6a915d9c170c81918666a8d67f0a7526` 成功，workflow `33162801129` 與 D1 run `gha-33162801129-1` 完成 51／51 targets、0 blocked；3008 包含 `2026-08-14` 與 `2026-08-21`，受保護 control-plane 為 HTTP 200。
+  - Cloudflare 正式站：deploy workflow `33162773812` 通過 migration、exact SHA 與 protected smoke，TDCC workflow `33163313139` 回報 healthy、30／30 targets、0 queued／running／blocked；3008 為 55／55、missing `[]`，包含 `2026-08-14` 與最新 `2026-08-21`。
