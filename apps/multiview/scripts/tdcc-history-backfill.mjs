@@ -8,6 +8,7 @@ import { parseTdccSnapshot } from "../worker/taiwan-stock-chip.ts";
 
 export const TDCC_HISTORY_URL = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock";
 export const TDCC_LATEST_OPEN_DATA_URL = "https://openapi.tdcc.com.tw/v1/opendata/1-5";
+export const CONTROL_PLANE_TIMEOUT_MS = 90000;
 export const TDCC_LISTING_METADATA = Object.freeze({
   "009816.TW": { listingDate: "2026-02-03", sourceUrl: "https://www.twse.com.tw/zh/ETFortune/etfInfo/009816" },
   "009819.TW": { listingDate: "2026-04-23", sourceUrl: "https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69d2e8217019daf567620022f.pdf" },
@@ -272,7 +273,7 @@ async function continuousRequest(siteUrl, body = null) {
     method: body ? "POST" : "GET",
     headers: continuousApiHeaders(siteUrl),
     ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(30000),
+    signal: AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || payload.ok === false) throw new Error(payload.error || `control_plane_${response.status}`);

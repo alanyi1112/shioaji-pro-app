@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  CONTROL_PLANE_TIMEOUT_MS,
   createTdccHistorySession,
   normalizeHistoryTable,
   parseTdccHistoryForm,
@@ -99,6 +100,7 @@ test("runner 強制至少一秒間隔與有限重試", () => {
 });
 
 test("continuous runner 不接受固定 symbol，並限制 claim 與總時間", () => {
+  assert.equal(CONTROL_PLANE_TIMEOUT_MS, 90000);
   assert.equal(parseRunnerArgs([]).chipWarmLimit, 40);
   const parsed = parseRunnerArgs(["--continuous", "--claim-limit=4", "--chip-warm-limit=40", "--max-run-ms=1200000", "--run-id=gha-123-1", "--trigger=schedule"]);
   assert.equal(parsed.continuous, true);
