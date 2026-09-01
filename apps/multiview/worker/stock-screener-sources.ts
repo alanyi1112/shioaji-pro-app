@@ -2,6 +2,10 @@ import {
   isIsoDate, validateStock, validateTdcc,
   type HolderPoint, type Provenance, type ScreenerMarket, type UniverseStock, type VolumePoint,
 } from "../../../src/lib/stock-screener-domain.ts";
+import {
+  SCREENER_OHLC_MAPPING_VERSION, SCREENER_PRICE_BASIS, validateCanonicalOhlc,
+  type SourcedOhlc,
+} from "../../../src/lib/stock-screener-ohlcv.ts";
 
 export const SCREENER_SOURCES = {
   TWSE: {
@@ -117,6 +121,97 @@ export function parseDailyVolumes(payload: unknown, market: ScreenerMarket, prov
       turnoverBasis: basis, turnoverMappingVersion: "official-daily-trade-value-v1", provenance });
   }
   return { date, points, invalid };
+}
+
+const dailyOhlcFields = {
+  TWSE: { code: "Code", open: "OpeningPrice", high: "HighestPrice", low: "LowestPrice", close: "ClosingPrice" },
+  TPEx: { code: "SecuritiesCompanyCode", open: "Open", high: "High", low: "Low", close: "Close" },
+} as const;
+
+const officialPrice = (value: unknown): string | null => {
+  const price = text(value).replaceAll(",", "");
+  return /^(?:0|[1-9]\d{0,8})(?:\.\d{1,6})?$/.test(price) ? price : null;
+};
+
+/** Latest official daily batch. Missing/no-trade rows remain explicit unknowns. */
+export function parseDailyOhlcv(payload: unknown, market: ScreenerMarket, provenance: Provenance) {
+  const rows = records(payload);
+  const dates = new Set(rows.map((row) => sourceDate(row.Date)));
+  if (dates.size !== 1) throw new Error("mixed_source_dates");
+  const date = [...dates][0];
+  const fields = dailyOhlcFields[market];
+  const points = new Map<string, SourcedOhlc>();
+  const invalid = new Map<string, "missing_ohlcv" | "invalid_ohlcv">();
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const code = text(row[fields.code]);
+    if (!/^[1-9]\d{3}$/.test(code)) continue;
+    if (seen.has(code)) throw new Error("duplicate_security");
+    seen.add(code);
+    const values = [fields.open, fields.high, fields.low, fields.close].map((field) => officialPrice(row[field]));
+    const symbol = `${code}.${market === "TWSE" ? "TW" : "TWO"}`;
+    if (values.some((value) => value === null)) {
+      invalid.set(symbol, values.every((value) => value === null) ? "missing_ohlcv" : "invalid_ohlcv");
+      continue;
+    }
+    const [open, high, low, close] = values as [string, string, string, string];
+    const point: SourcedOhlc = { symbol, market, sessionDate: date, open, high, low, close,
+      currency: "TWD", priceBasis: SCREENER_PRICE_BASIS, mappingVersion: SCREENER_OHLC_MAPPING_VERSION, provenance };
+    if (!validateCanonicalOhlc(point)) { invalid.set(symbol, "invalid_ohlcv"); continue; }
+    points.set(symbol, point);
+  }
+  return { date, points, invalid, mapping: { ...fields, date: "Date" as const } };
+}
+
+type HistoricalReport = { stat?: unknown; date?: unknown; tables?: unknown };
+const historyFields = {
+  TWSE: { code: "證券代號", open: "開盤價", high: "最高價", low: "最低價", close: "收盤價" },
+  TPEx: { code: "代號", open: "開盤", high: "最高", low: "最低", close: "收盤" },
+} as const;
+
+/** Historical reports are accepted only when requested/actual dates and exact field names match. */
+export function parseHistoricalOhlcvReport(
+  payload: HistoricalReport, market: ScreenerMarket, requestedDate: string,
+  provenance: Provenance, universe: readonly UniverseStock[],
+) {
+  if (!isIsoDate(requestedDate) || String(payload?.stat).toLowerCase() !== "ok"
+    || sourceDate(payload?.date) !== requestedDate || !Array.isArray(payload?.tables)) throw new Error("invalid_report_date");
+  const fields = historyFields[market];
+  const tables = payload.tables.filter((value): value is { fields: unknown[]; data: unknown[] } => {
+    if (!value || typeof value !== "object") return false;
+    const table = value as { fields?: unknown; data?: unknown };
+    return Array.isArray(table.fields) && table.fields.includes(fields.code);
+  });
+  if (tables.length !== (market === "TWSE" ? 1 : 2) || tables.some((table) => !Array.isArray(table.data))) throw new Error("invalid_report_schema");
+  const required = [fields.code, fields.open, fields.high, fields.low, fields.close];
+  if (tables.some((table) => required.some((field) => !table.fields.includes(field)))) throw new Error("invalid_report_schema");
+  const allowed = new Set(universe.filter((stock) => stock.market === market && (!stock.listingDate || stock.listingDate <= requestedDate)).map((stock) => stock.symbol));
+  if (!allowed.size) throw new Error("invalid_report_universe");
+  const latestRows: RecordRow[] = [];
+  const seen = new Set<string>();
+  for (const table of tables) {
+    const indexes = Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, table.fields.indexOf(field)])) as Record<keyof typeof fields, number>;
+    for (const value of table.data) {
+      if (!Array.isArray(value) || value.length !== table.fields.length) throw new Error("invalid_report_schema");
+      const code = text(value[indexes.code]);
+      if (!/^[1-9]\d{3}$/.test(code)) continue;
+      const symbol = `${code}.${market === "TWSE" ? "TW" : "TWO"}`;
+      if (!allowed.has(symbol)) continue;
+      if (seen.has(symbol)) throw new Error("duplicate_security");
+      seen.add(symbol);
+      latestRows.push({ Date: requestedDate,
+        [dailyOhlcFields[market].code]: code,
+        [dailyOhlcFields[market].open]: value[indexes.open],
+        [dailyOhlcFields[market].high]: value[indexes.high],
+        [dailyOhlcFields[market].low]: value[indexes.low],
+        [dailyOhlcFields[market].close]: value[indexes.close] });
+    }
+  }
+  if (!latestRows.length) throw new Error("empty_report");
+  const parsed = parseDailyOhlcv(latestRows, market, provenance);
+  return { ...parsed, requestedDate, actualDate: parsed.date, universeEligible: allowed.size,
+    universePresent: parsed.points.size + parsed.invalid.size,
+    universeMissing: [...allowed].filter((symbol) => !parsed.points.has(symbol) && !parsed.invalid.has(symbol)) };
 }
 
 /** A malformed stock does not poison the remaining market batch. */

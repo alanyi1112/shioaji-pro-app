@@ -204,6 +204,13 @@
       "when": 1788229869997,
       "tag": "0028_early_sir_ram",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1788279683338,
+      "tag": "0029_plain_strong_guy",
+      "breakpoints": true
     }
   ]
 }

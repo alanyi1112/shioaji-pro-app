@@ -1,8 +1,8 @@
-/** Operator-only SQLite adapter. SQL writes are restricted to the six additive tables. */
+/** Operator-only SQLite adapter. SQL writes are restricted to the seven additive tables. */
 import { DatabaseSync } from 'node:sqlite';
 import { lstatSync, realpathSync } from 'node:fs';
 
-const TABLES = new Set(['screener_universe', 'screener_daily_volume', 'screener_tdcc_weekly', 'screener_runs', 'screener_snapshots', 'screener_snapshot_rows']);
+const TABLES = new Set(['screener_universe', 'screener_daily_volume', 'screener_daily_ohlcv', 'screener_tdcc_weekly', 'screener_runs', 'screener_snapshots', 'screener_snapshot_rows']);
 class Statement {
     constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
     bind(...args) { this.args = args; return this; }

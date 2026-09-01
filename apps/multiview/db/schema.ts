@@ -13,6 +13,21 @@ export const screenerDailyVolume = sqliteTable("screener_daily_volume", {
   payload: text("payload").notNull(),
 }, (table) => [primaryKey({ columns: [table.dataDate, table.symbol] })]);
 
+export const screenerDailyOhlcv = sqliteTable("screener_daily_ohlcv", {
+  symbol: text("symbol").notNull(), dataDate: text("data_date").notNull(),
+  market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
+  open: text("open").notNull(), high: text("high").notNull(),
+  low: text("low").notNull(), close: text("close").notNull(),
+  currency: text("currency", { enum: ["TWD"] }).notNull(),
+  priceBasis: text("price_basis").notNull(), mappingVersion: text("mapping_version").notNull(),
+  sourceUrl: text("source_url").notNull(), payloadHash: text("payload_hash").notNull(),
+  fetchedAt: text("fetched_at").notNull(), validation: text("validation").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.dataDate, table.symbol] }),
+  index("screener_daily_ohlcv_market_date_idx").on(table.market, table.dataDate),
+  index("screener_daily_ohlcv_symbol_date_idx").on(table.symbol, table.dataDate),
+]);
+
 export const screenerTdccWeekly = sqliteTable("screener_tdcc_weekly", {
   symbol: text("symbol").notNull(), dataDate: text("data_date").notNull(),
   payload: text("payload").notNull(), validation: text("validation").notNull(),
@@ -28,7 +43,10 @@ export const screenerSnapshots = sqliteTable("screener_snapshots", {
   id: text("id").primaryKey(), createdAt: text("created_at").notNull(),
   status: text("status", { enum: ["staging", "published"] }).notNull(),
   metadata: text("metadata").notNull(), schemaVersion: integer("schema_version").notNull().default(1),
-}, (table) => [index("screener_snapshots_published_idx").on(table.status, table.createdAt)]);
+}, (table) => [
+  index("screener_snapshots_published_idx").on(table.status, table.createdAt),
+  index("screener_snapshots_schema_status_idx").on(table.schemaVersion, table.status, table.createdAt),
+]);
 
 export const screenerSnapshotRows = sqliteTable("screener_snapshot_rows", {
   snapshotId: text("snapshot_id").notNull().references(() => screenerSnapshots.id, { onDelete: "cascade" }),

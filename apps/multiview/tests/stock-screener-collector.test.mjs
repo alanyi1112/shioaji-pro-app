@@ -59,7 +59,7 @@ test("獨立 daily／weekly 收集與 checkpoint；名冊未審核不發布、GE
     const reads = calls.length;
     for (let i = 0; i < 3; i++) {
       const response = await handleStockScreener(new Request("http://127.0.0.1:5174/api/stock-screener/results?holder=false"), { DB: db, DEPLOYMENT_TARGET: "local" });
-      assert.equal((await response.json()).reason, "bootstrap_pending");
+      assert.equal((await response.json()).reason, "schema_pending");
     }
     assert.equal(calls.length, reads);
     assert.equal((await db.prepare("PRAGMA integrity_check").first()).integrity_check, "ok");

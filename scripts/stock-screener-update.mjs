@@ -7,11 +7,13 @@ import { publishCollectedScreener } from '../apps/multiview/worker/stock-screene
 import { ScreenerSqlite } from './stock-screener-sqlite.mjs';
 import { boundedOfficialText, discoverScreenerPeriods, hashText, screenerTdccSession } from './stock-screener-periods.mjs';
 import { preparePinnedTdccBootstrap } from './stock-screener-tdcc-bootstrap.mjs';
+import { prepareScreenerOhlcv, pruneScreenerOhlcv, selectOhlcvSessions } from './stock-screener-ohlcv-bootstrap.mjs';
+import { publishPreparedScreenerV3 } from '../apps/multiview/worker/stock-screener-v3-publisher.ts';
 
 const NORMALIZATION = 'screener-official-v1';
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const stamp = () => new Date().toISOString();
-const safeError = error => /^(source_\w+|archive_\w+|invalid_\w+|incomplete_tdcc|rate_limited|lease_busy|lease_lost|run_deadline|snapshot_\w+|calendar_\w+)$/.test(error?.message) ? error.message
+const safeError = error => /^(source_\w+|archive_\w+|invalid_\w+|incomplete_tdcc|rate_limited|lease_busy|lease_lost|run_deadline|snapshot_\w+|calendar_\w+|schema_pending)$/.test(error?.message) ? error.message
     : error?.errcode === 5 ? 'source_local_database_busy'
     : error?.name === 'TypeError' && error?.message === 'fetch failed' ? 'source_network_failed'
     : error?.name === 'TimeoutError' ? 'source_timeout' : 'update_failed';
@@ -87,8 +89,9 @@ export function parseDailyReport(payload, market, date, source) {
     return parseDailyVolumes(rows, market, source);
 }
 
-export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchive = false, scheduled = false, limit = 64, log = () => {}, fetcher = fetch } = {}) {
+export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchive = false, scheduled = false, limit = 64, ohlcvLimit = 8, log = () => {}, fetcher = fetch } = {}) {
     if (!Number.isInteger(limit) || limit < 1 || limit > 512) throw new Error('invalid_limit');
+    if (!Number.isInteger(ohlcvLimit) || ohlcvLimit < 1 || ohlcvLimit > 120) throw new Error('invalid_ohlcv_options');
     if (scheduled && !await db.prepare("SELECT id FROM screener_runs WHERE id='screener-enabled' AND status='enabled'").first()) return { state:'skipped', reason:'schedule_disabled' };
     const started = Date.now(), deadline = started + 15 * 60000, owner = crypto.randomUUID();
     const day = new Date(started + 8 * 3600000).toISOString().slice(0, 10);
@@ -241,10 +244,22 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
         await batch([db.prepare(runSql).bind('screener-history-progress','screener-tdcc-bootstrap-progress',remaining?'running':'complete',JSON.stringify(progress),stamp())]);
         await batch([db.prepare(runSql).bind('screener-period-evidence','screener-calendar','verified',JSON.stringify(periods),stamp())]);
         const publication = await publishCollectedScreener(db, periods);
+        const dailyRun = await db.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-daily' AND status='collected'").first();
+        const dailyCheckpoint = dailyRun && JSON.parse(dailyRun.checkpoint);
+        const sourceDates = ['TWSE','TPEx'].map(market => dailyCheckpoint?.receipts?.[market]?.date);
+        if (sourceDates.some(date => !/^\d{4}-\d{2}-\d{2}$/.test(date ?? ''))) throw new Error('calendar_coverage_pending');
+        const technicalThrough = [...sourceDates].sort()[0];
+        const technicalReceiptRows = (await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE scope='screener-ohlcv-period'").all()).results ?? [];
+        const technicalReceipts = technicalReceiptRows.flatMap(row => { try { return [{ ...JSON.parse(row.checkpoint), status: row.status }]; } catch { return []; } });
+        const technicalSessions = selectOhlcvSessions(periods.sessions, technicalThrough, technicalReceipts);
+        const technical = await prepareScreenerOhlcv(db, { universe, sessions: technicalSessions, universeRevision: revision,
+            validThrough: periods.validThrough, limit: ohlcvLimit, fetcher, guard, log });
+        const technicalSnapshot = technical.state === 'complete' ? await publishPreparedScreenerV3(db) : { state:'pending', reason:'ohlcv_bootstrap_pending' };
         if (['published','unchanged'].includes(publication.state)) await pruneScreenerInputs(db, periods, revision, batch);
+        if (technical.state === 'complete') await pruneScreenerOhlcv(db, technicalSessions);
         await batch([db.prepare(runSql).bind('screener-operator-policy','screener-operator-policy','idle',JSON.stringify({day,attempts:0,nextAttemptAt:new Date(Date.now()+3600000).toISOString()}),stamp())]);
         return { ...publication, weekly: { dates: historyWeeks, target, processed: target - remaining, remaining,
-            valid: known.size, failed: progress.failed, overdue: progress.overdue, cursor: progress.cursor } };
+            valid: known.size, failed: progress.failed, overdue: progress.overdue, cursor: progress.cursor }, technical, technicalSnapshot };
     } catch (error) {
         const reason = safeError(error);
         if (await owned(lease)) {
@@ -261,8 +276,8 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     const args = process.argv.slice(2), database = args.find(arg => arg.startsWith('--database='))?.slice(11);
-    if (!database || args.some(arg => !/^(?:--database=\/.+|--bootstrap-week|--bootstrap-history|--scheduled|--enable-schedule|--disable-schedule|--limit=\d+)$/.test(arg))
-        || args.includes('--disable-schedule') && args.some(arg=>['--enable-schedule','--scheduled','--bootstrap-week','--bootstrap-history'].includes(arg))) throw new Error('使用方式：--database=/absolute/local.sqlite [--bootstrap-history] [--limit=64] [--scheduled|--enable-schedule|--disable-schedule]');
+    if (!database || args.some(arg => !/^(?:--database=\/.+|--bootstrap-week|--bootstrap-history|--scheduled|--enable-schedule|--disable-schedule|--limit=\d+|--ohlcv-limit=\d+)$/.test(arg))
+        || args.includes('--disable-schedule') && args.some(arg=>['--enable-schedule','--scheduled','--bootstrap-week','--bootstrap-history'].includes(arg))) throw new Error('使用方式：--database=/absolute/local.sqlite [--bootstrap-history] [--limit=64] [--ohlcv-limit=8] [--scheduled|--enable-schedule|--disable-schedule]');
     let db;
     try {
         db = new ScreenerSqlite(database);
@@ -277,7 +292,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
                 || !(Date.parse(metadata.validThrough) > Date.now())) throw new Error('invalid_bootstrap_not_complete');
             await db.prepare(runSql).bind('screener-enabled','screener-configuration','enabled',JSON.stringify({version:2,bootstrapHistory:true}),stamp()).run();
         }
-        const result = await updateScreener(db, { bootstrapWeek: args.includes('--bootstrap-week') || args.includes('--bootstrap-history'), bootstrapArchive: args.includes('--bootstrap-history'), scheduled:args.includes('--scheduled'), limit: Number(args.find(arg => arg.startsWith('--limit='))?.slice(8) ?? 64), log: value => console.log(JSON.stringify(value)) });
+        const result = await updateScreener(db, { bootstrapWeek: args.includes('--bootstrap-week') || args.includes('--bootstrap-history'), bootstrapArchive: args.includes('--bootstrap-history'), scheduled:args.includes('--scheduled'), limit: Number(args.find(arg => arg.startsWith('--limit='))?.slice(8) ?? 64), ohlcvLimit: Number(args.find(arg => arg.startsWith('--ohlcv-limit='))?.slice(14) ?? 8), log: value => console.log(JSON.stringify(value)) });
         console.log(JSON.stringify(result));
         if (result.state === 'pending') process.exitCode = 2;
         }

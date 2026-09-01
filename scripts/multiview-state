@@ -10,7 +10,7 @@ PERSIST_DIR="${STATE_DIR}/state"
 BACKUP_DIR="${STATE_DIR}/backups"
 METADATA_DIR="${STATE_DIR}/metadata"
 REPORT_DIR="${STATE_DIR}/reports"
-SCHEMA_REVISION="0028"
+SCHEMA_REVISION="0029"
 WRANGLER_BIN="${REPO_DIR}/apps/multiview/node_modules/.bin/wrangler"
 WRANGLER_CONFIG="${REPO_DIR}/apps/multiview/wrangler.local.jsonc"
 

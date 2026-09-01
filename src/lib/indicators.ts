@@ -2,7 +2,7 @@
 // Rendering/registry lives in indicator-defs.ts; this file is math only.
 // Points may carry value: undefined to encode a gap (whitespace data).
 
-import type { Candle } from './types/market';
+import type { Candle } from './types/market.ts';
 
 export interface IndicatorPoint {
     time: number;

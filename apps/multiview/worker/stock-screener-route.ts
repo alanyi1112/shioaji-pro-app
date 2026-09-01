@@ -5,6 +5,7 @@ import {
 import type { ScreenerResponse, ScreenerResultRow, ScreenerSort } from "../../../src/lib/stock-screener-api.ts";
 import { turnoverEvidence } from "../../../src/lib/stock-screener-api.ts";
 import { readScreenerSnapshot, type ScreenerDatabase } from "./stock-screener-repository.ts";
+import { handleStockScreenerV3 } from "./stock-screener-v3-route.ts";
 
 const prefix = "/api/stock-screener";
 const allowedKeys = new Set(["version", "mode", "volume", "volumeThreshold", "volumeTurnover", "volumeTurnoverMinimumWan",
@@ -73,6 +74,7 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
   if (env.DEPLOYMENT_TARGET !== "local" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return response({ reason: "local_only" }, 404);
   if (request.method !== "GET") return response({ reason: "method_not_allowed" }, 405);
   if (![`${prefix}/status`, `${prefix}/results`].includes(url.pathname)) return response({ reason: "route_not_allowed" }, 404);
+  if (url.searchParams.get("version") === "3") return handleStockScreenerV3(url, env, now);
   let query: ReturnType<typeof parseScreenerQuery>;
   try {
     if (url.pathname.endsWith("/status") && url.search) throw new Error("invalid_query");
@@ -80,8 +82,12 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
   } catch (error) { return response({ reason: (error as Error).message }, 400); }
   if (!env.DB) return response({ ...pending("d1_unavailable"), state: "unavailable" }, 503);
   try {
-    const snapshot = await readScreenerSnapshot(env.DB, query.cursor?.id);
-    if (!snapshot) return query.cursor ? response({ reason: "snapshot_expired" }, 409) : response(pending("bootstrap_pending"));
+    const snapshot = await readScreenerSnapshot(env.DB, query.cursor?.id, 2);
+    if (!snapshot) {
+      if (query.cursor) return response({ reason: "snapshot_expired" }, 409);
+      const legacy = await readScreenerSnapshot(env.DB);
+      return response(pending(legacy && legacy.metadata.version !== 2 ? "snapshot_version_pending" : "bootstrap_pending"));
+    }
     if (snapshot.metadata.version !== 2) return query.cursor ? response({ reason: "snapshot_version_expired" }, 409) : response(pending("snapshot_version_pending"));
     const evaluated = screenStocks(snapshot.inputs, snapshot.metadata.anchors, query.criteria);
     const rows = evaluated.rows.filter((row) => row.verdict === query.resultState);
@@ -126,7 +132,7 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
     return response(payload);
   } catch (error) {
     // Missing additive migration is a pending bootstrap, never an implicit DDL write on GET.
-    if (/no such table.*screener_/.test(String(error))) return response(pending("schema_pending"));
+    if (/no such (?:table.*screener_|column.*schema_version)/.test(String(error))) return response(pending("schema_pending"));
     return response({ ...pending("snapshot_unavailable"), state: "unavailable" }, 503);
   }
 }

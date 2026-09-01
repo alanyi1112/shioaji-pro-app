@@ -31,13 +31,13 @@ test("data-only export 只接受固定 table allowlist", () => {
   assert.equal(TABLE_ALLOWLIST.length, 12);
 });
 
-test("staging 套用 29 個 migration 並拒絕 schema drift", () => {
+test("staging 套用 30 個 migration 並拒絕 schema drift", () => {
   const directory = workspace();
   const liveDbPath = resolve(directory, "live.sqlite");
   const stagingDbPath = resolve(directory, "staging.sqlite");
   const exportPath = resolve(directory, "export.sql");
-  assert.equal(applyMigrations(liveDbPath), 29);
-  assert.equal(runSql(liveDbPath, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'screener_%';"), "6");
+  assert.equal(applyMigrations(liveDbPath), 30);
+  assert.equal(runSql(liveDbPath, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'screener_%';"), "7");
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_continuous_symbols');"), /official_plan_through/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_continuous_symbols');"), /coverage_verified_at/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_index_list('tdcc_continuous_symbols');"), /tdcc_continuous_symbols_handoff_idx/);
@@ -52,7 +52,7 @@ test("staging 套用 29 個 migration 並拒絕 schema drift", () => {
     "COMMIT;",
   ].join("\n"), { mode: 0o600 });
   const result = stageExport({ exportPath, stagingDbPath, liveDbPath });
-  assert.equal(result.migrationCount, 29);
+  assert.equal(result.migrationCount, 30);
   assert.equal(result.integrity, "ok");
   assert.equal(result.tables.instrument_catalog.rowCount, 1);
   assert.doesNotThrow(() => assertAllowlistSchema(stagingDbPath, liveDbPath));

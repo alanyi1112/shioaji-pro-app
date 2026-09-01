@@ -3,7 +3,20 @@ const TARGET = 'http://127.0.0.1:5174';
 const paths = new Set([`${PREFIX}/status`, `${PREFIX}/results`]);
 const keys = new Set(['version','mode','volume','volumeThreshold','volumeTurnover','volumeTurnoverMinimumWan',
     'holder','holderThreshold','holderMode','holderStreakWeeks','holderTurnover','holderTurnoverMinimumWan',
+    'fractal','fractalAlgorithm','fractalDirection','bollReversal','bollMode',
     'sort','direction','resultState','limit','cursor']);
+
+const requestedVersion = (url) => url.searchParams.get('version') === '3' ? 3 : 2;
+
+const unavailablePayload = (version) => version === 3
+    ? { version: 3, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
+        universeRevision: null, formulaVersion: 'after-market-v3-technical-multichart-ecae7ca-v1', criteriaFingerprint: null,
+        expectedSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
+        technicalAnchors: null, counts: null, byMarket: null, preparation: null, rows: [], nextCursor: null }
+    : { version: 2, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
+        universeRevision: null, formulaVersion: 'after-market-v2', criteriaFingerprint: null,
+        expectedSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
+        counts: null, byMarket: null, rows: [], nextCursor: null };
 
 export function validateScreenerGatewayRequest(req) {
     const raw = req.url ?? '/';
@@ -17,10 +30,12 @@ export function validateScreenerGatewayRequest(req) {
     if (!/^(?:127\.0\.0\.1|localhost|\[::1\]):5173$/.test(host)) return { status: 403, reason: 'local_only' };
     if (req.headers.origin && req.headers.origin !== `http://${host}`) return { status: 403, reason: 'same_origin_required' };
     if (req.headers['sec-fetch-site'] === 'cross-site') return { status: 403, reason: 'same_origin_required' };
-    if (raw.length > 2400 || [...url.searchParams.keys()].some((key) => !keys.has(key) || url.searchParams.getAll(key).length !== 1)
-        || url.pathname.endsWith('/status') && url.search
+    const version = url.searchParams.get('version');
+    if (raw.length > 3072 || [...url.searchParams.keys()].some((key) => !keys.has(key) || url.searchParams.getAll(key).length !== 1)
+        || version !== null && version !== '2' && version !== '3'
+        || url.pathname.endsWith('/status') && [...url.searchParams.keys()].some((key) => key !== 'version')
         || url.searchParams.has('limit') && (!/^\d{1,3}$/.test(url.searchParams.get('limit')) || Number(url.searchParams.get('limit')) < 1 || Number(url.searchParams.get('limit')) > 100)) return { status: 400, reason: 'invalid_query' };
-    return { url: `${TARGET}${url.pathname}${url.search}` };
+    return { url: `${TARGET}${url.pathname}${url.search}`, version: requestedVersion(url) };
 }
 
 export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
@@ -49,9 +64,7 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
                     ]);
                     reply(result.status, result.body);
                 } catch {
-                    reply(503, { version: 2, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
-                        universeRevision:null,formulaVersion:'after-market-v2',criteriaFingerprint:null,expectedSessionDate:null,createdAt: null,
-                        anchors: { daily: null, weekly: null, weeklyPeriods:[] }, counts: null, byMarket: null, rows: [], nextCursor: null });
+                    reply(503, unavailablePayload(checked.version));
                 } finally { clearTimeout(timer); controller.abort(); }
             });
         },

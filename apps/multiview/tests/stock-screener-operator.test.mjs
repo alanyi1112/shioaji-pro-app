@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { SqliteD1, applyDrizzleSql } from './helpers/sqlite-d1.mjs';
 import { validateHistoryTableShape, parseScreenerTpexCalendar, boundedOfficialText } from '../../../scripts/stock-screener-periods.mjs';
 import { updateScreener, pruneScreenerInputs, planScreenerHistory, buildHistoryProgress, dailySql, archiveHolderSql, parseDailyReport } from '../../../scripts/stock-screener-update.mjs';
-const migrations = await Promise.all(['0027_pale_randall_flagg.sql','0028_early_sir_ram.sql'].map(name=>readFile(new URL(`../drizzle/${name}`, import.meta.url),'utf8')));
+const migrations = await Promise.all(['0027_pale_randall_flagg.sql','0028_early_sir_ram.sql','0029_plain_strong_guy.sql'].map(name=>readFile(new URL(`../drizzle/${name}`, import.meta.url),'utf8')));
 const setup = () => { const db=new SqliteD1(); for(const migration of migrations) applyDrizzleSql(db,migration); return db; };
 const html = rows => `<div class="securities-overview"><table>${rows.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</table></div>`;
 const rows = () => [...Array.from({length:15},(_,i)=>[String(i+1),'級距','1','100','6.66']),['16','合　計','15','1500','100.00']];
@@ -88,6 +88,10 @@ test('選股排程預設停用、盤中不抓取，隔離於既有 broker 與長
     const handler=source.slice(source.indexOf('service_multiview_screener_pipeline()'),source.indexOf('service_multiview_tdcc_watcher()'));
     assert.match(handler,/--scheduled/); assert.doesNotMatch(handler,/--bootstrap-week/);
     assert.match(source,/tdcc-watcher-noop[^\n]*queue_empty[\s\S]*?service_multiview_screener_pipeline\s+return 0/);
+    const updater=await readFile(new URL('../../../scripts/stock-screener-update.mjs',import.meta.url),'utf8');
+    assert.match(updater,/source_not_closed[\s\S]*?prepareScreenerOhlcv/);
+    assert.match(updater,/selectOhlcvSessions\(periods\.sessions, technicalThrough, technicalReceipts\)/);
+    assert.doesNotMatch(updater,/Shioaji|yahoo|provider.*ohlcv/i);
   } finally {db.close();}
 });
 test('operator 共用 lease、Retry-After、每日三次上限與隔日恢復，禁止 busy-loop', async t => {

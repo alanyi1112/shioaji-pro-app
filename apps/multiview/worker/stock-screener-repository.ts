@@ -31,11 +31,15 @@ export interface ScreenerDatabase {
   batch(statements: ScreenerStatement[]): Promise<unknown[]>;
 }
 
-export async function readScreenerSnapshot(db: ScreenerDatabase, id?: string) {
+export async function readScreenerSnapshot(db: ScreenerDatabase, id?: string, schemaVersion?: number) {
   // Metadata and rows are read in one SQLite snapshot even during retention pruning.
   const sql = "SELECT s.id, s.created_at, s.metadata, r.payload FROM screener_snapshots s JOIN screener_snapshot_rows r ON r.snapshot_id = s.id WHERE s.status = 'published' AND s.id = ";
-  const query = id ? db.prepare(`${sql}? ORDER BY r.symbol`).bind(id)
-    : db.prepare(`${sql}(SELECT id FROM screener_snapshots WHERE status = 'published' ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY r.symbol`);
+  const query = id
+    ? schemaVersion === undefined ? db.prepare(`${sql}? ORDER BY r.symbol`).bind(id)
+      : db.prepare(`${sql}? AND s.schema_version=? ORDER BY r.symbol`).bind(id, schemaVersion)
+    : schemaVersion === undefined
+      ? db.prepare(`${sql}(SELECT id FROM screener_snapshots WHERE status = 'published' ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY r.symbol`)
+      : db.prepare(`${sql}(SELECT id FROM screener_snapshots WHERE status = 'published' AND schema_version=? ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY r.symbol`).bind(schemaVersion);
   const result = await query.all<SnapshotRecord & { payload: string }>();
   const record = result.results?.[0];
   if (!record) return null;
@@ -55,7 +59,7 @@ export async function publishScreenerSnapshot(db: ScreenerDatabase, metadata: Sc
   if (!Array.isArray(metadata.anchors.weeklyPeriods) || metadata.anchors.weeklyPeriods.length === 1 || metadata.anchors.weeklyPeriods.length > 6
     || metadata.anchors.weeklyPeriods.some((date, index, all) => !/^\d{4}-\d{2}-\d{2}$/.test(date) || index > 0 && date <= all[index - 1]!)) throw new Error("invalid_snapshot_dates");
   const nextCoverage = screenStocks(inputs, metadata.anchors, DEFAULT_CRITERIA);
-  const previous = await readScreenerSnapshot(db);
+  const previous = await readScreenerSnapshot(db, undefined, 2);
   if (previous) {
     for (const key of ["daily", "weekly"] as const) {
       const oldPair = previous.metadata.anchors[key], newPair = metadata.anchors[key];
@@ -87,8 +91,8 @@ export async function publishScreenerSnapshot(db: ScreenerDatabase, metadata: Sc
     }
     // One transaction: no reader can see a half-published snapshot or half-pruned version.
     await db.batch([
-      db.prepare("UPDATE screener_snapshots SET status = 'published' WHERE id = ? AND (SELECT COUNT(*) FROM screener_snapshot_rows WHERE snapshot_id = ?) = ? AND COALESCE((SELECT id FROM screener_snapshots WHERE status = 'published' ORDER BY created_at DESC, id DESC LIMIT 1), '') = ?").bind(id, id, inputs.length, previous?.id ?? ""),
-      db.prepare("DELETE FROM screener_snapshots WHERE status = 'published' AND id NOT IN (SELECT id FROM screener_snapshots WHERE status = 'published' ORDER BY created_at DESC, id DESC LIMIT 2)"),
+      db.prepare("UPDATE screener_snapshots SET status = 'published' WHERE id = ? AND (SELECT COUNT(*) FROM screener_snapshot_rows WHERE snapshot_id = ?) = ? AND COALESCE((SELECT id FROM screener_snapshots WHERE status = 'published' AND schema_version=2 ORDER BY created_at DESC, id DESC LIMIT 1), '') = ?").bind(id, id, inputs.length, previous?.id ?? ""),
+      db.prepare("DELETE FROM screener_snapshots WHERE status = 'published' AND schema_version=2 AND id NOT IN (SELECT id FROM screener_snapshots WHERE status = 'published' AND schema_version=2 ORDER BY created_at DESC, id DESC LIMIT 2)"),
     ]);
     const published = await db.prepare("SELECT status FROM screener_snapshots WHERE id = ?").bind(id).first<{ status: string }>();
     if (published?.status !== "published") throw new Error("snapshot_publication_conflict");

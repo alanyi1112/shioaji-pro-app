@@ -2,20 +2,44 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StockScreenerPanel } from './stock-screener-panel';
-import type { ScreenerResponse } from '../lib/stock-screener-api';
+import type { ScreenerResponseV3 } from '../lib/stock-screener-api';
+import { DEFAULT_CRITERIA as DEFAULT_V2 } from '../lib/stock-screener-domain';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 // UI fixtures only; these are deliberately not official stock evidence.
-const ready: ScreenerResponse = {
-    version: 2, state: 'ready', reason: 'none', snapshotId: 'fixture', createdAt: '2026-08-31T10:00:00Z',
-    universeRevision: 'fixture', formulaVersion: 'after-market-v2', criteriaFingerprint: 'fixture', expectedSessionDate: '2026-08-28',
+const ready: ScreenerResponseV3 = {
+    version: 3, state: 'ready', reason: 'none', snapshotId: 'fixture', createdAt: '2026-08-31T10:00:00Z',
+    universeRevision: 'fixture', formulaVersion: 'after-market-v3-technical-multichart-ecae7ca-v1', criteriaFingerprint: 'fixture', expectedSessionDate: '2026-08-28',
     anchors: { daily: { current: '2026-08-28', previous: '2026-08-27' }, weekly: { current: '2026-08-28', previous: '2026-08-21' }, weeklyPeriods: ['2026-08-21','2026-08-28'] },
-    counts: { total: 1, evaluated: 1, matched: 1, notMatched: 0, unknown: 0, missingByCondition: { 'volume-multiple': 0, 'large-holder-weekly-pp': 0 } },
+    technicalAnchors: { sessions: Array.from({ length: 60 }, (_, i) => `2026-08-${String(i + 1).padStart(2, '0')}`), through: '2026-08-28' },
+    preparation: { version: 3, target: 120, processed: 120, remaining: 0, failed: 0, overdue: 0, cursor: null,
+        markets: { TWSE: { target: 60, processed: 60, failed: 0 }, TPEx: { target: 60, processed: 60, failed: 0 } } },
+    counts: { total: 1, evaluated: 1, matched: 1, notMatched: 0, unknown: 0, missingByCondition: { 'volume-multiple': 0, 'large-holder-weekly-pp': 0, fractal: 0, 'boll-reversal': 0 } },
     byMarket: null, nextCursor: null,
-    rows: [{ code: '3008', symbol: '3008.TW', market: 'TWSE', kind: 'ordinary', name: '測試商品', verdict: 'pass', sources: ['測試 fixture'],
+    rows: [{
+        code: '3008', symbol: '3008.TW', market: 'TWSE', kind: 'ordinary', name: '測試商品', verdict: 'pass', sources: ['測試 fixture'],
         volume: { current: '300000', previous: '100000', multiple: 3, reason: 'none', turnover: { ntd: '12345600', wan: '1234.56', date: '2026-08-28', signalVerdict: 'pass', verdict: 'pass', reason: 'none' } },
         holder: { mode: 'weekly-increase', current: '60.2', previous: '60', changePp: 0.2, reason: 'none', streakWeeks: 0, changesPp: [0.2],
-            series: [{date:'2026-08-21',ratio:'60'},{date:'2026-08-28',ratio:'60.2'}], turnover: { ntd: '12345600', wan: '1234.56', date: '2026-08-28', signalVerdict: 'pass', verdict: 'pass', reason: 'none' } } }],
+            series: [{ date: '2026-08-21', ratio: '60' }, { date: '2026-08-28', ratio: '60.2' }],
+            turnover: { ntd: '12345600', wan: '1234.56', date: '2026-08-28', signalVerdict: 'pass', verdict: 'pass', reason: 'none' } },
+        technical: {
+            fractal: { verdict: 'pass', reason: 'none', evidence: {
+                algorithm: 'chan-containment', direction: 'bottom', centerDate: '2026-08-27', confirmationDate: '2026-08-28',
+                bars: [{ sessionDate: '2026-08-26', high: '100', low: '90' }, { sessionDate: '2026-08-27', high: '98', low: '80' }, { sessionDate: '2026-08-28', high: '101', low: '88' }],
+                normalizedBars: [
+                    { high: '100', low: '90', rawFrom: '2026-08-25', rawTo: '2026-08-26', rawDates: ['2026-08-25', '2026-08-26'] },
+                    { high: '98', low: '80', rawFrom: '2026-08-27', rawTo: '2026-08-27', rawDates: ['2026-08-27'] },
+                    { high: '101', low: '88', rawFrom: '2026-08-28', rawTo: '2026-08-28', rawDates: ['2026-08-28'] },
+                ],
+            } },
+            bollReversal: { verdict: 'pass', reason: 'none', evidence: {
+                mode: 'lower-bullish',
+                previous: { sessionDate: '2026-08-27', open: '91', high: '95', low: '90', close: '92', upper: 110, middle: 100, lower: 90 },
+                current: { sessionDate: '2026-08-28', open: '86', high: '90', low: '84', close: '88', upper: 109, middle: 99, lower: 89 },
+                lowerShadow: true, upperShadow: true, outsideDistance: 1,
+            } },
+        },
+    }],
 };
 let root: Root | null = null;
 const originalRootFont = document.documentElement.style.fontSize;
@@ -27,6 +51,7 @@ afterEach(async () => {
     document.documentElement.style.fontSize = originalRootFont;
     localStorage.removeItem('sj-pro-stock-screener-v1');
     localStorage.removeItem('sj-pro-stock-screener-v2');
+    localStorage.removeItem('sj-pro-stock-screener-v3');
 });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === text)!;
 async function mount(targets = [{ id: 'chart-a', label: '圖表 A' }], initialStatus?: Promise<Response>) {
@@ -35,7 +60,7 @@ async function mount(targets = [{ id: 'chart-a', label: '圖表 A' }], initialSt
     host.style.cssText = 'width:320px;height:550px;display:flex;flex-direction:column;font-size:24px';
     document.body.append(host); root = createRoot(host);
     const onPick = vi.fn(async () => true), onOpenChart = vi.fn(() => 'new-chart'), onTargetChange = vi.fn();
-    const fetcher = vi.fn(async (url: string) => url.endsWith('/status') && initialStatus ? initialStatus : Response.json(ready)); vi.stubGlobal('fetch', fetcher);
+    const fetcher = vi.fn(async (url: string) => url.includes('/status?') && initialStatus ? initialStatus : Response.json(ready)); vi.stubGlobal('fetch', fetcher);
     await act(async () => root?.render(createElement(StockScreenerPanel, { targets, onPick, onOpenChart, onTargetChange })));
     return { host, onPick, onOpenChart, onTargetChange, fetcher };
 }
@@ -85,21 +110,41 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(button(host, '開始篩選').disabled).toBe(true);
         expect(host.querySelector('[role=alert]')?.textContent).toContain('至少啟用一項條件');
     });
-    it('v1 偏好安全遷移，四週反轉及兩個成交值分別送出 v2 query', async () => {
+    it('v1 偏好安全遷移，四週反轉及兩個成交值分別送出 v3 query', async () => {
         localStorage.setItem('sj-pro-stock-screener-v1', JSON.stringify({ version: 1, query: { criteria: { mode: 'all', volume: { enabled: true, threshold: '4' }, holder: { enabled: true, threshold: '0.3' } }, sort: 'code', direction: 'asc', resultState: 'pass' } }));
         const { host, fetcher } = await mount();
         expect(host.querySelector<HTMLInputElement>('[aria-label="成交量倍數"]')!.value).toBe('4');
         expect(host.querySelector<HTMLInputElement>('[aria-label="大戶週增百分點"]')!.value).toBe('0.3');
-        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v2')!).version).toBe(2);
+        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v3')!).version).toBe(3);
         const mode = host.querySelector<HTMLSelectElement>('[aria-label="大戶持股模式"]')!;
         await act(async () => { mode.value = 'decrease-to-increase'; mode.dispatchEvent(new Event('change', { bubbles: true })); });
         const weeks = host.querySelector<HTMLInputElement>('[aria-label="反轉前連續週數"]')!;
         await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(weeks, '4'); weeks.dispatchEvent(new Event('input', { bubbles: true })); });
-        for (const checkbox of host.querySelectorAll<HTMLInputElement>('input[type=checkbox][aria-label]')) await act(async () => checkbox.click());
+        for (const label of ['成交量條件啟用最低成交值', '大戶條件啟用最低成交值'])
+            await act(async () => host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.click());
         await act(async () => button(host, '開始篩選').click());
         const request = String(fetcher.mock.calls.at(-1)?.[0]);
-        expect(request).toContain('version=2'); expect(request).toContain('holderMode=decrease-to-increase');
+        expect(request).toContain('version=3'); expect(request).toContain('holderMode=decrease-to-increase');
         expect(request).toContain('holderStreakWeeks=4'); expect(request).toContain('volumeTurnover=true'); expect(request).toContain('holderTurnover=true');
+        expect(request).toContain('fractal=false'); expect(request).toContain('bollReversal=false');
+    });
+    it('v2 偏好只遷移一次且技術條件預設關閉；啟用後顯示可稽核證據', async () => {
+        localStorage.setItem('sj-pro-stock-screener-v2', JSON.stringify({ version: 2, query: { criteria: DEFAULT_V2, sort: 'holderChange', direction: 'desc', resultState: 'pass' } }));
+        const { host, fetcher, onPick } = await mount();
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用 K 棒分型"]')!.checked).toBe(false);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用布林通道反轉 K"]')!.checked).toBe(false);
+        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v3')!).query.sort).toBe('holderChange');
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用 K 棒分型"]')!.click());
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用布林通道反轉 K"]')!.click());
+        await act(async () => button(host, '開始篩選').click());
+        const request = String(fetcher.mock.calls.at(-1)?.[0]);
+        expect(request).toContain('fractal=true'); expect(request).toContain('bollReversal=true');
+        expect(host.textContent).toContain('中心 2026-08-27 · 確認 2026-08-28');
+        expect(host.textContent).toContain('下軌陽 K＋下影 · 2026-08-28');
+        expect(host.textContent).toContain('技術型態：');
+        const row = [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.includes('3008 測試商品'))!;
+        await act(async () => row.click());
+        expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ symbol: '3008.TW' }), 'chart-a');
     });
     it('離線明確保留舊結果，不偽裝無符合', async () => {
         const { host, fetcher } = await mount();
