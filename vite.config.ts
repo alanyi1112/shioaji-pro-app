@@ -12,6 +12,7 @@ import {
     normalizeRuntimeMode,
 } from './src/lib/runtime-mode-shared';
 import { smartOrderSameOriginGateway } from './scripts/smart-order-runtime/vite-same-origin-gateway.mjs';
+import { stockScreenerGateway } from './scripts/stock-screener-gateway.mjs';
 
 function runtimeModeFile() {
     return (
@@ -180,6 +181,7 @@ export default defineConfig(({ command, mode, isPreview }) => {
                 : []),
             ...(isManagedLocalServe
                 ? [
+                      stockScreenerGateway(),
                       smartOrderSameOriginGateway({
                           appSupportRoot: smartOrderAppSupportRoot(),
                       }),

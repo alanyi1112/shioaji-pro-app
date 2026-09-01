@@ -116,6 +116,10 @@ describe('smart-order panel workspace contract', () => {
 });
 
 describe('workspace storage compatibility', () => {
+    it('選股為可保存的 singleton，不強制插入既有版面', () => {
+        expect(BLOCK_META.screener).toMatchObject({label:'選股',singleton:true,pinnable:false});
+        expect(LAYOUT_PRESETS.every(preset=>preset.workspace.blocks.every(block=>block.type!=='screener'))).toBe(true);
+    });
     it('round-trips current and named layouts through the existing storage keys', () => {
         const stored = new Map<string, string>();
         const previousLocalStorage = globalThis.localStorage;

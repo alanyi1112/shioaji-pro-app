@@ -4,6 +4,7 @@ import type { LayoutItem } from 'react-grid-layout';
 
 export type BlockType =
     | 'watchlist'
+    | 'screener'
     | 'movers'
     | 'dock'
     | 'chart'
@@ -71,6 +72,10 @@ export const BLOCK_META: Record<
         pinnable: false,
         singleton: true,
         defaultSize: { w: 4, h: 14, minW: 3, minH: 6 },
+    },
+    screener: {
+        label: '選股', pinnable: false, singleton: true,
+        defaultSize: { w: 7, h: 16, minW: 5, minH: 7 },
     },
     movers: {
         label: '排行榜',

@@ -38,6 +38,8 @@ import { DepthMap } from './components/depth-map';
 import { PanelChrome } from './components/panel-chrome';
 import { QuoteBoard } from './components/quote-board';
 import { ScannerPanel } from './components/scanner-panel';
+import { StockScreenerPanel, type StockScreenerPanelProps } from './components/stock-screener-panel';
+import { createScreenerChartSelection } from './lib/screener-chart-selection';
 import { SmartOrderPanel } from './components/smart-order-panel';
 import { TickTape } from './components/tick-tape';
 import { TrayPanel } from './components/tray-panel';
@@ -125,7 +127,8 @@ function useBlockContract(
     block: Block,
     selected: ContractInfo | null,
 ): ContractInfo | null {
-    const pinned = useContract(block.pin);
+    // Chart-only selections also follow Contract V2 daily cache refreshes.
+    const pinned = useContract(block.pin ?? (block.type === 'chart' ? selected?.code ?? null : null));
     useEffect(() => {
         if (block.pin && !pinned) {
             ensureContract(block.pin).catch(() =>
@@ -137,7 +140,7 @@ function useBlockContract(
             );
         }
     }, [block.pin, pinned]);
-    return block.pin ? (pinned ?? null) : selected;
+    return block.pin ? (pinned ?? null) : block.type === 'chart' ? (pinned ?? selected) : selected;
 }
 
 function BlockBody({
@@ -147,6 +150,8 @@ function BlockBody({
     watchlistProps,
     dockProps,
     onSelectCode,
+    screenerProps,
+    chartInitiallyDaily,
     onPulseConfigChange,
     refreshTrading,
 }: {
@@ -156,6 +161,8 @@ function BlockBody({
     watchlistProps: React.ComponentProps<typeof Watchlist>;
     dockProps: React.ComponentProps<typeof BottomDock>;
     onSelectCode: QuotePickHandler;
+    screenerProps: StockScreenerPanelProps;
+    chartInitiallyDaily?: boolean;
     onPulseConfigChange: (
         id: string,
         sections: PulseSection[],
@@ -171,6 +178,8 @@ function BlockBody({
             return <Watchlist {...watchlistProps} />;
         case 'movers':
             return <ScannerPanel onPick={onSelectCode} />;
+        case 'screener':
+            return <StockScreenerPanel {...screenerProps} />;
         case 'dock':
             return <BottomDock {...dockProps} />;
         case 'chart':
@@ -179,6 +188,7 @@ function BlockBody({
                     <QuoteBoard contract={contract} snapshot={snapshot} />
                     <CandleChart
                         contract={contract}
+                        initialDaily={chartInitiallyDaily}
                         trades={dockProps.trades}
                         onOrdersChanged={dockProps.onTradesChanged}
                     />
@@ -357,6 +367,9 @@ function IndexBlockUnavailable({ type }: { type: BlockType }) {
 interface BlockViewProps {
     block: Block;
     selected: ContractInfo | null;
+    chartSelection?: ContractInfo;
+    chartInitiallyDaily?: boolean;
+    screenerProps: StockScreenerPanelProps;
     onPinChange: (id: string, pin: string | null) => void;
     onRemove: (id: string) => void;
     snapshot?: Snapshot;
@@ -372,8 +385,8 @@ interface BlockViewProps {
 }
 
 function BlockView(props: BlockViewProps) {
-    const { block, selected, onPinChange, onRemove, ...bodyProps } = props;
-    const contract = useBlockContract(block, selected);
+    const { block, selected, chartSelection, onPinChange, onRemove, ...bodyProps } = props;
+    const contract = useBlockContract(block, block.type === 'chart' ? chartSelection ?? selected : selected);
     const meta = BLOCK_META[block.type];
     const showSymbol =
         meta.pinnable && contract ? ` · ${contract.code}` : '';
@@ -388,7 +401,7 @@ function BlockView(props: BlockViewProps) {
                 title={`${meta.label}${pulseMarket}${showSymbol}`}
                 pinnable={meta.pinnable}
                 pin={block.pin}
-                currentCode={selected?.code ?? null}
+                currentCode={contract?.code ?? null}
                 onPinChange={(pin) => onPinChange(block.id, pin)}
                 onRemove={() => onRemove(block.id)}
                 onPopout={
@@ -558,6 +571,20 @@ function TradingApp() {
     const selectionGenerationRef = useRef(0);
     const cachedSelected = useContract(selected?.code ?? null);
     const [workspace, setWorkspace] = useState<Workspace>(loadWorkspace);
+    const workspaceRef = useRef(workspace);
+    workspaceRef.current = workspace;
+    const [chartSelections, setChartSelections] = useState<Record<string, ContractInfo>>({});
+    const [dailyChartIds, setDailyChartIds] = useState<Set<string>>(() => new Set());
+    const [screenerSelection] = useState(() => createScreenerChartSelection(
+        () => workspaceRef.current.blocks,
+        ensureContract,
+        (id, contract) => setChartSelections((old) => ({ ...old, [id]: contract })),
+    ));
+    const clearChartSelections = useCallback(() => {
+        screenerSelection.cancel();
+        setChartSelections({});
+    }, [screenerSelection]);
+    useEffect(() => { clearChartSelections(); }, [selected?.code, clearChartSelections]);
     const [profiles, setProfiles] = useState<Profile[]>(loadProfiles);
     const { width, containerRef, mounted } = useContainerWidth();
 
@@ -656,6 +683,7 @@ function TradingApp() {
     // select & link a symbol WITHOUT adding it to the watchlist
     const selectByCode = useCallback<QuotePickHandler>(
         async (code, sourceSnapshot) => {
+            clearChartSelections();
             const generation = nextGeneration(selectionGenerationRef);
             if (sourceSnapshot?.code === code) {
                 setExternalSnapshot({ code, snapshot: sourceSnapshot });
@@ -720,7 +748,7 @@ function TradingApp() {
                 });
             }
         },
-        [items],
+        [items, clearChartSelections],
     );
 
     // tray-panel clicks link the symbol into the main window
@@ -803,12 +831,15 @@ function TradingApp() {
                 blocks: [...workspace.blocks, { id, type, pin: null }],
                 layout: [...workspace.layout, item],
             });
+            return id;
         },
         [workspace, updateWorkspace],
     );
 
     const removeBlock = useCallback(
         (id: string) => {
+            screenerSelection.cancel();
+            setChartSelections((old) => Object.fromEntries(Object.entries(old).filter(([key]) => key !== id)));
             const gone = workspace.blocks.find((b) => b.id === id);
             if (gone) trackActivity('關面板', gone.type);
             updateWorkspace({
@@ -816,11 +847,13 @@ function TradingApp() {
                 layout: workspace.layout.filter((l) => l.i !== id),
             });
         },
-        [workspace, updateWorkspace],
+        [workspace, updateWorkspace, screenerSelection],
     );
 
     const setBlockPin = useCallback(
         (id: string, pin: string | null) => {
+            screenerSelection.cancel();
+            setChartSelections((old) => Object.fromEntries(Object.entries(old).filter(([key]) => key !== id)));
             updateWorkspace({
                 ...workspace,
                 blocks: workspace.blocks.map((b) =>
@@ -828,7 +861,7 @@ function TradingApp() {
                 ),
             });
         },
-        [workspace, updateWorkspace],
+        [workspace, updateWorkspace, screenerSelection],
     );
 
     const setBlockPulseConfig = useCallback(
@@ -850,13 +883,15 @@ function TradingApp() {
     );
 
     const resetWorkspace = useCallback(() => {
+        clearChartSelections();
         updateWorkspace(structuredClone(DEFAULT_WORKSPACE));
-    }, [updateWorkspace]);
+    }, [updateWorkspace, clearChartSelections]);
 
     const loadPreset = useCallback(
         (name: string) => {
             const preset = LAYOUT_PRESETS.find((p) => p.name === name);
             if (preset) {
+                clearChartSelections();
                 updateWorkspace(structuredClone(preset.workspace));
                 trackActivity('套版面', name);
                 notify({
@@ -866,7 +901,7 @@ function TradingApp() {
                 });
             }
         },
-        [updateWorkspace],
+        [updateWorkspace, clearChartSelections],
     );
 
     // ---- profiles ----
@@ -893,6 +928,7 @@ function TradingApp() {
         (name: string) => {
             const p = profiles.find((x) => x.name === name);
             if (p) {
+                clearChartSelections();
                 updateWorkspace(structuredClone(p.workspace));
                 trackActivity('套版面', name);
                 notify({
@@ -902,7 +938,7 @@ function TradingApp() {
                 });
             }
         },
-        [profiles, updateWorkspace],
+        [profiles, updateWorkspace, clearChartSelections],
     );
 
     const deleteProfile = useCallback(
@@ -961,6 +997,7 @@ function TradingApp() {
         items,
         selectedCode: selected?.code ?? null,
         onSelect: (contract: ContractInfo) => {
+            clearChartSelections();
             nextGeneration(selectionGenerationRef);
             setExternalSnapshot(null);
             setSelected(contract);
@@ -983,6 +1020,19 @@ function TradingApp() {
         margin: marginPoll.data,
         onTradesChanged: refreshTrading,
         onSelectCode: selectByCode,
+    };
+    const screenerProps: StockScreenerPanelProps = {
+        targets: workspace.blocks.filter((block) => block.type === 'chart' && !block.pin).map((block, index) => ({
+            id: block.id, label: `K 線圖 ${index + 1} · ${chartSelections[block.id]?.code ?? selected?.code ?? '等待商品'}`,
+        })),
+        onPick: screenerSelection.pick,
+        onTargetChange: screenerSelection.cancel,
+        onOpenChart: () => {
+            screenerSelection.cancel();
+            const id = addBlock('chart');
+            if (id) setDailyChartIds((old) => new Set([...old, id]));
+            return id;
+        },
     };
 
     return (
@@ -1055,10 +1105,13 @@ function TradingApp() {
                                 <BlockView
                                     block={block}
                                     selected={selected}
+                                    chartSelection={chartSelections[block.id]}
+                                    chartInitiallyDaily={dailyChartIds.has(block.id)}
+                                    screenerProps={screenerProps}
                                     onPinChange={setBlockPin}
                                     onRemove={removeBlock}
                                     snapshot={
-                                        block.pin
+                                        block.pin || (block.type === 'chart' && chartSelections[block.id])
                                             ? undefined
                                             : selectedSnapshot
                                     }

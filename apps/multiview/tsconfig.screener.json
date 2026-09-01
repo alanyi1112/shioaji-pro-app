@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "allowImportingTsExtensions": true,
+    "incremental": false
+  },
+  "include": ["worker/stock-screener-*.ts"],
+  "exclude": ["node_modules"]
+}

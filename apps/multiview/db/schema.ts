@@ -1,6 +1,40 @@
 import { check, index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
+// 選股底稿與個人清單／長歷史佇列完全隔離。
+export const screenerUniverse = sqliteTable("screener_universe", {
+  revision: text("revision").notNull(), symbol: text("symbol").notNull(),
+  market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
+  dataDate: text("data_date").notNull(), payload: text("payload").notNull(),
+}, (table) => [primaryKey({ columns: [table.revision, table.symbol] })]);
+
+export const screenerDailyVolume = sqliteTable("screener_daily_volume", {
+  symbol: text("symbol").notNull(), dataDate: text("data_date").notNull(),
+  payload: text("payload").notNull(),
+}, (table) => [primaryKey({ columns: [table.dataDate, table.symbol] })]);
+
+export const screenerTdccWeekly = sqliteTable("screener_tdcc_weekly", {
+  symbol: text("symbol").notNull(), dataDate: text("data_date").notNull(),
+  payload: text("payload").notNull(), validation: text("validation").notNull(),
+}, (table) => [primaryKey({ columns: [table.dataDate, table.symbol] })]);
+
+export const screenerRuns = sqliteTable("screener_runs", {
+  id: text("id").primaryKey(), scope: text("scope").notNull(),
+  status: text("status").notNull(), checkpoint: text("checkpoint").notNull(),
+  leaseUntil: text("lease_until"), updatedAt: text("updated_at").notNull(),
+}, (table) => [index("screener_runs_scope_status_idx").on(table.scope, table.status)]);
+
+export const screenerSnapshots = sqliteTable("screener_snapshots", {
+  id: text("id").primaryKey(), createdAt: text("created_at").notNull(),
+  status: text("status", { enum: ["staging", "published"] }).notNull(),
+  metadata: text("metadata").notNull(), schemaVersion: integer("schema_version").notNull().default(1),
+}, (table) => [index("screener_snapshots_published_idx").on(table.status, table.createdAt)]);
+
+export const screenerSnapshotRows = sqliteTable("screener_snapshot_rows", {
+  snapshotId: text("snapshot_id").notNull().references(() => screenerSnapshots.id, { onDelete: "cascade" }),
+  symbol: text("symbol").notNull(), payload: text("payload").notNull(),
+}, (table) => [primaryKey({ columns: [table.snapshotId, table.symbol] })]);
+
 export const userTabs = sqliteTable("user_tabs", {
   userId: text("user_id").notNull(),
   id: text("id").notNull(),

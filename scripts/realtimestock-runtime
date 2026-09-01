@@ -2102,6 +2102,7 @@ service_multiview_daily_pipeline() {
     env PE_RIVER_BACKFILL_SECRET="${pipeline_secret}" PE_RIVER_INGEST_SECRET="${pipeline_secret}" \
         "${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs \
         --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-pe-$(date +%Y%m%d-%H)"
+    service_multiview_screener_pipeline
 }
 
 service_multiview_tdcc_pipeline() {
@@ -2116,6 +2117,24 @@ service_multiview_tdcc_pipeline() {
         "${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs --continuous \
         --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-tdcc-$(date +%Y%m%d)" \
         --checkpoint="${checkpoint_dir}/continuous.json" --claim-limit=2 --max-run-ms=1200000
+    service_multiview_screener_pipeline
+}
+
+# Runs after existing maintenance, and remains disabled until verified bootstrap enables it.
+# This does not install/restart any service or activate TDCC historical backfill.
+service_multiview_screener_pipeline() {
+    local screener_database
+    local -a screener_databases
+    screener_databases=("${(@f)$(find "${MULTIVIEW_STATE_DIR}/state/v3/d1" -type f -name '*.sqlite' ! -name 'metadata.sqlite' -print)}")
+    if (( ${#screener_databases} != 1 )); then
+        print -u2 '選股更新未執行：本機資料庫目標不唯一'
+        return 0
+    fi
+    screener_database="${screener_databases[1]}"
+    [[ -f "${screener_database}" ]] || return 0
+    "${NODE_BIN}" "${REPO_DIR}/scripts/stock-screener-update.mjs" \
+        --database="${screener_database}" --scheduled \
+        || print -u2 '選股資料更新暫未就緒；既有維護工作不受影響'
 }
 
 service_multiview_tdcc_watcher() {
@@ -2129,6 +2148,7 @@ service_multiview_tdcc_watcher() {
     print -r -- "${probe}" | jq -e '.ok == true and (.queue.shouldRun | type == "boolean")' >/dev/null
     if [[ "$(print -r -- "${probe}" | jq -r '.queue.shouldRun')" != 'true' ]]; then
         print '{"event":"tdcc-watcher-noop","reason":"queue_empty"}'
+        service_multiview_screener_pipeline
         return 0
     fi
     lock_dir="${MULTIVIEW_STATE_DIR}/locks/tdcc-watcher"
@@ -2146,6 +2166,7 @@ service_multiview_tdcc_watcher() {
         --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="${run_id}" \
         --checkpoint="${MULTIVIEW_STATE_DIR}/checkpoints/tdcc/continuous.json" --claim-limit=2 --max-run-ms=1200000 || exit_code=$?
     command rmdir "${lock_dir}" 2>/dev/null || true
+    if (( exit_code == 0 )); then service_multiview_screener_pipeline; fi
     return "${exit_code}"
 }
 

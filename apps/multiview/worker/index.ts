@@ -11,6 +11,8 @@ import { handleLocalShioajiAdapter } from "./local-shioaji-adapter";
 import { handleLocalOrderTicketBridge } from "./local-order-ticket-bridge";
 import { handleLocalMaintenance } from "./local-maintenance";
 import { withLocalLauncherCors } from "./local-launcher-cors";
+import { handleStockScreener } from "./stock-screener-route";
+import { collectScreenerData } from "./stock-screener-collector";
 
 export { RealtimeMarketHub } from "./realtime-hub";
 
@@ -36,11 +38,17 @@ const worker = {
     const authorizationFailure = await authorizeCloudflarePrincipal(request, env.DB, env.ACCESS_OWNER_EMAIL);
     if (authorizationFailure) return authorizationFailure;
 
+    const screenerResponse = await handleStockScreener(request, env);
+    if (screenerResponse) return screenerResponse;
+
     const localShioajiResponse = await handleLocalShioajiAdapter(request, env);
     if (localShioajiResponse) return withLocalLauncherCors(request, localShioajiResponse);
     const localOrderTicketResponse = await handleLocalOrderTicketBridge(request, env);
     if (localOrderTicketResponse) return localOrderTicketResponse;
     const localMaintenanceResponse = await handleLocalMaintenance(request, env, ctx, {
+      async screener(currentEnv, scope) {
+        return collectScreenerData((currentEnv as Env).DB!, scope);
+      },
       async daily(currentEnv, scheduledTime) {
         const typedEnv = currentEnv as Env;
         await cleanupExpiredCandleCache(typedEnv.DB, new Date(scheduledTime));

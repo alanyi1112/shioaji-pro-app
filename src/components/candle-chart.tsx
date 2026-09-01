@@ -281,17 +281,19 @@ export function CandleChart({
     contract,
     trades = [],
     onOrdersChanged,
+    initialDaily = false,
 }: {
     contract: ContractInfo;
     trades?: Trade[];
     onOrdersChanged?: () => void;
+    initialDaily?: boolean;
 }) {
     const hostRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
     const lastBarRef = useRef<Candle | null>(null);
-    const [tfIdx, setTfIdx] = useState(1); // default 5m
+    const [tfIdx, setTfIdx] = useState(initialDaily ? 4 : 1); // Existing charts keep 5m; explicit screener charts start daily.
     const [empty, setEmpty] = useState(false);
     const [loading, setLoading] = useState(false);
     const loadingRef = useRef(loading);
