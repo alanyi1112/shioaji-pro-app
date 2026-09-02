@@ -1347,7 +1347,7 @@ test("台股官方核對會對齊交易日、重用全市場資料並保持 stre
     assert.deepEqual(honHai.dataQuality.verificationMismatchFields, ["volume"]);
     assert.deepEqual(tsmc.dataQuality.ignoredSessionDates, ["2026-07-10"]);
     assert.equal(tsmc.dataQuality.reason, "zero_volume_flat_carry_forward");
-    assert.equal(tsmc.dataQuality.continuity.status, "unknown");
+    assert.equal(tsmc.dataQuality.continuity.status, "complete");
     assert.deepEqual(tsmc.quote.dataQuality, tsmc.dataQuality);
     assert.equal(new Date(tsmc.candles.at(-1).time * 1000).toISOString().slice(0, 10), "2026-07-09");
 
@@ -1854,7 +1854,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.doesNotMatch(chipScript, /個百分點|\s百分點/);
   assert.ok(chipScript.includes('directionalSegment("週變化", exact.direction, (value) => `${formatSigned(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}%`)'));
   assert.ok(chipScript.includes('directionalSegment("持股", exact.lotsChange, (value) => `${formatSigned(value, { maximumFractionDigits: 1 })} 張`)'));
-  assert.match(chipScript, /const lotsChange = previousLots === null \? null : aggregate\.lots - previousLots/);
+  assert.match(chipScript, /const lotsChange = historyGap \|\| previousLots === null \? null : aggregate\.lots - previousLots/);
   assert.match(chipScript, /\["持股增減", holdingLotsChange\]/);
   assert.doesNotMatch(chipScript, /className = "chip-series-control"|summary\.textContent = "項目"/);
   assert.match(chipScript, /seriesSection\.className = "chip-pane-context-series"/);

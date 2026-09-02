@@ -129,6 +129,34 @@ test("TDCC response 以實際前一期 dataDate 回傳總戶數與級距人數�
   assert.deepEqual(decorated[1].largeHolder400.levelIds, [12, 13, 14, 15]);
 });
 
+test("TDCC 非相鄰週不跨缺口冒充單週變化", () => {
+  const first = parseTdccSnapshot(tdccFixture, new Set(["2330.TW"]))[0];
+  const later = parseTdccSnapshot(tdccFixture.map(row => ({ ...row, "\uFEFF資料日期": "20260730" })), new Set(["2330.TW"]))[0];
+  const decorated = decorateDistributionRows([first, later]);
+  assert.equal(decorated[1].holderMetrics.previousDataDate, "2026-07-09");
+  assert.equal(decorated[1].holderMetrics.adjacentPeriod, false);
+  assert.equal(decorated[1].holderMetrics.historyGap, true);
+  assert.equal(decorated[1].holderMetrics.totalHoldersChange, null);
+  assert.equal(decorated[1].holderMetrics.largeHolder.holdersChange, null);
+});
+
+test("TDCC refresh 暫時只回一期時，最終 D1 已保留多期便不再顯示單期假警告", async () => {
+  const db = new ChipFakeD1();
+  const latest = parseTdccSnapshot(tdccFixture, new Set(["2330.TW"]))[0];
+  const previous = parseTdccSnapshot(tdccFixture.map(row => ({ ...row, "\uFEFF資料日期": "20260702" })), new Set(["2330.TW"]))[0];
+  for (const row of [previous, latest]) db.distribution.set(`${row.symbol}|${row.dataDate}`, {
+    symbol: row.symbol, data_date: row.dataDate, levels_json: JSON.stringify(row.levels), adjustment_json: JSON.stringify(row.adjustment), total_json: JSON.stringify(row.total),
+    provider: "tdcc", frequency: "weekly", source_fetched_at: "2026-07-10T00:00:00Z",
+  });
+  const result = await taiwanStockChipPayload({
+    url: new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-07-01&end=2026-07-10&datasets=shareholder-distribution"),
+    env: { DB: db }, eligibility: eligible, fetchImpl: async () => Response.json(tdccFixture),
+  });
+  assert.equal(result.body.distributionRows.length, 2);
+  assert.equal(result.body.shareholderDistribution.displayWeeks, 2);
+  assert.ok(result.body.warnings.every(message => !message.includes("目前僅有一期集保週資料")));
+});
+
 test("TDCC coverage 安全回傳官方計畫、完整缺週數、bounded dates 與 handoff evidence", async () => {
   const db = new ChipFakeD1();
   const missingDates = Array.from({ length: 13 }, (_, index) => `2026-${String(6 - Math.floor(index / 4)).padStart(2, "0")}-${String(27 - (index % 4) * 7).padStart(2, "0")}`).sort();
@@ -758,8 +786,12 @@ test("TDCC 只有較新合法快照時明確回傳 history_not_archived", async 
     dataset: "shareholder-distribution", start: null, end: null,
     requestedStart: "2026-06-01", requestedEnd: "2026-06-30",
     frequency: "weekly", status: "history_not_archived",
-    frequencyLabel: "週資料／當週最後營業日", savedWeeks: 0,
-    expectedWeeks: 0, completedWeeks: 0, failedWeeks: 0, backfillStatus: "idle", lastSuccessAt: null,
+    frequencyLabel: "週資料／當週最後營業日", savedWeeks: 0, displayWeeks: 0,
+    archiveImportedWeeks: 0, officialVerifiedWeeks: 0,
+    expectedWeeks: 0, completedWeeks: 0, remainingWeeks: 0, failedWeeks: 0, overdue: false,
+    backfillStatus: "idle", receipt: null,
+    provenance: { archiveImportedWeeks: 0, officialVerifiedWeeks: 0, conflictWeeks: 0, transports: [] },
+    lastSuccessAt: null,
   });
   assert.equal(result.body.backfill.status, "idle");
 });

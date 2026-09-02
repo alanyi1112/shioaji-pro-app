@@ -148,8 +148,23 @@ export function validateContinuousTargets(input: TdccContinuousTarget[]) {
   return [...deduped.values()].sort((a, b) => a.symbol.localeCompare(b.symbol));
 }
 
+const verifiedDistributionPredicate = `(p.symbol IS NULL
+  OR (p.transport IN ('official-openapi','official-history','legacy-verified') AND p.validation_status IN ('verified','official-confirmed','legacy-compatible'))
+  OR (p.transport='verified-archive' AND p.validation_status IN ('verified','official-confirmed') AND r.status IN ('verified','matched-existing')))`;
+
+async function verifiedSavedDates(db: D1Database, symbol: string) {
+  return db.prepare(`SELECT d.data_date FROM taiwan_stock_shareholder_distribution d
+    LEFT JOIN tdcc_distribution_row_provenance p ON p.symbol=d.symbol AND p.data_date=d.data_date
+    LEFT JOIN tdcc_archive_period_receipts r ON r.receipt_id=p.receipt_id
+    WHERE d.symbol=? AND ${verifiedDistributionPredicate} ORDER BY d.data_date`).bind(symbol).all<TdccSavedDateRow>();
+}
+
 async function coverageFor(db: D1Database, symbol: string) {
-  return db.prepare("SELECT MIN(data_date) AS coverage_start, MAX(data_date) AS coverage_end, COUNT(DISTINCT data_date) AS saved_weeks, MAX(source_fetched_at) AS last_success_at FROM taiwan_stock_shareholder_distribution WHERE symbol = ?")
+  return db.prepare(`SELECT MIN(d.data_date) AS coverage_start,MAX(d.data_date) AS coverage_end,COUNT(DISTINCT d.data_date) AS saved_weeks,MAX(d.source_fetched_at) AS last_success_at
+    FROM taiwan_stock_shareholder_distribution d
+    LEFT JOIN tdcc_distribution_row_provenance p ON p.symbol=d.symbol AND p.data_date=d.data_date
+    LEFT JOIN tdcc_archive_period_receipts r ON r.receipt_id=p.receipt_id
+    WHERE d.symbol=? AND ${verifiedDistributionPredicate}`)
     .bind(symbol).first<TdccCoverageRow>();
 }
 
@@ -204,7 +219,65 @@ export async function upsertTdccContinuousTarget(input: {
   const target = validateContinuousTargets([input.target])[0];
   const now = iso(input.now);
   await saveTdccContinuousTarget({ db: input.db, target, catalogRevision: String(input.catalogRevision || ""), now });
+  await reconcileTdccContinuousTargetFromKnownPlan({ db: input.db, symbol: target.symbol, now });
   return readTdccContinuousSymbolStatus(input.db, target.symbol);
+}
+
+export async function reconcileTdccContinuousTargetFromKnownPlan(input: {
+  db: D1Database;
+  symbol: string;
+  now?: Date | string;
+}) {
+  const symbol = normalizedSymbol(input.symbol);
+  const now = iso(input.now);
+  const target = await input.db.prepare("SELECT * FROM tdcc_continuous_symbols WHERE symbol=? AND active=1")
+    .bind(symbol).first<TdccContinuousSymbolRow>();
+  if (!target || ["running", "blocked"].includes(String(target.status || ""))) return readTdccContinuousSymbolStatus(input.db, symbol);
+  const known = await input.db.prepare(`SELECT data_date FROM tdcc_continuous_items
+    GROUP BY data_date ORDER BY data_date DESC LIMIT ?`).bind(TDCC_CONTINUOUS_CONTRACT.minimumHistoryWeeks)
+    .all<{ data_date: string }>();
+  const officialDates = known.results.map(row => String(row.data_date || "")).filter(realDate).sort();
+  if (officialDates.length < TDCC_CONTINUOUS_CONTRACT.minimumHistoryWeeks) return readTdccContinuousSymbolStatus(input.db, symbol);
+  const [savedResult, universe] = await Promise.all([
+    verifiedSavedDates(input.db, symbol),
+    input.db.prepare("SELECT listing_date FROM tdcc_archive_symbol_universe WHERE symbol=? ORDER BY manifest_version DESC LIMIT 1")
+      .bind(symbol).first<{ listing_date: string | null }>(),
+  ]);
+  const saved = new Set(savedResult.results.map(row => String(row.data_date || "")).filter(realDate));
+  const listingDate = realDate(universe?.listing_date) ? String(universe?.listing_date) : null;
+  const statements = officialDates.map((date) => {
+    const preListing = Boolean(listingDate && date < listingDate);
+    const completed = saved.has(date) || preListing;
+    return input.db.prepare(`INSERT INTO tdcc_continuous_items
+      (symbol,data_date,status,priority,completed_at,error_code,lease_owner,lease_expires_at,next_retry_at)
+      VALUES (?,?,?,100,?,?,NULL,NULL,NULL)
+      ON CONFLICT(symbol,data_date) DO UPDATE SET
+        status=CASE WHEN tdcc_continuous_items.status IN ('running','blocked') THEN tdcc_continuous_items.status ELSE excluded.status END,
+        completed_at=CASE WHEN tdcc_continuous_items.status IN ('running','blocked') THEN tdcc_continuous_items.completed_at ELSE excluded.completed_at END,
+        error_code=CASE WHEN tdcc_continuous_items.status IN ('running','blocked') THEN tdcc_continuous_items.error_code ELSE excluded.error_code END,
+        lease_owner=CASE WHEN tdcc_continuous_items.status IN ('running','blocked') THEN tdcc_continuous_items.lease_owner ELSE NULL END,
+        lease_expires_at=CASE WHEN tdcc_continuous_items.status IN ('running','blocked') THEN tdcc_continuous_items.lease_expires_at ELSE NULL END,
+        next_retry_at=CASE WHEN tdcc_continuous_items.status IN ('running','blocked') THEN tdcc_continuous_items.next_retry_at ELSE NULL END,
+        updated_at=CURRENT_TIMESTAMP`)
+      .bind(symbol, date, completed ? "completed" : "queued", completed ? now : null, preListing ? "pre_listing" : null);
+  });
+  await runD1Batch(input.db, statements);
+  const itemResult = await input.db.prepare("SELECT data_date,status,error_code FROM tdcc_continuous_items WHERE symbol=? ORDER BY data_date")
+    .bind(symbol).all<TdccItemRow>();
+  const projection = projectTdccContinuousEvidence({
+    officialDates,
+    savedRows: savedResult.results,
+    itemRows: itemResult.results,
+    latestDataDate: target.latest_snapshot_date,
+    existingStatus: target.status,
+  });
+  await input.db.prepare(`UPDATE tdcc_continuous_symbols SET
+    status=?,target_start=?,target_end=?,expected_weeks=?,completed_weeks=?,failed_weeks=?,missing_dates_json=?,checkpoint_date=?,official_plan_through=?,coverage_verified_at=?,last_error_code=NULL,next_retry_at=NULL,updated_at=CURRENT_TIMESTAMP
+    WHERE symbol=? AND active=1 AND status NOT IN ('running','blocked')`).bind(
+    projection.status, projection.targetStart, projection.targetEnd, projection.expectedWeeks, projection.completedWeeks,
+    projection.failedWeeks, JSON.stringify(projection.missingDates), projection.checkpoint, projection.officialPlanThrough, now, symbol,
+  ).run();
+  return readTdccContinuousSymbolStatus(input.db, symbol);
 }
 
 export async function queueTdccContinuousSymbolBackfill(input: {
@@ -219,6 +292,9 @@ export async function queueTdccContinuousSymbolBackfill(input: {
   if (current === "blocked") return { status: "blocked", backfill: toSymbolStatus(row) };
   if (current === "running") return { status: "already-running", backfill: toSymbolStatus(row) };
   if (current === "queued") return { status: "queued", backfill: toSymbolStatus(row) };
+  if (current === "completed" && Number(row.completed_weeks || 0) >= Number(row.expected_weeks || 0) && Number(row.expected_weeks || 0) >= TDCC_CONTINUOUS_CONTRACT.minimumHistoryWeeks) {
+    return { status: "completed", backfill: toSymbolStatus(row) };
+  }
   const now = iso(input.now);
   await input.db.prepare(`UPDATE tdcc_continuous_symbols SET status='queued',last_error_code=NULL,next_retry_at=NULL,
     lease_owner=NULL,lease_expires_at=NULL,last_seen_at=?,updated_at=CURRENT_TIMESTAMP
@@ -294,7 +370,7 @@ export function projectTdccContinuousEvidence(input: {
 
 async function projectTdccContinuousLedger(db: D1Database, symbol: string, row: TdccContinuousSymbolRow) {
   const [savedResult, itemResult] = await Promise.all([
-    db.prepare("SELECT data_date FROM taiwan_stock_shareholder_distribution WHERE symbol=? ORDER BY data_date").bind(symbol).all<TdccSavedDateRow>(),
+    verifiedSavedDates(db, symbol),
     db.prepare("SELECT data_date,status,error_code FROM tdcc_continuous_items WHERE symbol=? ORDER BY data_date").bind(symbol).all<TdccItemRow>(),
   ]);
   const itemRows = itemResult.results || [];
@@ -431,7 +507,7 @@ export async function planTdccContinuousDates(input: { db: D1Database; symbol: s
   const claimed = await input.db.prepare("SELECT * FROM tdcc_continuous_symbols WHERE symbol=? AND lease_owner=? AND status='running'").bind(symbol, input.owner).first<TdccContinuousSymbolRow>();
   if (!claimed) throw new Error("invalid_response");
   const [savedResult, itemResult] = await Promise.all([
-    input.db.prepare("SELECT data_date FROM taiwan_stock_shareholder_distribution WHERE symbol=? ORDER BY data_date").bind(symbol).all<TdccSavedDateRow>(),
+    verifiedSavedDates(input.db, symbol),
     input.db.prepare("SELECT data_date,status,error_code FROM tdcc_continuous_items WHERE symbol=? ORDER BY data_date").bind(symbol).all<TdccItemRow>(),
   ]);
   const { saved, completed } = resolvedTdccContinuousDates(savedResult.results || [], itemResult.results || []);

@@ -7,11 +7,13 @@ import {
   failTdccContinuousWork,
   planTdccContinuousDates,
   probeTdccContinuousQueue,
+  queueTdccContinuousSymbolBackfill,
   readTdccContinuousHealth,
   readTdccContinuousSymbolStatus,
   recordTdccLatestSnapshot,
   startTdccContinuousRun,
   syncTdccContinuousTargets,
+  upsertTdccContinuousTarget,
 } from "../worker/tdcc-continuous-backfill.ts";
 import { applyDrizzleSql, SqliteD1 } from "./helpers/sqlite-d1.mjs";
 import { AEMC_SAVED_DATES, LARGAN_SAVED_DATES, OFFICIAL_TDCC_DATES, savedDateRows } from "./fixtures/tdcc-holder-continuity.mjs";
@@ -21,6 +23,7 @@ const migration6 = await readFile(new URL("../drizzle/0006_thin_mentor.sql", imp
 const migration7 = await readFile(new URL("../drizzle/0007_clever_mach_iv.sql", import.meta.url), "utf8");
 const migration8 = await readFile(new URL("../drizzle/0008_dazzling_rafael_vega.sql", import.meta.url), "utf8");
 const migration24 = await readFile(new URL("../drizzle/0024_gifted_thunderbolt_ross.sql", import.meta.url), "utf8");
+const migration30 = await readFile(new URL("../drizzle/0030_tdcc_verified_archive_bootstrap.sql", import.meta.url), "utf8");
 
 function continuousDb() {
   const db = new SqliteD1();
@@ -29,6 +32,7 @@ function continuousDb() {
   applyDrizzleSql(db, migration7);
   applyDrizzleSql(db, migration8);
   applyDrizzleSql(db, migration24);
+  applyDrizzleSql(db, migration30);
   return db;
 }
 
@@ -49,6 +53,7 @@ test("continuous migrations 保留既有 TDCC rows，並補上 baseline 與 retr
   applyDrizzleSql(db, migration7);
   applyDrizzleSql(db, migration8);
   applyDrizzleSql(db, migration24);
+  applyDrizzleSql(db, migration30);
   assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM taiwan_stock_shareholder_distribution").first("rows"), 1);
   assert.equal((await db.prepare("PRAGMA table_info(tdcc_continuous_symbols)").all()).results.some((row) => row.name === "official_baseline"), true);
   assert.equal((await db.prepare("PRAGMA table_info(tdcc_continuous_runs)").all()).results.some((row) => row.name === "next_retry_at"), true);
@@ -123,6 +128,38 @@ test("清單 target 只有兩週資料時同步後保持未核對，仍能被 du
   assert.equal(beforeClaim.officialPlanThrough, null);
   const claims = await claimTdccContinuousSymbols({ db, owner: "run-short-history", limit: 1, now: "2026-07-19T09:31:00Z" });
   assert.deepEqual(claims.map((item) => item.symbol), ["3481.TW"]);
+});
+
+test("新增商品先重用 verified archive 週次，再只排入已知官方計畫的剩餘日期", async (t) => {
+  const db = continuousDb();
+  t.after(() => db.close());
+  const symbol = "7777.TW";
+  for (const date of OFFICIAL_TDCC_DATES) {
+    await db.prepare("INSERT INTO tdcc_continuous_items (symbol,data_date,status) VALUES ('2330.TW',?,'completed')").bind(date).run();
+  }
+  await db.prepare(`INSERT INTO tdcc_archive_runs
+    (run_id,manifest_version,commit_sha,validator_version,scope,status,target_periods,processed_periods,heartbeat_at,started_at)
+    VALUES ('test-run','test-manifest','test-commit','test-validator','full-market','complete',18,18,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)`).run();
+  for (const date of OFFICIAL_TDCC_DATES.slice(-18)) {
+    const receipt = `receipt:${date}`;
+    await db.prepare(`INSERT INTO tdcc_archive_period_receipts
+      (receipt_id,run_id,manifest_version,commit_sha,validator_version,normalization_version,data_date,source_url,byte_length,payload_sha256,row_count,symbol_count,staged_symbol_count,material_hash,status)
+      VALUES (?,'test-run','test-manifest','test-commit','test-validator','v2',?,'https://example.invalid/fixed',1,'hash',17,1,1,'material','verified')`).bind(receipt, date).run();
+    await db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution
+      (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at)
+      VALUES (?,?,'[]','{}','{}','tdcc','weekly','2026-09-02T00:00:00Z')`).bind(symbol, date).run();
+    await db.prepare(`INSERT INTO tdcc_distribution_row_provenance
+      (symbol,data_date,transport,validation_status,receipt_id,normalization_version,material_hash)
+      VALUES (?,?,'verified-archive','verified',?,'v2','material')`).bind(symbol, date, receipt).run();
+  }
+  const target = await upsertTdccContinuousTarget({ db, target: { symbol, source: "user" }, now: "2026-09-02T00:00:00Z" });
+  assert.equal(target.expectedWeeks, 51);
+  assert.equal(target.completedWeeks, 18);
+  assert.equal(target.missingWeeks, 33);
+  assert.equal(target.status, "partial");
+  assert.equal(await db.prepare("SELECT COUNT(*) AS count FROM tdcc_continuous_items WHERE symbol=? AND status='completed'").bind(symbol).first("count"), 18);
+  assert.equal(await db.prepare("SELECT COUNT(*) AS count FROM tdcc_continuous_items WHERE symbol=? AND status='queued'").bind(symbol).first("count"), 33);
+  assert.equal((await queueTdccContinuousSymbolBackfill({ db, symbol, now: "2026-09-02T00:00:01Z" })).status, "queued");
 });
 
 test("gap-only 規劃、checkpoint 續跑與唯一鍵重跑維持冪等", async (t) => {

@@ -29,6 +29,7 @@ import { readTdccWorkflowDispatch } from "./tdcc-workflow-dispatch.ts";
 import { WATCHLIST_CHIP_PREWARM_CONTRACT, watchlistChipWarmWindow } from "./watchlist-chip-prewarming.ts";
 import { calculateEstimatedMarginMetrics, ESTIMATED_MARGIN_FORMULA_VERSION } from "./estimated-margin-metrics.ts";
 import { runD1Batch } from "./d1-batch.ts";
+import { tdccArchiveStatus, tdccDistributionMaterialHash, tdccStoredDistributionMaterialHash } from "./tdcc-archive-bootstrap.ts";
 
 type ChipEnv = { DB?: D1Database; FINMIND_API_TOKEN?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string };
 export type TaiwanChipEligibility = { eligible: boolean; symbol: string; exchange: "TWSE" | "TPEx" | ""; quoteType?: string; eligibleSymbols: ReadonlySet<string> };
@@ -115,7 +116,7 @@ export async function prewarmTaiwanStockChipSymbol(input: {
   url.searchParams.set("end", window.end);
   url.searchParams.set("datasets", datasets.join(","));
   const result = await taiwanStockChipPayload({ url, env: input.env, eligibility: input.eligibility, fetchImpl: input.fetchImpl, now: input.now });
-  const availability = result.body?.availability || {};
+  const availability: Record<string, { reason?: string } | undefined> = result.body?.availability || {};
   return {
     symbol: input.eligibility.symbol,
     eligible: true,
@@ -231,34 +232,38 @@ export function decorateDistributionRows(rows: DistributionRow[]) {
   let previousLargeHolders: number | null = null;
   let previousRetailHolders: number | null = null;
   let previousLarge400Holders: number | null = null;
+  let previousDataDate: string | null = null;
   return [...rows].sort((left, right) => left.dataDate.localeCompare(right.dataDate)).map((row) => {
     const largeHolder = safeAggregate(row, "large-holder-tier");
     const retailHolder = safeAggregate(row, "retail-holder-tiers");
     const largeHolder400 = safeAggregate(row, "large-holder-400");
     const totalHolders = Number.isFinite(Number(row.total?.holders)) ? Number(row.total.holders) : null;
+    const periodDays = previousDataDate ? Math.round((Date.parse(`${row.dataDate}T00:00:00Z`) - Date.parse(`${previousDataDate}T00:00:00Z`)) / 86400000) : null;
+    const adjacentPeriod = periodDays !== null && periodDays >= 4 && periodDays <= 10;
     const holderMetrics = {
       totalHolders,
-      totalHoldersChange: totalHolders === null || previousTotalHolders === null ? null : totalHolders - previousTotalHolders,
-      previousDataDate: null as string | null,
+      totalHoldersChange: !adjacentPeriod || totalHolders === null || previousTotalHolders === null ? null : totalHolders - previousTotalHolders,
+      previousDataDate,
+      adjacentPeriod,
+      historyGap: Boolean(previousDataDate && !adjacentPeriod),
       largeHolder: largeHolder ? {
         ...largeHolder,
-        holdersChange: previousLargeHolders === null ? null : largeHolder.holders - previousLargeHolders,
+        holdersChange: !adjacentPeriod || previousLargeHolders === null ? null : largeHolder.holders - previousLargeHolders,
       } : null,
       retailHolder: retailHolder ? {
         ...retailHolder,
-        holdersChange: previousRetailHolders === null ? null : retailHolder.holders - previousRetailHolders,
+        holdersChange: !adjacentPeriod || previousRetailHolders === null ? null : retailHolder.holders - previousRetailHolders,
       } : null,
       largeHolder400: largeHolder400 ? {
         ...largeHolder400,
-        holdersChange: previousLarge400Holders === null ? null : largeHolder400.holders - previousLarge400Holders,
+        holdersChange: !adjacentPeriod || previousLarge400Holders === null ? null : largeHolder400.holders - previousLarge400Holders,
       } : null,
     };
-    const previous = rows.filter((candidate) => candidate.dataDate < row.dataDate).sort((a, b) => b.dataDate.localeCompare(a.dataDate))[0];
-    holderMetrics.previousDataDate = previous?.dataDate || null;
     if (totalHolders !== null) previousTotalHolders = totalHolders;
     if (largeHolder) previousLargeHolders = largeHolder.holders;
     if (retailHolder) previousRetailHolders = retailHolder.holders;
     if (largeHolder400) previousLarge400Holders = largeHolder400.holders;
+    previousDataDate = row.dataDate;
     return { ...row, largeHolder, retailHolder, largeHolder400, holderMetrics };
   });
 }
@@ -303,6 +308,24 @@ async function readDistribution(db: D1Database | undefined, symbol: string, star
   if (!db) return [];
   const result = await db.prepare("SELECT * FROM taiwan_stock_shareholder_distribution WHERE symbol = ? AND data_date >= ? AND data_date <= ? ORDER BY data_date").bind(symbol, start, end).all<DistributionDbRow>();
   return result.results.map(dbRowToDistribution);
+}
+
+async function readDistributionProvenanceSummary(db: D1Database | undefined, symbol: string, start: string, end: string) {
+  if (!db) return { archiveImportedWeeks: 0, officialVerifiedWeeks: 0, conflictWeeks: 0, transports: [] as string[] };
+  const row = await db.prepare(`SELECT
+      COUNT(DISTINCT CASE WHEN transport='verified-archive' THEN data_date END) AS archive_weeks,
+      COUNT(DISTINCT CASE WHEN transport IN ('official-openapi','official-history') OR validation_status='official-confirmed' THEN data_date END) AS official_weeks,
+      COUNT(DISTINCT CASE WHEN validation_status='source-mismatch' THEN data_date END) AS conflict_weeks
+    FROM tdcc_distribution_row_provenance WHERE symbol=? AND data_date>=? AND data_date<=?`)
+    .bind(symbol, start, end).first<{ archive_weeks?: number; official_weeks?: number; conflict_weeks?: number }>();
+  const transports = await db.prepare(`SELECT DISTINCT transport FROM tdcc_distribution_row_provenance
+    WHERE symbol=? AND data_date>=? AND data_date<=? ORDER BY transport`).bind(symbol, start, end).all<{ transport: string }>();
+  return {
+    archiveImportedWeeks: Number(row?.archive_weeks || 0),
+    officialVerifiedWeeks: Number(row?.official_weeks || 0),
+    conflictWeeks: Number(row?.conflict_weeks || 0),
+    transports: transports.results.map(item => String(item.transport)),
+  };
 }
 
 function completeness(row: ChipDailyRow) {
@@ -375,18 +398,55 @@ async function upsertDaily(db: D1Database | undefined, exchange: string, rows: C
   return { attempted: rows.length, written: acceptedRows.length, unchanged: rows.length - acceptedRows.length };
 }
 
-async function upsertDistribution(db: D1Database | undefined, rows: DistributionRow[]) {
+async function upsertDistribution(db: D1Database | undefined, rows: DistributionRow[], transport: "official-openapi" | "official-history") {
   if (!db || !rows.length) return;
-  const statements = rows.map((row) => db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(symbol,data_date) DO UPDATE SET levels_json=excluded.levels_json,adjustment_json=excluded.adjustment_json,total_json=excluded.total_json,provider=excluded.provider,frequency=excluded.frequency,source_fetched_at=excluded.source_fetched_at,updated_at=CURRENT_TIMESTAMP WHERE taiwan_stock_shareholder_distribution.levels_json IS NOT excluded.levels_json OR taiwan_stock_shareholder_distribution.adjustment_json IS NOT excluded.adjustment_json OR taiwan_stock_shareholder_distribution.total_json IS NOT excluded.total_json OR taiwan_stock_shareholder_distribution.provider IS NOT excluded.provider OR taiwan_stock_shareholder_distribution.frequency IS NOT excluded.frequency`).bind(
-    row.symbol, row.dataDate, JSON.stringify(row.levels), JSON.stringify(row.adjustment), JSON.stringify(row.total), row.provenance.provider, row.provenance.frequency, row.provenance.fetchedAt,
-  ));
+  const archiveMaterial = new Map<string, string>();
+  for (const dataDate of [...new Set(rows.map(row => row.dataDate))]) {
+    const existing = await db.prepare(`SELECT d.symbol,d.levels_json,d.total_json FROM taiwan_stock_shareholder_distribution d
+      INNER JOIN tdcc_distribution_row_provenance p ON p.symbol=d.symbol AND p.data_date=d.data_date
+      WHERE d.data_date=? AND p.transport='verified-archive'`).bind(dataDate)
+      .all<{ symbol: string; levels_json: string; total_json: string }>();
+    for (const item of existing.results) {
+      try { archiveMaterial.set(`${item.symbol}|${dataDate}`, await tdccStoredDistributionMaterialHash(item.levels_json, item.total_json)); }
+      catch { archiveMaterial.set(`${item.symbol}|${dataDate}`, "invalid"); }
+    }
+  }
+  const statements = [];
+  for (const row of rows) {
+    const levels = JSON.stringify(row.levels);
+    const adjustment = JSON.stringify(row.adjustment);
+    const total = JSON.stringify(row.total);
+    const materialHash = await tdccDistributionMaterialHash(row);
+    const existingArchiveHash = archiveMaterial.get(`${row.symbol}|${row.dataDate}`);
+    const canonicalMatch = !existingArchiveHash || existingArchiveHash === materialHash;
+    const sourceUrl = transport === "official-history" ? "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock" : "https://openapi.tdcc.com.tw/v1/opendata/1-5";
+    statements.push(db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at)
+      VALUES (?,?,?,?,?,?,?,?)
+      ON CONFLICT(symbol,data_date) DO UPDATE SET levels_json=excluded.levels_json,adjustment_json=excluded.adjustment_json,total_json=excluded.total_json,provider=excluded.provider,frequency=excluded.frequency,source_fetched_at=excluded.source_fetched_at,updated_at=CURRENT_TIMESTAMP
+      WHERE NOT EXISTS (SELECT 1 FROM tdcc_distribution_row_provenance p WHERE p.symbol=excluded.symbol AND p.data_date=excluded.data_date AND p.transport='verified-archive')`)
+      .bind(row.symbol, row.dataDate, levels, adjustment, total, row.provenance.provider, row.provenance.frequency, row.provenance.fetchedAt));
+    statements.push(db.prepare(`INSERT INTO tdcc_distribution_row_provenance
+      (symbol,data_date,transport,validation_status,source_url,normalization_version,material_hash,official_confirmed_at)
+      VALUES (?,?,?,'official-confirmed',?,'tdcc-official-distribution-v2',?,CURRENT_TIMESTAMP)
+      ON CONFLICT(symbol,data_date) DO UPDATE SET
+        transport=CASE WHEN tdcc_distribution_row_provenance.transport='verified-archive' THEN tdcc_distribution_row_provenance.transport ELSE excluded.transport END,
+        validation_status=CASE WHEN ?=1 THEN 'official-confirmed' ELSE 'source-mismatch' END,
+        source_url=CASE WHEN tdcc_distribution_row_provenance.transport='verified-archive' THEN tdcc_distribution_row_provenance.source_url ELSE excluded.source_url END,
+        material_hash=CASE WHEN ?=1 THEN excluded.material_hash ELSE tdcc_distribution_row_provenance.material_hash END,
+        official_confirmed_at=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE tdcc_distribution_row_provenance.official_confirmed_at END,
+        updated_at=CURRENT_TIMESTAMP`)
+      .bind(row.symbol, row.dataDate, transport, sourceUrl, materialHash, canonicalMatch ? 1 : 0, canonicalMatch ? 1 : 0, canonicalMatch ? 1 : 0));
+    statements.push(db.prepare(`UPDATE tdcc_continuous_items SET status='queued',error_code='source_mismatch',completed_at=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE symbol=? AND data_date=? AND EXISTS (SELECT 1 FROM tdcc_distribution_row_provenance p WHERE p.symbol=? AND p.data_date=? AND p.validation_status='source-mismatch')`)
+      .bind(row.symbol, row.dataDate, row.symbol, row.dataDate));
+  }
   await runD1Batch(db, statements);
 }
 
-async function persistTdccDistributionRows(env: ChipEnv, rows: DistributionRow[]) {
+async function persistTdccDistributionRows(env: ChipEnv, rows: DistributionRow[], transport: "official-openapi" | "official-history" = "official-openapi") {
   if (!env.DB) throw new Error("d1_unavailable");
   if (!rows.length) throw new Error("invalid_response");
-  await upsertDistribution(env.DB, rows);
+  await upsertDistribution(env.DB, rows, transport);
   const dates = [...new Set(rows.map((row) => row.dataDate))].sort();
   await saveState(env.DB, {
     symbol: TDCC_MARKET_STATE_SYMBOL,
@@ -405,9 +465,10 @@ export async function ingestTdccDistributionSnapshot(input: {
   payload: unknown;
   eligibleSymbols: ReadonlySet<string>;
   fetchedAt?: string;
+  transport?: "official-openapi" | "official-history";
 }) {
   const rows = parseTdccSnapshot(input.payload, input.eligibleSymbols, input.fetchedAt);
-  return persistTdccDistributionRows(input.env, rows);
+  return persistTdccDistributionRows(input.env, rows, input.transport);
 }
 
 async function fetchState(db: D1Database | undefined, symbol: string, dataset: ChipDataset) {
@@ -688,6 +749,21 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
   if (!env.DB && !directRows.length && datasets.some((dataset) => dailyDatasets.includes(dataset as typeof dailyDatasets[number]))) warnings.push("網站資料庫未啟用，無法保存籌碼資料快取。");
   if (env.DB) distribution = await readDistribution(env.DB, symbol, start, end);
   const distributionRows = decorateDistributionRows(distribution);
+  const distributionProvenance = await readDistributionProvenanceSummary(env.DB, symbol, start, end);
+  const archive = env.DB ? await tdccArchiveStatus(env.DB) : null;
+  const archiveSummary = archive ? {
+    manifestVersion: archive.manifestVersion,
+    validatorVersion: archive.validatorVersion,
+    commitSha: archive.commitSha,
+    target: archive.target,
+    processed: archive.processed,
+    remaining: archive.remaining,
+    failed: archive.failed,
+    overdue: archive.overdue,
+    status: archive.status,
+    complete: archive.complete,
+    reasonCode: archive.reasonCode,
+  } : null;
   const resultRows = decorateEstimatedMarginRows(env.DB ? rows : directRows, await readDailyCloses(env.DB, symbol, start, end));
   for (const dataset of datasets) {
     const retainedCount = dataset === "shareholder-distribution"
@@ -739,10 +815,17 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       ...(dataset === "shareholder-distribution" ? {
         frequencyLabel: "週資料／當週最後營業日",
         savedWeeks: new Set(dates).size,
+        displayWeeks: new Set(dates).size,
+        archiveImportedWeeks: distributionProvenance.archiveImportedWeeks,
+        officialVerifiedWeeks: distributionProvenance.officialVerifiedWeeks,
         expectedWeeks: backfill.expectedWeeks,
         completedWeeks: backfill.completedWeeks,
+        remainingWeeks: Math.max(0, backfill.expectedWeeks - backfill.completedWeeks),
         failedWeeks: backfill.failedWeeks,
+        overdue: backfill.handoff.overdue,
         backfillStatus: backfill.status,
+        receipt: archiveSummary,
+        provenance: distributionProvenance,
         ...(env.DB ? {
           missingWeeks: backfill.missingWeeks || 0,
           missingDates: backfill.missingDates || [],
@@ -772,6 +855,21 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
   });
   const availabilityValues = Object.values(availability);
   if (availabilityValues.some((item) => item?.status === "available") && availabilityValues.some((item) => item?.status !== "available")) warnings.push("部分資料：上列資料尚未齊全或當日沒有新增紀錄，其他籌碼資料仍正常顯示；網站會在背景更新或再次開啟圖表時重新檢查");
+  const holderProgressPrefix = /^股權分散：(等待背景回補|背景回補中|資料來源目前受阻|目前僅有一期集保週資料)/;
+  const finalWarnings = warnings.filter(message => !holderProgressPrefix.test(message));
+  if (datasets.includes("shareholder-distribution")) {
+    const historyGaps = distributionRows.filter(row => row.holderMetrics.historyGap).length;
+    if (distributionRows.length < 2) {
+      finalWarnings.push(backfill.status === "blocked"
+        ? "股權分散：資料來源目前受阻，保留最後已驗證資料"
+        : `股權分散：快速資料準備中（目前 ${distributionRows.length} 期）`);
+    } else if (distributionProvenance.conflictWeeks > 0) {
+      finalWarnings.push(`股權分散：有 ${distributionProvenance.conflictWeeks} 期來源 material 衝突，保留最後已驗證資料`);
+    } else if (Math.max(0, backfill.expectedWeeks - backfill.completedWeeks) > 0) {
+      finalWarnings.push(`股權分散：已顯示 ${distributionRows.length} 期驗證資料，官方背景補缺中（尚餘 ${Math.max(0, backfill.expectedWeeks - backfill.completedWeeks)} 期）`);
+    }
+    if (historyGaps) finalWarnings.push(`股權分散：歷史中有 ${historyGaps} 個非相鄰週缺口，未跨缺口計算單週變化`);
+  }
   return {
     status: 200,
     body: {
@@ -783,12 +881,28 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       availability,
       rows: resultRows,
       distributionRows,
+      shareholderDistribution: {
+        displayWeeks: distributionRows.length,
+        archiveImportedWeeks: distributionProvenance.archiveImportedWeeks,
+        officialVerifiedWeeks: distributionProvenance.officialVerifiedWeeks,
+        expectedWeeks: backfill.expectedWeeks,
+        remainingWeeks: Math.max(0, backfill.expectedWeeks - backfill.completedWeeks),
+        failedWeeks: backfill.failedWeeks,
+        overdue: backfill.handoff.overdue,
+        provenance: distributionProvenance,
+        receipt: archiveSummary,
+        sourceAttribution: {
+          provider: "臺灣集中保管結算所（TDCC）",
+          license: "政府資料開放授權條款",
+          transport: "wirelessr/tdcc-opendata-archive verified immutable snapshot mirror",
+        },
+      },
       coverage,
       sources,
       backfill,
       dispatch,
       cache: { mode: fetchedAny ? "d1_refreshed" : "d1_hit", d1: Boolean(env.DB), schemaVersion: "taiwan-chip-v4", formulaVersion: ESTIMATED_MARGIN_FORMULA_VERSION },
-      warnings: [...new Set(warnings)],
+      warnings: [...new Set(finalWarnings)],
     },
   };
 }

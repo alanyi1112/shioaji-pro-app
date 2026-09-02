@@ -31,12 +31,12 @@ test("data-only export 只接受固定 table allowlist", () => {
   assert.equal(TABLE_ALLOWLIST.length, 12);
 });
 
-test("staging 套用 30 個 migration 並拒絕 schema drift", () => {
+test("staging 套用 31 個 migration 並拒絕 schema drift", () => {
   const directory = workspace();
   const liveDbPath = resolve(directory, "live.sqlite");
   const stagingDbPath = resolve(directory, "staging.sqlite");
   const exportPath = resolve(directory, "export.sql");
-  assert.equal(applyMigrations(liveDbPath), 30);
+  assert.equal(applyMigrations(liveDbPath), 31);
   assert.equal(runSql(liveDbPath, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'screener_%';"), "7");
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_continuous_symbols');"), /official_plan_through/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_continuous_symbols');"), /coverage_verified_at/);
@@ -46,13 +46,15 @@ test("staging 套用 30 個 migration 並拒絕 schema drift", () => {
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_index_list('candle_continuity_run_items');"), /candle_continuity_run_items_queue_idx/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('screener_snapshots');"), /schema_version/);
   assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_index_list('screener_runs');"), /screener_runs_scope_status_idx/);
+  assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_table_info('tdcc_archive_period_receipts');"), /staged_symbol_count/);
+  assert.match(runSql(liveDbPath, "SELECT group_concat(name, ',') FROM pragma_index_list('tdcc_distribution_row_provenance');"), /tdcc_distribution_provenance_date_idx/);
   writeFileSync(exportPath, [
     "BEGIN TRANSACTION;",
     "INSERT INTO instrument_catalog (symbol,exchange,localized_name,english_name,aliases_json,normalized_search,market,group_name,quote_type,provider,source,active,source_updated_at,updated_at) VALUES ('TEST.TW','TWSE','測試','Test','[]','test','台股','測試','','yfinance','test',1,'2026-08-06','2026-08-06');",
     "COMMIT;",
   ].join("\n"), { mode: 0o600 });
   const result = stageExport({ exportPath, stagingDbPath, liveDbPath });
-  assert.equal(result.migrationCount, 30);
+  assert.equal(result.migrationCount, 31);
   assert.equal(result.integrity, "ok");
   assert.equal(result.tables.instrument_catalog.rowCount, 1);
   assert.doesNotThrow(() => assertAllowlistSchema(stagingDbPath, liveDbPath));

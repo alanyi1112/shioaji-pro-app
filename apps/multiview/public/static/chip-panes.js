@@ -904,13 +904,14 @@
     };
   }
 
-  function holderDetailModel(definition, snapshots, targetDate) {
+  function holderDetailModel(definition, snapshots, targetDate, payload) {
     const ordered = [...(snapshots || [])]
       .filter((item) => item?.row?.dataDate && item?.aggregate)
       .sort((left, right) => left.row.dataDate.localeCompare(right.row.dataDate));
     const currentIndex = ordered.findLastIndex((item) => item.row.dataDate <= targetDate);
     const current = currentIndex >= 0 ? ordered[currentIndex] : null;
-    const previous = currentIndex > 0 ? ordered[currentIndex - 1] : null;
+    const actualPrevious = currentIndex > 0 ? ordered[currentIndex - 1] : null;
+    const previous = current?.row?.holderMetrics?.adjacentPeriod === false ? null : actualPrevious;
     const values = (snapshot) => ({
       ratio: snapshot?.aggregate?.ratioPercent,
       lots: snapshot?.aggregate?.lots,
@@ -939,10 +940,13 @@
       }),
       metadata: [
         ["指向日期", targetDate || "無資料"],
-        ["前一期發布日", previous?.row?.dataDate || "首筆／無前期比較"],
+        ["前一期發布日", previous?.row?.dataDate || (actualPrevious ? "歷史缺口／不跨週比較" : "首筆／無前期比較")],
         ["當期發布日", current?.row?.dataDate || "無資料"],
         ["官方級距", current?.aggregate?.description || "無資料"],
         ["資料來源", providerLabel(current?.row?.provenance?.provider)],
+        ["原資料提供機關", payload?.shareholderDistribution?.sourceAttribution?.provider || "臺灣集中保管結算所（TDCC）"],
+        ["授權", payload?.shareholderDistribution?.sourceAttribution?.license || "政府資料開放授權條款"],
+        ["歷史傳輸", payload?.shareholderDistribution?.sourceAttribution?.transport || "官方來源"],
         ["資料頻率", "週資料／當週最後營業日"],
         ["提醒", "集保持股級距，不推論投資人身分"],
       ],
@@ -960,8 +964,11 @@
   const MINIMUM_TDCC_HISTORY_WEEKS = 51;
   const isHolderDefinition = (definition) => ["holder", "holder-total"].includes(definition?.kind);
 
-  function availabilityLabel(availability, capability, backfill, dispatch) {
+  function availabilityLabel(availability, capability, backfill, dispatch, progress) {
     if (capability?.supported === false) return capability.reason === "unsupported_interval" ? "僅支援日 K" : "不適用";
+    if (Number(progress?.provenance?.conflictWeeks || 0) > 0) return `資料衝突，保留最後已驗證資料（${progress.provenance.conflictWeeks} 期）`;
+    if (Number(progress?.displayWeeks || 0) >= 2 && Number(progress?.remainingWeeks || 0) > 0) return `快速補入 ${progress.displayWeeks} 期／官方補缺尚餘 ${progress.remainingWeeks} 期`;
+    if (progress?.receipt?.status && !progress?.receipt?.complete && Number(progress?.displayWeeks || 0) < 2) return "快速歷史資料準備中";
     if (backfill?.status === "blocked") return "來源阻擋";
     if (backfill?.status === "failed") return backfillMissingWeeks(backfill) > 0 ? `回補失敗，缺少 ${backfillMissingWeeks(backfill)} 週` : "背景回補失敗";
     if (backfill?.status === "running") return `背景歷史回補中（${backfill.completedWeeks || 0}/${backfill.expectedWeeks || 0} 週）`;
@@ -1299,7 +1306,14 @@
 
   function chipPayloadMaterialSignature(payload) {
     if (!payload || typeof payload !== "object") return "";
-    return JSON.stringify(canonicalChipMaterial(payload));
+    return JSON.stringify(canonicalChipMaterial({
+      symbol: payload.symbol,
+      interval: payload.interval,
+      eligible: payload.eligible,
+      datasetEligibility: payload.datasetEligibility,
+      rows: payload.rows,
+      distributionRows: payload.distributionRows,
+    }));
   }
 
   function chipReadoutContentSignature(readout) {
@@ -2389,7 +2403,7 @@
 
     function renderDetailTable(targetDate) {
       const model = isHolderDefinition(definition)
-        ? holderDetailModel(definition, holderSnapshots, targetDate)
+        ? holderDetailModel(definition, holderSnapshots, targetDate, lastPayload)
         : dailyDetailModel(definition, [...dailyRowsByDate.values()], targetDate);
       holderDetailsBody.replaceChildren();
       holderDetailsMetadata.replaceChildren();
@@ -2443,19 +2457,7 @@
       else if (payloadChanged || !lastMaterialSignature) lastMaterialSignature = chipPayloadMaterialSignature(payload);
       syncSeriesControls();
       if (!chart || !anchor) return false;
-      const renderSignature = `${definition.id}|${lastMaterialSignature}|${reservationControlKey()}`;
-      if (!renderGate.shouldRender(renderSignature)) return false;
-      clearSeries();
-      chart.applyOptions({ rightPriceScale: { visible: true, borderVisible: true, ticksVisible: true } });
-      const timeMap = candleTimeByDate(lastCandles);
-      // Lightweight Charts cannot always resolve a coordinate for a flat zero-only
-      // scale while a synchronized crosshair is being restored.  A neutral,
-      // non-zero anchor keeps every candle date addressable without drawing data.
-      anchor.setData(lastCandles.map((row) => ({ time: row.time, value: 1 })));
       const daily = payload?.rows || [];
-      dailyRowsByDate = new Map(daily.map((row) => [row.sessionDate, row]));
-      shortMarginRatioRowsByDate = new Map(shortMarginRatioRows(daily).map((row) => [row.sessionDate, row]));
-      holderSnapshots = [];
       const definitionDatasets = datasetsForDefinition(definition);
       const availabilities = definitionDatasets.map((dataset) => payload?.availability?.[dataset]).filter(Boolean);
       const availability = availabilities.every((item) => item.status === "available")
@@ -2464,7 +2466,7 @@
           ? { status: "partial" }
           : availabilities[0];
       const capability = definitionDatasets.map((dataset) => payload?.datasetEligibility?.[dataset]).find((item) => item?.supported === false);
-      status.textContent = availabilityLabel(availability, capability, isHolderDefinition(definition) ? payload?.backfill : null, isHolderDefinition(definition) ? payload?.dispatch : null);
+      status.textContent = availabilityLabel(availability, capability, isHolderDefinition(definition) ? payload?.backfill : null, isHolderDefinition(definition) ? payload?.dispatch : null, isHolderDefinition(definition) ? payload?.shareholderDistribution : null);
       if (isHolderDefinition(definition) && status.textContent === "歷史已更新") status.textContent = "";
       if (definition.kind === "estimated-margin-maintenance"
         && !daily.some((row) => safeNumber(row.marginShort?.estimatedMaintenancePercent) !== null)) {
@@ -2480,6 +2482,19 @@
         ? `${backfillState.label}：${definition.label}`
         : `${backfillState.label}：${definition.label}缺少資料`);
       backfillSeparator.hidden = !backfillState.visible;
+
+      const renderSignature = `${definition.id}|${lastMaterialSignature}|${reservationControlKey()}`;
+      if (!renderGate.shouldRender(renderSignature)) return false;
+      clearSeries();
+      chart.applyOptions({ rightPriceScale: { visible: true, borderVisible: true, ticksVisible: true } });
+      const timeMap = candleTimeByDate(lastCandles);
+      // Lightweight Charts cannot always resolve a coordinate for a flat zero-only
+      // scale while a synchronized crosshair is being restored.  A neutral,
+      // non-zero anchor keeps every candle date addressable without drawing data.
+      anchor.setData(lastCandles.map((row) => ({ time: row.time, value: 1 })));
+      dailyRowsByDate = new Map(daily.map((row) => [row.sessionDate, row]));
+      shortMarginRatioRowsByDate = new Map(shortMarginRatioRows(daily).map((row) => [row.sessionDate, row]));
+      holderSnapshots = [];
 
       if (definition.kind === "foreign-combined") {
         const selected = selectedSeriesIds();
@@ -2632,7 +2647,11 @@
           const holders = safeNumber(row?.holderMetrics?.totalHolders ?? row?.total?.holders);
           const time = timeMap.get(row.dataDate);
           if (holders === null || !time) return [];
-          const holdersChange = previousHolders === null ? null : holders - previousHolders;
+          const holdersChange = row?.holderMetrics?.historyGap
+            ? null
+            : row?.holderMetrics && Object.hasOwn(row.holderMetrics, "totalHoldersChange")
+              ? safeNumber(row.holderMetrics.totalHoldersChange)
+              : previousHolders === null ? null : holders - previousHolders;
           previousHolders = holders;
           return [{
             row,
@@ -2664,9 +2683,16 @@
           const aggregate = holderAggregate(row, definition.id, threshold);
           const time = timeMap.get(row.dataDate);
           if (!aggregate || !time) return [];
-          const direction = previous === null ? null : aggregate.ratioPercent - previous;
-          const lotsChange = previousLots === null ? null : aggregate.lots - previousLots;
-          const holdersChange = previousHolders === null ? null : aggregate.holders - previousHolders;
+          const historyGap = Boolean(row?.holderMetrics?.historyGap);
+          const direction = historyGap || previous === null ? null : aggregate.ratioPercent - previous;
+          const lotsChange = historyGap || previousLots === null ? null : aggregate.lots - previousLots;
+          const serverHoldersChange = definition.id === "big-holder"
+            ? row?.holderMetrics?.largeHolder?.holdersChange
+            : row?.holderMetrics?.retailHolder?.holdersChange;
+          const holdersChange = historyGap
+            ? null
+            : serverHoldersChange !== undefined ? safeNumber(serverHoldersChange)
+              : previousHolders === null ? null : aggregate.holders - previousHolders;
           previous = aggregate.ratioPercent;
           previousLots = aggregate.lots;
           previousHolders = aggregate.holders;

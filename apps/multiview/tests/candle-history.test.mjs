@@ -273,7 +273,8 @@ test("candle_history_state 記住短歷史已完成 full window，跨帳戶只�
   }
 });
 
-test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，下一帳戶不重抓", async () => {
+test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，下一帳戶不重抓", async (context) => {
+  context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-28T10:00:00Z') });
   const db = new SqliteD1();
   const originalFetch = globalThis.fetch;
   const priorTime = Date.parse("2026-08-27T01:00:00Z") / 1000;
@@ -636,7 +637,8 @@ test("Worker `/api/candles` 跨 display_count 共用 history，重新載入 Work
   }
 });
 
-test("health 分開呈現 D1 schema 與逐商品 continuity，舊 coverage 不會算入 latest session", async () => {
+test("health 分開呈現 D1 schema 與逐商品 continuity，舊 coverage 不會算入 latest session", async (context) => {
+  context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-28T10:00:00Z') });
   const db = new SqliteD1();
   try {
     const service = await builtWorker("continuity-health");

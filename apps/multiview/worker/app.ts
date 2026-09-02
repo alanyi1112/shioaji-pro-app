@@ -69,6 +69,14 @@ import {
   type TdccContinuousTarget,
 } from "./tdcc-continuous-backfill";
 import {
+  assertTdccArchiveRequestContract,
+  finalizeTdccArchiveRun,
+  prepareTdccArchivePeriod,
+  rollbackTdccArchiveReceipt,
+  startTdccArchiveRun,
+  tdccArchiveStatus,
+} from "./tdcc-archive-bootstrap";
+import {
   WATCHLIST_CHIP_PREWARM_CONTRACT,
   WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS,
   discoverWatchlistChipWarmTargets,
@@ -221,6 +229,18 @@ function jsonObject(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 }
 
+function requiredString(value: unknown): string {
+  if (typeof value !== "string") throw new Error("invalid_response");
+  return value;
+}
+function requiredStringArray(value: unknown): string[] {
+  if (!Array.isArray(value) || value.some(item => typeof item !== "string")) throw new Error("invalid_response");
+  return value;
+}
+function optionalStringArray(value: unknown): string[] | undefined {
+  return value === undefined ? undefined : requiredStringArray(value);
+}
+
 export const INTERVALS = ["1d", "1wk", "1mo"];
 export const LOCAL_INTERVALS = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"];
 const intervalsForRequest = (request: Request) =>
@@ -364,6 +384,19 @@ async function ensureDb(db?: D1Database) {
     db.prepare(`CREATE INDEX IF NOT EXISTS taiwan_stock_chip_daily_symbol_date_idx ON taiwan_stock_chip_daily (symbol, session_date)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS taiwan_stock_shareholder_distribution (symbol TEXT NOT NULL, data_date TEXT NOT NULL, levels_json TEXT NOT NULL, adjustment_json TEXT NOT NULL, total_json TEXT NOT NULL, provider TEXT NOT NULL, frequency TEXT NOT NULL DEFAULT 'weekly', source_fetched_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (symbol, data_date))`),
     db.prepare(`CREATE INDEX IF NOT EXISTS taiwan_stock_shareholder_symbol_date_idx ON taiwan_stock_shareholder_distribution (symbol, data_date)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS taiwan_stock_shareholder_date_symbol_idx ON taiwan_stock_shareholder_distribution (data_date, symbol)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_archive_runs (run_id TEXT PRIMARY KEY NOT NULL, manifest_version TEXT NOT NULL, commit_sha TEXT NOT NULL, validator_version TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'full-market' CHECK (scope='full-market'), status TEXT NOT NULL CHECK (status IN ('preparing','prepared','running','complete','failed','blocked')), target_periods INTEGER NOT NULL DEFAULT 0, processed_periods INTEGER NOT NULL DEFAULT 0, failed_periods INTEGER NOT NULL DEFAULT 0, overdue_periods INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, last_error_code TEXT, heartbeat_at TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_archive_runs_status_idx ON tdcc_archive_runs (status,lease_expires_at,updated_at)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_archive_symbol_universe (manifest_version TEXT NOT NULL, symbol TEXT NOT NULL, stock_code TEXT NOT NULL, exchange TEXT NOT NULL CHECK (exchange IN ('TWSE','TPEx')), quote_type TEXT NOT NULL CHECK (quote_type IN ('EQUITY','ETF')), listing_date TEXT, source TEXT NOT NULL, source_date TEXT, source_url TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (manifest_version,symbol))`),
+    db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS tdcc_archive_symbol_universe_code_idx ON tdcc_archive_symbol_universe (manifest_version,stock_code)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_archive_period_receipts (receipt_id TEXT PRIMARY KEY NOT NULL, run_id TEXT NOT NULL, manifest_version TEXT NOT NULL, commit_sha TEXT NOT NULL, validator_version TEXT NOT NULL, normalization_version TEXT NOT NULL, data_date TEXT NOT NULL, source_url TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK (byte_length>0), payload_sha256 TEXT NOT NULL, row_count INTEGER NOT NULL CHECK (row_count>=0), symbol_count INTEGER NOT NULL CHECK (symbol_count>=0), staged_symbol_count INTEGER NOT NULL DEFAULT 0 CHECK (staged_symbol_count>=0), material_hash TEXT NOT NULL DEFAULT '', official_anchor_hash TEXT, status TEXT NOT NULL CHECK (status IN ('prepared','staging','verified','matched-existing','source-mismatch','failed','rolled-back')), inserted_rows INTEGER NOT NULL DEFAULT 0, matched_rows INTEGER NOT NULL DEFAULT 0, last_error_code TEXT, verified_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (run_id) REFERENCES tdcc_archive_runs(run_id) ON DELETE CASCADE, UNIQUE(manifest_version,data_date))`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_archive_receipts_status_idx ON tdcc_archive_period_receipts (status,data_date)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_archive_staging (receipt_id TEXT NOT NULL, data_date TEXT NOT NULL, symbol TEXT NOT NULL, levels_json TEXT NOT NULL, adjustment_json TEXT NOT NULL, total_json TEXT NOT NULL, material_hash TEXT NOT NULL, source_fetched_at TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (receipt_id,symbol), FOREIGN KEY (receipt_id) REFERENCES tdcc_archive_period_receipts(receipt_id) ON DELETE CASCADE)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_archive_staging_date_idx ON tdcc_archive_staging (receipt_id,data_date,symbol)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_distribution_row_provenance (symbol TEXT NOT NULL, data_date TEXT NOT NULL, transport TEXT NOT NULL CHECK (transport IN ('official-openapi','official-history','verified-archive','legacy-verified')), validation_status TEXT NOT NULL CHECK (validation_status IN ('verified','official-confirmed','source-mismatch','legacy-compatible')), receipt_id TEXT, source_url TEXT, payload_sha256 TEXT, commit_sha TEXT, normalization_version TEXT NOT NULL, material_hash TEXT NOT NULL DEFAULT '', official_confirmed_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (symbol,data_date), FOREIGN KEY (receipt_id) REFERENCES tdcc_archive_period_receipts(receipt_id) ON DELETE SET NULL)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_distribution_provenance_receipt_idx ON tdcc_distribution_row_provenance (receipt_id,validation_status)`),
+    db.prepare(`CREATE INDEX IF NOT EXISTS tdcc_distribution_provenance_date_idx ON tdcc_distribution_row_provenance (data_date,transport,validation_status)`),
+    db.prepare(`INSERT INTO tdcc_distribution_row_provenance (symbol,data_date,transport,validation_status,normalization_version,material_hash,created_at,updated_at) SELECT symbol,data_date,'legacy-verified','legacy-compatible','legacy-v1','',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP FROM taiwan_stock_shareholder_distribution WHERE 1 ON CONFLICT(symbol,data_date) DO NOTHING`),
     db.prepare(`CREATE TABLE IF NOT EXISTS taiwan_stock_chip_fetch_state (symbol TEXT NOT NULL, dataset TEXT NOT NULL, coverage_start TEXT, coverage_end TEXT, source_date TEXT, status TEXT NOT NULL, reason_code TEXT NOT NULL, last_success_at TEXT, last_attempt_at TEXT, retry_after TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (symbol, dataset))`),
     db.prepare(`CREATE INDEX IF NOT EXISTS taiwan_stock_chip_fetch_retry_idx ON taiwan_stock_chip_fetch_state (retry_after)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS tdcc_shareholder_backfill_job (job_id TEXT PRIMARY KEY, mode TEXT NOT NULL, target_start TEXT NOT NULL, target_end TEXT NOT NULL, expected_dates_json TEXT NOT NULL, target_symbols_json TEXT NOT NULL DEFAULT '[]', expected_symbols INTEGER NOT NULL DEFAULT 0, expected_weeks INTEGER NOT NULL, completed_weeks INTEGER NOT NULL DEFAULT 0, failed_weeks INTEGER NOT NULL DEFAULT 0, checkpoint_date TEXT, status TEXT NOT NULL, last_error_code TEXT, last_success_at TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
@@ -1408,12 +1441,12 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     }
     if (action === "plan") {
       if (!historyAutomationEnabled) throw new Error("history_automation_not_permitted");
-      const plan = await planTdccContinuousDates({ db: env.DB, symbol: body?.symbol, owner, officialDates: body?.officialDates, preListingDates: body?.preListingDates });
+      const plan = await planTdccContinuousDates({ db: env.DB, symbol: requiredString(body?.symbol), owner, officialDates: requiredStringArray(body?.officialDates), preListingDates: optionalStringArray(body?.preListingDates) });
       return json({ ok: true, plan });
     }
     if (action === "heartbeat") {
       if (!historyAutomationEnabled) throw new Error("history_automation_not_permitted");
-      const lease = await heartbeatTdccContinuousLease({ db: env.DB, owner, symbols: body?.symbols });
+      const lease = await heartbeatTdccContinuousLease({ db: env.DB, owner, symbols: requiredStringArray(body?.symbols) });
       await heartbeatTdccContinuousRun({ db: env.DB, runId });
       return json({ ok: true, lease });
     }
@@ -1424,7 +1457,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       const fetchedAt = String(body?.fetchedAt || "");
       const claimed = await env.DB.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE symbol=? AND lease_owner=? AND status='running' AND lease_expires_at>CURRENT_TIMESTAMP").bind(symbol, owner).first<SymbolRow>();
       if (!claimed || !Number.isFinite(Date.parse(fetchedAt)) || !Array.isArray(body?.rows) || body.rows.length !== 17) throw new Error("invalid_response");
-      const result = await ingestTdccDistributionSnapshot({ env, payload: body.rows, eligibleSymbols: new Set([symbol]), fetchedAt });
+      const result = await ingestTdccDistributionSnapshot({ env, payload: body.rows, eligibleSymbols: new Set([symbol]), fetchedAt, transport: "official-history" });
       if (result.dataDates.length !== 1 || result.dataDates[0] !== dataDate || result.symbols !== 1) throw new Error("invalid_response");
       const backfill = await completeTdccContinuousWeek({ db: env.DB, symbol, dataDate, owner });
       return json({ ok: true, source: "tdcc-official-history-query", ...result, backfill });
@@ -1432,16 +1465,16 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     if (action === "complete-gap") {
       if (!historyAutomationEnabled) throw new Error("history_automation_not_permitted");
       if (body?.reason !== "not_published") throw new Error("invalid_response");
-      const backfill = await completeTdccContinuousWeek({ db: env.DB, symbol: body?.symbol, dataDate: body?.dataDate, owner, gapReason: "not_published" });
+      const backfill = await completeTdccContinuousWeek({ db: env.DB, symbol: requiredString(body?.symbol), dataDate: requiredString(body?.dataDate), owner, gapReason: "not_published" });
       return json({ ok: true, reason: "not_published", backfill });
     }
     if (action === "complete-symbol") {
       if (!historyAutomationEnabled) throw new Error("history_automation_not_permitted");
-      await releaseTdccContinuousSymbol({ db: env.DB, symbol: body?.symbol, owner, status: body?.partial ? "partial" : "completed" });
-      return json({ ok: true, backfill: await readTdccContinuousSymbolStatus(env.DB, body?.symbol) });
+      await releaseTdccContinuousSymbol({ db: env.DB, symbol: requiredString(body?.symbol), owner, status: body?.partial ? "partial" : "completed" });
+      return json({ ok: true, backfill: await readTdccContinuousSymbolStatus(env.DB, requiredString(body?.symbol)) });
     }
     if (action === "fail") {
-      const backfill = await failTdccContinuousWork({ db: env.DB, symbol: body?.symbol, dataDate: body?.dataDate, owner, reason: body?.reason, retryable: Boolean(body?.retryable) });
+      const backfill = await failTdccContinuousWork({ db: env.DB, symbol: requiredString(body?.symbol), dataDate: body?.dataDate === undefined ? undefined : requiredString(body.dataDate), owner, reason: body?.reason, retryable: Boolean(body?.retryable) });
       return json({ ok: true, backfill });
     }
     if (action === "finish-run") {
@@ -1455,6 +1488,57 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     if (runId && action.startsWith("orchestrator-")) try { failure = await finalizeChipBackfillOrchestratorFailure({ db: env.DB, runId, trigger: orchestratorTrigger, scope: orchestratorScope, reason }); } catch {}
     if (runId && action === "refresh-latest") try { await finishTdccContinuousRun({ db: env.DB, runId, reason }); } catch {}
     return json({ ok: false, error: reason, ...failure }, ["provider_unavailable", "rate_limited", "timeout", "tick_limit_exceeded"].includes(reason) ? 503 : 400);
+  }
+}
+
+async function tdccArchiveBootstrap(request: Request, env: Env) {
+  if (!env.DB || !env.TDCC_CONTINUOUS_BACKFILL_SECRET) return json({ ok: false, reasonCode: "archive_not_configured" }, 503);
+  if (!authorizedTdccContinuous(request, env)) return json({ ok: false, reasonCode: "unauthorized" }, 401);
+  await ensureDb(env.DB);
+  if (request.method === "GET") return json({ ok: true, archive: await tdccArchiveStatus(env.DB) });
+  let body: JsonObject;
+  try {
+    const raw = await request.text();
+    if (new TextEncoder().encode(raw).byteLength > 4096) throw new Error("archive_invalid_payload");
+    body = jsonObject(JSON.parse(raw));
+  } catch {
+    return json({ ok: false, reasonCode: "archive_invalid_payload" }, 400);
+  }
+  const action = String(body.action || "");
+  const owner = String(body.owner || "");
+  try {
+    assertTdccArchiveRequestContract(body.manifestVersion, body.scope);
+    if (action === "start") return json({ ok: true, archive: await startTdccArchiveRun(env.DB, owner) });
+    if (action === "prepare-period") {
+      const receipt = await prepareTdccArchivePeriod({ db: env.DB, owner, date: String(body.date || "") });
+      return json({ ok: true, receipt, archive: await tdccArchiveStatus(env.DB) });
+    }
+    if (action === "finalize") return json({ ok: true, archive: await finalizeTdccArchiveRun(env.DB, owner) });
+    if (action === "rollback-dry-run") {
+      const date = String(body.date || "");
+      if (!/^2026-\d{2}-\d{2}$/.test(date)) throw new Error("archive_period_not_allowed");
+      return json({ ok: true, rollback: await rollbackTdccArchiveReceipt(env.DB, `tdcc-archive-2026-v1:${date}`, true) });
+    }
+    throw new Error("archive_invalid_payload");
+  } catch (error) {
+    const reason = String(error instanceof Error ? error.message : "archive_failed");
+    const safeReasons = new Set([
+      "archive_invalid_owner", "archive_period_not_allowed", "archive_lease_conflict", "archive_manifest_not_prepared",
+      "archive_source_mismatch", "archive_staging_readback_mismatch", "archive_hash_mismatch", "archive_invalid_utf8",
+      "archive_source_not_allowed", "archive_redirect_not_allowed", "archive_size_mismatch", "archive_too_large",
+      "archive_invalid_headers", "archive_invalid_csv", "archive_invalid_row_count", "archive_invalid_row", "archive_duplicate_level",
+      "archive_invalid_symbol_count", "archive_invalid_tdcc", "archive_official_anchor_mismatch", "archive_timeout",
+      "archive_official_anchor_invalid", "archive_official_anchor_redirect", "archive_empty_supported_universe", "archive_receipt_not_rollbackable",
+      "archive_universe_not_ready", "archive_universe_invalid", "archive_catalog_redirect", "archive_catalog_invalid",
+      "archive_catalog_timeout", "archive_normalization_invalid",
+      "archive_universe_schema_invalid", "archive_universe_query_failed", "archive_universe_write_failed",
+      "archive_catalog_unavailable",
+      "archive_request_contract_mismatch",
+      "archive_transport_unavailable",
+      "archive_official_anchor_timeout", "archive_official_anchor_unavailable",
+    ]);
+    const reasonCode = safeReasons.has(reason) || /^archive_(?:http|official_anchor_http|catalog_http)_\d{3}$/.test(reason) ? reason : "archive_failed";
+    return json({ ok: false, reasonCode }, reasonCode === "archive_lease_conflict" ? 409 : 400);
   }
 }
 
@@ -1499,7 +1583,7 @@ async function tdccHistoryBackfill(request: Request, env: Env) {
     const eligibility = await taiwanChipEligibility(request, env, "");
     const eligibleSymbols = definition.mode === "local-operator-query" ? new Set(returnedSymbols) : eligibility.eligibleSymbols;
     if ([...eligibleSymbols].some((symbol) => !eligibility.eligibleSymbols.has(symbol))) throw new Error("invalid_response");
-    const result = await ingestTdccDistributionSnapshot({ env, payload: body.rows, eligibleSymbols, fetchedAt });
+    const result = await ingestTdccDistributionSnapshot({ env, payload: body.rows, eligibleSymbols, fetchedAt, transport: "official-history" });
     if (result.dataDates.length !== 1 || result.dataDates[0] !== dataDate) throw new Error("invalid_response");
     if (definition.mode === "official-file-import" && result.symbols < 500) throw new Error("invalid_response");
     if (definition.mode === "local-operator-query" && result.symbols !== returnedSymbols.length) throw new Error("invalid_response");
@@ -2090,9 +2174,10 @@ async function registerAndWarmTaiwanChipTarget(
   if (!env.DB || !eligibility.eligible) return;
   const symbol = eligibility.symbol;
   await upsertTdccContinuousTarget({ db: env.DB, target: { symbol, source: "user" } });
-  const jobs: Promise<unknown>[] = [queueTdccContinuousSymbolBackfill({ db: env.DB, symbol })];
-  if (includeDailyPrewarm) jobs.push(prewarmTaiwanStockChipSymbol({ env, eligibility }));
-  const [queued] = await Promise.allSettled(jobs);
+  const [queued] = await Promise.allSettled([
+    queueTdccContinuousSymbolBackfill({ db: env.DB, symbol }),
+    ...(includeDailyPrewarm ? [prewarmTaiwanStockChipSymbol({ env, eligibility })] : []),
+  ] as const);
   if (queued.status === "fulfilled" && queued.value.status === "queued") {
     await dispatchTdccContinuousWorkflow({
       db: env.DB,
@@ -2171,7 +2256,7 @@ async function requestTaiwanStockChipBackfill(request: Request, env: Env, contex
   }
 
   let tdcc: { status: string; backfill?: unknown } | null = null;
-  let dispatch: Awaited<ReturnType<typeof dispatchTdccContinuousWorkflow>> | null = null;
+  let dispatch: Awaited<ReturnType<typeof dispatchTdccContinuousWorkflow>> | { status: "already-running"; requestedAt: string; cooldownUntil: null } | null = null;
   if (datasets.includes("shareholder-distribution")) {
     await upsertTdccContinuousTarget({ db: env.DB, target: { symbol, source: "user" } });
     const current = await readTdccContinuousSymbolStatus(env.DB, symbol);
@@ -3001,7 +3086,8 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
     const river = await peRiverHealth(env.DB);
     const deploymentTarget = deploymentTargetForRequest(request);
     const continuityTarget = deploymentTarget === "cloudflare" ? "cloudflare" : deploymentTarget === "local" ? "local" : "sites";
-    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB), continuityAudit: { configured: Boolean(env.DB && env.CANDLE_CONTINUITY_AUDIT_SECRET), batchLimit: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.batchLimit, concurrency: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.concurrency, automation: await readCandleContinuityAutomationHealth(env.DB, continuityTarget) }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: await taiwanStockChipHealth(env), taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
+    const chipHealth = await taiwanStockChipHealth(env);
+    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB), continuityAudit: { configured: Boolean(env.DB && env.CANDLE_CONTINUITY_AUDIT_SECRET), batchLimit: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.batchLimit, concurrency: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.concurrency, automation: await readCandleContinuityAutomationHealth(env.DB, continuityTarget) }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: env.DB ? { ...chipHealth, archive: await tdccArchiveStatus(env.DB) } : chipHealth, taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
   }
   if (path === "/api/internal/candle-continuity-audit" && request.method === "POST") return candleContinuityAuditResponse(request, env);
   if (path === "/api/internal/taiwan-stock-pe-river" && request.method === "POST") return ingestPeRiverMonth(request, env);
@@ -3011,6 +3097,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   if (path === "/api/internal/tdcc-shareholder-distribution" && request.method === "POST") return ingestTdccShareholderDistribution(request, env);
   if (path === "/api/internal/tdcc-shareholder-backfill" && ["GET", "POST"].includes(request.method)) return tdccHistoryBackfill(request, env);
   if (path === "/api/internal/tdcc-continuous-backfill" && ["GET", "POST"].includes(request.method)) return tdccContinuousBackfill(request, env);
+  if (path === "/api/internal/tdcc-archive-bootstrap" && ["GET", "POST"].includes(request.method)) return tdccArchiveBootstrap(request, env);
   if (path === "/api/config") {
     const deploymentTarget = deploymentTargetForRequest(request);
     const principal = requestPrincipal(request);

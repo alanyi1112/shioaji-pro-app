@@ -1,0 +1,109 @@
+name: Cloudflare TDCC verified archive bootstrap
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-tdcc-verified-archive-bootstrap
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: cloudflare-production
+    env:
+      SITE_URL: ${{ vars.CLOUDFLARE_SITE_URL }}
+      CLOUDFLARE_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_ID }}
+      CLOUDFLARE_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_ACCESS_CLIENT_SECRET }}
+      TDCC_ARCHIVE_SECRET: ${{ secrets.CLOUDFLARE_TDCC_CONTINUOUS_BACKFILL_SECRET }}
+      MANIFEST_VERSION: tdcc-archive-2026-v1
+      ARCHIVE_SCOPE: full-market
+      OWNER: cloudflare-archive-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Verify protected exact release
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$SITE_URL"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_ID"
+          test -n "$CLOUDFLARE_ACCESS_CLIENT_SECRET"
+          test -n "$TDCC_ARCHIVE_SECRET"
+          response="$(curl --fail --silent --show-error --max-time 60 \
+            -H "CF-Access-Client-Id: $CLOUDFLARE_ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $CLOUDFLARE_ACCESS_CLIENT_SECRET" \
+            "$SITE_URL/api/health")"
+          jq -e --arg sha "$GITHUB_SHA" '
+            .ok == true
+            and .deploymentTarget == "cloudflare"
+            and .commitSha == $sha
+            and .persistence.d1 == true
+          ' <<<"$response" >/dev/null
+      - name: Seed fixed verified archive manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          endpoint="$SITE_URL/api/internal/tdcc-archive-bootstrap"
+          dates=(2026-04-30 2026-05-08 2026-05-15 2026-05-22 2026-05-29 2026-06-05 2026-06-12 2026-06-18 2026-06-26 2026-07-03 2026-07-09 2026-07-17 2026-07-24 2026-07-31 2026-08-07 2026-08-14 2026-08-21 2026-08-28)
+
+          request() {
+            local action="$1"
+            local date="${2:-}"
+            local payload
+            payload="$(jq -cn --arg action "$action" --arg owner "$OWNER" --arg manifestVersion "$MANIFEST_VERSION" --arg scope "$ARCHIVE_SCOPE" --arg date "$date" '
+              {action:$action,owner:$owner,manifestVersion:$manifestVersion,scope:$scope}
+              + if $date == "" then {} else {date:$date} end')"
+            curl --fail --silent --show-error --max-time 120 \
+              -H "CF-Access-Client-Id: $CLOUDFLARE_ACCESS_CLIENT_ID" \
+              -H "CF-Access-Client-Secret: $CLOUDFLARE_ACCESS_CLIENT_SECRET" \
+              -H "X-MultiChart-Pipeline-Authorization: Bearer $TDCC_ARCHIVE_SECRET" \
+              -H "Content-Type: application/json" \
+              --data "$payload" "$endpoint"
+          }
+
+          validate_summary() {
+            jq -e --arg manifest "$MANIFEST_VERSION" '
+              .ok == true
+              and .archive.manifestVersion == $manifest
+              and .archive.target == 18
+              and (.archive.processed | type == "number" and . >= 0 and floor == .)
+              and (.archive.remaining | type == "number" and . >= 0 and floor == .)
+              and (.archive.failed | type == "number" and . >= 0 and floor == .)
+              and (.archive.overdue | type == "number" and . >= 0 and floor == .)
+              and .archive.commitSha == "17944774a7a37c8ef52a7ca919817fe6f949891c"
+            ' >/dev/null <<<"$1"
+          }
+
+          response="$(request start)"
+          validate_summary "$response"
+          for date in "${dates[@]}"; do
+            response="$(request prepare-period "$date")"
+            validate_summary "$response"
+            jq -r --arg date "$date" '"tdcc-archive target=cloudflare date=\($date) status=\(.receipt.status) processed=\(.archive.processed) remaining=\(.archive.remaining) failed=\(.archive.failed) overdue=\(.archive.overdue)"' <<<"$response"
+          done
+          response="$(request finalize)"
+          validate_summary "$response"
+          jq -e '.archive.complete == true and .archive.processed == 18 and .archive.remaining == 0 and .archive.failed == 0 and .archive.overdue == 0' <<<"$response" >/dev/null
+          jq -r '"tdcc-archive target=cloudflare status=complete processed=\(.archive.processed) remaining=\(.archive.remaining) failed=\(.archive.failed) overdue=\(.archive.overdue)"' <<<"$response"
+      - name: Verify protected archive health
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl --fail --silent --show-error --max-time 60 \
+            -H "CF-Access-Client-Id: $CLOUDFLARE_ACCESS_CLIENT_ID" \
+            -H "CF-Access-Client-Secret: $CLOUDFLARE_ACCESS_CLIENT_SECRET" \
+            "$SITE_URL/api/health")"
+          jq -e --arg sha "$GITHUB_SHA" --arg manifest "$MANIFEST_VERSION" '
+            .ok == true
+            and .deploymentTarget == "cloudflare"
+            and .commitSha == $sha
+            and .taiwanStockChip.archive.manifestVersion == $manifest
+            and .taiwanStockChip.archive.complete == true
+            and .taiwanStockChip.archive.remaining == 0
+            and .taiwanStockChip.archive.failed == 0
+            and .taiwanStockChip.archive.overdue == 0
+          ' <<<"$response" >/dev/null
+          jq -r '"tdcc-archive-health target=cloudflare complete=\(.taiwanStockChip.archive.complete) processed=\(.taiwanStockChip.archive.processed) remaining=\(.taiwanStockChip.archive.remaining) failed=\(.taiwanStockChip.archive.failed) overdue=\(.taiwanStockChip.archive.overdue)"' <<<"$response"

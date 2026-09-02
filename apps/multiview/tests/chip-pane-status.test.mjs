@@ -588,6 +588,10 @@ test("籌碼 material signature 與 per-pane gate 忽略 refresh metadata 且只
   metadataOnly.coverage[0].requestedStart = "2025-01-01";
   metadataOnly.cache.mode = "d1_refreshed";
   assert.equal(chipPayloadMaterialSignature(first), chipPayloadMaterialSignature(metadataOnly));
+  const progressOnly = structuredClone(metadataOnly);
+  progressOnly.shareholderDistribution = { displayWeeks: 18, remainingWeeks: 33, receipt: { status: "running" } };
+  progressOnly.backfill = { status: "running", completedWeeks: 18, expectedWeeks: 51, updatedAt: "second" };
+  assert.equal(chipPayloadMaterialSignature(first), chipPayloadMaterialSignature(progressOnly), "純進度不得重建 canvas");
 
   const changed = structuredClone(metadataOnly);
   changed.rows[0].marginShort.marginTodayBalanceLots = 11;
@@ -747,6 +751,24 @@ test("TDCC 詳細資料使用指向日以前的實際發布快照且前期欄位
   assert.deepEqual(model.metadata.slice(1, 3), [["前一期發布日", "2026-07-10"], ["當期發布日", "2026-07-17"]]);
 });
 
+test("TDCC 詳細資料遇歷史缺口不跨週比較，並顯示官方、授權與 verified archive 傳輸", () => {
+  const snapshots = [
+    { row: { dataDate: "2026-07-10", provenance: { provider: "tdcc" } }, aggregate: { ratioPercent: 42, lots: 1000, holders: 20 } },
+    { row: { dataDate: "2026-07-31", provenance: { provider: "tdcc" }, holderMetrics: { adjacentPeriod: false, historyGap: true } }, aggregate: { ratioPercent: 44, lots: 900, holders: 21 } },
+  ];
+  const payload = { shareholderDistribution: { sourceAttribution: { provider: "臺灣集中保管結算所（TDCC）", license: "政府資料開放授權條款", transport: "verified archive mirror" } } };
+  const model = normalized(holderDetailModel({ id: "big-holder" }, snapshots, "2026-07-31", payload));
+  assert.equal(model.previousDate, "");
+  assert.equal(model.rows[0].previous, "無資料");
+  assert.equal(model.rows[0].change, "無資料");
+  assert.deepEqual(model.metadata.slice(4, 8), [
+    ["資料來源", "TDCC"],
+    ["原資料提供機關", "臺灣集中保管結算所（TDCC）"],
+    ["授權", "政府資料開放授權條款"],
+    ["歷史傳輸", "verified archive mirror"],
+  ]);
+});
+
 test("詳細資料首筆、缺值與持平不補零，非發布交易日也只採用已發布 TDCC 快照", () => {
   const first = normalized(dailyDetailModel(
     { id: "margin" },
@@ -801,6 +823,8 @@ test("普通股與 ETF 的 queued、running、completed、partial、blocked 狀�
   }, { status: "unavailable" }), "歷史已更新");
   assert.equal(availabilityLabel(available, { supported: true }, { status: "queued", completedWeeks: 1, expectedWeeks: 51 }), "等待背景回補（1/51 週）");
   assert.equal(availabilityLabel(available, { supported: true }, { status: "partial", completedWeeks: 49, expectedWeeks: 51, missingWeeks: 2 }), "缺少 2 週（49/51 週）");
+  assert.equal(availabilityLabel(available, { supported: true }, { status: "partial" }, null, { displayWeeks: 18, remainingWeeks: 33 }), "快速補入 18 期／官方補缺尚餘 33 期");
+  assert.equal(availabilityLabel(available, { supported: true }, { status: "partial" }, null, { displayWeeks: 18, remainingWeeks: 33, provenance: { conflictWeeks: 1 } }), "資料衝突，保留最後已驗證資料（1 期）");
 });
 
 test("scheduler stale 與可及性不只靠顏色，holder 缺值仍有文字", () => {

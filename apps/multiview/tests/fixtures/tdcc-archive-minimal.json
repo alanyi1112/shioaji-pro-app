@@ -1,0 +1,21 @@
+{
+  "date": "2026-08-28",
+  "securities": [
+    { "code": "8103", "symbol": "8103.TW", "kind": "equity" },
+    { "code": "2330", "symbol": "2330.TW", "kind": "equity" },
+    { "code": "8069", "symbol": "8069.TWO", "kind": "equity" },
+    { "code": "0050", "symbol": "0050.TW", "kind": "etf" }
+  ],
+  "levelTemplate": {
+    "holders": 1,
+    "shares": 100,
+    "ratioPercent": 6.66,
+    "adjustmentHolders": 0,
+    "adjustmentShares": 0,
+    "adjustmentRatioPercent": 0,
+    "totalHolders": 15,
+    "totalShares": 1500,
+    "totalRatioPercent": 100
+  },
+  "expectedMaterialHash": "8de3441fd3055daddd3fc7d2003a0bc243c48f2dddbcdc0c2f142b1e63b4886d"
+}
