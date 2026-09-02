@@ -95,8 +95,23 @@ if (start.archive.complete) {
   process.exit(0);
 }
 
+async function preparePeriod(entry) {
+  for (let leaseAttempt = 0; leaseAttempt < 2; leaseAttempt += 1) {
+    try {
+      return await call({ action: 'prepare-period', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market', date: entry.date });
+    } catch (error) {
+      if (leaseAttempt === 0 && error?.message === 'archive_lease_conflict') {
+        await call({ action: 'start', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market' });
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('archive_lease_conflict');
+}
+
 for (const entry of TDCC_ARCHIVE_MANIFEST) {
-  const payload = await call({ action: 'prepare-period', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market', date: entry.date });
+  const payload = await preparePeriod(entry);
   console.log(JSON.stringify({ date: entry.date, status: payload.receipt?.status, processed: payload.archive.processed, remaining: payload.archive.remaining }));
   if (entry !== TDCC_ARCHIVE_MANIFEST.at(-1)) await sleep(10000);
 }

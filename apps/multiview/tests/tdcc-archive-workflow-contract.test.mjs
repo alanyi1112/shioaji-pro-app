@@ -33,6 +33,8 @@ test("archive workflow 僅能手動執行固定 manifest，且逐期日期與程
   assert.match(runner, /90000/);
   assert.match(runner, /sleep\(10000\)/);
   assert.match(runner, /retry-after/);
+  assert.match(runner, /error\?\.message === 'archive_lease_conflict'/);
+  assert.match(runner, /async function preparePeriod/);
   assert.match(app, /assertTdccArchiveRequestContract\(body\.manifestVersion, body\.scope\)/);
 });
 
