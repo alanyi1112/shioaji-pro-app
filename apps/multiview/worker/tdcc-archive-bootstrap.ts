@@ -178,8 +178,9 @@ export async function ensureArchiveUniverse(db: D1Database, fetcher: typeof fetc
   }));
   const allRows = [...ordinaryRows, ...[...etfs.values()].map(row => ({ ...row, quoteType: "ETF", listingDate: null }))];
   const statements = [db.prepare("DELETE FROM tdcc_archive_symbol_universe WHERE manifest_version=?").bind(TDCC_ARCHIVE_MANIFEST_VERSION)];
-  for (let index = 0; index < allRows.length; index += 250) {
-    const chunk = allRows.slice(index, index + 250);
+  const universeRowsPerStatement = 250;
+  for (let index = 0; index < allRows.length; index += universeRowsPerStatement) {
+    const chunk = allRows.slice(index, index + universeRowsPerStatement);
     statements.push(db.prepare(`INSERT INTO tdcc_archive_symbol_universe
       (manifest_version,symbol,stock_code,exchange,quote_type,listing_date,source,source_date,source_url)
       SELECT ?,json_extract(value,'$.symbol'),json_extract(value,'$.code'),json_extract(value,'$.exchange'),
