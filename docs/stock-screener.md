@@ -83,7 +83,7 @@ scripts/multiview-state migrate
 
 停用保留資料與快照，已在執行中的有界 run 會完成或逾時；不強制中斷任何服務。完整 D1 覆蓋復原需要另行取得停機授權，不能因選股故障自行停止 simulation API、watchdog、5173、5174、pipeline 或行情連線。
 
-本機 API 為 `GET /api/stock-screener/status?version=3`、`GET /api/stock-screener/results?version=3&…`；v2 route 暫留一個 release window。gateway 固定同源 loopback 5174，拒絕其他 path／method／任意 URL。GET 只讀 immutable snapshot，不連 provider、不訂閱、不派送回補、不執行 DDL，也不依賴 Shioaji session。Sites／Cloudflare 不啟用此功能，本 change 不包含部署、交易或歸檔。
+本機 API 為 `GET /api/stock-screener/status?version=3`、`GET /api/stock-screener/results?version=3&…`；v2 route 與最新兩份 v2 snapshot 暫留一個 release window，供本機回滾。gateway 固定同源 loopback 5174，拒絕其他 path／method／任意 URL。GET 只讀 immutable snapshot，不連 provider、不訂閱、不派送回補、不執行 DDL，也不依賴 Shioaji session。Sites／Cloudflare 不啟用選股功能；即使 additive migration 隨共同 schema 套用，hosted route 仍須維持 `local_only`。
 
 ## 當次驗收狀態
 
@@ -93,8 +93,8 @@ scripts/multiview-state migrate
 
 同日 API 全分頁驗收涵蓋成交量、大戶單週、兩種四週反轉、各自成交值、AND／OR 與缺中間週；實際本機 UI 已核對 600／768／900 CSS px、console、結果明細與點選不在自選清單的 1101 台泥。背景工作已完成不代表每檔都有來源值；大戶四週反轉仍有 6 檔依法為 `history_pending`，介面正確顯示 `partial`。
 
-完整非敏感版本、缺口、測試與 run 證據見 `openspec/changes/extend-after-market-stock-screener-with-turnover-and-holder-reversal/verification.md`。本輪未歸檔、commit、push 或部署。
+完整非敏感版本、缺口、測試與 run 證據見 `openspec/changes/archive/2026-09-01-extend-after-market-stock-screener-with-turnover-and-holder-reversal/verification.md`。v2 已歸檔並以 commit `a63a342` 保存；功能維持本機限定，未另行部署至 Sites／Cloudflare。
 
 2026-09-02 已完成 v3 技術型態升級：60 日 × 兩市場共 120 個 OHLC target 全部 processed，remaining／failed／overdue 為 0；D1 保存 116,886 筆合法 OHLC，並原子發布 1,975-row snapshot `273e72b9-dc65-4320-8753-1d1520a61179`。原始三 K 底／頂分別有 482／52 檔，纏論底／頂 530／317 檔；BOLL 下軌陽 K 下影為 2701，BOLL 上軌陰 K 上影為 1735、6153、6532。
 
-背景完整不代表每檔每天都有成交四價；API 因合法 row-level `missing_ohlcv`、`containment_direction_unknown` 或 `insufficient_history` 可能顯示 `partial`。新上市 7814 自 2026-07-16 起有 34 筆，7855 自 2026-08-11 起有 16 筆且 BOLL 仍為 `insufficient_history`，兩者都沒有上市前假資料。完整 v3 source、D1、API、UI、responsive、console 與測試證據見 `openspec/changes/add-technical-pattern-filters-to-after-market-stock-screener/verification.md`。本 change 尚未歸檔、commit、push 或部署。
+背景完整不代表每檔每天都有成交四價；API 因合法 row-level `missing_ohlcv`、`containment_direction_unknown` 或 `insufficient_history` 可能顯示 `partial`。新上市 7814 自 2026-07-16 起有 34 筆，7855 自 2026-08-11 起有 16 筆且 BOLL 仍為 `insufficient_history`，兩者都沒有上市前假資料。完整 v3 source、D1、API、UI、responsive、console 與測試證據見 `openspec/changes/archive/2026-09-01-add-technical-pattern-filters-to-after-market-stock-screener/verification.md`。v3 已歸檔並以 commit `972f781` 保存；功能維持本機限定，未另行部署至 Sites／Cloudflare。

@@ -7,6 +7,7 @@ describe('選股 allowlist 不接觸 broker', () => {
         expect(validateScreenerGatewayRequest(req)?.url).toBe('http://127.0.0.1:5174/api/stock-screener/results');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=2&holderMode=decrease-to-increase&holderStreakWeeks=4&holderTurnover=true&holderTurnoverMinimumWan=1000' })?.url).toContain('holderStreakWeeks=4');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=3&fractal=true&fractalAlgorithm=chan-containment&fractalDirection=any&bollReversal=true&bollMode=any' })?.url).toContain('fractalAlgorithm=chan-containment');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=2' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=2');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=3' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=3');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/v1/contracts' })).toBeNull();
         for (const extra of [

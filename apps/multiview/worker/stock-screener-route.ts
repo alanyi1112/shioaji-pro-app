@@ -77,7 +77,8 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
   if (url.searchParams.get("version") === "3") return handleStockScreenerV3(url, env, now);
   let query: ReturnType<typeof parseScreenerQuery>;
   try {
-    if (url.pathname.endsWith("/status") && url.search) throw new Error("invalid_query");
+    if (url.pathname.endsWith("/status")
+      && [...url.searchParams.keys()].some((key) => key !== "version")) throw new Error("invalid_query");
     query = parseScreenerQuery(url.searchParams);
   } catch (error) { return response({ reason: (error as Error).message }, 400); }
   if (!env.DB) return response({ ...pending("d1_unavailable"), state: "unavailable" }, 503);

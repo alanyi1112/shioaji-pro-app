@@ -123,6 +123,19 @@ test('v2 route 對最新 v1 snapshot 回 version pending，不用新條件重算
   } finally {db.close();}
 });
 
+test('v2 status 接受 gateway 的唯一 version 參數，其他篩選仍 fail closed',async()=>{
+  const db=await database();
+  try {
+    await publishScreenerSnapshot(db,metadata,inputs);
+    const response=await handleStockScreener(new Request('http://127.0.0.1:5174/api/stock-screener/status?version=2'),{DB:db,DEPLOYMENT_TARGET:'local'},new Date('2026-08-31T12:00:00Z'));
+    assert.equal(response.status,200);
+    const result=await response.json();
+    assert.equal(result.version,2);assert.equal(result.snapshotId!==null,true);assert.deepEqual(result.rows,[]);
+    assert.equal((await handleStockScreener(new Request('http://127.0.0.1:5174/api/stock-screener/status?version=2&holder=false'),{DB:db,DEPLOYMENT_TARGET:'local'})).status,400);
+    assert.equal((await handleStockScreener(new Request('http://127.0.0.1:5174/api/stock-screener/status?version=2&version=2'),{DB:db,DEPLOYMENT_TARGET:'local'})).status,400);
+  }finally{db.close();}
+});
+
 test("精確分數排序不使用浮點顯示值；未知永遠置底且代碼穩定排序", async () => {
   const db = await database();
   try {
