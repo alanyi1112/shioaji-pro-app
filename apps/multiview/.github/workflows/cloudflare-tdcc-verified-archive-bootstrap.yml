@@ -22,7 +22,7 @@ jobs:
       TDCC_ARCHIVE_SECRET: ${{ secrets.CLOUDFLARE_TDCC_CONTINUOUS_BACKFILL_SECRET }}
       MANIFEST_VERSION: tdcc-archive-2026-v1
       ARCHIVE_SCOPE: full-market
-      OWNER: cloudflare-archive-${{ github.run_id }}-${{ github.run_attempt }}
+      OWNER: cloudflare-archive-bootstrap
     steps:
       - name: Checkout fixed release source
         uses: actions/checkout@v4

@@ -20,7 +20,7 @@ jobs:
       TDCC_ARCHIVE_SECRET: ${{ secrets.TDCC_CONTINUOUS_BACKFILL_SECRET }}
       MANIFEST_VERSION: tdcc-archive-2026-v1
       ARCHIVE_SCOPE: full-market
-      OWNER: sites-archive-${{ github.run_id }}-${{ github.run_attempt }}
+      OWNER: sites-archive-bootstrap
     steps:
       - name: Checkout fixed release source
         uses: actions/checkout@v4

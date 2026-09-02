@@ -33,10 +33,29 @@ if (process.env.CLOUDFLARE_ACCESS_CLIENT_ID && process.env.CLOUDFLARE_ACCESS_CLI
 }
 
 async function call(body) {
-  const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error' });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.ok) throw new Error(String(payload.reasonCode || `archive_http_${response.status}`));
-  return payload;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 90000);
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: controller.signal });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok && payload.ok) return payload;
+      if (attempt < 2 && [429, 502, 503, 504].includes(response.status)) {
+        await new Promise(resolve => setTimeout(resolve, 5000 * (attempt + 1)));
+        continue;
+      }
+      throw new Error(String(payload.reasonCode || `archive_http_${response.status}`));
+    } catch (error) {
+      if (attempt < 2 && error?.name === 'AbortError') {
+        await new Promise(resolve => setTimeout(resolve, 5000 * (attempt + 1)));
+        continue;
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw new Error('archive_http_retry_exhausted');
 }
 
 const universeManifest = JSON.parse(readFileSync(new URL('../src/lib/tdcc-archive-universe.json', import.meta.url), 'utf8'));

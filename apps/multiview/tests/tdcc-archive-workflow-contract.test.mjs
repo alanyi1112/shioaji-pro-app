@@ -28,6 +28,9 @@ test("archive workflow 僅能手動執行固定 manifest，且逐期日期與程
   assert.match(runner, /universeRows\.slice\(index, index \+ 200\)/);
   assert.match(runner, /tdcc-archive-universe\.json/);
   assert.match(runner, /archive_universe_manifest_invalid/);
+  assert.match(runner, /attempt < 3/);
+  assert.match(runner, /\[429, 502, 503, 504\]/);
+  assert.match(runner, /90000/);
   assert.match(app, /assertTdccArchiveRequestContract\(body\.manifestVersion, body\.scope\)/);
 });
 
@@ -35,6 +38,7 @@ test("Sites 與 Cloudflare 使用獨立權限、concurrency 與 exact release he
   assert.match(sites, /group: tdcc-verified-archive-bootstrap/);
   assert.match(sites, /OAI-Sites-Authorization/);
   assert.match(sites, /deploymentTarget == "codex-sites"/);
+  assert.match(sites, /OWNER: sites-archive-bootstrap/);
   assert.doesNotMatch(sites, /CF-Access-Client-/);
   assert.match(cloudflare, /group: cloudflare-tdcc-verified-archive-bootstrap/);
   assert.match(cloudflare, /environment: cloudflare-production/);
@@ -42,6 +46,7 @@ test("Sites 與 Cloudflare 使用獨立權限、concurrency 與 exact release he
   assert.match(cloudflare, /CF-Access-Client-Secret/);
   assert.match(runner, /X-MultiChart-Pipeline-Authorization/);
   assert.match(cloudflare, /deploymentTarget == "cloudflare"/);
+  assert.match(cloudflare, /OWNER: cloudflare-archive-bootstrap/);
   assert.doesNotMatch(cloudflare, /SITES_BYPASS_TOKEN/);
   for (const workflow of [sites, cloudflare]) {
     assert.match(workflow, /\.commitSha == \$sha/);
