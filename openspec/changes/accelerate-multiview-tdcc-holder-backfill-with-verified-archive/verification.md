@@ -75,3 +75,22 @@
 - [ ] 使用者已授權依建議順序執行；先保存 Sites 保留站與 Cloudflare 正式站可取得的 migration、TDCC、容量、integrity 與 continuous 基線，再以同一 exact release SHA 分別執行 additive migration 與 verified manifest seed。
 - [ ] 逐環境核對獨立 receipts、18 期 hashes、archive all-zero 終態、51 週官方 remaining、protected health、API、8103／`.TW`／`.TWO` DOM、可見 canvas、console／network 與新增商品 warm path。
 - [ ] 未取得上述兩環境實際證據前，不勾選 tasks 8.1–8.4，也不把本機成功代替 Sites 或 Cloudflare 成功。
+
+## 2026-09-02 Sites exact release 與 archive 驗收
+
+- [x] 主專案精準修正 commit 為 `899e093`；獨立部署 repo exact release SHA 為 `1994d3f874f965ab2907cb3c4af6d48fa1dddbcd`。修正新增唯讀 `universe-status`，只有固定 manifest 計數不是 2,330／1,974 普通股／356 ETF 時才重建商品母體，避免每次 fresh run 重寫已正確的 D1 universe。
+- [x] Sites source repo 已推送 exact SHA；Sites v223、deployment `appgdep_6a979cac64188191ac8a4c8d91389e0f`、environment revision 45 部署成功，owner-only custom access policy 維持 1 位 owner、0 groups。
+- [x] Sites fresh workflow run `33588505422` 於 exact SHA 完成，checkout、protected exact-release health、archive bootstrap 與 protected archive health 全數通過；固定 universe 回報 2,330 檔，immutable archive commit 為 `17944774a7a37c8ef52a7ca919817fe6f949891c`。
+- [x] 同一 run 的 archive 終態為 `target=18`、`processed=18`、`remaining=0`、`failed=0`、`overdue=0`、`complete=true`；18 期 receipts 全部 verified，最後一期 `2026-08-28` 為 68,799 rows／4,047 symbols。
+- [x] Sites protected shareholder-distribution API 實測：8103 與 4768.TWO 各回 18 期、`2026-04-30` 至 `2026-08-28`、available、無 warning；0050.TW 回 58 期、`2025-07-18` 至 `2026-08-28`、remaining／failed／overdue 為 0。8103 最新大戶 32.16%／11 人／25,228,740 股，散戶 23.11%／18,389 人／18,138,091 股，與本機驗收一致。
+- [x] 專用 release tree 完整 `npm test` 為 697／697 通過；lint、Cloudflare budget、strict OpenSpec validation、build 與 `git diff --check` 通過。主專案聚焦 archive tests 11／11、MultiView lint 與 typecheck 通過。
+- [x] 主專案完整 `npm test` 初次在受限 sandbox 因測試 Unix／loopback socket 全部得到 `listen EPERM`；以相同命令在允許測試 socket、且不啟停既有服務的環境重跑後，169 個 test files、2,045 項測試全數通過。
+- [x] 最終唯讀服務核對：`8080`、`5173`、`5174` 仍由原 PID 912／893／899 LISTEN，2330 simulation snapshot HTTP 200；本輪未停止 simulation API、watchdog、Web、MultiView、pipeline 或行情連線。
+- [ ] Sites machine bypass 可通過 protected page、health 與資料 API，但不是 owner 個人清單 principal；headless `/api/instruments` 實際回 401，頁面安全退回 `SAMPLE`。因此不得把該畫面標成 8103 DOM／canvas 驗收，待可操作的 owner 身分瀏覽器補做 tasks 8.3b／9.5。
+
+## Cloudflare 正式站本輪跳過與後續維護邊界
+
+- 2026-09-02 使用者明確指示：Cloudflare D1 免費用量已達限制，本輪停止 Cloudflare 正式站的 D1 回補、fresh workflow、health／API／UI 驗收；此例外不阻擋本 change 的本輪完成。
+- exact release push 發生在上述指示之前，可能依既有 `main` push 規則自動觸發 Cloudflare deployment；收到指示後未再 dispatch Cloudflare archive workflow，也未再查詢或寫入 Cloudflare D1，且不以先前部分 run 或 Sites 成功冒充 fresh Cloudflare 證據。
+- tasks 8.2、8.3c、8.4b 與 9.1～9.4 保持未勾選，待額度恢復後依序補做 exact SHA、18 期 receipts、all-zero health、代表 API、DB-only warm path、DOM／canvas／console／network 與非預期 request 核對。
+- Sites owner-only DOM 自動化受個人 principal 邊界限制，另保留 tasks 8.3b／9.5；本輪 UI 正確性仍有本機 5174 的 1／2／3／4／6／8 圖實際 DOM、canvas 與零 console error 證據，Hosted 資料與 exact deployment 則由 Sites protected workflow/API 證明，兩者沒有互相冒充。

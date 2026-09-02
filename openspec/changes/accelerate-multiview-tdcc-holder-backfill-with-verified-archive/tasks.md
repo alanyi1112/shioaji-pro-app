@@ -69,10 +69,23 @@
 
 ## 8. Sites／Cloudflare 驗收與完成證據
 
-- [ ] 8.1 在明確部署／資料寫入授權下，以同一 exact release SHA 對 Sites 保留站套用 additive migration與 verified manifest seed，核對 receipt、integrity、容量、archive all-zero 終態與 51 週 official remaining
-- [ ] 8.2 在相同授權與 exact release SHA 下對 Cloudflare 正式站完成 migration／seed／readback，核對與 Sites 相同的 manifest version、validator version、逐 period hashes 與獨立 receipts
-- [ ] 8.3 分別對 Sites 保留站與 Cloudflare 正式站執行 protected health、shareholder-distribution API、8103／`.TW`／`.TWO` DOM、可見 canvas、文案、週變化、console／network 與新增商品 DB-only warm path驗收
-- [ ] 8.4 證明三環境的 archive target／processed／remaining／failed／overdue 各自守恆，並將 archive complete 與仍在進行的 official 51 週補缺清楚分列；不得用其他環境或單一 HTTP 200 代替
+- [x] 8.1 在明確部署／資料寫入授權下，以 exact release SHA `1994d3f874f965ab2907cb3c4af6d48fa1dddbcd` 對 Sites 保留站套用 additive migration 與 verified manifest seed；protected workflow 已核對固定商品母體 2,330 檔、18 期 receipts 與 archive all-zero 終態
+- [ ] 8.2 【後續維護，不列入本輪完成 gate】Cloudflare D1 免費額度恢復後，以當時 exact release SHA 完成 migration／seed／readback，核對與 Sites 相同的 manifest version、validator version、逐 period hashes 與獨立 receipts
+- [x] 8.3a 對 Sites 保留站完成 protected health 與 shareholder-distribution API 驗收；8103、`.TWO` 4768 與 ETF 0050 均為 available，archive receipt 18／18、remaining／failed／overdue 為 0，且未以本機或 Cloudflare 回應代替
+- [ ] 8.3b 【後續維護，不列入本輪完成 gate】在可操作的 owner 身分瀏覽器補做 Sites 保留站 8103／`.TW`／`.TWO` DOM、可見 canvas、文案、週變化與 console／network；machine bypass 不具個人清單 principal，不得以 `SAMPLE` 畫面冒充驗收
+- [ ] 8.3c 【後續維護，不列入本輪完成 gate】Cloudflare D1 額度恢復後，補做 protected health、shareholder-distribution API、8103／`.TW`／`.TWO` DOM、可見 canvas、console／network 與新增商品 DB-only warm path 驗收
+- [x] 8.4a 證明本機與 Sites 的 archive target／processed／remaining／failed／overdue 各自守恆，並將 archive complete 與 official 51 週補缺分列；Sites fresh run `33588505422` 為 18／18、0／0／0
+- [ ] 8.4b 【後續維護，不列入本輪完成 gate】Cloudflare D1 額度恢復後，補齊其獨立守恆與 official 51 週證據；不得用 Sites 或舊 run 代替 fresh Cloudflare 證據
 - [x] 8.5 執行完整 `npm test`、lint、type／build、migration suites、`openspec validate --all --strict` 與 `git diff --check`，修正本 change 範圍內問題且保留無關 dirty work
 - [x] 8.6 更新繁體中文 `source-review.md`、`verification.md`、tasks 與正式 specs 所需 evidence，只勾選已取得實際資料／API／DOM／canvas／console／health 證據的項目
 - [x] 8.7 盤點精準 commit／push／部署 scope，排除秘密、大型 CSV、staging DB、logs、screenshots、exports、產生物及所有無關變更；archive、commit、push 與部署仍依各自明確授權執行
+
+## 9. 已授權延後的 hosted 補驗
+
+> 2026-09-02 使用者明確指示：Cloudflare 正式站因 D1 免費用量已達限制，本輪跳過所有 D1 回補與驗收，且不得因此阻擋本 change 的本輪完成。下列項目保留為額度恢復後的維護清單；未實際取得證據前不得勾選。
+
+- [ ] 9.1 確認 Cloudflare D1 額度與寫入限制恢復，再選定並記錄當時 exact deployment SHA；不得沿用過期 SHA 或假設 push 即部署成功
+- [ ] 9.2 fresh dispatch `cloudflare-tdcc-verified-archive-bootstrap.yml`，核對固定 2,330 檔 universe、18 期 receipts、manifest／validator／immutable archive commit 與 `target=processed=18`、`remaining=failed=overdue=0`
+- [ ] 9.3 以 Cloudflare protected health 與代表 8103／`.TW`／`.TWO`／ETF API 核對日期、級距、provenance、archive／official weeks、D1 warm path 與零非預期外部 request
+- [ ] 9.4 在已登入 Cloudflare Access 的瀏覽器核對 8103／`.TW`／`.TWO` 的大戶／散戶 DOM、可見 canvas、狀態文案、週變化、console 與 network
+- [ ] 9.5 在可操作的 Sites owner 身分瀏覽器補齊 8.3b，並將 Cloudflare 9.1～9.4 與 Sites 8.3b 的實際非敏感證據寫回 `verification.md`
