@@ -10,6 +10,7 @@ import {
   startTdccArchiveRun,
   tdccStoredDistributionMaterialHash,
   tdccArchiveStatus,
+  tdccArchiveUniverseStatus,
   TDCC_ARCHIVE_RUN_ID,
 } from '../worker/tdcc-archive-bootstrap.ts';
 import {
@@ -91,6 +92,7 @@ test('runner 分批商品宇宙由 Worker 重驗代號、市場與固定 provena
     { symbol: '0050.TW', stockCode: '0050', exchange: 'TWSE', quoteType: 'ETF', listingDate: null, sourceDate: '2026-09-02' },
   ] });
   assert.deepEqual(result, { accepted: 2, count: 2, equities: 1, etfs: 1 });
+  assert.deepEqual(await tdccArchiveUniverseStatus(db), { count: 2, equities: 1, etfs: 1 });
   const rows = await db.prepare('SELECT symbol,source,source_url FROM tdcc_archive_symbol_universe ORDER BY symbol').all();
   assert.deepEqual(rows.results.map(row => ({ ...row })), [
     { symbol: '0050.TW', source: 'twse-official-catalog', source_url: 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL' },

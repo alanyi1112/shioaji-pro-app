@@ -80,12 +80,16 @@ const universeSymbols = new Set(universeRows.map(row => row?.symbol));
 if (universeSymbols.size !== universeRows.length || !['2330.TW', '8103.TW', '6488.TWO', '0050.TW', '006201.TWO'].every(symbol => universeSymbols.has(symbol))) {
   throw new Error('archive_universe_manifest_invalid');
 }
-for (let index = 0; index < universeRows.length; index += 200) {
-  const response = await call({
-    action: 'seed-universe', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market',
-    reset: index === 0, rows: universeRows.slice(index, index + 200),
-  });
-  if (Number(response.universe?.accepted || 0) < 1) throw new Error('archive_invalid_universe_batch');
+const expectedUniverse = universeManifest.counts;
+const currentUniverse = await call({ action: 'universe-status', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market' });
+if (currentUniverse.universe?.count !== expectedUniverse.total || currentUniverse.universe?.equities !== expectedUniverse.equities || currentUniverse.universe?.etfs !== expectedUniverse.etfs) {
+  for (let index = 0; index < universeRows.length; index += 200) {
+    const response = await call({
+      action: 'seed-universe', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market',
+      reset: index === 0, rows: universeRows.slice(index, index + 200),
+    });
+    if (Number(response.universe?.accepted || 0) < 1) throw new Error('archive_invalid_universe_batch');
+  }
 }
 console.log(JSON.stringify({ event: 'tdcc-archive-universe', count: universeRows.length }));
 

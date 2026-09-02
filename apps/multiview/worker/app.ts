@@ -75,6 +75,7 @@ import {
   rollbackTdccArchiveReceipt,
   seedTdccArchiveUniverseBatch,
   startTdccArchiveRun,
+  tdccArchiveUniverseStatus,
   tdccArchiveStatus,
 } from "./tdcc-archive-bootstrap";
 import {
@@ -1509,6 +1510,7 @@ async function tdccArchiveBootstrap(request: Request, env: Env) {
   const owner = String(body.owner || "");
   try {
     assertTdccArchiveRequestContract(body.manifestVersion, body.scope);
+    if (action === "universe-status") return json({ ok: true, universe: await tdccArchiveUniverseStatus(env.DB) });
     if (action === "seed-universe") return json({ ok: true, universe: await seedTdccArchiveUniverseBatch(env.DB, { reset: body.reset === true, rows: body.rows }) });
     if (action === "start") return json({ ok: true, archive: await startTdccArchiveRun(env.DB, owner) });
     if (action === "prepare-period") {

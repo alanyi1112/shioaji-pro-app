@@ -265,12 +265,17 @@ export async function seedTdccArchiveUniverseBatch(db: D1Database, input: { rese
       .bind(TDCC_ARCHIVE_MANIFEST_VERSION, row.symbol, row.stockCode, row.exchange, row.quoteType, row.listingDate, source, row.sourceDate, sourceUrl));
   }
   await runD1Batch(db, statements);
+  const counts = await tdccArchiveUniverseStatus(db);
+  return { accepted: rows.length, ...counts };
+}
+
+export async function tdccArchiveUniverseStatus(db: D1Database) {
   const counts = await db.prepare(`SELECT COUNT(*) AS count,
     SUM(CASE WHEN quote_type='EQUITY' THEN 1 ELSE 0 END) AS equities,
     SUM(CASE WHEN quote_type='ETF' THEN 1 ELSE 0 END) AS etfs
     FROM tdcc_archive_symbol_universe WHERE manifest_version=?`).bind(TDCC_ARCHIVE_MANIFEST_VERSION)
     .first<{ count: number; equities: number; etfs: number }>();
-  return { accepted: rows.length, count: Number(counts?.count || 0), equities: Number(counts?.equities || 0), etfs: Number(counts?.etfs || 0) };
+  return { count: Number(counts?.count || 0), equities: Number(counts?.equities || 0), etfs: Number(counts?.etfs || 0) };
 }
 
 async function officialLatestRows(fetcher: typeof fetch) {

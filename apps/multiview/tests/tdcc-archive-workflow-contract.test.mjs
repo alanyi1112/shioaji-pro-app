@@ -25,6 +25,7 @@ test("archive workflow 僅能手動執行固定 manifest，且逐期日期與程
   }
   assert.match(runner, /for \(const entry of TDCC_ARCHIVE_MANIFEST\)/);
   assert.match(runner, /action: 'seed-universe'/);
+  assert.match(runner, /action: 'universe-status'/);
   assert.match(runner, /universeRows\.slice\(index, index \+ 200\)/);
   assert.match(runner, /tdcc-archive-universe\.json/);
   assert.match(runner, /archive_universe_manifest_invalid/);
