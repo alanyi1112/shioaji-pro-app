@@ -28,9 +28,11 @@ test("archive workflow 僅能手動執行固定 manifest，且逐期日期與程
   assert.match(runner, /universeRows\.slice\(index, index \+ 200\)/);
   assert.match(runner, /tdcc-archive-universe\.json/);
   assert.match(runner, /archive_universe_manifest_invalid/);
-  assert.match(runner, /attempt < 3/);
+  assert.match(runner, /attempt < 4/);
   assert.match(runner, /\[429, 502, 503, 504\]/);
   assert.match(runner, /90000/);
+  assert.match(runner, /sleep\(10000\)/);
+  assert.match(runner, /retry-after/);
   assert.match(app, /assertTdccArchiveRequestContract\(body\.manifestVersion, body\.scope\)/);
 });
 
