@@ -107,8 +107,14 @@ async function fetchOfficialCatalogPayload(url: string, minimumRows: number, fet
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetcher(url, { signal: controller.signal, redirect: "manual", headers: { accept: "application/json", "accept-language": "zh-TW,zh;q=0.9", "user-agent": "Mozilla/5.0 CodexSites MultiChart" } });
-    if (response.redirected || (response.status >= 300 && response.status < 400)) throw new Error("archive_catalog_redirect");
+    const response = await fetcher(url, { signal: controller.signal, redirect: "follow", headers: { accept: "application/json", "accept-language": "zh-TW,zh;q=0.9", "user-agent": "Mozilla/5.0 CodexSites MultiChart" } });
+    const requested = new URL(url);
+    const resolved = new URL(response.url || url);
+    const canonicalPath = (value: string) => value.replace(/\/$/, "");
+    if ((response.status >= 300 && response.status < 400)
+      || resolved.protocol !== "https:" || resolved.hostname !== requested.hostname
+      || canonicalPath(resolved.pathname) !== canonicalPath(requested.pathname)
+      || resolved.search || resolved.hash || resolved.username || resolved.password) throw new Error("archive_catalog_redirect");
     if (!response.ok) throw new Error(`archive_catalog_http_${response.status}`);
     const payload = await response.json();
     if (!Array.isArray(payload) || payload.length < minimumRows || payload.length > 10000) throw new Error("archive_catalog_invalid");
