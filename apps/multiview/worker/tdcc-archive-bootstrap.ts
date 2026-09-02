@@ -11,6 +11,7 @@ import {
 } from "../../../src/lib/tdcc-archive-validator.ts";
 import { runD1Batch } from "./d1-batch.ts";
 import { parseTdccSnapshot, type DistributionRow } from "./taiwan-stock-chip.ts";
+import { mergeUniverses, parseUniverse, SCREENER_SOURCES } from "./stock-screener-sources.ts";
 
 export const TDCC_ARCHIVE_RUN_ID = `${TDCC_ARCHIVE_MANIFEST_VERSION}:full-market`;
 export const TDCC_ARCHIVE_SCOPE = "full-market";
@@ -133,30 +134,23 @@ export async function ensureArchiveUniverse(db: D1Database, fetcher: typeof fetc
     throw new Error("archive_universe_schema_invalid");
   }
   if (Number(existing?.equities || 0) >= 1500 && Number(existing?.etfs || 0) >= 100) return Number(existing?.count || 0);
-  let ordinary: D1Result<{ symbol: string; market: string; data_date: string; payload: string }>;
-  try {
-    ordinary = await db.prepare(`SELECT symbol,market,data_date,payload FROM screener_universe
-      WHERE revision=(SELECT revision FROM screener_universe ORDER BY data_date DESC,revision DESC LIMIT 1)
-      ORDER BY symbol`).all<{ symbol: string; market: string; data_date: string; payload: string }>();
-  } catch {
-    throw new Error("archive_universe_query_failed");
-  }
-  if (ordinary.results.length < 1500) throw new Error("archive_universe_not_ready");
-  const [twse, tpex] = await Promise.all([
+  const [twseIssuers, tpexIssuers, twse, tpex] = await Promise.all([
+    fetchOfficialCatalogPayload(SCREENER_SOURCES.TWSE.universe, 800, fetcher),
+    fetchOfficialCatalogPayload(SCREENER_SOURCES.TPEx.universe, 500, fetcher),
     fetchOfficialCatalogPayload(TWSE_CATALOG_URL, 800, fetcher),
     fetchOfficialCatalogPayload(TPEX_CATALOG_URL, 500, fetcher),
   ]);
+  let ordinary;
+  try {
+    ordinary = mergeUniverses(parseUniverse(twseIssuers, "TWSE"), parseUniverse(tpexIssuers, "TPEx"));
+  } catch {
+    throw new Error("archive_universe_invalid");
+  }
+  if (ordinary.stocks.length < 1500) throw new Error("archive_universe_not_ready");
   const ordinaryCodes = new Set<string>();
-  for (const item of ordinary.results) {
-    let parsed: Record<string, unknown> = {};
-    try { parsed = JSON.parse(String(item.payload || "{}")) as Record<string, unknown>; } catch {}
-    const stock = parsed.stock && typeof parsed.stock === "object" ? parsed.stock as Record<string, unknown> : {};
-    const symbol = String(item.symbol || "").toUpperCase();
-    const code = symbol.split(".")[0];
-    const exchange = item.market === "TWSE" && symbol.endsWith(".TW") ? "TWSE" : item.market === "TPEx" && symbol.endsWith(".TWO") ? "TPEx" : "";
-    if (!exchange || !/^[0-9A-Z]{4,8}$/.test(code) || String(stock.kind || "") !== "ordinary") throw new Error("archive_universe_invalid");
-    if (ordinaryCodes.has(code)) throw new Error("archive_universe_invalid");
-    ordinaryCodes.add(code);
+  for (const stock of ordinary.stocks) {
+    if (ordinaryCodes.has(stock.code)) throw new Error("archive_universe_invalid");
+    ordinaryCodes.add(stock.code);
   }
   const etfs = new Map<string, { symbol: string; code: string; exchange: "TWSE" | "TPEx"; source: string; sourceDate: string; sourceUrl: string }>();
   const catalogDate = (value: unknown) => {
@@ -176,26 +170,22 @@ export async function ensureArchiveUniverse(db: D1Database, fetcher: typeof fetc
   appendEtfs(twse, "TWSE", TWSE_CATALOG_URL);
   appendEtfs(tpex, "TPEx", TPEX_CATALOG_URL);
   if (etfs.size < 100) throw new Error("archive_catalog_invalid");
-  const statements = [
-    db.prepare("DELETE FROM tdcc_archive_symbol_universe WHERE manifest_version=?").bind(TDCC_ARCHIVE_MANIFEST_VERSION),
-    db.prepare(`INSERT INTO tdcc_archive_symbol_universe
-      (manifest_version,symbol,stock_code,exchange,quote_type,listing_date,source,source_date,source_url)
-      SELECT ?,symbol,substr(symbol,1,instr(symbol,'.')-1),market,'EQUITY',NULLIF(json_extract(payload,'$.stock.listingDate'),''),
-        'screener-universe-official',data_date,
-        CASE market WHEN 'TWSE' THEN 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L'
-          ELSE 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O' END
-      FROM screener_universe
-      WHERE revision=(SELECT revision FROM screener_universe ORDER BY data_date DESC,revision DESC LIMIT 1)
-      ORDER BY symbol`).bind(TDCC_ARCHIVE_MANIFEST_VERSION),
-  ];
-  const etfRows = [...etfs.values()];
-  for (let index = 0; index < etfRows.length; index += 10) {
-    const chunk = etfRows.slice(index, index + 10);
-    const values = chunk.map(() => "(?,?,?,?,?,NULL,?,?,?)").join(",");
+  const ordinaryRows = ordinary.stocks.map(stock => ({
+    symbol: stock.symbol, code: stock.code, exchange: stock.market, quoteType: "EQUITY",
+    listingDate: stock.listingDate || null, source: "official-issuer-directory",
+    sourceDate: stock.market === "TWSE" ? ordinary.dates.TWSE : ordinary.dates.TPEx,
+    sourceUrl: stock.market === "TWSE" ? SCREENER_SOURCES.TWSE.universe : SCREENER_SOURCES.TPEx.universe,
+  }));
+  const allRows = [...ordinaryRows, ...[...etfs.values()].map(row => ({ ...row, quoteType: "ETF", listingDate: null }))];
+  const statements = [db.prepare("DELETE FROM tdcc_archive_symbol_universe WHERE manifest_version=?").bind(TDCC_ARCHIVE_MANIFEST_VERSION)];
+  for (let index = 0; index < allRows.length; index += 250) {
+    const chunk = allRows.slice(index, index + 250);
     statements.push(db.prepare(`INSERT INTO tdcc_archive_symbol_universe
       (manifest_version,symbol,stock_code,exchange,quote_type,listing_date,source,source_date,source_url)
-      VALUES ${values}`)
-      .bind(...chunk.flatMap(row => [TDCC_ARCHIVE_MANIFEST_VERSION, row.symbol, row.code, row.exchange, "ETF", row.source, row.sourceDate, row.sourceUrl])));
+      SELECT ?,json_extract(value,'$.symbol'),json_extract(value,'$.code'),json_extract(value,'$.exchange'),
+        json_extract(value,'$.quoteType'),json_extract(value,'$.listingDate'),json_extract(value,'$.source'),
+        json_extract(value,'$.sourceDate'),json_extract(value,'$.sourceUrl') FROM json_each(?)`)
+      .bind(TDCC_ARCHIVE_MANIFEST_VERSION, JSON.stringify(chunk)));
   }
   if (statements.length > 40) throw new Error("archive_universe_invalid");
   try {

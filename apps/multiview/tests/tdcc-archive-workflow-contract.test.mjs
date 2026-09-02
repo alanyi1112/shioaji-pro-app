@@ -28,7 +28,7 @@ test("archive workflow 僅能手動執行固定 manifest，且逐期日期與程
 test("Sites 與 Cloudflare 使用獨立權限、concurrency 與 exact release health gate", () => {
   assert.match(sites, /group: tdcc-verified-archive-bootstrap/);
   assert.match(sites, /OAI-Sites-Authorization/);
-  assert.match(sites, /deploymentTarget == "sites"/);
+  assert.match(sites, /deploymentTarget == "codex-sites"/);
   assert.doesNotMatch(sites, /CF-Access-Client-/);
   assert.match(cloudflare, /group: cloudflare-tdcc-verified-archive-bootstrap/);
   assert.match(cloudflare, /environment: cloudflare-production/);

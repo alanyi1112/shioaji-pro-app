@@ -19,6 +19,7 @@ import {
   TDCC_ARCHIVE_VALIDATOR_VERSION,
 } from '../../../src/lib/tdcc-archive-validator.ts';
 import { ingestTdccDistributionSnapshot } from '../worker/taiwan-stock-chip-service.ts';
+import { SCREENER_SOURCES } from '../worker/stock-screener-sources.ts';
 
 const migration = await readFile(new URL('../drizzle/0030_tdcc_verified_archive_bootstrap.sql', import.meta.url), 'utf8');
 const levels = Array.from({ length: 15 }, (_, index) => ({ level: index + 1, range: `L${index + 1}`, holders: 1, shares: 100, ratioPercent: 6.66 }));
@@ -47,19 +48,22 @@ function database() {
 
 test('固定商品宇宙沿用官方發行人市場歸屬並只由官方目錄補 ETF', async () => {
   const db = database();
-  const rows = Array.from({ length: 1800 }, (_, index) => {
-    const market = index < 1000 ? 'TWSE' : 'TPEx';
-    const code = String(index < 1000 ? index + 1000 : index + 2000);
-    const suffix = market === 'TWSE' ? 'TW' : 'TWO';
-    const payload = JSON.stringify({ stock: { kind: 'ordinary', listingDate: '2000-01-01' } }).replaceAll("'", "''");
-    return `('revision-1','${code}.${suffix}','${market}','2026-09-01','${payload}')`;
-  });
-  db.exec(`INSERT INTO screener_universe (revision,symbol,market,data_date,payload) VALUES ${rows.join(',')}`);
+  const twseIssuers = Array.from({ length: 1000 }, (_, index) => ({
+    出表日期: '1150901', 公司代號: String(index + 1000), 公司簡稱: `上市${index}`,
+    產業別: '01', 已發行普通股數或TDR原股發行股數: '1000000', 上市日期: '0890101',
+  }));
+  const tpexIssuers = Array.from({ length: 800 }, (_, index) => ({
+    Date: '1150901', SecuritiesCompanyCode: String(index + 3000), CompanyAbbreviation: `上櫃${index}`,
+    SecuritiesIndustryCode: '01', IssueShares: '1000000', DateOfListing: '0890101',
+  }));
   const twse = Array.from({ length: 800 }, (_, index) => ({ Date: '1150901', Code: index < 100 ? `00${String(index + 50).padStart(2, '0')}` : `9${String(index).padStart(3, '0')}` }));
   const tpex = Array.from({ length: 500 }, (_, index) => ({ Date: '1150901', SecuritiesCompanyCode: index < 50 ? `006${String(index + 50).padStart(2, '0')}B` : `8${String(index).padStart(3, '0')}` }));
-  const fetcher = async (url) => new Response(JSON.stringify(String(url).includes('twse') ? twse : tpex), {
-    headers: { 'content-type': 'application/json' },
-  });
+  const fetcher = async (url) => {
+    const payload = url === SCREENER_SOURCES.TWSE.universe ? twseIssuers
+      : url === SCREENER_SOURCES.TPEx.universe ? tpexIssuers
+      : String(url).includes('twse') ? twse : tpex;
+    return new Response(JSON.stringify(payload), { headers: { 'content-type': 'application/json' } });
+  };
   assert.equal(await ensureArchiveUniverse(db, fetcher), 1950);
   const etfs = await db.prepare("SELECT symbol,exchange,quote_type FROM tdcc_archive_symbol_universe WHERE stock_code IN ('0050','00679B') ORDER BY symbol").all();
   assert.deepEqual(etfs.results.map(row => ({ ...row })), [

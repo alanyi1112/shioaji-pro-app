@@ -33,7 +33,7 @@ jobs:
             "$SITE_URL/api/health")"
           jq -e --arg sha "$GITHUB_SHA" '
             .ok == true
-            and .deploymentTarget == "sites"
+            and .deploymentTarget == "codex-sites"
             and .commitSha == $sha
             and .persistence.d1 == true
           ' <<<"$response" >/dev/null
@@ -91,7 +91,7 @@ jobs:
             "$SITE_URL/api/health")"
           jq -e --arg sha "$GITHUB_SHA" --arg manifest "$MANIFEST_VERSION" '
             .ok == true
-            and .deploymentTarget == "sites"
+            and .deploymentTarget == "codex-sites"
             and .commitSha == $sha
             and .taiwanStockChip.archive.manifestVersion == $manifest
             and .taiwanStockChip.archive.complete == true
