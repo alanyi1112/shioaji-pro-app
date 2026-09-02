@@ -217,6 +217,62 @@ export async function ensureArchiveUniverse(db: D1Database, fetcher: typeof fetc
   return count;
 }
 
+type ArchiveUniverseSeedRow = {
+  symbol: string;
+  stockCode: string;
+  exchange: "TWSE" | "TPEx";
+  quoteType: "EQUITY" | "ETF";
+  listingDate: string | null;
+  sourceDate: string;
+};
+
+function validArchiveDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  return new Date(`${value}T00:00:00.000Z`).toISOString().slice(0, 10) === value;
+}
+
+export async function seedTdccArchiveUniverseBatch(db: D1Database, input: { reset: boolean; rows: unknown }) {
+  if (!Array.isArray(input.rows) || input.rows.length < 1 || input.rows.length > 250) throw new Error("archive_invalid_universe_batch");
+  const seen = new Set<string>();
+  const rows: ArchiveUniverseSeedRow[] = input.rows.map(value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("archive_invalid_universe_batch");
+    const row = value as Record<string, unknown>;
+    const stockCode = String(row.stockCode || "").trim().toUpperCase();
+    const exchange = String(row.exchange || "");
+    const quoteType = String(row.quoteType || "");
+    const symbol = String(row.symbol || "").trim().toUpperCase();
+    const suffix = exchange === "TWSE" ? ".TW" : exchange === "TPEx" ? ".TWO" : "";
+    const listingDate = row.listingDate == null ? null : String(row.listingDate);
+    const sourceDate = String(row.sourceDate || "");
+    if (!suffix || !["EQUITY", "ETF"].includes(quoteType) || symbol !== `${stockCode}${suffix}`
+      || (quoteType === "EQUITY" ? !/^[1-9]\d{3}$/.test(stockCode) || !listingDate || !validArchiveDate(listingDate) : !/^00[0-9A-Z]{2,6}$/.test(stockCode) || listingDate !== null)
+      || !validArchiveDate(sourceDate) || seen.has(symbol)) throw new Error("archive_invalid_universe_batch");
+    seen.add(symbol);
+    return { symbol, stockCode, exchange: exchange as "TWSE" | "TPEx", quoteType: quoteType as "EQUITY" | "ETF", listingDate, sourceDate };
+  });
+  const statements: D1PreparedStatement[] = [];
+  if (input.reset) statements.push(db.prepare("DELETE FROM tdcc_archive_symbol_universe WHERE manifest_version=?").bind(TDCC_ARCHIVE_MANIFEST_VERSION));
+  for (const row of rows) {
+    const source = row.quoteType === "EQUITY" ? "official-issuer-directory" : `${row.exchange.toLowerCase()}-official-catalog`;
+    const sourceUrl = row.quoteType === "EQUITY"
+      ? row.exchange === "TWSE" ? SCREENER_SOURCES.TWSE.universe : SCREENER_SOURCES.TPEx.universe
+      : row.exchange === "TWSE" ? TWSE_CATALOG_URL : TPEX_CATALOG_URL;
+    statements.push(db.prepare(`INSERT INTO tdcc_archive_symbol_universe
+      (manifest_version,symbol,stock_code,exchange,quote_type,listing_date,source,source_date,source_url)
+      VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(manifest_version,symbol) DO UPDATE SET
+      stock_code=excluded.stock_code,exchange=excluded.exchange,quote_type=excluded.quote_type,listing_date=excluded.listing_date,
+      source=excluded.source,source_date=excluded.source_date,source_url=excluded.source_url`)
+      .bind(TDCC_ARCHIVE_MANIFEST_VERSION, row.symbol, row.stockCode, row.exchange, row.quoteType, row.listingDate, source, row.sourceDate, sourceUrl));
+  }
+  await runD1Batch(db, statements);
+  const counts = await db.prepare(`SELECT COUNT(*) AS count,
+    SUM(CASE WHEN quote_type='EQUITY' THEN 1 ELSE 0 END) AS equities,
+    SUM(CASE WHEN quote_type='ETF' THEN 1 ELSE 0 END) AS etfs
+    FROM tdcc_archive_symbol_universe WHERE manifest_version=?`).bind(TDCC_ARCHIVE_MANIFEST_VERSION)
+    .first<{ count: number; equities: number; etfs: number }>();
+  return { accepted: rows.length, count: Number(counts?.count || 0), equities: Number(counts?.equities || 0), etfs: Number(counts?.etfs || 0) };
+}
+
 async function officialLatestRows(fetcher: typeof fetch) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);

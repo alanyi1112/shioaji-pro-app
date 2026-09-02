@@ -73,6 +73,7 @@ import {
   finalizeTdccArchiveRun,
   prepareTdccArchivePeriod,
   rollbackTdccArchiveReceipt,
+  seedTdccArchiveUniverseBatch,
   startTdccArchiveRun,
   tdccArchiveStatus,
 } from "./tdcc-archive-bootstrap";
@@ -1499,7 +1500,7 @@ async function tdccArchiveBootstrap(request: Request, env: Env) {
   let body: JsonObject;
   try {
     const raw = await request.text();
-    if (new TextEncoder().encode(raw).byteLength > 4096) throw new Error("archive_invalid_payload");
+    if (new TextEncoder().encode(raw).byteLength > 131072) throw new Error("archive_invalid_payload");
     body = jsonObject(JSON.parse(raw));
   } catch {
     return json({ ok: false, reasonCode: "archive_invalid_payload" }, 400);
@@ -1508,6 +1509,7 @@ async function tdccArchiveBootstrap(request: Request, env: Env) {
   const owner = String(body.owner || "");
   try {
     assertTdccArchiveRequestContract(body.manifestVersion, body.scope);
+    if (action === "seed-universe") return json({ ok: true, universe: await seedTdccArchiveUniverseBatch(env.DB, { reset: body.reset === true, rows: body.rows }) });
     if (action === "start") return json({ ok: true, archive: await startTdccArchiveRun(env.DB, owner) });
     if (action === "prepare-period") {
       const receipt = await prepareTdccArchivePeriod({ db: env.DB, owner, date: String(body.date || "") });
@@ -1531,6 +1533,7 @@ async function tdccArchiveBootstrap(request: Request, env: Env) {
       "archive_official_anchor_invalid", "archive_official_anchor_redirect", "archive_empty_supported_universe", "archive_receipt_not_rollbackable",
       "archive_universe_not_ready", "archive_universe_invalid", "archive_catalog_redirect", "archive_catalog_invalid",
       "archive_catalog_timeout", "archive_normalization_invalid",
+      "archive_invalid_universe_batch",
       "archive_universe_schema_invalid", "archive_universe_query_failed", "archive_universe_write_failed",
       "archive_catalog_unavailable",
       "archive_request_contract_mismatch",

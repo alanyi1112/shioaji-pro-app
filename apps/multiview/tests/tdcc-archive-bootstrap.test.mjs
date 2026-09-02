@@ -6,6 +6,7 @@ import {
   ensureArchiveUniverse,
   finalizeTdccArchiveRun,
   rollbackTdccArchiveReceipt,
+  seedTdccArchiveUniverseBatch,
   startTdccArchiveRun,
   tdccStoredDistributionMaterialHash,
   tdccArchiveStatus,
@@ -80,6 +81,24 @@ test('商品宇宙建立失敗會保存安全原因並立即釋放 lease', async
   const row = await db.prepare('SELECT status,last_error_code,lease_owner,lease_expires_at FROM tdcc_archive_runs WHERE run_id=?')
     .bind(TDCC_ARCHIVE_RUN_ID).first();
   assert.deepEqual({ ...row }, { status: 'failed', last_error_code: 'archive_catalog_invalid', lease_owner: null, lease_expires_at: null });
+  db.close();
+});
+
+test('runner 分批商品宇宙由 Worker 重驗代號、市場與固定 provenance', async () => {
+  const db = database();
+  const result = await seedTdccArchiveUniverseBatch(db, { reset: true, rows: [
+    { symbol: '2330.TW', stockCode: '2330', exchange: 'TWSE', quoteType: 'EQUITY', listingDate: '1994-09-05', sourceDate: '2026-09-02' },
+    { symbol: '0050.TW', stockCode: '0050', exchange: 'TWSE', quoteType: 'ETF', listingDate: null, sourceDate: '2026-09-02' },
+  ] });
+  assert.deepEqual(result, { accepted: 2, count: 2, equities: 1, etfs: 1 });
+  const rows = await db.prepare('SELECT symbol,source,source_url FROM tdcc_archive_symbol_universe ORDER BY symbol').all();
+  assert.deepEqual(rows.results.map(row => ({ ...row })), [
+    { symbol: '0050.TW', source: 'twse-official-catalog', source_url: 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL' },
+    { symbol: '2330.TW', source: 'official-issuer-directory', source_url: 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L' },
+  ]);
+  await assert.rejects(seedTdccArchiveUniverseBatch(db, { reset: false, rows: [
+    { symbol: '2330.TWO', stockCode: '2330', exchange: 'TWSE', quoteType: 'EQUITY', listingDate: '1994-09-05', sourceDate: '2026-09-02' },
+  ] }), /archive_invalid_universe_batch/);
   db.close();
 });
 

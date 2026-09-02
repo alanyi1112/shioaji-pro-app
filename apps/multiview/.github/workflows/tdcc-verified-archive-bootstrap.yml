@@ -41,57 +41,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          endpoint="$SITE_URL/api/internal/tdcc-archive-bootstrap"
-          dates=(2026-04-30 2026-05-08 2026-05-15 2026-05-22 2026-05-29 2026-06-05 2026-06-12 2026-06-18 2026-06-26 2026-07-03 2026-07-09 2026-07-17 2026-07-24 2026-07-31 2026-08-07 2026-08-14 2026-08-21 2026-08-28)
-
-          request() {
-            local action="$1"
-            local date="${2:-}"
-            local payload response_file status reason
-            payload="$(jq -cn --arg action "$action" --arg owner "$OWNER" --arg manifestVersion "$MANIFEST_VERSION" --arg scope "$ARCHIVE_SCOPE" --arg date "$date" '
-              {action:$action,owner:$owner,manifestVersion:$manifestVersion,scope:$scope}
-              + if $date == "" then {} else {date:$date} end')"
-            response_file="$(mktemp)"
-            status="$(curl --silent --show-error --max-time 120 --output "$response_file" --write-out '%{http_code}' \
-              -H "OAI-Sites-Authorization: Bearer $SITES_BYPASS_TOKEN" \
-              -H "Authorization: Bearer $TDCC_ARCHIVE_SECRET" \
-              -H "Content-Type: application/json" \
-              --data "$payload" "$endpoint")"
-            if [[ "$status" != 2* ]]; then
-              reason="$(jq -r '.reasonCode // .error // "archive_failed"' "$response_file")"
-              [[ "$reason" =~ ^archive_[a-z0-9_]+$ ]] || reason="archive_failed"
-              echo "tdcc-archive target=sites action=$action status=http_$status reason=$reason" >&2
-              rm -f "$response_file"
-              return 22
-            fi
-            cat "$response_file"
-            rm -f "$response_file"
-          }
-
-          validate_summary() {
-            jq -e --arg manifest "$MANIFEST_VERSION" --arg sha "$GITHUB_SHA" '
-              .ok == true
-              and .archive.manifestVersion == $manifest
-              and .archive.target == 18
-              and (.archive.processed | type == "number" and . >= 0 and floor == .)
-              and (.archive.remaining | type == "number" and . >= 0 and floor == .)
-              and (.archive.failed | type == "number" and . >= 0 and floor == .)
-              and (.archive.overdue | type == "number" and . >= 0 and floor == .)
-              and .archive.commitSha == "17944774a7a37c8ef52a7ca919817fe6f949891c"
-            ' >/dev/null <<<"$1"
-          }
-
-          response="$(request start)"
-          validate_summary "$response"
-          for date in "${dates[@]}"; do
-            response="$(request prepare-period "$date")"
-            validate_summary "$response"
-            jq -r --arg date "$date" '"tdcc-archive target=sites date=\($date) status=\(.receipt.status) processed=\(.archive.processed) remaining=\(.archive.remaining) failed=\(.archive.failed) overdue=\(.archive.overdue)"' <<<"$response"
-          done
-          response="$(request finalize)"
-          validate_summary "$response"
-          jq -e '.archive.complete == true and .archive.processed == 18 and .archive.remaining == 0 and .archive.failed == 0 and .archive.overdue == 0' <<<"$response" >/dev/null
-          jq -r '"tdcc-archive target=sites status=complete processed=\(.archive.processed) remaining=\(.archive.remaining) failed=\(.archive.failed) overdue=\(.archive.overdue)"' <<<"$response"
+          MULTIVIEW_ARCHIVE_TARGET_URL="$SITE_URL" TDCC_ARCHIVE_OWNER="$OWNER" TDCC_CONTINUOUS_BACKFILL_SECRET="$TDCC_ARCHIVE_SECRET" \
+            node scripts/tdcc-archive-bootstrap.mjs
       - name: Verify protected archive health
         shell: bash
         run: |
