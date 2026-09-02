@@ -22,6 +22,10 @@ jobs:
       ARCHIVE_SCOPE: full-market
       OWNER: sites-archive-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Checkout fixed release source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Verify protected exact release
         shell: bash
         run: |

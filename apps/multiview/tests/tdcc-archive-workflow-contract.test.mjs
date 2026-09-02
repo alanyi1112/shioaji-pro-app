@@ -15,6 +15,8 @@ test("archive workflow 僅能手動執行固定 manifest，且逐期日期與程
     assert.match(workflow, new RegExp(`MANIFEST_VERSION: ${TDCC_ARCHIVE_MANIFEST_VERSION}`));
     assert.match(workflow, /ARCHIVE_SCOPE: full-market/);
     assert.doesNotMatch(workflow, /inputs:/);
+    assert.match(workflow, /uses: actions\/checkout@v4/);
+    assert.match(workflow, /persist-credentials: false/);
     assert.match(workflow, /node scripts\/tdcc-archive-bootstrap\.mjs/);
     assert.match(workflow, /archive\.remaining == 0/);
     assert.match(workflow, /archive\.failed == 0/);
