@@ -43,11 +43,43 @@ async function call(body) {
   return payload;
 }
 
+const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+async function officialSource(url) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await fetchScreenerSource(url, fetch, 120000);
+    } catch (error) {
+      if (attempt > 0 || !/^source_(?:timeout|http_\d+)$/.test(String(error?.message || ''))) throw error;
+      await delay(3000);
+    }
+  }
+  throw new Error('source_timeout');
+}
+
 async function catalog(url, minimumRows) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await catalogAttempt(url, minimumRows);
+    } catch (error) {
+      if (attempt > 0 || !/^archive_catalog_(?:timeout|http_\d+)$/.test(String(error?.message || ''))) throw error;
+      await delay(3000);
+    }
+  }
+  throw new Error('archive_catalog_timeout');
+}
+
+async function catalogAttempt(url, minimumRows) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
+  const timer = setTimeout(() => controller.abort(), 120000);
   try {
-    const response = await fetch(url, { signal: controller.signal, redirect: 'follow', headers: { accept: 'application/json', 'accept-encoding': 'identity' } });
+    let response;
+    try {
+      response = await fetch(url, { signal: controller.signal, redirect: 'follow', headers: { accept: 'application/json', 'accept-encoding': 'identity' } });
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('archive_catalog_timeout');
+      throw error;
+    }
     if (!response.ok) throw new Error(`archive_catalog_http_${response.status}`);
     const payload = await response.json();
     if (!Array.isArray(payload) || payload.length < minimumRows || payload.length > 10000) throw new Error('archive_catalog_invalid');
@@ -58,12 +90,10 @@ async function catalog(url, minimumRows) {
 }
 
 async function verifiedUniverse() {
-  const [twseIssuer, tpexIssuer, twseCatalog, tpexCatalog] = await Promise.all([
-    fetchScreenerSource(SCREENER_SOURCES.TWSE.universe),
-    fetchScreenerSource(SCREENER_SOURCES.TPEx.universe),
-    catalog(TWSE_CATALOG_URL, 800),
-    catalog(TPEX_CATALOG_URL, 500),
-  ]);
+  const twseIssuer = await officialSource(SCREENER_SOURCES.TWSE.universe);
+  const tpexIssuer = await officialSource(SCREENER_SOURCES.TPEx.universe);
+  const twseCatalog = await catalog(TWSE_CATALOG_URL, 800);
+  const tpexCatalog = await catalog(TPEX_CATALOG_URL, 500);
   const ordinary = mergeUniverses(parseUniverse(twseIssuer.payload, 'TWSE'), parseUniverse(tpexIssuer.payload, 'TPEx'));
   if (ordinary.stocks.length < 1500) throw new Error('archive_universe_not_ready');
   const rows = ordinary.stocks.map(stock => ({
