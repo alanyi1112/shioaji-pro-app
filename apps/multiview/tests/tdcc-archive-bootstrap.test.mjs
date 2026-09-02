@@ -73,6 +73,16 @@ test('固定商品宇宙沿用官方發行人市場歸屬並只由官方目錄�
   db.close();
 });
 
+test('商品宇宙建立失敗會保存安全原因並立即釋放 lease', async () => {
+  const db = database();
+  const fetcher = async () => new Response('[]', { headers: { 'content-type': 'application/json' } });
+  await assert.rejects(startTdccArchiveRun(db, 'failed-owner-0001', fetcher), /archive_catalog_invalid/);
+  const row = await db.prepare('SELECT status,last_error_code,lease_owner,lease_expires_at FROM tdcc_archive_runs WHERE run_id=?')
+    .bind(TDCC_ARCHIVE_RUN_ID).first();
+  assert.deepEqual({ ...row }, { status: 'failed', last_error_code: 'archive_catalog_invalid', lease_owner: null, lease_expires_at: null });
+  db.close();
+});
+
 async function seedPreparedRun(db, { conflict = false, semanticExisting = false } = {}) {
   const owner = 'test-owner-0001';
   await db.prepare(`INSERT INTO tdcc_archive_runs

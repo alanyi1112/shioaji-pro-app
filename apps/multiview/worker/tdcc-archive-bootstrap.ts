@@ -179,14 +179,24 @@ export async function ensureArchiveUniverse(db: D1Database, fetcher: typeof fetc
   const allRows = [...ordinaryRows, ...[...etfs.values()].map(row => ({ ...row, quoteType: "ETF", listingDate: null }))];
   const statements = [db.prepare("DELETE FROM tdcc_archive_symbol_universe WHERE manifest_version=?").bind(TDCC_ARCHIVE_MANIFEST_VERSION)];
   const universeRowsPerStatement = 250;
-  for (let index = 0; index < allRows.length; index += universeRowsPerStatement) {
-    const chunk = allRows.slice(index, index + universeRowsPerStatement);
-    statements.push(db.prepare(`INSERT INTO tdcc_archive_symbol_universe
-      (manifest_version,symbol,stock_code,exchange,quote_type,listing_date,source,source_date,source_url)
-      SELECT ?,json_extract(value,'$.symbol'),json_extract(value,'$.code'),json_extract(value,'$.exchange'),
-        json_extract(value,'$.quoteType'),json_extract(value,'$.listingDate'),json_extract(value,'$.source'),
-        json_extract(value,'$.sourceDate'),json_extract(value,'$.sourceUrl') FROM json_each(?)`)
-      .bind(TDCC_ARCHIVE_MANIFEST_VERSION, JSON.stringify(chunk)));
+  const groups = new Map<string, typeof allRows>();
+  for (const row of allRows) {
+    const key = [row.exchange, row.quoteType, row.source, row.sourceUrl].join("|");
+    const rows = groups.get(key) || [];
+    rows.push(row);
+    groups.set(key, rows);
+  }
+  for (const rows of groups.values()) {
+    const first = rows[0];
+    for (let index = 0; index < rows.length; index += universeRowsPerStatement) {
+      const chunk = rows.slice(index, index + universeRowsPerStatement)
+        .map(row => ({ symbol: row.symbol, code: row.code, listingDate: row.listingDate, sourceDate: row.sourceDate }));
+      statements.push(db.prepare(`INSERT INTO tdcc_archive_symbol_universe
+        (manifest_version,symbol,stock_code,exchange,quote_type,listing_date,source,source_date,source_url)
+        SELECT ?,json_extract(value,'$.symbol'),json_extract(value,'$.code'),?,?,json_extract(value,'$.listingDate'),?,
+          json_extract(value,'$.sourceDate'),? FROM json_each(?)`)
+        .bind(TDCC_ARCHIVE_MANIFEST_VERSION, first.exchange, first.quoteType, first.source, first.sourceUrl, JSON.stringify(chunk)));
+    }
   }
   if (statements.length > 40) throw new Error("archive_universe_invalid");
   try {
@@ -236,7 +246,7 @@ async function assertRunLease(db: D1Database, owner: string) {
   if (!row) throw new Error("archive_lease_conflict");
 }
 
-export async function startTdccArchiveRun(db: D1Database, owner: string) {
+export async function startTdccArchiveRun(db: D1Database, owner: string, fetcher: typeof fetch = fetch) {
   if (!/^[a-zA-Z0-9._:-]{8,128}$/.test(owner)) throw new Error("archive_invalid_owner");
   const now = isoNow();
   await db.prepare(`INSERT INTO tdcc_archive_runs
@@ -252,7 +262,15 @@ export async function startTdccArchiveRun(db: D1Database, owner: string) {
     .bind(TDCC_ARCHIVE_RUN_ID).first<{ status: string }>();
   if (current?.status !== "complete") {
     await acquireRunLease(db, owner);
-    await ensureArchiveUniverse(db);
+    try {
+      await ensureArchiveUniverse(db, fetcher);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "archive_failed";
+      const reason = /^archive_[a-z0-9_]+$/.test(message) ? message : "archive_failed";
+      await db.prepare("UPDATE tdcc_archive_runs SET status='failed',last_error_code=?,lease_owner=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE run_id=? AND lease_owner=?")
+        .bind(reason, TDCC_ARCHIVE_RUN_ID, owner).run();
+      throw error;
+    }
   }
   return tdccArchiveStatus(db);
 }

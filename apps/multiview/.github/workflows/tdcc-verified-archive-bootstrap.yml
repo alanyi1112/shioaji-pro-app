@@ -47,15 +47,25 @@ jobs:
           request() {
             local action="$1"
             local date="${2:-}"
-            local payload
+            local payload response_file status reason
             payload="$(jq -cn --arg action "$action" --arg owner "$OWNER" --arg manifestVersion "$MANIFEST_VERSION" --arg scope "$ARCHIVE_SCOPE" --arg date "$date" '
               {action:$action,owner:$owner,manifestVersion:$manifestVersion,scope:$scope}
               + if $date == "" then {} else {date:$date} end')"
-            curl --fail --silent --show-error --max-time 120 \
+            response_file="$(mktemp)"
+            status="$(curl --silent --show-error --max-time 120 --output "$response_file" --write-out '%{http_code}' \
               -H "OAI-Sites-Authorization: Bearer $SITES_BYPASS_TOKEN" \
               -H "Authorization: Bearer $TDCC_ARCHIVE_SECRET" \
               -H "Content-Type: application/json" \
-              --data "$payload" "$endpoint"
+              --data "$payload" "$endpoint")"
+            if [[ "$status" != 2* ]]; then
+              reason="$(jq -r '.reasonCode // .error // "archive_failed"' "$response_file")"
+              [[ "$reason" =~ ^archive_[a-z0-9_]+$ ]] || reason="archive_failed"
+              echo "tdcc-archive target=sites action=$action status=http_$status reason=$reason" >&2
+              rm -f "$response_file"
+              return 22
+            fi
+            cat "$response_file"
+            rm -f "$response_file"
           }
 
           validate_summary() {
