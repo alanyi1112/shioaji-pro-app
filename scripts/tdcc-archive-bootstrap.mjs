@@ -4,10 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { TDCC_ARCHIVE_MANIFEST, TDCC_ARCHIVE_MANIFEST_VERSION } from '../src/lib/tdcc-archive-validator.ts';
-import { fetchScreenerSource, mergeUniverses, parseUniverse, SCREENER_SOURCES } from '../apps/multiview/worker/stock-screener-sources.ts';
-
-const TWSE_CATALOG_URL = 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL';
-const TPEX_CATALOG_URL = 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes';
 
 const baseUrl = String(process.env.MULTIVIEW_ARCHIVE_TARGET_URL || 'http://127.0.0.1:5174').replace(/\/$/, '');
 const launchctlSecret = () => {
@@ -43,86 +39,26 @@ async function call(body) {
   return payload;
 }
 
-const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-
-async function officialSource(url) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await fetchScreenerSource(url, fetch, 120000);
-    } catch (error) {
-      if (attempt > 0 || !/^source_(?:timeout|http_\d+)$/.test(String(error?.message || ''))) throw error;
-      await delay(3000);
-    }
-  }
-  throw new Error('source_timeout');
+const universeManifest = JSON.parse(readFileSync(new URL('../src/lib/tdcc-archive-universe.json', import.meta.url), 'utf8'));
+const expectedSources = new Map([
+  ['twse-issuer', 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L'],
+  ['tpex-issuer', 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O'],
+  ['twse-catalog', 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL'],
+  ['tpex-catalog', 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes'],
+]);
+if (universeManifest.version !== 'tdcc-archive-universe-2026-09-02-v1'
+  || !Array.isArray(universeManifest.sources) || universeManifest.sources.length !== expectedSources.size
+  || !Array.isArray(universeManifest.rows) || universeManifest.rows.length !== universeManifest.counts?.total
+  || universeManifest.rows.length < 2000 || universeManifest.rows.length > 5000) throw new Error('archive_universe_manifest_invalid');
+for (const source of universeManifest.sources) {
+  if (expectedSources.get(source.id) !== source.url || !/^\d{4}-\d{2}-\d{2}$/.test(source.sourceDate)
+    || !/^[0-9a-f]{64}$/.test(source.payloadSha256)) throw new Error('archive_universe_manifest_invalid');
 }
-
-async function catalog(url, minimumRows) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await catalogAttempt(url, minimumRows);
-    } catch (error) {
-      if (attempt > 0 || !/^archive_catalog_(?:timeout|http_\d+)$/.test(String(error?.message || ''))) throw error;
-      await delay(3000);
-    }
-  }
-  throw new Error('archive_catalog_timeout');
+const universeRows = universeManifest.rows;
+const universeSymbols = new Set(universeRows.map(row => row?.symbol));
+if (universeSymbols.size !== universeRows.length || !['2330.TW', '8103.TW', '6488.TWO', '0050.TW', '006201.TWO'].every(symbol => universeSymbols.has(symbol))) {
+  throw new Error('archive_universe_manifest_invalid');
 }
-
-async function catalogAttempt(url, minimumRows) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120000);
-  try {
-    let response;
-    try {
-      response = await fetch(url, { signal: controller.signal, redirect: 'follow', headers: { accept: 'application/json', 'accept-encoding': 'identity' } });
-    } catch (error) {
-      if (error?.name === 'AbortError') throw new Error('archive_catalog_timeout');
-      throw error;
-    }
-    if (!response.ok) throw new Error(`archive_catalog_http_${response.status}`);
-    const payload = await response.json();
-    if (!Array.isArray(payload) || payload.length < minimumRows || payload.length > 10000) throw new Error('archive_catalog_invalid');
-    return payload;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function verifiedUniverse() {
-  const twseIssuer = await officialSource(SCREENER_SOURCES.TWSE.universe);
-  const tpexIssuer = await officialSource(SCREENER_SOURCES.TPEx.universe);
-  const twseCatalog = await catalog(TWSE_CATALOG_URL, 800);
-  const tpexCatalog = await catalog(TPEX_CATALOG_URL, 500);
-  const ordinary = mergeUniverses(parseUniverse(twseIssuer.payload, 'TWSE'), parseUniverse(tpexIssuer.payload, 'TPEx'));
-  if (ordinary.stocks.length < 1500) throw new Error('archive_universe_not_ready');
-  const rows = ordinary.stocks.map(stock => ({
-    symbol: stock.symbol, stockCode: stock.code, exchange: stock.market, quoteType: 'EQUITY',
-    listingDate: stock.listingDate, sourceDate: stock.market === 'TWSE' ? ordinary.dates.TWSE : ordinary.dates.TPEx,
-  }));
-  const ordinaryCodes = new Set(ordinary.stocks.map(stock => stock.code));
-  const etfCodes = new Set();
-  const catalogDate = value => {
-    const match = /^(\d{3})(\d{2})(\d{2})$/.exec(String(value || ''));
-    if (!match) throw new Error('archive_catalog_invalid');
-    return `${Number(match[1]) + 1911}-${match[2]}-${match[3]}`;
-  };
-  const appendEtfs = (payload, exchange) => {
-    for (const item of payload) {
-      const stockCode = String(exchange === 'TWSE' ? item.Code ?? '' : item.SecuritiesCompanyCode ?? '').trim().toUpperCase();
-      if (!/^00[0-9A-Z]{2,6}$/.test(stockCode)) continue;
-      if (ordinaryCodes.has(stockCode) || etfCodes.has(stockCode)) throw new Error('archive_universe_invalid');
-      etfCodes.add(stockCode);
-      rows.push({ symbol: `${stockCode}.${exchange === 'TWSE' ? 'TW' : 'TWO'}`, stockCode, exchange, quoteType: 'ETF', listingDate: null, sourceDate: catalogDate(item.Date) });
-    }
-  };
-  appendEtfs(twseCatalog, 'TWSE');
-  appendEtfs(tpexCatalog, 'TPEx');
-  if (etfCodes.size < 100) throw new Error('archive_catalog_invalid');
-  return rows;
-}
-
-const universeRows = await verifiedUniverse();
 for (let index = 0; index < universeRows.length; index += 200) {
   const response = await call({
     action: 'seed-universe', owner, manifestVersion: TDCC_ARCHIVE_MANIFEST_VERSION, scope: 'full-market',
