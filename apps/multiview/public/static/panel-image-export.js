@@ -55,57 +55,6 @@
     return { width, height, scale, outputWidth: Math.max(1, Math.floor(width * scale)), outputHeight: Math.max(1, Math.floor(height * scale)) };
   }
 
-  function copyComputedStyle(source, target) {
-    const computed = global.getComputedStyle(source);
-    let cssText = "";
-    for (const property of computed) cssText += `${property}:${computed.getPropertyValue(property)};`;
-    target.setAttribute("style", cssText);
-  }
-
-  function cloneNodeForExport(source) {
-    if (source.nodeType === 3) return document.createTextNode(source.nodeValue || "");
-    if (source.nodeType !== 1) return document.createTextNode("");
-    if (source.matches(EXCLUDE_SELECTOR)) return document.createTextNode("");
-    let target;
-    if (source instanceof HTMLCanvasElement) {
-      target = document.createElement("img");
-      target.src = source.toDataURL("image/png");
-      target.alt = "";
-      target.width = source.width;
-      target.height = source.height;
-    } else {
-      target = source.cloneNode(false);
-    }
-    copyComputedStyle(source, target);
-    if (source instanceof HTMLInputElement) {
-      target.setAttribute("value", source.value);
-      if (source.checked) target.setAttribute("checked", "checked");
-      else target.removeAttribute("checked");
-    } else if (source instanceof HTMLTextAreaElement) {
-      target.textContent = source.value;
-    } else if (source instanceof HTMLSelectElement) {
-      [...source.options].forEach((option, index) => {
-        if (option.selected) target.options[index]?.setAttribute("selected", "selected");
-        else target.options[index]?.removeAttribute("selected");
-      });
-    }
-    if (!(source instanceof HTMLCanvasElement)) {
-      for (const child of source.childNodes) target.appendChild(cloneNodeForExport(child));
-    }
-    return target;
-  }
-
-  function serializePanel(panel, dimensions) {
-    const clone = cloneNodeForExport(panel);
-    clone.classList.remove("is-hovered", "is-exporting");
-    clone.style.width = `${dimensions.width}px`;
-    clone.style.height = `${dimensions.height}px`;
-    clone.style.maxHeight = "none";
-    clone.style.overflow = "visible";
-    clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-    return new XMLSerializer().serializeToString(clone);
-  }
-
   function canvasToBlob(canvas) {
     return new Promise((resolve, reject) => {
       canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG 編碼失敗")), "image/png");
@@ -210,6 +159,17 @@
     }
   }
 
+  async function withExportPreparation(options = {}) {
+    if (typeof options.capture !== "function") throw new TypeError("缺少圖片擷取流程");
+    let lease;
+    try {
+      lease = typeof options.prepare === "function" ? await options.prepare() : undefined;
+      return await options.capture(lease);
+    } finally {
+      lease?.release?.();
+    }
+  }
+
   async function exportPanelImage(options) {
     const { panel, signal } = options || {};
     panel?.classList.add("is-exporting");
@@ -226,13 +186,13 @@
 
   global.QuoteChartPanelImageExporter = {
     exportPanelImage,
+    withExportPreparation,
     __test: {
       appendExportFrame,
       captureDimensions,
       captureFrameStyle,
       filenameForPanel,
       safeFilenamePart,
-      serializePanel,
       visibleDescendantBounds,
     },
   };

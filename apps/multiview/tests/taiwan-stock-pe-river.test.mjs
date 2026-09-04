@@ -212,7 +212,7 @@ test("本機 Worker API smoke 涵蓋 .TW、.TWO、ETF、partial 與 available", 
   } finally { db.close(); }
 });
 
-test("frontend contract 預設不請求、latest-wins、SVG 標籤、右鍵詳細說明與 PNG clone", async () => {
+test("frontend contract 預設不請求、latest-wins、SVG 標籤、右鍵詳細說明與 PNG capture", async () => {
   const html = await readFile(new URL("../public/static/index.html", import.meta.url), "utf8");
   const app = await readFile(new URL("../public/static/app.js", import.meta.url), "utf8");
   const overlay = await readFile(new URL("../public/static/pe-river-overlay.js", import.meta.url), "utf8");
@@ -242,8 +242,8 @@ test("frontend contract 預設不請求、latest-wins、SVG 標籤、右鍵詳�
   assert.match(css, /\.pe-river-layer[\s\S]*pointer-events:\s*none/);
   assert.match(css, /\.panel-context-menu-pe-river-details\[hidden\][\s\S]*display:\s*none/);
   assert.doesNotMatch(overlay, /同業|產業本益比|目標價|投資建議語意/);
-  assert.match(exporter, /source\.cloneNode\(false\)/);
-  assert.match(exporter, /for \(const child of source\.childNodes\)/);
+  assert.match(exporter, /global\.html2canvas\(panel/);
+  assert.match(exporter, /onclone: \(clonedDocument\)/);
 
   const window = {};
   vm.runInNewContext(overlay, { window, document: {}, Date, Math, Number, Object, String, Array, Set, Map, fetch: async () => ({ json: async () => ({}) }), AbortController, console });

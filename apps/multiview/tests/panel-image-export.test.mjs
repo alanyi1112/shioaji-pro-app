@@ -9,6 +9,7 @@ const indexHtml = await readFile(new URL("../public/static/index.html", import.m
 const window = { devicePixelRatio: 2 };
 vm.runInNewContext(source, { window, Date, Math, DOMException });
 const { appendExportFrame, captureDimensions, captureFrameStyle, filenameForPanel, safeFilenamePart } = window.QuoteChartPanelImageExporter.__test;
+const { withExportPreparation } = window.QuoteChartPanelImageExporter;
 
 test("PNG 檔名使用安全 symbol、interval 與固定時間戳", () => {
   const now = new Date("2026-07-20T04:05:06.789Z");
@@ -117,16 +118,12 @@ test("匯出 frame 從 live panel 複製四側 computed border 與圓角", () =>
   });
 });
 
-test("exporter 置換 Canvas、排除暫態 UI、只序列化指定 panel 且不含上傳路徑", () => {
-  assert.match(source, /source instanceof HTMLCanvasElement/);
-  assert.match(source, /source\.toDataURL\("image\/png"\)/);
+test("exporter 排除暫態 UI、只擷取指定 panel 且不含上傳路徑", () => {
   assert.match(source, /\[data-export-exclude\]/);
-  assert.match(source, /if \(source\.matches\(EXCLUDE_SELECTOR\)\) return document\.createTextNode\(""\)/);
   assert.match(appSource, /class: "chart-annotation-fibonacci-price-guide"[\s\S]*?"data-export-exclude": ""/);
   assert.match(appSource, /圖片已儲存：\$\{result\.filename\}/);
   assert.match(source, /\.chip-pane-group-ghost/);
   assert.match(source, /\.indicator-options/);
-  assert.match(source, /serializePanel\(panel, dimensions\)/);
   assert.match(source, /panel\.scrollHeight/);
   assert.match(source, /visibleDescendantBounds\(panel, rect\)/);
   assert.match(source, /rect\.bottom - panelRect\.top/);
@@ -138,12 +135,50 @@ test("exporter 置換 Canvas、排除暫態 UI、只序列化指定 panel 且不
   assert.match(source, /windowHeight: global\.innerHeight/);
   assert.match(source, /windowWidth: global\.innerWidth/);
   assert.doesNotMatch(source, /windowHeight: dimensions\.height/);
-  assert.match(source, /new XMLSerializer\(\)\.serializeToString/);
   assert.match(source, /signal\?\.aborted/);
   assert.match(source, /URL\.revokeObjectURL/);
   assert.match(source, /global\.html2canvas\(panel/);
   assert.match(source, /foreignObjectRendering: false/);
   assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|sendBeacon|WebSocket/);
+  assert.match(appSource, /panelImageExporter\.withExportPreparation\(\{/);
+  assert.match(appSource, /prepare: \(\) => chipPaneManager\?\.prepareExport\?\.\(\{/);
+  assert.match(appSource, /onExportInvalidated: \(\) => panelExportAbortController\?\.abort\(\)/);
+});
+
+test("準備完成後才呼叫 renderer，失敗時不擷取且所有路徑都 release", async () => {
+  const calls = [];
+  const success = await withExportPreparation({
+    prepare: async () => {
+      calls.push("prepare");
+      return { release: () => calls.push("release"), readyReport: [{ paneId: "margin", ready: true }] };
+    },
+    capture: async (lease) => {
+      calls.push(`capture:${lease.readyReport[0].paneId}`);
+      return "png";
+    },
+  });
+  assert.equal(success, "png");
+  assert.deepEqual(calls, ["prepare", "capture:margin", "release"]);
+
+  const failedCalls = [];
+  await assert.rejects(withExportPreparation({
+    prepare: async () => {
+      failedCalls.push("prepare");
+      throw new Error("副圖尚未完成繪製：big-holder");
+    },
+    capture: async () => failedCalls.push("capture"),
+  }), /big-holder/);
+  assert.deepEqual(failedCalls, ["prepare"]);
+
+  const rendererCalls = [];
+  await assert.rejects(withExportPreparation({
+    prepare: async () => ({ release: () => rendererCalls.push("release") }),
+    capture: async () => {
+      rendererCalls.push("capture");
+      throw new Error("renderer failed");
+    },
+  }), /renderer failed/);
+  assert.deepEqual(rendererCalls, ["capture", "release"]);
 });
 
 test("完整panel匯出會保留目前可見的成交值readout", () => {
@@ -151,5 +186,4 @@ test("完整panel匯出會保留目前可見的成交值readout", () => {
   const turnoverEnd = indexHtml.indexOf('data-main-readout="change"', turnoverStart);
   assert.ok(turnoverStart >= 0 && turnoverEnd > turnoverStart);
   assert.doesNotMatch(indexHtml.slice(turnoverStart, turnoverEnd), /data-export-exclude/);
-  assert.match(source, /if \(!\(source instanceof HTMLCanvasElement\)\) \{\s*for \(const child of source\.childNodes\) target\.appendChild\(cloneNodeForExport\(child\)\);/s);
 });

@@ -58,9 +58,9 @@ test("1／2／4／8 panel在窄版或字級放大時只於欄位邊界換行", (
 
 test("完整panel匯出保留值欄位且成交值能力不外溢到axis、series、設定或交易", () => {
   assert.doesNotMatch(indexHtml.slice(indexHtml.indexOf('data-main-readout="turnover"'), changeIndexAfterTurnover(indexHtml)), /data-export-exclude/);
-  assert.match(exporterSource, /serializePanel\(panel, dimensions\)/);
-  assert.match(exporterSource, /for \(const child of source\.childNodes\) target\.appendChild\(cloneNodeForExport\(child\)\)/);
-  assert.match(indexHtml, /panel-image-export\.js\?v=20260826-turnover-readout-v1/);
+  assert.match(exporterSource, /global\.html2canvas\(panel/);
+  assert.match(exporterSource, /onclone: \(clonedDocument\)/);
+  assert.match(indexHtml, /panel-image-export\.js\?v=20260904-panel-export-lease-v1/);
   assert.match(appSource, /const panelImageExporter = window\.QuoteChartPanelImageExporter;[\s\S]*?typeof panelImageExporter\?\.exportPanelImage !== "function"[\s\S]*?throw new Error\("圖片匯出元件尚未載入"\)/);
 
   const turnoverFiles = `${indexHtml}\n${appSource}`;

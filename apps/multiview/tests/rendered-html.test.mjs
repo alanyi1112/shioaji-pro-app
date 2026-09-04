@@ -483,8 +483,8 @@ test("主圖估算融資成本與清單 metadata UI 保留偏好、缺值及無�
   assert.match(appScript, /quoteChart\.estimatedMarginCost\.v1:/);
   assert.match(appScript, /state\.activeMarketTabId/);
   assert.match(appScript, /estimatedMarginAbortController\?\.abort\(\)/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260827-holder-scale-v2/);
-  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260827-holder-scale-v2/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260904-panel-export-lease-v1/);
+  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260904-panel-export-lease-v1/);
   assert.match(appScript, /requestData\?\.\(\{[\s\S]*datasets: \["margin-short"\]/);
   assert.match(appScript, /加入日期未知/);
   assert.match(indexHtml, /id="watchlist-symbol-recommender"[^>]*maxlength="80"/);
@@ -1280,7 +1280,8 @@ test("不保留 starter 預覽標記", async () => {
   await assert.rejects(readFile(new URL("../app/_sites-preview/SkeletonPreview.tsx", root), "utf8"));
 });
 
-test("台股官方核對會對齊交易日、重用全市場資料並保持 stream parity", async () => {
+test("台股官方核對會對齊交易日、重用全市場資料並保持 stream parity", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-07-10T02:00:00.000Z") });
   const originalFetch = globalThis.fetch;
   const officialCalls = { twse: 0, tpex: 0 };
   const closeBySymbol = { "2330.TW": 100, "2317.TW": 50, "6146.TWO": 206, "8069.TWO": 200.5 };
@@ -1749,7 +1750,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(chipScript, /function startBackfillPolling\(symbol\)/);
   assert.match(chipScript, /invalidateChipRequestCache\(symbol\);\s*await load\(\{ force: true \}\)/);
   assert.match(chipScript, /if \(identityChanged\) \{[\s\S]*?clearTimeout\(reloadTimer\);[\s\S]*?stopBackfillPolling\(\);/);
-  assert.match(chipScript, /destroy\(\) \{ generation \+= 1; cancelPaneDrag\(\); clearTimeout\(reloadTimer\); stopBackfillPolling\(\);/);
+  assert.match(chipScript, /destroy\(\) \{ generation \+= 1; invalidateActiveExport\(\); cancelPaneDrag\(\); clearTimeout\(reloadTimer\); stopBackfillPolling\(\);/);
   assert.match(chipScript, /surface\.addEventListener\("contextmenu", handleContextMenu\)/);
   assert.match(chipScript, /document\.addEventListener\("pointerdown", handleContextMenuPointerDown, true\)/);
   assert.match(chipScript, /surface\.removeEventListener\("contextmenu", handleContextMenu\)/);
@@ -1929,9 +1930,9 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(styles, /\.chart-panel\.has-no-subchart \.subchart-slot\s*\{[^}]*display: none;/s);
   assert.match(indexHtml, /styles\.css\?v=20260810-interval-label-v1/);
   assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260827-holder-scale-v2/);
-  assert.match(indexHtml, /panel-image-export\.js\?v=20260826-turnover-readout-v1/);
-  assert.match(indexHtml, /app\.js\?v=20260827-holder-scale-v2/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260904-panel-export-lease-v1/);
+  assert.match(indexHtml, /panel-image-export\.js\?v=20260904-panel-export-lease-v1/);
+  assert.match(indexHtml, /app\.js\?v=20260904-panel-export-lease-v1/);
 });
 
 test("固定範圍 VP 價格標籤無範圍前綴，水平線為 1px 且控制線為 2px", async () => {
@@ -2230,7 +2231,7 @@ test("多層副圖一般 wheel 捲頁且保持圖表範圍，Alt wheel 明確縮
     readFile(new URL("../public/static/chip-panes.js", import.meta.url), "utf8"),
   ]);
   assert.match(indexHtml, /chart-interactions\.js[^<]*<\/script>[\s\S]*chip-panes\.js[^<]*<\/script>[\s\S]*live-batch-coordinator\.js[^<]*<\/script>[\s\S]*app\.js/);
-  assert.match(indexHtml, /chip-panes\.js\?v=20260827-holder-scale-v2/);
+  assert.match(indexHtml, /chip-panes\.js\?v=20260904-panel-export-lease-v1/);
   assert.match(appScript, /QuoteChartInteractions\.chartInteractionOptions\(mode\)/);
   assert.match(appScript, /bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\)/);
   assert.match(appScript, /mainWheelRoutingCleanup = window\.QuoteChartInteractions\.bindWheelRouting\(surface, \(\) => subchartPresentation\.mode\);[\s\S]*?bindViewportIntent\(surface,[\s\S]*?chart = LightweightCharts\.createChart/s);

@@ -454,6 +454,7 @@ test("主圖工具、註記圖層與匯出路徑保持可見且不攔截圖表�
   assert.match(styles, /\.chart-annotation-price-range-boundary\s*\{[^}]*stroke-width:\s*1/s);
   assert.match(styles, /\.chart-annotation-price-range-arrow,[^}]*stroke-width:\s*2/s);
   assert.match(styles, /\.chart-grid\.grid-4 \.panel-toolbar \.symbol-select/);
-  assert.match(exporter, /source\.cloneNode\(false\)/);
+  assert.match(exporter, /global\.html2canvas\(panel/);
+  assert.match(exporter, /onclone: \(clonedDocument\)/);
   assert.doesNotMatch(exporter, /chart-annotation-layer/);
 });

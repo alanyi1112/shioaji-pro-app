@@ -3612,6 +3612,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (isPanelActive()) applySubchartPresentation(presentation);
     },
     onExport: ({ date } = {}) => exportPanelPng(date),
+    onExportInvalidated: () => panelExportAbortController?.abort(),
   });
   chipPaneManager?.setMode(effectivePanelSubchartMode());
 
@@ -4017,12 +4018,24 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (typeof panelImageExporter?.exportPanelImage !== "function") {
         throw new Error("圖片匯出元件尚未載入");
       }
-      return await panelImageExporter.exportPanelImage({
-        panel: element,
-        symbol: symbolSelect.value,
-        interval: intervalSelect.value,
-        pointedDate,
-        signal: panelExportAbortController.signal,
+      if (typeof panelImageExporter.withExportPreparation !== "function") {
+        throw new Error("圖片匯出準備元件尚未載入");
+      }
+      const signal = panelExportAbortController.signal;
+      return await panelImageExporter.withExportPreparation({
+        prepare: () => chipPaneManager?.prepareExport?.({
+          signal,
+          range: viewportCoordinator?.acceptedRange?.() || chart?.timeScale().getVisibleLogicalRange?.(),
+          crosshairTime: sharedHoverTime,
+          axisSafeWidth: priceScaleMinWidth,
+        }),
+        capture: () => panelImageExporter.exportPanelImage({
+          panel: element,
+          symbol: symbolSelect.value,
+          interval: intervalSelect.value,
+          pointedDate,
+          signal,
+        }),
       });
     } finally {
       panelExportAction.disabled = false;

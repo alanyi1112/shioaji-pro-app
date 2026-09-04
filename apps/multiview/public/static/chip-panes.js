@@ -1881,6 +1881,12 @@
     const renderGate = createChipRenderGate();
     let resizeObserver;
     let intersectionObserver;
+    const exportPins = new Set();
+    let exportBaseMounted;
+    let hasIntersectionState = !("IntersectionObserver" in global);
+    let isIntersecting = hasIntersectionState;
+    let lastAvailabilityStatus = "unavailable";
+    let lastMaterialExpected = false;
     let destroyed = false;
     let readoutReservationFrame = 0;
     let readoutReservationSignature = "";
@@ -2466,6 +2472,9 @@
           ? { status: "partial" }
           : availabilities[0];
       const capability = definitionDatasets.map((dataset) => payload?.datasetEligibility?.[dataset]).find((item) => item?.supported === false);
+      const materialRows = isHolderDefinition(definition) ? payload?.distributionRows || [] : daily;
+      lastAvailabilityStatus = availability?.status || "unavailable";
+      lastMaterialExpected = materialRows.length > 0 && availability?.status !== "unavailable" && capability?.supported !== false;
       status.textContent = availabilityLabel(availability, capability, isHolderDefinition(definition) ? payload?.backfill : null, isHolderDefinition(definition) ? payload?.dispatch : null, isHolderDefinition(definition) ? payload?.shareholderDistribution : null);
       if (isHolderDefinition(definition) && status.textContent === "歷史已更新") status.textContent = "";
       if (definition.kind === "estimated-margin-maintenance"
@@ -2745,8 +2754,10 @@
     if ("IntersectionObserver" in global) {
       intersectionObserver = new IntersectionObserver((entries) => {
         const visible = entries.some((entry) => entry.isIntersecting);
+        hasIntersectionState = true;
+        isIntersecting = visible;
         if (visible) mountChart();
-        else unmountChart();
+        else if (!exportPins.size) unmountChart();
       }, { root: null, rootMargin: "240px 0px", threshold: 0.01 });
       intersectionObserver.observe(element);
     } else {
@@ -2757,6 +2768,59 @@
       id: definition.id,
       element,
       render,
+      pinForExport(token) {
+        if (!exportPins.size) exportBaseMounted = Boolean(chart);
+        exportPins.add(token);
+        mountChart();
+      },
+      releaseExportPin(token) {
+        exportPins.delete(token);
+        if (exportPins.size) return;
+        const shouldRemainMounted = Boolean(exportBaseMounted) || (hasIntersectionState && isIntersecting);
+        exportBaseMounted = undefined;
+        if (!shouldRemainMounted) unmountChart();
+      },
+      synchronizeExport({ range, crosshairTime, axisSafeWidth } = {}) {
+        if (!chart) return;
+        if (Number.isFinite(Number(axisSafeWidth))) {
+          chart.applyOptions({
+            rightPriceScale: {
+              visible: true,
+              borderVisible: true,
+              ticksVisible: true,
+              minimumWidth: Math.max(52, Number(axisSafeWidth) || 52),
+            },
+            leftPriceScale: { visible: false, borderVisible: false },
+          });
+        }
+        if (range) {
+          try { chart.timeScale().setVisibleLogicalRange(range); } catch {}
+        }
+        if (crosshairTime) {
+          sharedReadoutDate = dateForChartTime(crosshairTime);
+          renderInlineReadout(resolveReadout(sharedReadoutDate));
+          try { chart.setCrosshairPosition?.(1, crosshairTime, anchor); } catch {}
+        }
+      },
+      exportReadiness() {
+        const canvases = [...surface.querySelectorAll("canvas")];
+        const canvasReady = canvases.length > 0 && canvases.every((canvas) => Number(canvas.width) > 0 && Number(canvas.height) > 0);
+        const selectedSeriesCount = selectedSeriesIds().size;
+        const renderedSeriesCount = series.length;
+        const seriesReady = !lastMaterialExpected || selectedSeriesCount === 0 || renderedSeriesCount > 0;
+        return {
+          paneId: definition.id,
+          contextIdentity: options.getExportIdentity?.() || "",
+          mounted: Boolean(chart),
+          canvasCount: canvases.length,
+          canvasReady,
+          availability: lastAvailabilityStatus,
+          materialExpected: lastMaterialExpected,
+          selectedSeriesCount,
+          renderedSeriesCount,
+          ready: Boolean(chart) && canvasReady && seriesReady,
+        };
+      },
       setCandles(candles) {
         const nextCandles = Array.isArray(candles) ? candles : [];
         const previousRange = rangeForCandles(lastCandles);
@@ -2896,6 +2960,7 @@
         closeOverlays();
         intersectionObserver?.disconnect();
         intersectionObserver = undefined;
+        exportPins.clear();
         unmountChart();
         surface.removeEventListener("contextmenu", handleContextMenu);
         surface.removeEventListener("keydown", handleSurfaceKeydown);
@@ -2933,6 +2998,81 @@
     return mode === "B" ? "multi" : "single";
   }
 
+  function exportAbortError() {
+    return new DOMException("匯出已取消", "AbortError");
+  }
+
+  function waitForExportFrame(requestFrame, signal) {
+    if (signal?.aborted) return Promise.reject(exportAbortError());
+    return new Promise((resolve, reject) => {
+      requestFrame(() => {
+        if (signal?.aborted) reject(exportAbortError());
+        else resolve();
+      });
+    });
+  }
+
+  async function createChipPaneExportLease(options = {}) {
+    const controllers = [...(options.controllers || [])].filter(Boolean);
+    const expectedIdentity = String(options.expectedIdentity || "");
+    const currentIdentity = typeof options.currentIdentity === "function"
+      ? options.currentIdentity
+      : () => expectedIdentity;
+    const requestFrame = options.requestFrame
+      || global.requestAnimationFrame?.bind(global)
+      || ((callback) => global.setTimeout(callback, 16));
+    const now = options.now
+      || (() => global.performance?.now?.() ?? Date.now());
+    const timeoutMs = Math.max(1, Number(options.timeoutMs) || 1_500);
+    const token = {};
+    const beforeMountedPaneIds = new Set(controllers.filter((controller) => controller.isMounted?.()).map((controller) => controller.id));
+    const expectedPaneIds = new Set(controllers.map((controller) => controller.id));
+    const synchronization = {
+      range: options.range,
+      crosshairTime: options.crosshairTime,
+      axisSafeWidth: options.axisSafeWidth,
+    };
+    let released = false;
+    let readyReport = [];
+
+    function release() {
+      if (released) return;
+      released = true;
+      for (const controller of controllers) controller.releaseExportPin?.(token);
+    }
+
+    try {
+      if (options.signal?.aborted) throw exportAbortError();
+      for (const controller of controllers) controller.pinForExport?.(token);
+      const deadline = now() + timeoutMs;
+      await waitForExportFrame(requestFrame, options.signal);
+      while (true) {
+        if (options.signal?.aborted) throw exportAbortError();
+        if (currentIdentity() !== expectedIdentity) throw new Error("匯出期間商品或資料狀態已變更，請重新儲存圖片");
+        for (const controller of controllers) controller.synchronizeExport?.(synchronization);
+        readyReport = controllers.map((controller) => controller.exportReadiness?.() || {
+          paneId: controller.id,
+          ready: false,
+        });
+        if (readyReport.every((item) => item.ready)) break;
+        if (now() >= deadline) {
+          const missing = readyReport.filter((item) => !item.ready).map((item) => item.paneId).filter(Boolean);
+          throw new Error(`副圖尚未完成繪製：${missing.join("、") || "未知副圖"}`);
+        }
+        await waitForExportFrame(requestFrame, options.signal);
+      }
+      return {
+        beforeMountedPaneIds,
+        expectedPaneIds,
+        get readyReport() { return readyReport; },
+        release,
+      };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
   function createChipPaneManager(options) {
     const controllers = new Map();
     const groupControllers = new Map();
@@ -2953,6 +3093,8 @@
     let presentationSignature = "";
     let currentNoticeSignature = "";
     let dismissedNoticeSignature = "";
+    let activeExportLease;
+    let exportLifecycleToken;
     let manager;
     const backfillPollDelays = [1200, 1800, 2500, 3500, 5000, 7000, 9000, 12000];
 
@@ -3105,6 +3247,71 @@
 
     function mountedControllers() {
       return orderedControllers().filter((controller) => controller.isMounted?.());
+    }
+
+    function exportIdentity() {
+      const range = rangeForCandles(context.candles);
+      return [
+        context.tabId,
+        context.symbol,
+        context.interval,
+        range.start,
+        range.end,
+        payloadRequestKey,
+        payloadMaterialSignature,
+        mode,
+        desiredPaneIds().join(","),
+      ].join("|");
+    }
+
+    function invalidateActiveExport() {
+      if (!exportLifecycleToken && !activeExportLease) return;
+      options.onExportInvalidated?.();
+      activeExportLease?.release?.();
+      activeExportLease = undefined;
+      exportLifecycleToken = undefined;
+    }
+
+    async function prepareExport({ signal, range, crosshairTime, axisSafeWidth, timeoutMs } = {}) {
+      activeExportLease?.release?.();
+      activeExportLease = undefined;
+      const lifecycleToken = {};
+      exportLifecycleToken = lifecycleToken;
+      const expectedIdentity = exportIdentity();
+      try {
+        const lease = await createChipPaneExportLease({
+          controllers: orderedControllers(),
+          expectedIdentity,
+          currentIdentity: exportIdentity,
+          range: range || options.getMainRange?.(),
+          crosshairTime,
+          axisSafeWidth: axisSafeWidth ?? options.getAxisSafeWidth?.(),
+          signal,
+          timeoutMs,
+        });
+        let released = false;
+        const managedLease = {
+          beforeMountedPaneIds: lease.beforeMountedPaneIds,
+          expectedPaneIds: lease.expectedPaneIds,
+          get readyReport() { return lease.readyReport; },
+          release() {
+            if (released) return;
+            released = true;
+            lease.release();
+            if (activeExportLease === managedLease) activeExportLease = undefined;
+            if (exportLifecycleToken === lifecycleToken) exportLifecycleToken = undefined;
+          },
+        };
+        if (exportLifecycleToken !== lifecycleToken || signal?.aborted) {
+          managedLease.release();
+          throw exportAbortError();
+        }
+        activeExportLease = managedLease;
+        return managedLease;
+      } catch (error) {
+        if (exportLifecycleToken === lifecycleToken) exportLifecycleToken = undefined;
+        throw error;
+      }
     }
 
     function applyControllerOrder(groupIds = desiredGroupIds()) {
@@ -3430,6 +3637,7 @@
     }
 
     function reconcile() {
+      invalidateActiveExport();
       cancelPaneDrag();
       const createdControllers = [];
       const suspended = mode === "none";
@@ -3468,9 +3676,10 @@
           getMainRange: options.getMainRange,
           onLayoutChange: options.onLayoutChange,
           onReadoutReservationChange: scheduleChipReadoutCohorts,
-          onRange(range, paneId, timeRange) { if (!syncing) options.onRange?.(range, paneId, timeRange); },
+          onRange(range, paneId, timeRange) { if (!syncing && !exportLifecycleToken) options.onRange?.(range, paneId, timeRange); },
           onViewportIntent(intent) { options.onViewportIntent?.(intent); },
-          onCrosshair(pointer, paneId) { if (!syncing) options.onCrosshair?.(pointer, paneId); },
+          onCrosshair(pointer, paneId) { if (!syncing && !exportLifecycleToken) options.onCrosshair?.(pointer, paneId); },
+          getExportIdentity: exportIdentity,
         });
         controllers.set(definition.id, controller);
         createdControllers.push(controller);
@@ -3652,6 +3861,7 @@
         persist();
         reconcile();
       },
+      prepareExport,
       syncRange(range) { syncing = true; for (const controller of mountedControllers()) controller.syncRange(range); syncing = false; },
       syncTimeRange(range) { syncing = true; for (const controller of mountedControllers()) controller.syncTimeRange(range); syncing = false; },
       alignCoordinates(time, mainScreenX, mainRange, tolerance = 1) { syncing = true; for (const controller of mountedControllers()) controller.alignCoordinate(time, mainScreenX, mainRange, tolerance); syncing = false; },
@@ -3687,8 +3897,8 @@
           return [{ ...geometry, nextPaneTop, panelHeight: panelRect?.height ?? null }];
         });
       },
-      report() { return { mode: presentationModeForChipMode(mode), chipMode: mode, modeASlotKind: selection.modeASlotKind, paneIds: desiredPaneIds(), modeBPaneOrder: [...selection.modeBPaneOrder], modeBGroupOrder: [...selection.modeBGroupOrder], seriesByPane: structuredClone(selection.seriesByPane), controllerCount: controllers.size, mountedControllerCount: mountedControllers().length, symbol: context.symbol, interval: context.interval }; },
-      destroy() { generation += 1; cancelPaneDrag(); clearTimeout(reloadTimer); stopBackfillPolling(); CHIP_READOUT_RESERVATION_MANAGERS.delete(manager); abortController?.abort(); options.noticeClose?.removeEventListener("click", closeNotice); for (const controller of controllers.values()) controller.destroy(); controllers.clear(); for (const groupController of groupControllers.values()) groupController.destroy(); groupControllers.clear(); options.panel?.classList.remove("has-chip-panes"); scheduleChipReadoutCohorts(); },
+      report() { return { mode: presentationModeForChipMode(mode), chipMode: mode, modeASlotKind: selection.modeASlotKind, paneIds: desiredPaneIds(), modeBPaneOrder: [...selection.modeBPaneOrder], modeBGroupOrder: [...selection.modeBGroupOrder], seriesByPane: structuredClone(selection.seriesByPane), controllerCount: controllers.size, mountedControllerCount: mountedControllers().length, exportActive: Boolean(exportLifecycleToken), symbol: context.symbol, interval: context.interval }; },
+      destroy() { generation += 1; invalidateActiveExport(); cancelPaneDrag(); clearTimeout(reloadTimer); stopBackfillPolling(); CHIP_READOUT_RESERVATION_MANAGERS.delete(manager); abortController?.abort(); options.noticeClose?.removeEventListener("click", closeNotice); for (const controller of controllers.values()) controller.destroy(); controllers.clear(); for (const groupController of groupControllers.values()) groupController.destroy(); groupControllers.clear(); options.panel?.classList.remove("has-chip-panes"); scheduleChipReadoutCohorts(); },
     };
     CHIP_READOUT_RESERVATION_MANAGERS.add(manager);
     return manager;
@@ -3757,6 +3967,7 @@
       warningColorForText,
       warningMessages,
       warningNoticeSignature,
+      createChipPaneExportLease,
     },
   };
 })(window);
