@@ -7,6 +7,10 @@ import {
     fetchContracts,
     fetchWarrantUnderlyings,
 } from './shioaji';
+import {
+    normalizeInstrumentSearchText,
+    scoreInstrumentCandidate,
+} from './taiwan-instrument-search';
 
 export interface StockMeta {
     code: string;
@@ -112,24 +116,19 @@ export function searchStocks(
     query: string,
     limit = 8,
 ): StockMeta[] {
-    const q = query.trim().toUpperCase();
+    const q = normalizeInstrumentSearchText(query);
     if (!q) return [];
     const scored: { s: StockMeta; score: number }[] = [];
     for (const s of index) {
-        const name = s.name.toUpperCase();
-        const codeHit = s.code.startsWith(q);
-        const nameHit = name.includes(q);
-        if (!codeHit && !nameHit) continue;
-        let score = 0;
-        if (s.code === q || name === q) score -= 100; // exact
-        if (codeHit) score -= 10;
-        else if (name.startsWith(q)) score -= 5;
-        // plain 4-digit equities rank above warrants/ETNs (6-char codes)
-        score += s.code.length === 4 ? 0 : 50;
-        score += s.name.length; // shorter names first
+        const score = scoreInstrumentCandidate(q, s);
+        if (score === null) continue;
         scored.push({ s, score });
     }
-    scored.sort((a, b) => a.score - b.score);
+    scored.sort((a, b) =>
+        b.score - a.score
+        || a.s.exchange.localeCompare(b.s.exchange)
+        || a.s.code.localeCompare(b.s.code)
+        || a.s.name.localeCompare(b.s.name, 'zh-Hant-TW'));
     return scored.slice(0, limit).map((x) => x.s);
 }
 

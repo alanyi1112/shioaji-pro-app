@@ -252,6 +252,29 @@ export const suggestRow = style({
     ':hover': { background: vars.color.muted },
 });
 
+export const suggestRowSelected = style([
+    suggestRow,
+    {
+        background: vars.color.muted,
+        outline: `1px solid ${vars.color.accent}`,
+        outlineOffset: '-1px',
+    },
+]);
+
+export const suggestStatus = style({
+    padding: `5px ${vars.space.sm}`,
+    color: vars.color.mutedForeground,
+    fontSize: '0.66rem',
+    borderBottom: `1px solid ${vars.color.border}`,
+});
+
+export const suggestError = style([
+    suggestStatus,
+    {
+        color: vars.color.danger,
+    },
+]);
+
 export const suggestCode = style({
     fontFamily: vars.font.mono,
     fontWeight: 600,

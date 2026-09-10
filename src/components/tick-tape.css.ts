@@ -11,6 +11,58 @@ export const tape = style({
     flexDirection: 'column',
 });
 
+export const toolbar = style({
+    display: 'flex',
+    gap: '4px',
+    padding: `4px ${vars.space.sm}`,
+    borderBottom: `1px solid ${vars.color.border}`,
+    flexShrink: 0,
+});
+
+const tabBase = style({
+    minHeight: '22px',
+    padding: '2px 8px',
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    background: vars.color.inset,
+    color: vars.color.mutedForeground,
+    fontFamily: vars.font.body,
+    fontSize: '0.68rem',
+    cursor: 'pointer',
+    ':hover': {
+        color: vars.color.foreground,
+        borderColor: vars.color.borderBright,
+    },
+});
+
+export const tab = style([tabBase]);
+
+export const tabActive = style([
+    tabBase,
+    {
+        color: vars.color.accent,
+        borderColor: vars.color.accent,
+        background: vars.color.accentDim,
+    },
+]);
+
+export const ruleBox = style({
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '2px',
+    padding: `5px ${vars.space.sm}`,
+    color: vars.color.mutedForeground,
+    background: vars.color.inset,
+    borderBottom: `1px solid ${vars.color.border}`,
+    fontFamily: vars.font.body,
+    fontSize: '0.64rem',
+    lineHeight: 1.35,
+});
+
+export const warmup = style({
+    color: vars.color.amber,
+});
+
 export const tapeRow = style({
     display: 'grid',
     gridTemplateColumns: '7.6rem 1fr 3.4rem',

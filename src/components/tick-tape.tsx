@@ -1,36 +1,30 @@
 // src/components/tick-tape.tsx — time & sales feed.
 // Preloads today's recent history ticks, then streams live deals on top.
 // Times show full microsecond precision (HH:MM:SS.ffffff).
-// Big lots (≥3× the rolling average of visible rows) are highlighted.
+// Large trades use a fixed notional floor plus a rolling P70 threshold.
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { fetchLastTicks } from '../lib/shioaji';
 import { onAnyTick } from '../lib/stream';
 import type { ContractBase } from '../lib/types/contract';
+import type { SseTick } from '../lib/types/market';
 import type { HistoryTicks } from '../lib/types/tick';
+import {
+    LARGE_TRADE_WARMUP_SIZE,
+    createTickTapeLargeTradeState,
+    historyTickTapeInputs,
+    ingestTickTapeEvent,
+    liveTickTapeInput,
+    replayTickTapeEvents,
+    type TickTapeEventInput,
+    type TickTapeRow,
+} from '../lib/tick-tape-large-trade';
 import { fmtContractPrice, fmtInt } from '../lib/utils/format';
 import { dateStrOffset } from '../lib/utils/kbars';
 import * as panel from './panel.css';
 import * as styles from './tick-tape.css';
 
 const MAX_ROWS = 120;
-const BIG_LOT_FACTOR = 3;
-
-interface TapeRow {
-    id: number; // monotonic — stable React key
-    time: string; // HH:MM:SS.ffffff
-    close: number | string;
-    volume: number;
-    tick_type: number; // 1=buy 2=sell 0=unknown
-}
-
-let rowSeq = 0;
-
-// normalize to HH:MM:SS.ffffff (6 fraction digits)
-function fmtTickTime(t: string): string {
-    const [hms = '', frac = ''] = t.split('.');
-    return `${hms}.${frac.padEnd(6, '0').slice(0, 6)}`;
-}
 
 // futures night-session ticks are filed under the NEXT trading date —
 // try tomorrow first for FUT/OPT, fall back to today.
@@ -56,100 +50,137 @@ async function loadHistory(
 }
 
 const TapeRowView = memo(function TapeRowView({
-    time,
-    close,
-    volume,
-    tickType,
-    big,
+    row,
     contract,
 }: {
-    time: string;
-    close: number | string;
-    volume: number;
-    tickType: number;
-    big: boolean;
+    row: TickTapeRow;
     contract: ContractBase;
 }) {
-    const dir = tickType === 1 ? 'up' : tickType === 2 ? 'down' : 'flat';
+    const dir = row.tickType === 1 ? 'up' : row.tickType === 2 ? 'down' : 'flat';
     return (
-        <div className={big ? styles.tapeRowBig : styles.tapeRow}>
-            <span className={styles.time}>{time}</span>
+        <div className={row.isLarge ? styles.tapeRowBig : styles.tapeRow}>
+            <span className={styles.time}>{row.time}</span>
             <span
                 className={panel.dirText[dir]}
                 style={{ textAlign: 'right' }}
             >
-                {fmtContractPrice(contract, close)}
+                {fmtContractPrice(contract, row.close)}
             </span>
-            <span className={big ? styles.volBig : styles.vol}>
-                {fmtInt(volume)}
+            <span className={row.isLarge ? styles.volBig : styles.vol}>
+                {fmtInt(row.volume)}
             </span>
         </div>
     );
 });
 
-export function TickTape({ contract }: { contract: ContractBase }) {
-    const [rows, setRows] = useState<TapeRow[]>([]);
+function formatThreshold(value: number | null): string {
+    if (value === null) return '至少 40 萬元';
+    if (value >= 10_000) {
+        const units = value / 10_000;
+        return `${new Intl.NumberFormat('zh-TW', {
+            maximumFractionDigits: units >= 100 ? 0 : 1,
+        }).format(units)} 萬元`;
+    }
+    return `${fmtInt(value)} 元`;
+}
+
+export function TickTape({
+    contract,
+    historyLoader = loadHistory,
+    tickSubscriber = onAnyTick,
+}: {
+    contract: ContractBase;
+    historyLoader?: typeof loadHistory;
+    tickSubscriber?: (listener: (tick: SseTick) => void) => () => void;
+}) {
+    const generationRef = useRef(0);
+    const [model, setModel] = useState(() =>
+        createTickTapeLargeTradeState(contract, 1),
+    );
     const [loading, setLoading] = useState(true);
+    const [tab, setTab] = useState<'all' | 'large'>('all');
 
     // history preload, then live stream on top
     useEffect(() => {
         let cancelled = false;
-        setRows([]);
+        const generation = generationRef.current + 1;
+        generationRef.current = generation;
+        let historySettled = false;
+        const pendingLive: TickTapeEventInput[] = [];
+        setModel(createTickTapeLargeTradeState(contract, generation));
+        setTab('all');
         setLoading(true);
 
-        loadHistory(contract, MAX_ROWS)
+        historyLoader(contract, MAX_ROWS)
             .then((h) => {
                 if (cancelled) return;
-                const hist: TapeRow[] = [];
-                for (let i = h.datetime.length - 1; i >= 0; i--) {
-                    const dt = h.datetime[i];
-                    if (!dt) continue;
-                    hist.push({
-                        id: rowSeq++,
-                        time: fmtTickTime(dt.slice(11)),
-                        close: h.close[i] ?? 0,
-                        volume: h.volume[i] ?? 0,
-                        tick_type: h.tick_type[i] ?? 0,
-                    });
-                }
-                // live rows may already have arrived — keep them on top
-                setRows((live) => [...live, ...hist].slice(0, MAX_ROWS));
+                historySettled = true;
+                setModel(replayTickTapeEvents(
+                    contract,
+                    generation,
+                    [...historyTickTapeInputs(contract, h, generation), ...pendingLive],
+                ));
             })
-            .catch(() => undefined)
+            .catch(() => {
+                historySettled = true;
+            })
             .finally(() => {
                 if (!cancelled) setLoading(false);
             });
 
-        const off = onAnyTick((tick) => {
+        const off = tickSubscriber((tick) => {
             if (tick.code !== contract.code) return;
-            setRows((prev) =>
-                [
-                    {
-                        id: rowSeq++,
-                        time: fmtTickTime(tick.time),
-                        close: tick.close,
-                        volume: tick.volume,
-                        tick_type: tick.tick_type,
-                    },
-                    ...prev,
-                ].slice(0, MAX_ROWS),
-            );
+            const input = liveTickTapeInput(contract, tick, generation);
+            if (!historySettled) pendingLive.push(input);
+            setModel((current) => ingestTickTapeEvent(current, input));
         });
         return () => {
             cancelled = true;
             off();
         };
-    }, [contract]);
+    }, [contract, historyLoader, tickSubscriber]);
 
-    // big-lot threshold from the rolling average of visible rows
-    const bigThreshold = useMemo(() => {
-        if (rows.length < 10) return Infinity;
-        const sum = rows.reduce((s, r) => s + r.volume, 0);
-        return Math.max(5, (sum / rows.length) * BIG_LOT_FACTOR);
-    }, [rows]);
+    const supported = contract.security_type === 'STK'
+        && (contract.exchange === 'TSE' || contract.exchange === 'OTC');
+    const rows = tab === 'large' ? model.largeRows : model.rows;
 
     return (
         <div className={panel.panelBody}>
+            <div className={styles.toolbar} role='tablist' aria-label='成交明細篩選'>
+                <button
+                    className={tab === 'all' ? styles.tabActive : styles.tab}
+                    role='tab'
+                    aria-selected={tab === 'all'}
+                    onClick={() => setTab('all')}
+                >
+                    全部
+                </button>
+                <button
+                    className={tab === 'large' ? styles.tabActive : styles.tab}
+                    role='tab'
+                    aria-selected={tab === 'large'}
+                    onClick={() => setTab('large')}
+                >
+                    大單 {model.largeRows.length}
+                </button>
+            </div>
+            {tab === 'large' && (
+                <div className={styles.ruleBox}>
+                    {supported ? (
+                        <>
+                            <span>大單條件：單筆成交金額 ≥ {formatThreshold(model.currentThresholdTwd)}</span>
+                            <span>門檻＝40 萬元、5 張價值、近 120 筆 P70 三者取高</span>
+                            {model.sampleAmounts.length < LARGE_TRADE_WARMUP_SIZE && (
+                                <span className={styles.warmup}>
+                                    動態門檻暖機中 {model.sampleAmounts.length}/{LARGE_TRADE_WARMUP_SIZE}
+                                </span>
+                            )}
+                        </>
+                    ) : (
+                        <span>目前商品不適用台股大單分類</span>
+                    )}
+                </div>
+            )}
             <div className={styles.tape}>
                 {rows.length === 0 && (
                     <span
@@ -158,19 +189,19 @@ export function TickTape({ contract }: { contract: ContractBase }) {
                     >
                         <span />
                         <span className={styles.time}>
-                            {loading ? '載入歷史成交…' : '今日尚無成交'}
+                            {loading
+                                ? '載入歷史成交…'
+                                : tab === 'large'
+                                  ? '目前尚無符合條件的大單'
+                                  : '今日尚無成交'}
                         </span>
                         <span />
                     </span>
                 )}
                 {rows.map((t) => (
                     <TapeRowView
-                        key={t.id}
-                        time={t.time}
-                        close={t.close}
-                        volume={t.volume}
-                        tickType={t.tick_type}
-                        big={t.volume >= bigThreshold}
+                        key={t.tradeKey}
+                        row={t}
                         contract={contract}
                     />
                 ))}

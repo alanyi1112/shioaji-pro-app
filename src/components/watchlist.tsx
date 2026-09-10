@@ -25,6 +25,11 @@ import {
     type ProductSuggestion,
 } from '../lib/product-search';
 import {
+    normalizeInstrumentSearchText,
+    rankAndMergeInstrumentCandidates,
+    searchTaiwanInstrumentCatalog,
+} from '../lib/taiwan-instrument-search';
+import {
     fmtContractPrice,
     fmtContractSigned,
     fmtPct,
@@ -36,6 +41,20 @@ import * as styles from './watchlist.css';
 const SPARK_KEY = 'sj-pro-watchlist-spark';
 
 type SortMode = 'custom' | 'desc' | 'asc';
+type SuggestionStatus =
+    | 'idle'
+    | 'loading'
+    | 'ready'
+    | 'degraded'
+    | 'empty'
+    | 'error'
+    | 'validation-error';
+type WatchlistSuggestion = ProductSuggestion & {
+    source: 'multiview' | 'local';
+};
+
+const EXPLICIT_NON_STOCK_SEARCH = /(?:權證|warrant|期貨|個股期|future|選擇權|option|期$)/iu;
+const DIRECT_CODE = /^[A-Z0-9]+$/u;
 
 // live percent change for sorting — quote first, snapshot fallback
 function pctOf(item: WatchItem): number {
@@ -208,6 +227,8 @@ export function Watchlist({
     onRenameList,
     onDeleteList,
     loading,
+    searchProductsForInput = searchProducts,
+    searchTaiwanForInput = searchTaiwanInstrumentCatalog,
 }: {
     items: WatchItem[];
     selectedCode: string | null;
@@ -227,32 +248,92 @@ export function Watchlist({
     onRenameList: (name: string) => Promise<boolean>;
     onDeleteList: () => Promise<unknown>;
     loading: boolean;
+    searchProductsForInput?: typeof searchProducts;
+    searchTaiwanForInput?: typeof searchTaiwanInstrumentCatalog;
 }) {
     const [input, setInput] = useState('');
     const [busy, setBusy] = useState(false);
     const [creating, setCreating] = useState(false);
-    const [suggestions, setSuggestions] = useState<ProductSuggestion[]>([]);
+    const [suggestions, setSuggestions] = useState<WatchlistSuggestion[]>([]);
+    const [suggestionStatus, setSuggestionStatus] = useState<SuggestionStatus>('idle');
+    const [suggestionMessage, setSuggestionMessage] = useState('');
+    const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+    const suggestionRequestRef = useRef(0);
     useEffect(() => {
         const query = input.trim();
+        const requestId = suggestionRequestRef.current + 1;
+        suggestionRequestRef.current = requestId;
         if (!query) {
             setSuggestions([]);
+            setSuggestionStatus('idle');
+            setSuggestionMessage('');
+            setSelectedSuggestionIndex(-1);
             return;
         }
-        let active = true;
+        const controller = new AbortController();
+        setSuggestionStatus('loading');
+        setSuggestionMessage('');
         const timer = setTimeout(() => {
-            void searchProducts(query, 10)
-                .then((results) => {
-                    if (active) setSuggestions(results);
-                })
-                .catch(() => {
-                    if (active) setSuggestions([]);
-                });
+            const skipTaiwanCatalog = EXPLICIT_NON_STOCK_SEARCH.test(query);
+            void Promise.allSettled([
+                searchProductsForInput(query, 16),
+                skipTaiwanCatalog
+                    ? Promise.resolve({ items: [], warnings: [] })
+                    : searchTaiwanForInput(query, {
+                        limit: 16,
+                        signal: controller.signal,
+                    }),
+            ]).then(([localResult, taiwanResult]) => {
+                if (suggestionRequestRef.current !== requestId) return;
+                const local = localResult.status === 'fulfilled'
+                    ? localResult.value.map((item): WatchlistSuggestion => ({
+                        ...item,
+                        source: 'local',
+                    }))
+                    : [];
+                const remote = taiwanResult.status === 'fulfilled'
+                    ? taiwanResult.value.items.map((item): WatchlistSuggestion => ({
+                        code: item.code,
+                        name: item.name,
+                        security_type: 'STK',
+                        exchange: item.exchange,
+                        detail: `股票 · ${item.market}`,
+                        source: 'multiview',
+                    }))
+                    : [];
+                const ranked = skipTaiwanCatalog
+                    ? local.slice(0, 10)
+                    : rankAndMergeInstrumentCandidates(query, [...remote, ...local], 10);
+                const bothFailed = localResult.status === 'rejected'
+                    && taiwanResult.status === 'rejected';
+                const degraded = !skipTaiwanCatalog && (
+                    taiwanResult.status === 'rejected'
+                    || localResult.status === 'rejected'
+                    || (taiwanResult.status === 'fulfilled'
+                        && taiwanResult.value.warnings.length > 0)
+                );
+                setSuggestions(ranked);
+                setSelectedSuggestionIndex(-1);
+                if (bothFailed) {
+                    setSuggestionStatus('error');
+                    setSuggestionMessage('搜尋服務暫時無法使用；有效商品代號仍可直接加入');
+                } else if (degraded) {
+                    setSuggestionStatus('degraded');
+                    setSuggestionMessage('部分股名來源離線，目前顯示可用的降級結果');
+                } else if (ranked.length === 0) {
+                    setSuggestionStatus('empty');
+                    setSuggestionMessage('找不到符合的商品');
+                } else {
+                    setSuggestionStatus('ready');
+                    setSuggestionMessage('');
+                }
+            });
         }, 150);
         return () => {
-            active = false;
             clearTimeout(timer);
+            controller.abort();
         };
-    }, [input]);
+    }, [input, searchProductsForInput, searchTaiwanForInput]);
     const [newName, setNewName] = useState('');
     const [confirmDelete, setConfirmDelete] = useState(false);
     // inline rename (issue #9) — WKWebView has no working window.prompt,
@@ -324,15 +405,59 @@ export function Watchlist({
         if (from && to && from !== to) onReorder(from, to);
     };
 
+    const submitSuggestion = async (suggestion: WatchlistSuggestion) => {
+        if (busy) return;
+        setBusy(true);
+        try {
+            // Search candidates are display-only. Resolve the canonical
+            // Shioaji contract again before the watchlist mutation.
+            await onAdd(suggestion.code, suggestion.security_type);
+            setInput('');
+            setSuggestions([]);
+            setSuggestionStatus('idle');
+            setSuggestionMessage('');
+            setSelectedSuggestionIndex(-1);
+        } catch {
+            setSuggestionStatus('validation-error');
+            setSuggestionMessage('商品驗證失敗，未加入自選清單');
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const submit = async () => {
-        const code = input.trim().toUpperCase();
+        const raw = input.trim();
+        const code = raw.toUpperCase();
         if (!code || busy) return;
+        const selected = suggestions[selectedSuggestionIndex];
+        if (selected) {
+            await submitSuggestion(selected);
+            return;
+        }
+        const normalized = normalizeInstrumentSearchText(raw);
+        const exact = suggestions.filter((suggestion) =>
+            normalizeInstrumentSearchText(suggestion.code) === normalized
+            || normalizeInstrumentSearchText(suggestion.name) === normalized,
+        );
+        if (exact.length === 1) {
+            await submitSuggestion(exact[0]!);
+            return;
+        }
+        if (!DIRECT_CODE.test(code)) {
+            setSuggestionStatus('validation-error');
+            setSuggestionMessage('請先從搜尋結果選擇一個商品');
+            return;
+        }
         setBusy(true);
         try {
             await onAdd(code);
             setInput('');
+            setSuggestions([]);
+            setSuggestionStatus('idle');
+            setSuggestionMessage('');
         } catch {
-            // keep input so user can fix typo
+            setSuggestionStatus('validation-error');
+            setSuggestionMessage('商品代號驗證失敗，未加入自選清單');
         } finally {
             setBusy(false);
         }
@@ -531,26 +656,37 @@ export function Watchlist({
                 </div>
             </div>
             <div className={styles.addRow}>
-                {suggestions.length > 0 && (
-                    <div className={styles.suggestBox}>
-                        {suggestions.map((s) => (
+                {(suggestions.length > 0 || suggestionStatus !== 'idle') && (
+                    <div
+                        className={styles.suggestBox}
+                        id='watchlist-product-suggestions'
+                        role='listbox'
+                        aria-label='商品搜尋結果'
+                    >
+                        {suggestionStatus === 'loading' && (
+                            <div className={styles.suggestStatus} role='status'>搜尋中…</div>
+                        )}
+                        {suggestionMessage && (
+                            <div
+                                className={suggestionStatus === 'validation-error' || suggestionStatus === 'error'
+                                    ? styles.suggestError
+                                    : styles.suggestStatus}
+                                role='status'
+                            >
+                                {suggestionMessage}
+                            </div>
+                        )}
+                        {suggestions.map((s, index) => (
                             <button
-                                key={s.code}
-                                className={styles.suggestRow}
-                                onClick={async () => {
-                                    setSuggestions([]);
-                                    setInput('');
-                                    setBusy(true);
-                                    try {
-                                        await onAdd(
-                                            s.code,
-                                            s.security_type,
-                                            s.contract,
-                                        );
-                                    } finally {
-                                        setBusy(false);
-                                    }
-                                }}
+                                key={`${s.security_type}:${s.exchange}:${s.code}`}
+                                id={`watchlist-suggestion-${index}`}
+                                className={index === selectedSuggestionIndex
+                                    ? styles.suggestRowSelected
+                                    : styles.suggestRow}
+                                role='option'
+                                aria-selected={index === selectedSuggestionIndex}
+                                onMouseEnter={() => setSelectedSuggestionIndex(index)}
+                                onClick={() => void submitSuggestion(s)}
                             >
                                 <span className={styles.suggestCode}>
                                     {s.code}
@@ -567,20 +703,47 @@ export function Watchlist({
                 )}
                 <input
                     className={styles.addInput}
-                    placeholder='股票、期貨或指數（如 台積電期）'
+                    placeholder='商品代號或股名（如 2330、台積電）'
                     value={input}
                     onChange={(e) => {
                         setInput(e.target.value);
+                        setSelectedSuggestionIndex(-1);
                     }}
+                    role='combobox'
+                    aria-autocomplete='list'
+                    aria-expanded={suggestions.length > 0}
+                    aria-controls='watchlist-product-suggestions'
+                    aria-activedescendant={selectedSuggestionIndex >= 0
+                        ? `watchlist-suggestion-${selectedSuggestionIndex}`
+                        : undefined}
                     onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                            setSuggestions([]);
-                            submit();
+                        if (e.key === 'ArrowDown' && suggestions.length > 0) {
+                            e.preventDefault();
+                            setSelectedSuggestionIndex((current) =>
+                                current < suggestions.length - 1 ? current + 1 : 0,
+                            );
+                            return;
                         }
-                        if (e.key === 'Escape') setSuggestions([]);
+                        if (e.key === 'ArrowUp' && suggestions.length > 0) {
+                            e.preventDefault();
+                            setSelectedSuggestionIndex((current) =>
+                                current > 0 ? current - 1 : suggestions.length - 1,
+                            );
+                            return;
+                        }
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            void submit();
+                        }
+                        if (e.key === 'Escape') {
+                            setSuggestions([]);
+                            setSelectedSuggestionIndex(-1);
+                            setSuggestionStatus('idle');
+                            setSuggestionMessage('');
+                        }
                     }}
                 />
-                <button className={panel.btn} onClick={submit} disabled={busy}>
+                <button className={panel.btn} onClick={() => void submit()} disabled={busy}>
                     {busy ? '…' : '+'}
                 </button>
             </div>
