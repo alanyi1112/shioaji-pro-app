@@ -256,6 +256,39 @@ export const DEFAULT_WORKSPACE: Workspace = {
     ],
 };
 
+export interface WorkspaceStartupPolicy {
+    blockForInitialWatchlist: boolean;
+    hydrateActiveList: boolean;
+    subscribeActiveListQuotes: boolean;
+}
+
+const DEFAULT_WORKSPACE_STARTUP_POLICY: WorkspaceStartupPolicy = {
+    blockForInitialWatchlist: true,
+    hydrateActiveList: true,
+    subscribeActiveListQuotes: true,
+};
+
+/**
+ * Dedicated stock-selection workspaces use their own data services and only
+ * need watchlist metadata for explicit import/add actions. Keep the ordinary
+ * trading workspace on the existing full watchlist bootstrap.
+ */
+export function workspaceStartupPolicy(
+    layoutId: string | null,
+): WorkspaceStartupPolicy {
+    if (
+        layoutId === 'stock-screener' ||
+        layoutId === 'intraday-stock-selection'
+    ) {
+        return {
+            blockForInitialWatchlist: false,
+            hydrateActiveList: false,
+            subscribeActiveListQuotes: false,
+        };
+    }
+    return DEFAULT_WORKSPACE_STARTUP_POLICY;
+}
+
 // built-in layout presets for common trading workflows
 export const LAYOUT_PRESETS: { name: string; desc: string; workspace: Workspace }[] = [
     {

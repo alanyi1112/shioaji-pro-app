@@ -48,6 +48,11 @@ export interface WatchlistServiceIssue {
     detail: string;
 }
 
+export interface UseWatchlistOptions {
+    hydrateActiveList?: boolean;
+    subscribeActiveListQuotes?: boolean;
+}
+
 const DEFAULT_LIST_NAME = '我的自選';
 const DEFAULT_SYMBOLS: { code: string; type: SecurityType }[] = [
     { code: '2330', type: 'STK' },
@@ -138,7 +143,10 @@ async function resolveContract(
     return ensureContract(code);
 }
 
-export function useWatchlist() {
+export function useWatchlist({
+    hydrateActiveList = true,
+    subscribeActiveListQuotes = true,
+}: UseWatchlistOptions = {}) {
     const businessSession = useSyncExternalStore(
         subscribeBusinessSession,
         getBusinessSessionSnapshot,
@@ -220,7 +228,10 @@ export function useWatchlist() {
     );
 
     const loadList = useCallback(
-        async (list: ServerWatchlist) => {
+        async (
+            list: ServerWatchlist,
+            options: { subscribeQuotes?: boolean } = {},
+        ) => {
             const seq = ++loadSeq.current;
             setLoading(true);
             setItems([]);
@@ -242,7 +253,16 @@ export function useWatchlist() {
                     (contract, index) =>
                         contract.code !== list.contracts[index]?.code,
                 );
-            await Promise.allSettled(contracts.map(subscribeContract));
+            if (options.subscribeQuotes !== false) {
+                await Promise.allSettled(contracts.map(subscribeContract));
+            } else {
+                for (const contract of contracts) {
+                    if (contract.target_code) {
+                        registerCodeAlias(contract.target_code, contract.code);
+                    }
+                    primeContract(contract);
+                }
+            }
             if (loadSeq.current !== seq) return;
             setItems(contracts.map((c) => ({ contract: c })));
             attachSnapshots(contracts);
@@ -486,12 +506,24 @@ export function useWatchlist() {
             if (target) {
                 setActiveListId(target.id);
                 localStorage.setItem(ACTIVE_KEY, target.id);
-                await loadList(target);
+                if (hydrateActiveList) {
+                    await loadList(target, {
+                        subscribeQuotes: subscribeActiveListQuotes,
+                    });
+                } else {
+                    setItems([]);
+                    setLoading(false);
+                }
             } else {
                 setLoading(false);
             }
         },
-        [loadList, refreshLists],
+        [
+            hydrateActiveList,
+            loadList,
+            refreshLists,
+            subscribeActiveListQuotes,
+        ],
     );
 
     const retryService = useCallback((): Promise<void> => {

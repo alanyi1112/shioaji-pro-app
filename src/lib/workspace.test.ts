@@ -6,6 +6,7 @@ import {
     loadWorkspace,
     saveProfiles,
     saveWorkspace,
+    workspaceStartupPolicy,
     upsertProfile,
     type Profile,
     type Workspace,
@@ -119,6 +120,26 @@ describe('workspace storage compatibility', () => {
     it('選股為可保存的 singleton，不強制插入既有版面', () => {
         expect(BLOCK_META.screener).toMatchObject({label:'選股',singleton:true,pinnable:false});
         expect(LAYOUT_PRESETS.every(preset=>preset.workspace.blocks.every(block=>block.type!=='screener'))).toBe(true);
+    });
+
+    it('兩個專用選股新頁皆不阻塞且不訂閱作用中清單', () => {
+        for (const layoutId of [
+            'stock-screener',
+            'intraday-stock-selection',
+        ]) {
+            expect(workspaceStartupPolicy(layoutId)).toEqual({
+                blockForInitialWatchlist: false,
+                hydrateActiveList: false,
+                subscribeActiveListQuotes: false,
+            });
+        }
+        for (const layoutId of [null, 'unknown-layout']) {
+            expect(workspaceStartupPolicy(layoutId)).toEqual({
+                blockForInitialWatchlist: true,
+                hydrateActiveList: true,
+                subscribeActiveListQuotes: true,
+            });
+        }
     });
     it('round-trips current and named layouts through the existing storage keys', () => {
         const stored = new Map<string, string>();

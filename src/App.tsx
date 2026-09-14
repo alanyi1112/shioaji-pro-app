@@ -87,6 +87,7 @@ import {
     newBlockId,
     saveProfiles,
     saveWorkspace,
+    workspaceStartupPolicy,
     upsertProfile,
     type Block,
     type BlockType,
@@ -114,6 +115,7 @@ const POPOUT_TYPES: ReadonlySet<string> = new Set([
 
 const popoutQuery = new URLSearchParams(window.location.search);
 const POPOUT_TYPE = popoutQuery.get('popout');
+const WORKSPACE_LAYOUT_ID = popoutQuery.get('layout');
 const IS_MULTIVIEW_TICKET_BRIDGE =
     POPOUT_TYPE === 'ticket' && popoutQuery.get('bridge') === 'multiview';
 const ORDER_TICKET_BRIDGE = parseOrderTicketBridge(popoutQuery);
@@ -546,6 +548,7 @@ function PopoutView({
 }
 
 function TradingApp() {
+    const startupPolicy = workspaceStartupPolicy(WORKSPACE_LAYOUT_ID);
     const {
         items,
         loading,
@@ -562,7 +565,10 @@ function TradingApp() {
         createList,
         renameCurrentList,
         deleteCurrentList,
-    } = useWatchlist();
+    } = useWatchlist({
+        hydrateActiveList: startupPolicy.hydrateActiveList,
+        subscribeActiveListQuotes: startupPolicy.subscribeActiveListQuotes,
+    });
     const [selected, setSelected] = useState<ContractInfo | null>(null);
     const [externalSnapshot, setExternalSnapshot] = useState<{
         code: string;
@@ -974,7 +980,8 @@ function TradingApp() {
         [workspace.blocks],
     );
 
-    const booting = initialLoading;
+    const booting =
+        startupPolicy.blockForInitialWatchlist && initialLoading;
 
     if (POPOUT_TYPE === 'traypanel') {
         return <TrayPanel />;
