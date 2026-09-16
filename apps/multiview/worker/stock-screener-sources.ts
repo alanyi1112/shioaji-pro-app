@@ -3,8 +3,8 @@ import {
   type HolderPoint, type Provenance, type ScreenerMarket, type UniverseStock, type VolumePoint,
 } from "../../../src/lib/stock-screener-domain.ts";
 import {
-  SCREENER_OHLC_MAPPING_VERSION, SCREENER_PRICE_BASIS, validateCanonicalOhlc,
-  type SourcedOhlc,
+  SCREENER_OHLC_MAPPING_VERSION, SCREENER_OHLCV_V4_MAPPING_VERSION, SCREENER_PRICE_BASIS,
+  validateCanonicalOhlc, validateCanonicalOhlcv, type SourcedOhlc, type SourcedOhlcv,
 } from "../../../src/lib/stock-screener-ohlcv.ts";
 
 export const SCREENER_SOURCES = {
@@ -67,7 +67,10 @@ export function parseUniverse(payload: unknown, market: ScreenerMarket) {
     const listed = sourceDate(row[market === "TWSE" ? "上市日期" : "DateOfListing"]);
     if (listed > date) { excluded.push(code); continue; }
     const stock: UniverseStock = { code, symbol: `${code}.${market === "TWSE" ? "TW" : "TWO"}`, market, kind: "ordinary",
-      name, listingDate: listed, classificationVersion: "official-issuer-common-stock-FL033103-1131231-v1" };
+      name, listingDate: listed, classificationVersion: "official-issuer-common-stock-FL033103-1131231-v1",
+      issuedCommonShares: commonShares, issuedSharesSourceDate: date,
+      issuedSharesSourceUrl: SCREENER_SOURCES[market].universe,
+      issuedSharesPayloadHash: null, issuedSharesNormalizationVersion: "official-issued-common-shares-v1" };
     if (!validateStock(stock)) throw new Error("invalid_security");
     stocks.push(stock);
   }
@@ -168,6 +171,11 @@ const historyFields = {
   TWSE: { code: "證券代號", open: "開盤價", high: "最高價", low: "最低價", close: "收盤價" },
   TPEx: { code: "代號", open: "開盤", high: "最高", low: "最低", close: "收盤" },
 } as const;
+const historyVolumeFields = { TWSE: "成交股數", TPEx: "成交股數" } as const;
+const officialShares = (value: unknown): string | null => {
+  const shares = text(value).replaceAll(",", "");
+  return /^(?:0|[1-9]\d{0,19})$/.test(shares) ? shares : null;
+};
 
 /** Historical reports are accepted only when requested/actual dates and exact field names match. */
 export function parseHistoricalOhlcvReport(
@@ -212,6 +220,47 @@ export function parseHistoricalOhlcvReport(
   return { ...parsed, requestedDate, actualDate: parsed.date, universeEligible: allowed.size,
     universePresent: parsed.points.size + parsed.invalid.size,
     universeMissing: [...allowed].filter((symbol) => !parsed.points.has(symbol) && !parsed.invalid.has(symbol)) };
+}
+
+/** v4 history requires the exact official 成交股數 field in the same requested-date report. */
+export function parseHistoricalOhlcvV4Report(
+  payload: HistoricalReport, market: ScreenerMarket, requestedDate: string,
+  provenance: Provenance, universe: readonly UniverseStock[],
+) {
+  const base = parseHistoricalOhlcvReport(payload, market, requestedDate, provenance, universe);
+  const fields = historyFields[market], volumeField = historyVolumeFields[market];
+  const tables = (payload.tables as Array<{ fields: unknown[]; data: unknown[] }>).filter((table) =>
+    Array.isArray(table?.fields) && table.fields.includes(fields.code));
+  if (tables.some((table) => !table.fields.includes(volumeField))) throw new Error("invalid_report_schema");
+  const allowed = new Set(universe.filter((stock) => stock.market === market
+    && (!stock.listingDate || stock.listingDate <= requestedDate)).map((stock) => stock.symbol));
+  const volumes = new Map<string, string>();
+  const volumeInvalid = new Set<string>();
+  for (const table of tables) {
+    const codeIndex = table.fields.indexOf(fields.code), volumeIndex = table.fields.indexOf(volumeField);
+    for (const value of table.data) {
+      if (!Array.isArray(value) || value.length !== table.fields.length) throw new Error("invalid_report_schema");
+      const code = text(value[codeIndex]);
+      if (!/^[1-9]\d{3}$/.test(code)) continue;
+      const symbol = `${code}.${market === "TWSE" ? "TW" : "TWO"}`;
+      if (!allowed.has(symbol)) continue;
+      const shares = officialShares(value[volumeIndex]);
+      if (shares === null) volumeInvalid.add(symbol); else volumes.set(symbol, shares);
+    }
+  }
+  const points = new Map<string, SourcedOhlcv>();
+  const invalid = new Map<string, "missing_ohlcv" | "invalid_ohlcv" | "missing_volume" | "invalid_volume">(base.invalid);
+  for (const [symbol, point] of base.points) {
+    const volumeShares = volumes.get(symbol);
+    if (volumeInvalid.has(symbol)) { invalid.set(symbol, "invalid_volume"); continue; }
+    if (volumeShares === undefined) { invalid.set(symbol, "missing_volume"); continue; }
+    const candidate: SourcedOhlcv = { ...point, volumeShares, volumeUnit: "shares", volumeField,
+      mappingVersion: SCREENER_OHLCV_V4_MAPPING_VERSION };
+    if (!validateCanonicalOhlcv(candidate)) { invalid.set(symbol, "invalid_volume"); continue; }
+    points.set(symbol, candidate);
+  }
+  return { ...base, points, invalid, mapping: { ...base.mapping, volume: volumeField,
+    volumeUnit: "shares" as const, mappingVersion: SCREENER_OHLCV_V4_MAPPING_VERSION } };
 }
 
 /** A malformed stock does not poison the remaining market batch. */

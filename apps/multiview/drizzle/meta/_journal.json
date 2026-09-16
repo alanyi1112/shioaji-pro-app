@@ -218,6 +218,20 @@
       "when": 1788336000000,
       "tag": "0030_tdcc_verified_archive_bootstrap",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1788357697000,
+      "tag": "0031_screener_ohlcv_v4",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1789392000000,
+      "tag": "0032_screener_chip_v5",
+      "breakpoints": true
     }
   ]
 }

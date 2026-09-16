@@ -60,3 +60,35 @@ test('v2 publisher 以官方六期順序嵌入 holder series 與成交值覆蓋�
     assert.equal(snapshot.metadata.background.remaining,0);
   } finally {db.close();}
 });
+test('2026-09-03 雙市場日報完成後原子推進 P=9/2、D=9/3，不再沿用 9/1',async()=>{
+  const db=new SqliteD1(); for(const migration of migrations) applyDrizzleSql(db,migration);
+  const at=new Date('2026-09-03T07:00:00Z');
+  const evidence={version:1,through:'2026-09-03',sessions:['2026-09-01','2026-09-02','2026-09-03','2026-09-04'],weeks:['2026-08-21','2026-08-28'],
+    fetchedAt:at.toISOString(),validThrough:'2026-09-04T06:00:00Z',sourceHashes:['b'.repeat(64)]};
+  const volume=(date,shares)=>({date,shares,turnoverNtd:String(Number(shares)*25),market:'TWSE',unit:'shares',basis:'official',
+    turnoverCurrency:'TWD',turnoverField:'TradeValue',turnoverBasis:'official',turnoverMappingVersion:'official-daily-trade-value-v1',provenance});
+  try {
+    await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES ('screener-daily','screener-daily','collected',?,?)")
+      .bind(JSON.stringify({receipts:{catalog:{hash:'revision-0903',total:1,offset:1,complete:true}}}),at.toISOString()).run();
+    await db.prepare("INSERT INTO screener_universe(revision,symbol,market,data_date,payload) VALUES('revision-0903','2330.TW','TWSE','2026-09-02',?)")
+      .bind(JSON.stringify({stock,review:'verified',sourceDate:'2026-09-02'})).run();
+    for(const date of ['2026-09-01','2026-09-02']) {
+      for(const source of ['TWSE','TPEx']) await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES (?,'screener-source-period','collected',?,?)")
+        .bind(`${source}:${date}`,JSON.stringify({source,date,complete:true}),at.toISOString()).run();
+    }
+    for(const [date,shares] of [['2026-09-01','100'],['2026-09-02','200']]) await db.prepare("INSERT INTO screener_daily_volume(symbol,data_date,payload) VALUES('2330.TW',?,?)")
+      .bind(date,JSON.stringify(volume(date,shares))).run();
+    await publishCollectedScreener(db,{...evidence,through:'2026-09-02'},at);
+    let snapshot=await readScreenerSnapshot(db);
+    assert.deepEqual(snapshot.metadata.anchors.daily,{previous:'2026-09-01',current:'2026-09-02'});
+    for(const source of ['TWSE','TPEx']) await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES (?,'screener-source-period','collected',?,?)")
+      .bind(`${source}:2026-09-03`,JSON.stringify({source,date:'2026-09-03',complete:true}),at.toISOString()).run();
+    await db.prepare("INSERT INTO screener_daily_volume(symbol,data_date,payload) VALUES('2330.TW','2026-09-03',?)")
+      .bind(JSON.stringify(volume('2026-09-03','700'))).run();
+    await publishCollectedScreener(db,evidence,at);
+    snapshot=await readScreenerSnapshot(db);
+    assert.deepEqual(snapshot.metadata.anchors.daily,{previous:'2026-09-02',current:'2026-09-03'});
+    assert.equal(snapshot.inputs[0].previousVolume.shares,'200');
+    assert.equal(snapshot.inputs[0].currentVolume.shares,'700');
+  } finally {db.close();}
+});

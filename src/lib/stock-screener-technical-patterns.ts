@@ -1,7 +1,7 @@
 /** 收盤後選股 v3 技術型態純函式；不得在此模組抓行情、寫 D1 或觸發交易。 */
 import { bollinger, REFERENCE_FORMULA_VERSION } from './indicators.ts';
 import {
-    combineVerdicts, DEFAULT_CRITERIA, hundredths, isIsoDate,
+    combineVerdicts, DEFAULT_CRITERIA, effectiveCriteria, hasAlignedSessionEvidence, hundredths, isIsoDate,
     turnoverWanToNtd, validateCriteria,
     type Counts, type Criteria, type Provenance, type ScreenerAnchors,
     type ScreenerInput, type UniverseStock, type Verdict,
@@ -135,6 +135,9 @@ export interface ScreenerV3Metadata {
     sourceReview: 'verified';
     progress: ScreenerV3Progress;
     counts: ScreenerV3Counts;
+    /** New snapshots persist both names; old v3 snapshots may omit them. */
+    expectedSessionDate?: string;
+    effectiveSessionDate?: string;
 }
 export interface ScreenerV3Counts extends Omit<Counts, 'missingByCondition'> {
     missingByCondition: Counts['missingByCondition'] & {
@@ -364,11 +367,12 @@ export function validateCriteriaV3(criteria: CriteriaV3): boolean {
 
 export function criteriaFingerprintV3(criteria: CriteriaV3): string {
     if (!validateCriteriaV3(criteria)) throw new Error('invalid_criteria');
-    const volume = criteria.volume.enabled ? `v:on:${hundredths(criteria.volume.threshold, 1000)}:${criteria.volume.turnover.enabled ? turnoverWanToNtd(criteria.volume.turnover.minimumWan) : 'toff'}` : 'v:off';
-    const holder = criteria.holder.enabled ? `h:on:${criteria.holder.mode}:${criteria.holder.streakWeeks}:${hundredths(criteria.holder.threshold)}:${criteria.holder.turnover.enabled ? turnoverWanToNtd(criteria.holder.turnover.minimumWan) : 'toff'}` : 'h:off';
-    return [SCREENER_V3_VERSION, criteria.mode, volume, holder,
-        criteria.fractal.enabled ? `f:${criteria.fractal.algorithm}:${criteria.fractal.direction}` : 'f:off',
-        criteria.bollReversal.enabled ? `b:${criteria.bollReversal.mode}` : 'b:off'].join('|');
+    const applied = effectiveCriteria(criteria) as CriteriaV3;
+    const volume = applied.volume.enabled ? `v:on:${hundredths(applied.volume.threshold, 1000)}:${applied.volume.turnover.enabled ? turnoverWanToNtd(applied.volume.turnover.minimumWan) : 'toff'}` : 'v:off';
+    const holder = applied.holder.enabled ? `h:on:${applied.holder.mode}:${applied.holder.streakWeeks}:${hundredths(applied.holder.threshold)}:${applied.holder.turnover.enabled ? turnoverWanToNtd(applied.holder.turnover.minimumWan) : 'toff'}` : 'h:off';
+    return [SCREENER_V3_VERSION, applied.mode, volume, holder,
+        applied.fractal.enabled ? `f:${applied.fractal.algorithm}:${applied.fractal.direction}` : 'f:off',
+        applied.bollReversal.enabled ? `b:${applied.bollReversal.mode}` : 'b:off'].join('|');
 }
 
 export function combineCriteriaV3(
@@ -487,7 +491,11 @@ export function validateScreenerV3Metadata(metadata: ScreenerV3Metadata): boolea
         || !Number.isFinite(Date.parse(metadata.validThrough)) || !validateScreenerV3Progress(metadata.progress)
         || metadata.counts?.total !== metadata.total) return false;
     const sessions = metadata.technicalAnchors?.sessions;
-    return Array.isArray(sessions) && sessions.length >= 60 && sessions.length <= 62
+    const legacyDates = metadata.expectedSessionDate === undefined && metadata.effectiveSessionDate === undefined;
+    const datesValid = legacyDates || hasAlignedSessionEvidence({ expectedSessionDate: metadata.expectedSessionDate,
+        daily: metadata.anchors.daily, technicalThrough: metadata.technicalAnchors?.through,
+        effectiveSessionDate: metadata.effectiveSessionDate });
+    return datesValid && Array.isArray(sessions) && sessions.length >= 60 && sessions.length <= 62
         && sessions.every(isIsoDate) && new Set(sessions).size === sessions.length
         && sessions.every((date, index) => index === 0 || date > sessions[index - 1]!)
         && metadata.technicalAnchors.through === sessions.at(-1);

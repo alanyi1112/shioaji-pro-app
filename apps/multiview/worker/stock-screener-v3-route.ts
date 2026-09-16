@@ -1,4 +1,4 @@
-import { screenStocks, type ScreenerRow, type Verdict } from "../../../src/lib/stock-screener-domain.ts";
+import { effectiveCriteria, screenStocks, type ScreenerRow, type Verdict } from "../../../src/lib/stock-screener-domain.ts";
 import { turnoverEvidence, type ScreenerResultRow } from "../../../src/lib/stock-screener-api.ts";
 import {
   combineCriteriaV3, compareTechnicalRows, criteriaFingerprintV3, DEFAULT_CRITERIA_V3,
@@ -7,7 +7,9 @@ import {
   type ScreenerV3Counts, type ScreenerV3Progress, type TechnicalSort,
 } from "../../../src/lib/stock-screener-technical-patterns.ts";
 import type { ScreenerDatabase } from "./stock-screener-repository.ts";
+import { readScreenerSnapshot } from "./stock-screener-repository.ts";
 import { readScreenerV3Snapshot } from "./stock-screener-v3-repository.ts";
+import { readScreenerFreshness } from "./stock-screener-session-readiness.ts";
 
 const allowedKeys = new Set(["version", "mode", "volume", "volumeThreshold", "volumeTurnover", "volumeTurnoverMinimumWan",
   "holder", "holderThreshold", "holderMode", "holderStreakWeeks", "holderTurnover", "holderTurnoverMinimumWan",
@@ -21,7 +23,7 @@ export function parseScreenerV3Query(params: URLSearchParams) {
     || params.toString().length > 3072 || params.get("version") !== "3") throw new Error("invalid_query");
   for (const key of ["volume", "holder", "volumeTurnover", "holderTurnover", "fractal", "bollReversal"])
     if (params.has(key) && !["true", "false"].includes(params.get(key)!)) throw new Error("invalid_query");
-  const criteria: CriteriaV3 = {
+  const rawCriteria: CriteriaV3 = {
     mode: (params.get("mode") ?? "all") as CriteriaV3["mode"],
     volume: { enabled: params.get("volume") !== "false", threshold: params.get("volumeThreshold") ?? DEFAULT_CRITERIA_V3.volume.threshold,
       turnover: { enabled: params.get("volumeTurnover") === "true", minimumWan: params.get("volumeTurnoverMinimumWan") ?? DEFAULT_CRITERIA_V3.volume.turnover.minimumWan } },
@@ -35,6 +37,7 @@ export function parseScreenerV3Query(params: URLSearchParams) {
     bollReversal: { enabled: params.get("bollReversal") === "true",
       mode: (params.get("bollMode") ?? DEFAULT_CRITERIA_V3.bollReversal.mode) as CriteriaV3["bollReversal"]["mode"] },
   };
+  const criteria = effectiveCriteria(rawCriteria) as CriteriaV3;
   const sort = (params.get("sort") ?? "code") as Sort;
   const direction = params.get("direction") ?? "asc";
   const resultState = (params.get("resultState") ?? "pass") as Verdict;
@@ -52,10 +55,10 @@ export function parseScreenerV3Query(params: URLSearchParams) {
   return { version: 3 as const, criteria, sort, direction: direction as "asc" | "desc", resultState, limit, cursor, fingerprint, criteriaKey };
 }
 
-const emptyCounts = (): ScreenerV3Counts => ({ total: 0, evaluated: 0, matched: 0, notMatched: 0, unknown: 0,
+export const emptyCounts = (): ScreenerV3Counts => ({ total: 0, evaluated: 0, matched: 0, notMatched: 0, unknown: 0,
   missingByCondition: { "volume-multiple": 0, "large-holder-weekly-pp": 0, fractal: 0, "boll-reversal": 0 } });
 
-function baseResult(row: ScreenerRow, criteria: CriteriaV3): ScreenerResultRow {
+export function baseResult(row: ScreenerRow, criteria: CriteriaV3): ScreenerResultRow {
   const ratio = (point: ScreenerRow["currentHolder"]) => point?.bands.find((band) => band.level === 15)?.ratio ?? null;
   const current = row.currentVolume?.shares ?? null, previous = row.previousVolume?.shares ?? null;
   const series = row.holderSeries ?? [row.previousHolder, row.currentHolder].filter((point): point is NonNullable<typeof point> => point !== null);
@@ -64,7 +67,8 @@ function baseResult(row: ScreenerRow, criteria: CriteriaV3): ScreenerResultRow {
   const volumeSignal = row.volume?.signal ?? row.volume, holderSignal = row.holder?.signal ?? row.holder;
   const turnoverNtd = row.currentVolume?.turnoverNtd ?? null;
   return { code: row.code, symbol: row.symbol, name: row.name, market: row.market, kind: row.kind, verdict: row.verdict,
-    volume: { current, previous, multiple: volumeSignal && volumeSignal.verdict !== "unknown" && current !== null && previous !== null && BigInt(previous) > 0 ? Number(current) / Number(previous) : null,
+    volume: { current, previous, currentDate: row.currentVolume?.date ?? null, previousDate: row.previousVolume?.date ?? null,
+      multiple: volumeSignal && volumeSignal.verdict !== "unknown" && current !== null && previous !== null && BigInt(previous) > 0 ? Number(current) / Number(previous) : null,
       reason: row.volume?.reason ?? null, turnover: turnoverEvidence(turnoverNtd, row.currentVolume?.date ?? null,
         volumeSignal?.verdict ?? null, row.volume?.turnover?.verdict ?? null, row.volume?.turnover?.reason ?? null) },
     holder: { mode: criteria.holder.mode, current: hc, previous: hp, changePp: holderSignal && holderSignal.verdict !== "unknown" ? changes.at(-1) ?? null : null,
@@ -87,8 +91,8 @@ function preparation(value: unknown): ScreenerV3Progress | null {
 const json = (payload: unknown, status = 200) => Response.json(payload, { status, headers: { "cache-control": "no-store" } });
 const pendingPayload = (reason: string, progress: ScreenerV3Progress | null = null) => ({ version: 3, state: "pending", reason,
   snapshotId: null, universeRevision: null, formulaVersion: SCREENER_V3_FORMULA_VERSION, criteriaFingerprint: null,
-  expectedSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
-  technicalAnchors: null, counts: null, byMarket: null, preparation: progress, rows: [], nextCursor: null });
+  expectedSessionDate: null, effectiveSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
+  sessionReadiness: null, technicalAnchors: null, counts: null, byMarket: null, preparation: progress, rows: [], nextCursor: null });
 
 export async function handleStockScreenerV3(url: URL, env: { DB?: ScreenerDatabase }, now = new Date()) {
   let query: ReturnType<typeof parseScreenerV3Query>;
@@ -96,13 +100,38 @@ export async function handleStockScreenerV3(url: URL, env: { DB?: ScreenerDataba
   catch (error) { return json({ reason: (error as Error).message }, 400); }
   if (!env.DB) return json({ ...pendingPayload("d1_unavailable"), state: "unavailable" }, 503);
   try {
-    const snapshot = await readScreenerV3Snapshot(env.DB, query.cursor?.snapshotId);
+    const technicalRequired = query.criteria.fractal.enabled || query.criteria.bollReversal.enabled;
+    const snapshot = technicalRequired
+      ? await readScreenerV3Snapshot(env.DB, query.cursor?.snapshotId)
+      : await readScreenerSnapshot(env.DB, query.cursor?.snapshotId, 2);
     if (!snapshot) {
       if (query.cursor) return json({ reason: "snapshot_expired" }, 409);
       const progressRow = await env.DB.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-ohlcv-progress'").first<{ checkpoint: string }>();
       let progress: ScreenerV3Progress | null = null;
       try { progress = preparation(progressRow ? JSON.parse(progressRow.checkpoint) : null); } catch { progress = null; }
-      return json(pendingPayload("v3_preparation_pending", progress));
+      const freshness = await readScreenerFreshness(env.DB, null);
+      return json({ ...pendingPayload(technicalRequired ? "v3_preparation_pending" : "v2_snapshot_pending", progress),
+        expectedSessionDate: freshness.expectedSessionDate, effectiveSessionDate: freshness.effectiveSessionDate,
+        sessionReadiness: freshness.readiness });
+    }
+    const technicalSnapshot = technicalRequired ? snapshot as Awaited<ReturnType<typeof readScreenerV3Snapshot>> : null;
+    const latestBase = technicalRequired ? await readScreenerSnapshot(env.DB, undefined, 2) : snapshot;
+    const currentSessionDate = snapshot.metadata.anchors.daily?.current ?? null;
+    const freshness = await readScreenerFreshness(env.DB, currentSessionDate);
+    const expectedSessionDate = freshness.readiness ? freshness.expectedSessionDate
+      : latestBase?.metadata.expectedSessionDate ?? latestBase?.metadata.anchors.daily?.current ?? freshness.expectedSessionDate;
+    const technicalThrough = technicalSnapshot?.metadata.technicalAnchors.through ?? null;
+    const mixed = freshness.pending || !expectedSessionDate || currentSessionDate !== expectedSessionDate
+      || technicalRequired && technicalThrough !== expectedSessionDate;
+    if (mixed && !query.cursor) {
+      const progressRow = await env.DB.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-ohlcv-progress'").first<{ checkpoint: string }>();
+      let progress: ScreenerV3Progress | null = null;
+      try { progress = preparation(progressRow ? JSON.parse(progressRow.checkpoint) : null); } catch { progress = null; }
+      return json({ ...pendingPayload(freshness.pending ? freshness.reason : technicalRequired ? "mixed_session_dates" : "source_not_published", progress),
+        expectedSessionDate, effectiveSessionDate: currentSessionDate, anchors: snapshot.metadata.anchors,
+        sessionReadiness: freshness.readiness,
+        technicalAnchors: technicalSnapshot?.metadata.technicalAnchors ?? null,
+        createdAt: snapshot.createdAt });
     }
     const baseCriteria = query.criteria.volume.enabled || query.criteria.holder.enabled ? query.criteria
       : { ...query.criteria, volume: { ...query.criteria.volume, enabled: true } };
@@ -110,8 +139,8 @@ export async function handleStockScreenerV3(url: URL, env: { DB?: ScreenerDataba
     const counts = emptyCounts(), byMarket = { TWSE: emptyCounts(), TPEx: emptyCounts() };
     const rows = evaluated.rows.map((base, index) => {
       const input = snapshot.inputs[index] as ScreenerInputV3;
-      const fractal = query.criteria.fractal.enabled ? selectStoredFractal(input.technical, query.criteria.fractal) : null;
-      const bollReversal = query.criteria.bollReversal.enabled ? selectStoredBoll(input.technical, query.criteria.bollReversal) : null;
+      const fractal = query.criteria.fractal.enabled && input.technical ? selectStoredFractal(input.technical, query.criteria.fractal) : null;
+      const bollReversal = query.criteria.bollReversal.enabled && input.technical ? selectStoredBoll(input.technical, query.criteria.bollReversal) : null;
       const verdict = combineCriteriaV3(query.criteria, { volume: base.volume?.verdict, holder: base.holder?.verdict,
         fractal: fractal?.verdict, bollReversal: bollReversal?.verdict });
       for (const summary of [counts, byMarket[input.market]]) {
@@ -146,15 +175,16 @@ export async function handleStockScreenerV3(url: URL, env: { DB?: ScreenerDataba
     });
     const offset = query.cursor?.offset ?? 0;
     if (offset > rows.length) return json({ reason: "invalid_cursor" }, 400);
-    const next = offset + query.limit, stale = now.getTime() > Date.parse(snapshot.metadata.validThrough);
+    const next = offset + query.limit, stale = now.getTime() > Date.parse(snapshot.metadata.validThrough) || mixed;
     const hasMissing = Object.values(counts.missingByCondition).some((count) => count > 0);
     const payload = { version: 3, state: stale ? "stale" : hasMissing ? "partial" : "ready",
-      reason: stale ? "snapshot_stale" : "none", snapshotId: snapshot.id, universeRevision: snapshot.metadata.universeRevision,
+      reason: mixed ? "mixed_session_dates" : stale ? "snapshot_stale" : "none", snapshotId: snapshot.id, universeRevision: snapshot.metadata.universeRevision,
       formulaVersion: SCREENER_V3_FORMULA_VERSION, criteriaFingerprint: query.criteriaKey,
-      expectedSessionDate: snapshot.metadata.technicalAnchors.through, createdAt: snapshot.createdAt,
-      anchors: snapshot.metadata.anchors, technicalAnchors: snapshot.metadata.technicalAnchors, counts, byMarket,
-      preparation: snapshot.metadata.progress, rows: url.pathname.endsWith("/status") ? [] : rows.slice(offset, next),
-      nextCursor: !url.pathname.endsWith("/status") && next < rows.length
+      expectedSessionDate, effectiveSessionDate: currentSessionDate, sessionReadiness: freshness.readiness, createdAt: snapshot.createdAt,
+      anchors: snapshot.metadata.anchors, technicalAnchors: technicalSnapshot?.metadata.technicalAnchors ?? null, counts, byMarket,
+      preparation: technicalSnapshot?.metadata.progress ?? null,
+      rows: url.pathname.endsWith("/status") || stale ? [] : rows.slice(offset, next),
+      nextCursor: !url.pathname.endsWith("/status") && !stale && next < rows.length
         ? btoa(JSON.stringify({ version: 3, snapshotId: snapshot.id, offset: next, fingerprint: query.fingerprint })) : null };
     return json(payload);
   } catch (error) {

@@ -18,7 +18,7 @@ const inputs = [
   { code: '4768', symbol: '4768.TWO', name: '晶呈科技', market: 'TPEx', kind: 'ordinary', listingDate: sessions.at(-2), currentVolume: null, previousVolume: null, currentHolder: null, previousHolder: null },
 ];
 const metadata = { version: 2, schemaVersion: 2, formulaVersion: 'after-market-v2', sourceReview: 'verified',
-  anchors: { daily: null, weekly: null, weeklyPeriods: [] }, universeRevision: 'r1', total: inputs.length,
+  anchors: { daily: { previous: sessions.at(-2), current: sessions.at(-1) }, weekly: null, weeklyPeriods: [] }, universeRevision: 'r1', total: inputs.length,
   validThrough: '2099-01-01T00:00:00Z', expectedSessionDate: sessions.at(-1) };
 
 async function seedPrepared(db) {
@@ -77,7 +77,7 @@ test('部分市場 receipt、staging row 缺漏與 CAS 競爭不得發布 comple
     await db.prepare("UPDATE screener_runs SET status='failed',checkpoint=? WHERE id=?")
       .bind(JSON.stringify({ version: 1, market: 'TPEx', sessionDate: sessions.at(-1), status: 'failed', complete: false,
         universeRevision: 'r1', expectedHash: buildOhlcvTargets(inputs, sessions).at(-1).expectedHash, universeEligible: 1 }), `screener-ohlcv:TPEx:${sessions.at(-1)}`).run();
-    await assert.rejects(publishPreparedScreenerV3(db), /incomplete_ohlcv_receipts/);
+    assert.partialDeepStrictEqual(await publishPreparedScreenerV3(db), { state: 'pending', reason: 'universe_coverage_pending' });
     assert.equal((await db.prepare("SELECT count(*) AS n FROM screener_snapshots WHERE schema_version=3").first()).n, 0);
   } finally { db.close(); }
 });
@@ -123,18 +123,56 @@ test('v3 GET 固定 snapshot／criteria，回傳分型證據、unknown 與穩定
   } finally { db.close(); }
 });
 
-test('v3 尚未發布時保留 preparation progress，v2 cursor 不得重解釋', async () => {
+test('v3 尚未發布時，非技術 status 投影最新 v2；v2 cursor 不得重解釋', async () => {
   const db = setup();
   try {
     await seedPrepared(db);
     const status = await handleStockScreener(new Request('http://127.0.0.1/api/stock-screener/status?version=3'), { DB: db, DEPLOYMENT_TARGET: 'local' });
     const body = await status.json();
-    assert.equal(body.state, 'pending');
-    assert.equal(body.reason, 'v3_preparation_pending');
-    assert.deepEqual({ target: body.preparation.target, processed: body.preparation.processed, remaining: body.preparation.remaining }, { target: 120, processed: 120, remaining: 0 });
+    assert.equal(body.state, 'partial');
+    assert.equal(body.reason, 'none');
+    assert.equal(body.snapshotId !== null, true);
+    assert.equal(body.technicalAnchors, null);
     const oldCursor = btoa(JSON.stringify({ id: crypto.randomUUID(), offset: 0, fingerprint: 'old' }));
     const invalid = await handleStockScreener(new Request(`http://127.0.0.1/api/stock-screener/results?version=3&cursor=${encodeURIComponent(oldCursor)}`), { DB: db, DEPLOYMENT_TARGET: 'local' });
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).reason, 'invalid_cursor');
+  } finally { db.close(); }
+});
+
+test('mixed-session 拒絕發布；純量查詢改投影最新 v2，技術查詢等待當期 v3', async () => {
+  const db = setup();
+  try {
+    await seedPrepared(db);
+    assert.equal((await publishPreparedScreenerV3(db)).state, 'published');
+    const next = new Date(Date.parse(`${sessions.at(-1)}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+    await publishScreenerSnapshot(db, { ...metadata,
+      anchors: { ...metadata.anchors, daily: { previous: sessions.at(-1), current: next } },
+      expectedSessionDate: next }, inputs, new Date('2026-09-02T01:00:00Z'));
+    assert.partialDeepStrictEqual(await publishPreparedScreenerV3(db), { state: 'pending', reason: 'mixed_session_dates' });
+
+    const baseQuery = 'version=3&volume=true&holder=false&fractal=false&bollReversal=false&resultState=unknown&sort=code&direction=asc&limit=10';
+    const base = await (await handleStockScreener(new Request(`http://127.0.0.1/api/stock-screener/results?${baseQuery}`),
+      { DB: db, DEPLOYMENT_TARGET: 'local' }, new Date('2026-09-02T01:01:00Z'))).json();
+    assert.equal(base.expectedSessionDate, next);
+    assert.equal(base.technicalAnchors, null);
+    assert.equal(base.rows.length, 3);
+
+    const technical = await (await handleStockScreener(new Request(`http://127.0.0.1/api/stock-screener/results?${baseQuery.replace('fractal=false', 'fractal=true')}`),
+      { DB: db, DEPLOYMENT_TARGET: 'local' }, new Date('2026-09-02T01:01:00Z'))).json();
+    assert.equal(technical.state, 'pending');
+    assert.equal(technical.reason, 'mixed_session_dates');
+    assert.deepEqual(technical.rows, []);
+    const readiness={version:1,expectedSessionDate:next,effectiveSessionDate:sessions.at(-1),phase:'awaiting-publication',attempts:1,
+      nextAttemptAt:'2026-09-02T02:00:00Z',updatedAt:'2026-09-02T01:00:00Z',markets:{
+        TWSE:{status:'complete',reportDate:next,hash:'a'.repeat(64),total:1000,invalid:0,reason:null,checkedAt:'2026-09-02T01:00:00Z'},
+        TPEx:{status:'pending',reportDate:sessions.at(-1),hash:null,total:null,invalid:null,reason:'source_not_published',checkedAt:'2026-09-02T01:00:00Z'}}};
+    await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES('screener-session-readiness','screener-session-readiness','awaiting-publication',?,?)")
+      .bind(JSON.stringify(readiness),readiness.updatedAt).run();
+    const waiting=await (await handleStockScreener(new Request(`http://127.0.0.1/api/stock-screener/results?${baseQuery.replace('fractal=false','fractal=true')}`),
+      {DB:db,DEPLOYMENT_TARGET:'local'},new Date('2026-09-02T01:02:00Z'))).json();
+    assert.equal(waiting.reason,'awaiting_tpex');
+    assert.equal(waiting.sessionReadiness.markets.TWSE.status,'complete');
+    assert.deepEqual(waiting.rows,[]);
   } finally { db.close(); }
 });

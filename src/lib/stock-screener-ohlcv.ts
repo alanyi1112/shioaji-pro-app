@@ -1,5 +1,6 @@
-/** Worker 與前端共用的零依賴 canonical OHLC 契約。 */
+/** Worker 與前端共用的零依賴 canonical OHLC／OHLCV 契約。 */
 export const SCREENER_OHLC_MAPPING_VERSION = 'official-daily-ohlcv-v1' as const;
+export const SCREENER_OHLCV_V4_MAPPING_VERSION = 'official-daily-ohlcv-v2' as const;
 export const SCREENER_PRICE_BASIS = 'official-unadjusted-after-market-twd' as const;
 
 export interface OhlcProvenance {
@@ -26,6 +27,20 @@ export interface SourcedOhlc extends CanonicalOhlc {
     mappingVersion: typeof SCREENER_OHLC_MAPPING_VERSION;
     provenance: OhlcProvenance;
 }
+export interface CanonicalOhlcv extends CanonicalOhlc {
+    /** 官方盤後成交股數，以十進位整數字串保存。 */
+    volumeShares: string;
+}
+export interface SourcedOhlcv extends CanonicalOhlcv {
+    symbol: string;
+    market: 'TWSE' | 'TPEx';
+    currency: 'TWD';
+    priceBasis: typeof SCREENER_PRICE_BASIS;
+    mappingVersion: typeof SCREENER_OHLCV_V4_MAPPING_VERSION;
+    volumeUnit: 'shares';
+    volumeField: '成交股數';
+    provenance: OhlcProvenance;
+}
 
 const isoDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
     && Number.isFinite(Date.parse(`${value}T00:00:00Z`))
@@ -48,6 +63,19 @@ export function validateCanonicalOhlc(bar: CanonicalOhlc): boolean {
 
 export function validateCanonicalOhlcSeries(bars: readonly CanonicalOhlc[]): boolean {
     return Array.isArray(bars) && bars.length > 0 && bars.every(validateCanonicalOhlc)
+        && new Set(bars.map((bar) => bar.sessionDate)).size === bars.length
+        && bars.every((bar, index) => index === 0 || bar.sessionDate > bars[index - 1]!.sessionDate);
+}
+
+export const canonicalVolumeShares = (value: unknown): bigint | null =>
+    typeof value === 'string' && /^(?:0|[1-9]\d{0,19})$/.test(value) ? BigInt(value) : null;
+
+export function validateCanonicalOhlcv(bar: CanonicalOhlcv): boolean {
+    return validateCanonicalOhlc(bar) && canonicalVolumeShares(bar.volumeShares) !== null;
+}
+
+export function validateCanonicalOhlcvSeries(bars: readonly CanonicalOhlcv[]): boolean {
+    return Array.isArray(bars) && bars.length > 0 && bars.every(validateCanonicalOhlcv)
         && new Set(bars.map((bar) => bar.sessionDate)).size === bars.length
         && bars.every((bar, index) => index === 0 || bar.sessionDate > bars[index - 1]!.sessionDate);
 }

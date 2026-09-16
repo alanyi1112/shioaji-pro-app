@@ -3,11 +3,26 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { SqliteD1, applyDrizzleSql } from './helpers/sqlite-d1.mjs';
 import { validateHistoryTableShape, parseScreenerTpexCalendar, boundedOfficialText } from '../../../scripts/stock-screener-periods.mjs';
-import { updateScreener, pruneScreenerInputs, planScreenerHistory, buildHistoryProgress, dailySql, archiveHolderSql, parseDailyReport } from '../../../scripts/stock-screener-update.mjs';
+import { updateScreener, pruneScreenerInputs, planScreenerHistory, buildHistoryProgress, collectOfficialDailyPeriods,
+  dailySql, archiveHolderSql, parseCandidateDailyReport, parseDailyReport } from '../../../scripts/stock-screener-update.mjs';
 const migrations = await Promise.all(['0027_pale_randall_flagg.sql','0028_early_sir_ram.sql','0029_plain_strong_guy.sql'].map(name=>readFile(new URL(`../drizzle/${name}`, import.meta.url),'utf8')));
 const setup = () => { const db=new SqliteD1(); for(const migration of migrations) applyDrizzleSql(db,migration); return db; };
 const html = rows => `<div class="securities-overview"><table>${rows.map(row=>`<tr>${row.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</table></div>`;
 const rows = () => [...Array.from({length:15},(_,i)=>[String(i+1),'級距','1','100','6.66']),['16','合　計','15','1500','100.00']];
+test('scheduled 籌碼檢查在主流程冷卻前執行，仍遵守 enable 與 lease', async t => {
+  const db = setup(), events = [];
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-16T12:00:00Z') });
+  try {
+    await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES('screener-enabled','configuration','enabled','{}','2026-09-16')").run();
+    await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES('screener-operator-policy','policy','idle',?,'2026-09-16')")
+      .bind(JSON.stringify({ day: '2026-09-16', attempts: 0, nextAttemptAt: '2026-09-16T13:00:00Z' })).run();
+    const result = await updateScreener(db, { scheduled: true, log: event => events.push(event), fetcher: async () => { throw new Error('unexpected_network'); } });
+    assert.equal(result.reason, 'backoff');
+    assert.equal(events[0].event, 'screener-chip-independent');
+    assert.equal(events[0].reason, 'v4_snapshot_pending');
+    assert.equal((await db.prepare("SELECT status FROM screener_runs WHERE id='screener-operator-lease'").first()).status, 'idle');
+  } finally { db.close(); }
+});
 test('歷史日報只接受逐市場核對的成交值欄名與同列資料', () => {
   const source={source:'official',sourceUrl:'https://example.invalid',fetchedAt:'2026-09-01T10:30:00Z',payloadHash:'fixture',normalizationVersion:'official-daily-trade-value-v1'};
   const twse=parseDailyReport({stat:'OK',date:'20260901',tables:[{fields:['證券代號','成交股數','成交金額'],data:[['2330','1,000','12,345,600']]}]},'TWSE','2026-09-01',source);
@@ -21,6 +36,34 @@ test('歷史日報只接受逐市場核對的成交值欄名與同列資料', ()
     {fields:['代號','成交股數','成交金額'],data:[['4768','2000','7797300']]},
     {fields:['代號','成交股數','成交金額'],data:[]},
   ]},'TPEx','2026-09-01',source),/invalid_report_schema/);
+});
+test('候選日必須回傳 exact date；單市場完成會保留 receipt，另一市場尚未發布不冒充 ready', async () => {
+  const db=setup();
+  const twse=Array.from({length:800},(_,i)=>({code:String(1000+i),symbol:`${1000+i}.TW`,market:'TWSE'}));
+  const tpex=Array.from({length:500},(_,i)=>({code:String(6000+i),symbol:`${6000+i}.TWO`,market:'TPEx'}));
+  const universe=[...twse,...tpex];
+  const twsePayload={stat:'OK',date:'20260903',tables:[{fields:['證券代號','成交股數','成交金額'],data:twse.map(row=>[row.code,'3000','900000'])}]};
+  const tpexTables=[0,1].map(part=>({fields:['代號','成交股數','成交金額(元)'],data:tpex.filter((_,i)=>i%2===part).map(row=>[row.code,'4000','1200000'])}));
+  const tpexPayload={stat:'ok',date:'20260903',tables:tpexTables};
+  const source={source:'TWSE',sourceUrl:'https://example.invalid',fetchedAt:'2026-09-03T06:00:00Z',payloadHash:'fixture',normalizationVersion:'v1'};
+  assert.throws(()=>parseCandidateDailyReport({...twsePayload,date:'20260902'},'TWSE','2026-09-03',source),/source_not_published/);
+  try {
+    for(const market of ['TWSE','TPEx']) await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES (?,'screener-source-period','collected',?,?)")
+      .bind(`screener-period:${market}:2026-09-02`,JSON.stringify({source:market,date:'2026-09-02',complete:true,total:market==='TWSE'?800:500,invalid:0,hash:`old-${market}`}),source.fetchedAt).run();
+    let tpexReady=false;
+    const fetcher=async url=>Response.json(url.includes('twse.com.tw')?twsePayload:tpexReady?tpexPayload:{stat:'ok',date:'20260902',tables:[]});
+    const options={sessions:['2026-09-01','2026-09-02','2026-09-03'],expectedSessionDate:'2026-09-03',universe,fetcher,batch:x=>db.batch(x)};
+    const first=await collectOfficialDailyPeriods(db,options);
+    assert.equal(first.outcomes.TWSE.status,'complete');
+    assert.equal(first.outcomes.TPEx.status,'pending');
+    assert.equal((await db.prepare("SELECT status FROM screener_runs WHERE id='screener-period:TWSE:2026-09-03'").first()).status,'collected');
+    assert.equal(await db.prepare("SELECT status FROM screener_runs WHERE id='screener-period:TPEx:2026-09-03'").first(),null);
+    tpexReady=true;
+    const second=await collectOfficialDailyPeriods(db,options);
+    assert.equal(second.outcomes.TWSE.status,'complete');
+    assert.equal(second.outcomes.TPEx.status,'complete');
+    assert.equal((await db.prepare("SELECT count(*) n FROM screener_daily_volume WHERE data_date='2026-09-03'").first()).n,1300);
+  } finally { db.close(); }
 });
 test('TDCC官網省略零調整列只能在十五級與合計精確對帳後接受；不明缺列不補零', () => {
   assert.equal(validateHistoryTableShape(html(rows())),16);
@@ -93,6 +136,18 @@ test('選股排程預設停用、盤中不抓取，隔離於既有 broker 與長
     assert.match(updater,/selectOhlcvSessions\(periods\.sessions, technicalThrough, technicalReceipts\)/);
     assert.doesNotMatch(updater,/Shioaji|yahoo|provider.*ohlcv/i);
   } finally {db.close();}
+});
+test('operator 在 13:59 零來源請求，14:00 起允許官方 publication probe',async t=>{
+  const db=setup();let calls=0;
+  t.mock.timers.enable({apis:['Date'],now:new Date('2026-09-03T05:59:00Z')});
+  const fetcher=async()=>{calls++;return new Response('',{status:503});};
+  try {
+    assert.equal((await updateScreener(db,{fetcher})).reason,'source_not_closed');
+    assert.equal(calls,0);
+    t.mock.timers.setTime(Date.parse('2026-09-03T06:00:00Z'));
+    assert.equal((await updateScreener(db,{fetcher})).reason,'source_http_503');
+    assert.equal(calls,1);
+  }finally{db.close();}
 });
 test('operator 共用 lease、Retry-After、每日三次上限與隔日恢復，禁止 busy-loop', async t => {
   const db=setup(); let calls=0,now=Date.parse('2026-08-31T10:00:00Z');

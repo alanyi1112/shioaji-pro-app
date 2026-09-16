@@ -2,6 +2,7 @@ import {
   technicalEvidenceHash, validateScreenerV3Metadata,
   type ScreenerInputV3, type ScreenerV3Metadata,
 } from "../../../src/lib/stock-screener-technical-patterns.ts";
+import { hasAlignedSessionEvidence } from "../../../src/lib/stock-screener-domain.ts";
 import { readScreenerSnapshot, type ScreenerDatabase } from "./stock-screener-repository.ts";
 
 export async function readScreenerV3Snapshot(db: ScreenerDatabase, id?: string) {
@@ -19,6 +20,9 @@ export async function publishScreenerV3Snapshot(
 ) {
   if (!validateScreenerV3Metadata(metadata) || metadata.total !== inputs.length || !inputs.length || inputs.length > 10000
     || metadata.progress.remaining !== 0 || metadata.progress.failed !== 0 || metadata.progress.overdue !== 0) throw new Error("invalid_v3_snapshot");
+  if (!hasAlignedSessionEvidence({ expectedSessionDate: metadata.expectedSessionDate,
+    daily: metadata.anchors.daily, technicalThrough: metadata.technicalAnchors.through,
+    effectiveSessionDate: metadata.effectiveSessionDate })) throw new Error("mixed_session_dates");
   for (const row of inputs) {
     if (!row.technical) throw new Error("invalid_v3_snapshot");
     const { evidenceHash, ...evidence } = row.technical;
@@ -48,6 +52,10 @@ export async function publishScreenerV3Snapshot(
         "INSERT INTO screener_snapshot_rows(snapshot_id,symbol,payload) VALUES(?,?,?)",
       ).bind(id, input.symbol, JSON.stringify(input))));
     }
+    // Re-assert the immutable metadata immediately before the atomic head swap.
+    if (!hasAlignedSessionEvidence({ expectedSessionDate: metadata.expectedSessionDate,
+      daily: metadata.anchors.daily, technicalThrough: metadata.technicalAnchors.through,
+      effectiveSessionDate: metadata.effectiveSessionDate })) throw new Error("mixed_session_dates");
     await db.batch([
       db.prepare("UPDATE screener_snapshots SET status='published' WHERE id=? AND schema_version=3 AND (SELECT COUNT(*) FROM screener_snapshot_rows WHERE snapshot_id=?)=? AND COALESCE((SELECT id FROM screener_snapshots WHERE status='published' AND schema_version=3 ORDER BY created_at DESC,id DESC LIMIT 1),'')=?")
         .bind(id, id, inputs.length, previous?.id ?? ""),

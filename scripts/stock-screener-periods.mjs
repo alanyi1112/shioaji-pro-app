@@ -1,10 +1,63 @@
 /** Official period discovery for the local operator; no broker/runtime authority is imported. */
 import { createHash } from 'node:crypto';
+import { request as httpsRequest } from 'node:https';
 import { parseTwseOfficialCalendar, parseTpexOfficialCalendar, buildOfficialMarketCalendarSnapshot } from './smart-order-runtime/official-market-calendar-core.mjs';
 import { createTdccHistorySession, TDCC_HISTORY_URL } from '../apps/multiview/scripts/tdcc-history-backfill.mjs';
 import { ScreenerSourceError } from '../apps/multiview/worker/stock-screener-sources.ts';
 
 export const hashText = text => createHash('sha256').update(text).digest('hex');
+
+/**
+ * TPEx occasionally resets a TLS 1.3 response after sending only part of a
+ * large report. Its official endpoint is stable over HTTP/1.1 + TLS 1.2, so
+ * the local scheduled collector pins that transport without weakening
+ * certificate verification. Injected fetchers still take the ordinary path,
+ * which keeps source contract tests deterministic.
+ */
+async function fetchTpexOfficial(url, init) {
+    const headers = new Headers(init.headers);
+    headers.set('accept-encoding', 'identity');
+    if (!headers.has('user-agent')) headers.set('user-agent', 'RealTimeStock/1.0 (local official-data collector)');
+    return await new Promise((resolve, reject) => {
+        const req = httpsRequest(url, {
+            method: init.method ?? 'GET', headers: Object.fromEntries(headers.entries()),
+            maxVersion: 'TLSv1.2', signal: init.signal,
+        }, (response) => {
+            const chunks = [];
+            let size = 0;
+            response.on('data', (chunk) => {
+                size += chunk.length;
+                if (size > 16 * 1024 * 1024) {
+                    response.destroy(new Error('source_too_large'));
+                    return;
+                }
+                chunks.push(chunk);
+            });
+            response.on('end', () => resolve(new Response(Buffer.concat(chunks), {
+                status: response.statusCode ?? 500,
+                headers: response.headers,
+            })));
+            response.on('error', reject);
+        });
+        req.on('error', reject);
+        if (init.body !== undefined) req.write(init.body);
+        req.end();
+    });
+}
+
+async function fetchTpexOfficialWithRetry(url, init) {
+    let lastError;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+            return await fetchTpexOfficial(url, init);
+        } catch (error) {
+            lastError = error;
+            if (init.signal?.aborted || !['ECONNRESET', 'ETIMEDOUT', 'EPIPE'].includes(error?.code) || attempt === 5) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        }
+    }
+    throw lastError;
+}
 export function parseScreenerTpexCalendar(payload, year) {
     // The official 2026 table has one bond-only row whose date/description are
     // row-spanned from the preceding STOCK row. Keep the stock row unchanged.
@@ -26,7 +79,10 @@ export async function boundedOfficialText(url, fetcher = fetch, init = {}) {
     let timer;
     try {
         return await Promise.race([(async () => {
-            const response = await fetcher(url, { ...init, signal, redirect:'error', headers: { ...init.headers, 'accept-encoding': 'identity' } });
+            const requestInit = { ...init, signal, redirect:'error', headers: { ...init.headers, 'accept-encoding': 'identity' } };
+            const response = parsed.hostname === 'www.tpex.org.tw' && fetcher === globalThis.fetch
+                ? await fetchTpexOfficialWithRetry(url, requestInit)
+                : await fetcher(url, requestInit);
             const text = await response.text();
             if (response.status === 429) {
                 const retry = response.headers.get('retry-after');
@@ -89,5 +145,5 @@ export async function discoverScreenerPeriods(now = new Date(), fetcher = fetch)
     if (!next) throw new Error('calendar_coverage_pending');
     hashes.push(hashText(JSON.stringify(weeks)));
     return { version: 1, sessions, weeks, through: day, fetchedAt: now.toISOString(), sourceHashes: hashes,
-        validThrough: new Date(`${next}T18:00:00+08:00`).toISOString() };
+        validThrough: new Date(`${next}T14:00:00+08:00`).toISOString() };
 }

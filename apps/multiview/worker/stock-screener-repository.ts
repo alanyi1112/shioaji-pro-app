@@ -12,6 +12,7 @@ export interface ScreenerSnapshotMetadata {
   sourceReview: "verified";
   periodEvidence?: { fetchedAt: string; sourceHashes: string[] };
   expectedSessionDate?: string;
+  effectiveSessionDate?: string;
   expectedWeekDate?: string;
   turnoverCoverage?: { valid: number; missing: number };
   holderHistoryCoverage?: { requiredPeriods: string[]; complete: number; pending: number };
@@ -56,6 +57,9 @@ export async function publishScreenerSnapshot(db: ScreenerDatabase, metadata: Sc
     || metadata.total !== inputs.length || !inputs.length || inputs.length > 10000
     || !Number.isFinite(Date.parse(metadata.validThrough))) throw new Error("invalid_snapshot");
   for (const pair of [metadata.anchors.daily, metadata.anchors.weekly]) if (pair && !validatePair(pair)) throw new Error("invalid_snapshot_dates");
+  if (metadata.expectedSessionDate !== undefined && metadata.expectedSessionDate !== metadata.anchors.daily?.current
+    || metadata.effectiveSessionDate !== undefined && metadata.effectiveSessionDate !== metadata.anchors.daily?.current)
+    throw new Error("mixed_session_dates");
   if (!Array.isArray(metadata.anchors.weeklyPeriods) || metadata.anchors.weeklyPeriods.length === 1 || metadata.anchors.weeklyPeriods.length > 6
     || metadata.anchors.weeklyPeriods.some((date, index, all) => !/^\d{4}-\d{2}-\d{2}$/.test(date) || index > 0 && date <= all[index - 1]!)) throw new Error("invalid_snapshot_dates");
   const nextCoverage = screenStocks(inputs, metadata.anchors, DEFAULT_CRITERIA);

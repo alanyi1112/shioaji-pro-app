@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchScreenerSource, mergeUniverses, parseDailyOhlcv, parseDailyVolumes, parseHistoricalOhlcvReport, parseHolderBatch, parseUniverse, SCREENER_SOURCES, sourceDate } from "../worker/stock-screener-sources.ts";
+import { fetchScreenerSource, mergeUniverses, parseDailyOhlcv, parseDailyVolumes, parseHistoricalOhlcvReport, parseHistoricalOhlcvV4Report, parseHolderBatch, parseUniverse, SCREENER_SOURCES, sourceDate } from "../worker/stock-screener-sources.ts";
 
 const provenance = { source: "official", sourceUrl: "https://example.invalid", fetchedAt: "2026-08-31T10:00:00Z", payloadHash: "fixture", normalizationVersion: "1" };
 const listed = { "出表日期": "1150830", "公司代號": "2330", "公司簡稱": "台積電", "上市日期": "19940905", "產業別": "24", "已發行普通股數或TDR原股發行股數": "1000001" };
@@ -81,6 +81,36 @@ test("歷史 OHLC 依欄名解析、核對 actual date 與普通股 universe，�
   assert.throws(() => parseHistoricalOhlcvReport({ stat: "ok", date: "20260901", tables: [
     { fields: ["代號", "收盤", "開盤", "最高", "最低"], data: [] }, { fields: ["代號", "收盤", "開盤", "最高", "最低"], data: [] },
   ] }, "TPEx", "2026-09-01", provenance, universe), /empty_report/);
+});
+test("v4 歷史 OHLCV 兩市場只接受同列成交股數，千分位轉為整數股並隔離壞列", () => {
+  const universe = [
+    { code: "2330", symbol: "2330.TW", name: "台積電", market: "TWSE", kind: "ordinary", listingDate: "1994-09-05" },
+    { code: "3008", symbol: "3008.TW", name: "大立光", market: "TWSE", kind: "ordinary", listingDate: "2002-03-11" },
+    { code: "4768", symbol: "4768.TWO", name: "晶呈科技", market: "TPEx", kind: "ordinary", listingDate: "2016-04-14" },
+  ];
+  const twse = parseHistoricalOhlcvV4Report({ stat: "OK", date: "20260831", tables: [{
+    fields: ["成交股數", "收盤價", "最低價", "證券代號", "最高價", "開盤價"],
+    data: [["1,234,567", "104", "99", "2330", "105", "100.5"], ["--", "2500", "2450", "3008", "2520", "2480"]],
+  }] }, "TWSE", "2026-08-31", provenance, universe);
+  assert.equal(twse.points.get("2330.TW").volumeShares, "1234567");
+  assert.equal(twse.points.get("2330.TW").volumeUnit, "shares");
+  assert.equal(twse.points.get("2330.TW").volumeField, "成交股數");
+  assert.equal(twse.points.get("2330.TW").mappingVersion, "official-daily-ohlcv-v2");
+  assert.equal(twse.invalid.get("3008.TW"), "invalid_volume");
+  const tpex = parseHistoricalOhlcvV4Report({ stat: "ok", date: "20260901", tables: [
+    { fields: ["代號", "名稱", "收盤", "開盤", "最高", "最低", "成交股數"], data: [["4768", "晶呈科技", "232", "230", "235", "228", "0"]] },
+    { fields: ["代號", "名稱", "收盤", "開盤", "最高", "最低", "成交股數"], data: [] },
+  ] }, "TPEx", "2026-09-01", provenance, universe);
+  assert.equal(tpex.points.get("4768.TWO").volumeShares, "0");
+  assert.equal(tpex.universePresent, 1);
+});
+test("v4 歷史 OHLCV 對缺成交量欄、日期錯置、schema 漂移及部分市場回應 fail closed", () => {
+  const universe = [{ code: "2330", symbol: "2330.TW", name: "台積電", market: "TWSE", kind: "ordinary", listingDate: "1994-09-05" }];
+  const base = { stat: "OK", date: "20260831", tables: [{ fields: ["證券代號", "開盤價", "最高價", "最低價", "收盤價"], data: [["2330", "100", "105", "99", "104"]] }] };
+  assert.throws(() => parseHistoricalOhlcvV4Report(base, "TWSE", "2026-08-31", provenance, universe), /invalid_report_schema/);
+  assert.throws(() => parseHistoricalOhlcvV4Report({ ...base, date: "20260828" }, "TWSE", "2026-08-31", provenance, universe), /invalid_report_date/);
+  assert.throws(() => parseHistoricalOhlcvV4Report({ ...base, tables: [] }, "TWSE", "2026-08-31", provenance, universe), /invalid_report_schema/);
+  assert.throws(() => parseHistoricalOhlcvV4Report({ ...base, tables: [base.tables[0], base.tables[0]] }, "TWSE", "2026-08-31", provenance, universe), /invalid_report_schema/);
 });
 test("TDCC BOM 及單一商品不完整不得拖累其他商品", () => {
   const universe = parseUniverse([listed, { ...listed, "公司代號": "3008" }], "TWSE").stocks;

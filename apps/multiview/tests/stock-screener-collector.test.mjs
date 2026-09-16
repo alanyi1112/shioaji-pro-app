@@ -8,6 +8,7 @@ import { handleLocalMaintenance } from "../worker/local-maintenance.ts";
 import { handleStockScreener } from "../worker/stock-screener-route.ts";
 
 const migration = await readFile(new URL("../drizzle/0027_pale_randall_flagg.sql", import.meta.url), "utf8");
+const chipMigration = await readFile(new URL("../drizzle/0032_screener_chip_v5.sql", import.meta.url), "utf8");
 const start = Date.parse("2026-08-31T12:00:00Z");
 const codes = Array.from({ length: 53 }, (_, i) => String(1000 + i));
 const universe = codes.map(code => ({ code, symbol: `${code}.TW`, name: `測試${code}`, market: "TWSE", kind: "ordinary" }));
@@ -24,6 +25,7 @@ function fixtures() {
 function setup() {
   const db = new SqliteD1();
   applyDrizzleSql(db, migration);
+  applyDrizzleSql(db, chipMigration);
   const payloads = fixtures(), calls = [];
   let now = start;
   const options = { clock: () => now, minimumUniverseRows: { TWSE: 1, TPEx: 1 }, fetcher: async url => { calls.push(url); assert.ok(payloads.has(url)); return Response.json(payloads.get(url)); } };
@@ -132,15 +134,17 @@ test("Retry-After 與每日最多三次失敗；翌日休眠恢復可再試，�
 });
 
 test("未收盤／未來日期拒收，混期可累積但不發布，較新稀疏回應不清空舊列", async () => {
-  const { db, payloads, options, advance } = setup();
+  const { db, payloads, calls, options, advance } = setup();
   try {
-    const early = { ...options, clock: () => Date.parse("2026-08-31T07:00:00Z") };
+    const early = { ...options, clock: () => Date.parse("2026-08-31T05:59:00Z") };
     assert.equal((await collectScreenerData(db, "screener-daily", early)).reason, "source_not_closed");
     assert.equal(await count(db, "screener_daily_volume"), 0);
+    assert.equal(calls.includes(SCREENER_SOURCES.TWSE.volume), false);
+    assert.equal(calls.includes(SCREENER_SOURCES.TPEx.volume), false);
     payloads.get(SCREENER_SOURCES.TPEx.volume)[0].Date = "1150828";
     assert.equal((await collectScreenerData(db, "screener-daily", options)).state, "collected");
     assert.equal(await count(db, "screener_snapshots"), 0);
-    advance(6 * 3600000);
+    advance(18 * 3600000);
     payloads.set(SCREENER_SOURCES.TWSE.volume, [payloads.get(SCREENER_SOURCES.TWSE.volume)[0]]);
     await collectScreenerData(db, "screener-daily", options);
     assert.equal(await count(db, "screener_daily_volume"), 54);

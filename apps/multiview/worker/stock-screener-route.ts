@@ -1,11 +1,14 @@
 import {
-  criteriaFingerprint, DEFAULT_CRITERIA, screenStocks, validateCriteria,
+  criteriaFingerprint, DEFAULT_CRITERIA, effectiveCriteria, screenStocks, validateCriteria,
   type Criteria, type ScreenerRow, type Verdict,
 } from "../../../src/lib/stock-screener-domain.ts";
 import type { ScreenerResponse, ScreenerResultRow, ScreenerSort } from "../../../src/lib/stock-screener-api.ts";
 import { turnoverEvidence } from "../../../src/lib/stock-screener-api.ts";
 import { readScreenerSnapshot, type ScreenerDatabase } from "./stock-screener-repository.ts";
+import { readScreenerFreshness } from "./stock-screener-session-readiness.ts";
 import { handleStockScreenerV3 } from "./stock-screener-v3-route.ts";
+import { handleStockScreenerV4 } from "./stock-screener-v4-route.ts";
+import { handleStockScreenerV5 } from "./stock-screener-v5-route.ts";
 
 const prefix = "/api/stock-screener";
 const allowedKeys = new Set(["version", "mode", "volume", "volumeThreshold", "volumeTurnover", "volumeTurnoverMinimumWan",
@@ -16,7 +19,7 @@ export function parseScreenerQuery(params: URLSearchParams) {
     || params.toString().length > 2048) throw new Error("invalid_query");
   for (const key of ["volume", "holder", "volumeTurnover", "holderTurnover"]) if (params.has(key) && !["true", "false"].includes(params.get(key)!)) throw new Error("invalid_query");
   if (params.has("version") && params.get("version") !== "2") throw new Error("invalid_query");
-  const criteria: Criteria = {
+  const rawCriteria: Criteria = {
     mode: (params.get("mode") ?? "all") as Criteria["mode"],
     volume: { enabled: params.get("volume") !== "false", threshold: params.get("volumeThreshold") ?? DEFAULT_CRITERIA.volume.threshold,
       turnover: { enabled: params.get("volumeTurnover") === "true", minimumWan: params.get("volumeTurnoverMinimumWan") ?? DEFAULT_CRITERIA.volume.turnover.minimumWan } },
@@ -25,6 +28,7 @@ export function parseScreenerQuery(params: URLSearchParams) {
       streakWeeks: Number(params.get("holderStreakWeeks") ?? DEFAULT_CRITERIA.holder.streakWeeks),
       turnover: { enabled: params.get("holderTurnover") === "true", minimumWan: params.get("holderTurnoverMinimumWan") ?? DEFAULT_CRITERIA.holder.turnover.minimumWan } },
   };
+  const criteria = effectiveCriteria(rawCriteria);
   const sort = (params.get("sort") ?? "code") as ScreenerSort;
   const direction = params.get("direction") ?? "asc";
   const resultState = (params.get("resultState") ?? "pass") as Verdict;
@@ -54,7 +58,8 @@ function resultRow(row: ScreenerRow, criteria: Criteria): ScreenerResultRow {
   const turnoverNtd = row.currentVolume?.turnoverNtd ?? null;
   return {
     code: row.code, symbol: row.symbol, name: row.name, market: row.market, kind: row.kind, verdict: row.verdict,
-    volume: { current, previous, multiple: volumeSignal && volumeSignal.verdict !== "unknown" && current !== null && previous !== null && BigInt(previous) > 0 ? Number(current) / Number(previous) : null,
+    volume: { current, previous, currentDate: row.currentVolume?.date ?? null, previousDate: row.previousVolume?.date ?? null,
+      multiple: volumeSignal && volumeSignal.verdict !== "unknown" && current !== null && previous !== null && BigInt(previous) > 0 ? Number(current) / Number(previous) : null,
       reason: row.volume?.reason ?? null, turnover: turnoverEvidence(turnoverNtd, row.currentVolume?.date ?? null,
         volumeSignal?.verdict ?? null, row.volume?.turnover?.verdict ?? null, row.volume?.turnover?.reason ?? null) },
     holder: { mode: criteria.holder.mode, current: hc, previous: hp, changePp: holderSignal && holderSignal.verdict !== "unknown" ? changes.at(-1) ?? null : null,
@@ -66,7 +71,7 @@ function resultRow(row: ScreenerRow, criteria: Criteria): ScreenerResultRow {
   };
 }
 const response = (payload: unknown, status = 200) => Response.json(payload, { status, headers: { "cache-control": "no-store" } });
-const pending = (reason: string): ScreenerResponse => ({ version: 2, state: "pending", reason, snapshotId: null, universeRevision: null, formulaVersion: "after-market-v2", criteriaFingerprint: null, expectedSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] }, counts: null, byMarket: null, rows: [], nextCursor: null });
+const pending = (reason: string): ScreenerResponse => ({ version: 2, state: "pending", reason, snapshotId: null, universeRevision: null, formulaVersion: "after-market-v2", criteriaFingerprint: null, expectedSessionDate: null, effectiveSessionDate: null, sessionReadiness: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] }, counts: null, byMarket: null, rows: [], nextCursor: null });
 
 export async function handleStockScreener(request: Request, env: { DB?: ScreenerDatabase; DEPLOYMENT_TARGET?: string }, now = new Date()): Promise<Response | null> {
   const url = new URL(request.url);
@@ -74,6 +79,8 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
   if (env.DEPLOYMENT_TARGET !== "local" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return response({ reason: "local_only" }, 404);
   if (request.method !== "GET") return response({ reason: "method_not_allowed" }, 405);
   if (![`${prefix}/status`, `${prefix}/results`].includes(url.pathname)) return response({ reason: "route_not_allowed" }, 404);
+  if (url.searchParams.get("version") === "5") return handleStockScreenerV5(url, env, now);
+  if (url.searchParams.get("version") === "4") return handleStockScreenerV4(url, env, now);
   if (url.searchParams.get("version") === "3") return handleStockScreenerV3(url, env, now);
   let query: ReturnType<typeof parseScreenerQuery>;
   try {
@@ -87,9 +94,14 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
     if (!snapshot) {
       if (query.cursor) return response({ reason: "snapshot_expired" }, 409);
       const legacy = await readScreenerSnapshot(env.DB);
-      return response(pending(legacy && legacy.metadata.version !== 2 ? "snapshot_version_pending" : "bootstrap_pending"));
+      const freshness = await readScreenerFreshness(env.DB, null);
+      return response({ ...pending(legacy && legacy.metadata.version !== 2 ? "snapshot_version_pending" : "bootstrap_pending"),
+        expectedSessionDate: freshness.expectedSessionDate, effectiveSessionDate: freshness.effectiveSessionDate,
+        sessionReadiness: freshness.readiness });
     }
     if (snapshot.metadata.version !== 2) return query.cursor ? response({ reason: "snapshot_version_expired" }, 409) : response(pending("snapshot_version_pending"));
+    const snapshotEffectiveSessionDate = snapshot.metadata.effectiveSessionDate ?? snapshot.metadata.anchors.daily?.current ?? null;
+    const freshness = await readScreenerFreshness(env.DB, snapshotEffectiveSessionDate);
     const evaluated = screenStocks(snapshot.inputs, snapshot.metadata.anchors, query.criteria);
     const rows = evaluated.rows.filter((row) => row.verdict === query.resultState);
     const metric = (row: ScreenerRow): [bigint, bigint] | null => {
@@ -118,17 +130,22 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
     const noPeriods = (dailyRequired && !snapshot.metadata.anchors.daily)
       || (query.criteria.holder.enabled && !snapshot.metadata.anchors.weekly);
     const hasMissing = Object.values(evaluated.counts.missingByCondition).some((count) => count > 0);
-    const sourcePending = (dailyRequired && snapshot.metadata.expectedSessionDate && snapshot.metadata.anchors.daily && snapshot.metadata.anchors.daily.current < snapshot.metadata.expectedSessionDate)
+    const expectedSessionDate = freshness.readiness ? freshness.expectedSessionDate
+      : snapshot.metadata.expectedSessionDate ?? freshness.expectedSessionDate;
+    const dailySourcePending = dailyRequired && (freshness.pending
+      || !!expectedSessionDate && !!snapshotEffectiveSessionDate && snapshotEffectiveSessionDate < expectedSessionDate);
+    const sourcePending = dailySourcePending
       || (query.criteria.holder.enabled && snapshot.metadata.expectedWeekDate && snapshot.metadata.anchors.weekly && snapshot.metadata.anchors.weekly.current < snapshot.metadata.expectedWeekDate);
-    const state = stale ? "stale" : noPeriods || sourcePending ? "pending" : hasMissing ? "partial" : "ready";
+    const state = dailySourcePending ? "pending" : stale ? "stale" : noPeriods || sourcePending ? "pending" : hasMissing ? "partial" : "ready";
     const payload: ScreenerResponse = {
-      version: 2, state, reason: stale ? "snapshot_stale" : noPeriods ? "period_pending" : sourcePending ? "source_not_published" : "none",
+      version: 2, state, reason: dailySourcePending ? freshness.pending ? freshness.reason : "source_not_published" : stale ? "snapshot_stale" : noPeriods ? "period_pending" : sourcePending ? "source_not_published" : "none",
       snapshotId: snapshot.id, createdAt: snapshot.createdAt, anchors: snapshot.metadata.anchors,
       universeRevision: snapshot.metadata.universeRevision, formulaVersion: "after-market-v2",
-      criteriaFingerprint: criteriaFingerprint(query.criteria), expectedSessionDate: snapshot.metadata.expectedSessionDate ?? null,
+      criteriaFingerprint: criteriaFingerprint(query.criteria), expectedSessionDate,
+      effectiveSessionDate: snapshotEffectiveSessionDate, sessionReadiness: freshness.readiness,
       counts: evaluated.counts, byMarket: evaluated.byMarket,
-      rows: url.pathname.endsWith("/status") ? [] : rows.slice(offset, next).map(row => resultRow(row, query.criteria)),
-      nextCursor: !url.pathname.endsWith("/status") && next < rows.length ? btoa(JSON.stringify({ id: snapshot.id, offset: next, fingerprint: query.fingerprint })) : null,
+      rows: url.pathname.endsWith("/status") || stale || sourcePending ? [] : rows.slice(offset, next).map(row => resultRow(row, query.criteria)),
+      nextCursor: !url.pathname.endsWith("/status") && !stale && !sourcePending && next < rows.length ? btoa(JSON.stringify({ id: snapshot.id, offset: next, fingerprint: query.fingerprint })) : null,
     };
     return response(payload);
   } catch (error) {

@@ -1,5 +1,6 @@
 /** 本機底稿收集；不發布結果、不寫個人清單／TDCC 長歷史佇列、不呼叫券商。 */
 import { isIsoDate, validateTdcc, type HolderPoint, type Provenance, type UniverseStock } from "../../../src/lib/stock-screener-domain.ts";
+import { SCREENER_POST_CLOSE_PROBE_MINUTES } from "../../../src/lib/stock-screener-session-readiness.ts";
 import type { ScreenerDatabase, ScreenerStatement } from "./stock-screener-repository.ts";
 import { fetchScreenerSource, mergeUniverses, parseDailyVolumes, parseHolderBatch, parseUniverse, SCREENER_SOURCES, ScreenerSourceError } from "./stock-screener-sources.ts";
 
@@ -69,6 +70,11 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
   const clock = options.clock ?? Date.now, fetcher = options.fetcher ?? fetch;
   const started = clock(), day = taipeiDate(started), owner = crypto.randomUUID();
   const deadline = started + MAX_RUN_MS;
+  if (scope === "screener-daily") {
+    const taipei = new Date(started + 8 * 3600000);
+    const minutes = taipei.getUTCHours() * 60 + taipei.getUTCMinutes();
+    if (minutes < SCREENER_POST_CLOSE_PROBE_MINUTES) return { state: "pending", reason: "source_not_closed" };
+  }
   // A fixed global lock serializes both scopes, so total external concurrency is at most two.
   try {
     await db.prepare("INSERT INTO screener_runs (id,scope,status,checkpoint,lease_until,updated_at) VALUES (?, 'screener-collector', 'running', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status='running',checkpoint=excluded.checkpoint,lease_until=excluded.lease_until,updated_at=excluded.updated_at WHERE screener_runs.lease_until IS NULL OR screener_runs.lease_until <= ?")
@@ -110,8 +116,11 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
     fetchedAt: result.fetchedAt, payloadHash: result.payloadHash, normalizationVersion: NORMALIZATION });
   const checkDate = (date: string, daily = false) => {
     if (date > day) throw new Error("source_future_date");
-    // Conservative ingestion gate, not a claim about publication SLA or trading calendars.
-    if (daily && date === day && new Date(started + 8 * 3600000).getUTCHours() < 18) throw new Error("source_not_closed");
+    if (daily && date === day) {
+      const taipei = new Date(started + 8 * 3600000);
+      const minutes = taipei.getUTCHours() * 60 + taipei.getUTCMinutes();
+      if (minutes < SCREENER_POST_CLOSE_PROBE_MINUTES) throw new Error("source_not_closed");
+    }
   };
   const holderStatement = (symbol: string, payload: string) => db.prepare(`INSERT INTO screener_tdcc_weekly (symbol,data_date,payload,validation) SELECT ?,json_extract(?,'$.date'),?,'full-17' WHERE ${guard} ON CONFLICT(data_date,symbol) DO UPDATE SET payload=excluded.payload,validation=excluded.validation WHERE json_extract(excluded.payload,'$.provenance.fetchedAt') >= json_extract(screener_tdcc_weekly.payload,'$.provenance.fetchedAt')`)
     .bind(symbol, payload, payload, ...guardArgs());
@@ -142,7 +151,10 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
     // Classification is strict and versioned; publication additionally needs period evidence.
     await writeRows("catalog", revision, universe.date, universe.stocks.map(stock => [stock.symbol, { stock, review: "verified", revision, sourceDate: universe.dates[stock.market],
       provenance: provenance(stock.market, urls[stock.market === "TWSE" ? 0 : 1], catalogs[stock.market === "TWSE" ? 0 : 1]) }]), 0,
-    (symbol, payload) => db.prepare(`INSERT INTO screener_universe (revision,symbol,market,data_date,payload) SELECT ?,?,json_extract(?,'$.stock.market'),?,? WHERE ${guard} ON CONFLICT(revision,symbol) DO NOTHING`).bind(revision, symbol, payload, universe.date, payload, ...guardArgs()));
+    (symbol, payload) => db.prepare(`INSERT INTO screener_universe (revision,symbol,market,data_date,payload,issued_common_shares,issued_shares_source_date,issued_shares_source_url,issued_shares_payload_hash,issued_shares_normalization_version)
+      SELECT ?,?,json_extract(?,'$.stock.market'),?,?,json_extract(?,'$.stock.issuedCommonShares'),json_extract(?,'$.stock.issuedSharesSourceDate'),json_extract(?,'$.stock.issuedSharesSourceUrl'),json_extract(?,'$.provenance.payloadHash'),json_extract(?,'$.stock.issuedSharesNormalizationVersion') WHERE ${guard}
+      ON CONFLICT(revision,symbol) DO NOTHING`).bind(revision, symbol, payload, universe.date, payload, payload, payload, payload,
+        payload, payload, ...guardArgs()));
 
     if (scope === "screener-daily") {
       for (const market of ["TWSE", "TPEx"] as const) {

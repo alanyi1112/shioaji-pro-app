@@ -1,5 +1,5 @@
 /** Only the trusted local updater supplies verified official periods. GET never calls this. */
-import { isIsoDate, selectPeriodPair, type HolderPoint, type ScreenerInput, type UniverseStock, type VolumePoint } from "../../../src/lib/stock-screener-domain.ts";
+import { isIsoDate, resolveEffectiveSessionPair, selectPeriodPair, type HolderPoint, type ScreenerInput, type UniverseStock, type VolumePoint } from "../../../src/lib/stock-screener-domain.ts";
 import { publishScreenerSnapshot, readScreenerSnapshot, type ScreenerDatabase } from "./stock-screener-repository.ts";
 
 export interface ScreenerPeriods {
@@ -37,10 +37,16 @@ export async function publishCollectedScreener(db: ScreenerDatabase, periods: Sc
     const item = JSON.parse(row.checkpoint);
     if (item.complete && published[item.source] && isIsoDate(item.date)) published[item.source].push(item.date);
   }
+  const previousV2 = await readScreenerSnapshot(db, undefined, 2);
+  const nextWeekly = selectPeriodPair(periods.weeks, [published.TDCC], periods.through);
+  const weekly = nextWeekly ?? previousV2?.metadata.anchors.weekly ?? null;
+  const weeklyPeriods = nextWeekly
+    ? periods.weeks.filter(date => date <= periods.through).slice(-6)
+    : previousV2?.metadata.anchors.weeklyPeriods ?? periods.weeks.filter(date => date <= periods.through).slice(-6);
   const anchors = {
-    daily: selectPeriodPair(periods.sessions, [published.TWSE, published.TPEx], periods.through),
-    weekly: selectPeriodPair(periods.weeks, [published.TDCC], periods.through),
-    weeklyPeriods: periods.weeks.filter(date => date <= periods.through).slice(-6),
+    daily: resolveEffectiveSessionPair(periods.sessions, { TWSE: published.TWSE, TPEx: published.TPEx }, periods.through),
+    weekly,
+    weeklyPeriods,
   };
   if (!anchors.daily && !anchors.weekly) return { state: "pending", reason: "period_pending" };
   const volumes = new Map<string, VolumePoint>(), holders = new Map<string, HolderPoint>();
@@ -83,7 +89,10 @@ export async function publishCollectedScreener(db: ScreenerDatabase, periods: Sc
   const snapshotId = await publishScreenerSnapshot(db, { version: 2, schemaVersion: 2, formulaVersion: "after-market-v2", anchors, total: inputs.length,
     sourceReview: "verified", universeRevision: receipt.hash, validThrough: periods.validThrough,
     periodEvidence: { fetchedAt: periods.fetchedAt, sourceHashes: periods.sourceHashes },
-    expectedSessionDate: periods.sessions.filter(date => date <= periods.through).at(-1),
+    // This is the only session that is safe to use across both markets. A newer
+    // one-sided source receipt remains pending and is never mixed into a snapshot.
+    expectedSessionDate: anchors.daily?.current,
+    effectiveSessionDate: anchors.daily?.current,
     expectedWeekDate: periods.weeks.filter(date => date <= periods.through).at(-1),
     turnoverCoverage: { valid: turnoverValid, missing: inputs.length - turnoverValid },
     holderHistoryCoverage: { requiredPeriods: anchors.weeklyPeriods, complete: historyComplete, pending: inputs.length - historyComplete },

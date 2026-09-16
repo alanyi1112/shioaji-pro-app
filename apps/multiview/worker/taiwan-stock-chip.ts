@@ -623,7 +623,7 @@ export function mergeChipDailyRow(existing: ChipDailyRow | undefined, patch: Chi
     const countKnown = (value: unknown): number => {
       if (value === null || value === undefined) return 0;
       if (typeof value !== "object") return 1;
-      return Object.values(value as UnknownRecord).reduce((sum, item) => sum + countKnown(item), 0);
+      return Object.values(value as UnknownRecord).reduce<number>((sum, item) => sum + countKnown(item), 0);
     };
     if (countKnown(next) < countKnown(before)) return false;
     const beforeTime = Date.parse(existing.provenance[dataset]?.fetchedAt || "");

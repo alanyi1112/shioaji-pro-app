@@ -2140,7 +2140,7 @@ service_multiview_screener_pipeline() {
     fi
     screener_database="${screener_databases[1]}"
     [[ -f "${screener_database}" ]] || return 0
-    "${NODE_BIN}" "${REPO_DIR}/scripts/stock-screener-update.mjs" \
+    "${NODE_BIN}" --use-system-ca "${REPO_DIR}/scripts/stock-screener-update.mjs" \
         --database="${screener_database}" --scheduled \
         || print -u2 '選股資料更新暫未就緒；既有維護工作不受影響'
 }

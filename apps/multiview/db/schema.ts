@@ -6,6 +6,11 @@ export const screenerUniverse = sqliteTable("screener_universe", {
   revision: text("revision").notNull(), symbol: text("symbol").notNull(),
   market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
   dataDate: text("data_date").notNull(), payload: text("payload").notNull(),
+  issuedCommonShares: text("issued_common_shares"),
+  issuedSharesSourceDate: text("issued_shares_source_date"),
+  issuedSharesSourceUrl: text("issued_shares_source_url"),
+  issuedSharesPayloadHash: text("issued_shares_payload_hash"),
+  issuedSharesNormalizationVersion: text("issued_shares_normalization_version"),
 }, (table) => [primaryKey({ columns: [table.revision, table.symbol] })]);
 
 export const screenerDailyVolume = sqliteTable("screener_daily_volume", {
@@ -18,6 +23,8 @@ export const screenerDailyOhlcv = sqliteTable("screener_daily_ohlcv", {
   market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
   open: text("open").notNull(), high: text("high").notNull(),
   low: text("low").notNull(), close: text("close").notNull(),
+  volumeShares: text("volume_shares"), volumeUnit: text("volume_unit", { enum: ["shares"] }),
+  volumeField: text("volume_field"), volumeMappingVersion: text("volume_mapping_version"),
   currency: text("currency", { enum: ["TWD"] }).notNull(),
   priceBasis: text("price_basis").notNull(), mappingVersion: text("mapping_version").notNull(),
   sourceUrl: text("source_url").notNull(), payloadHash: text("payload_hash").notNull(),
@@ -26,12 +33,66 @@ export const screenerDailyOhlcv = sqliteTable("screener_daily_ohlcv", {
   primaryKey({ columns: [table.dataDate, table.symbol] }),
   index("screener_daily_ohlcv_market_date_idx").on(table.market, table.dataDate),
   index("screener_daily_ohlcv_symbol_date_idx").on(table.symbol, table.dataDate),
+  index("screener_daily_ohlcv_v4_coverage_idx").on(table.validation, table.market, table.dataDate),
 ]);
 
 export const screenerTdccWeekly = sqliteTable("screener_tdcc_weekly", {
   symbol: text("symbol").notNull(), dataDate: text("data_date").notNull(),
   payload: text("payload").notNull(), validation: text("validation").notNull(),
 }, (table) => [primaryKey({ columns: [table.dataDate, table.symbol] })]);
+
+export const screenerChipRuns = sqliteTable("screener_chip_runs", {
+  id: text("id").primaryKey(), targetSessionDate: text("target_session_date").notNull(),
+  universeRevision: text("universe_revision").notNull(), status: text("status").notNull(),
+  target: integer("target").notNull().default(0), processed: integer("processed").notNull().default(0),
+  failed: integer("failed").notNull().default(0), overdue: integer("overdue").notNull().default(0),
+  checkpoint: text("checkpoint").notNull(), leaseOwner: text("lease_owner"), leaseUntil: text("lease_until"),
+  lastErrorCode: text("last_error_code"), startedAt: text("started_at").notNull(),
+  completedAt: text("completed_at"), updatedAt: text("updated_at").notNull(),
+}, (table) => [index("screener_chip_runs_status_idx").on(table.status, table.targetSessionDate)]);
+
+export const screenerChipReceipts = sqliteTable("screener_chip_receipts", {
+  id: text("id").primaryKey(), runId: text("run_id").notNull().references(() => screenerChipRuns.id, { onDelete: "cascade" }),
+  market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
+  dataset: text("dataset", { enum: ["institutional-flow", "margin-short"] }).notNull(),
+  requestedDate: text("requested_date").notNull(), sourceDate: text("source_date"),
+  sourceUrl: text("source_url").notNull(), payloadHash: text("payload_hash").notNull(),
+  normalizationVersion: text("normalization_version").notNull(), status: text("status").notNull(),
+  rowCount: integer("row_count").notNull().default(0), universeTarget: integer("universe_target").notNull().default(0),
+  missingCount: integer("missing_count").notNull().default(0), invalidCount: integer("invalid_count").notNull().default(0),
+  reasonCode: text("reason_code"), fetchedAt: text("fetched_at").notNull(), verifiedAt: text("verified_at"),
+}, (table) => [
+  uniqueIndex("screener_chip_receipts_dataset_date_idx").on(table.market, table.dataset, table.requestedDate, table.payloadHash),
+  index("screener_chip_receipts_status_idx").on(table.status, table.requestedDate, table.market),
+]);
+
+export const screenerChipDaily = sqliteTable("screener_chip_daily", {
+  symbol: text("symbol").notNull(), sessionDate: text("session_date").notNull(),
+  market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
+  investmentTrustBuyShares: text("investment_trust_buy_shares"),
+  investmentTrustSellShares: text("investment_trust_sell_shares"),
+  investmentTrustNetShares: text("investment_trust_net_shares"),
+  marginYesterdayBalanceLots: text("margin_yesterday_balance_lots"),
+  marginTodayBalanceLots: text("margin_today_balance_lots"),
+  marginBalanceChangeLots: text("margin_balance_change_lots"),
+  shortYesterdayBalanceLots: text("short_yesterday_balance_lots"),
+  shortTodayBalanceLots: text("short_today_balance_lots"),
+  shortBalanceChangeLots: text("short_balance_change_lots"),
+  institutionalReceiptId: text("institutional_receipt_id").references(() => screenerChipReceipts.id),
+  marginReceiptId: text("margin_receipt_id").references(() => screenerChipReceipts.id),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.sessionDate, table.symbol] }),
+  index("screener_chip_daily_market_date_idx").on(table.market, table.sessionDate),
+  index("screener_chip_daily_symbol_date_idx").on(table.symbol, table.sessionDate),
+]);
+
+export const screenerChipPublicationHead = sqliteTable("screener_chip_publication_head", {
+  name: text("name").primaryKey(), snapshotId: text("snapshot_id").notNull(),
+  effectiveSessionDate: text("effective_session_date").notNull(), universeRevision: text("universe_revision").notNull(),
+  dailyThrough: text("daily_through").notNull(), weeklyThrough: text("weekly_through"),
+  receiptsHash: text("receipts_hash").notNull(), status: text("status").notNull(), updatedAt: text("updated_at").notNull(),
+});
 
 export const screenerRuns = sqliteTable("screener_runs", {
   id: text("id").primaryKey(), scope: text("scope").notNull(),

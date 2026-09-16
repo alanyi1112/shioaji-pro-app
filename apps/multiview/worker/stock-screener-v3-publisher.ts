@@ -1,4 +1,4 @@
-import { DEFAULT_CRITERIA, screenStocks } from "../../../src/lib/stock-screener-domain.ts";
+import { DEFAULT_CRITERIA, hasAlignedSessionEvidence, screenStocks } from "../../../src/lib/stock-screener-domain.ts";
 import {
   evaluateBollReversal, evaluateChanFractal, evaluateRawFractal,
   SCREENER_V3_FORMULA_VERSION, technicalEvidenceHash,
@@ -51,16 +51,27 @@ export async function publishPreparedScreenerV3(db: ScreenerDatabase, now = new 
   if (progressRow.status !== "complete" || checkpoint.version !== 3 || checkpoint.remaining !== 0
     || checkpoint.failed !== 0 || checkpoint.overdue !== 0 || !Array.isArray(sessions) || sessions.length !== 60
     || checkpoint.universeRevision !== base.metadata.universeRevision) return { state: "pending", reason: "ohlcv_bootstrap_pending", progress: checkpoint } as const;
+  const effectiveSessionDate = base.metadata.anchors.daily?.current ?? null;
+  if (!effectiveSessionDate) return { state: "pending", reason: "daily_period_pending", progress: checkpoint } as const;
+  if (!hasAlignedSessionEvidence({ expectedSessionDate: base.metadata.expectedSessionDate,
+    daily: base.metadata.anchors.daily, technicalThrough: sessions.at(-1), effectiveSessionDate })) {
+    return { state: "pending", reason: "mixed_session_dates", progress: checkpoint } as const;
+  }
   const receiptRows = (await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE scope='screener-ohlcv-period'").all<{ status: string; checkpoint: string }>()).results ?? [];
   const receipts = parseReceipts(receiptRows);
-  const receiptPlan = planOhlcvBootstrap(base.inputs, sessions, receipts);
-  if (receiptPlan.remaining !== 0 || receiptPlan.failed !== 0 || receiptPlan.processed !== receiptPlan.target) throw new Error("incomplete_ohlcv_receipts");
+  const rawRows = await readOhlcvWindow(db, sessions[0]!, sessions.at(-1)!);
+  const coverage = new Map<string, Set<string>>();
+  const addCoverage = (key: string, symbol: string) => { const set = coverage.get(key) ?? new Set<string>(); set.add(symbol); coverage.set(key, set); };
+  for (const row of rawRows) addCoverage(`${row.market}|${row.data_date}`, row.symbol);
+  for (const receipt of receipts) for (const symbol of [...(receipt.invalidSymbols ?? []), ...(receipt.missingSymbols ?? [])]) addCoverage(`${receipt.market}|${receipt.sessionDate}`, symbol);
+  const receiptPlan = planOhlcvBootstrap(base.inputs, sessions, receipts, coverage);
+  if (receiptPlan.remaining !== 0 || receiptPlan.failed !== 0 || receiptPlan.processed !== receiptPlan.target)
+    return { state: "pending", reason: "universe_coverage_pending", progress: checkpoint } as const;
   const receiptsHash = await technicalEvidenceHash(receipts.filter((receipt) => sessions.includes(receipt.sessionDate))
     .sort((a, b) => `${a.market}|${a.sessionDate}`.localeCompare(`${b.market}|${b.sessionDate}`)));
   const previous = await readScreenerV3Snapshot(db);
   if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) return { state: "unchanged", snapshotId: previous.id } as const;
 
-  const rawRows = await readOhlcvWindow(db, sessions[0]!, sessions.at(-1)!);
   const allowedSymbols = new Set(base.inputs.map((row) => row.symbol));
   const bySymbol = new Map<string, CanonicalOhlc[]>();
   for (const row of rawRows) {
@@ -91,7 +102,18 @@ export async function publishPreparedScreenerV3(db: ScreenerDatabase, now = new 
   const metadata: ScreenerV3Metadata = { version: 3, schemaVersion: 3, formulaVersion: SCREENER_V3_FORMULA_VERSION,
     anchors: base.metadata.anchors, technicalAnchors: { sessions, through: sessions.at(-1)! },
     baseSnapshotId: base.id, receiptsHash, universeRevision: base.metadata.universeRevision,
-    total: inputs.length, validThrough: base.metadata.validThrough, sourceReview: "verified", progress, counts };
+    total: inputs.length, validThrough: base.metadata.validThrough, sourceReview: "verified", progress, counts,
+    expectedSessionDate: effectiveSessionDate, effectiveSessionDate };
+  // Re-read the mutable publication heads immediately before CAS. A concurrent
+  // v2/day advance must not publish the staged evidence under an older base day.
+  const latestBase = await readScreenerSnapshot(db, undefined, 2);
+  const latestProgress = await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE id='screener-ohlcv-progress'").first<{ status: string; checkpoint: string }>();
+  const latestCheckpoint = latestProgress ? JSON.parse(latestProgress.checkpoint) : null;
+  if (latestBase?.id !== base.id || latestProgress?.status !== "complete"
+    || latestCheckpoint?.through !== effectiveSessionDate
+    || !hasAlignedSessionEvidence({ expectedSessionDate: latestBase?.metadata.expectedSessionDate,
+      daily: latestBase?.metadata.anchors.daily, technicalThrough: latestCheckpoint?.through,
+      effectiveSessionDate })) return { state: "pending", reason: "mixed_session_dates" } as const;
   const snapshotId = await publishScreenerV3Snapshot(db, metadata, inputs, now);
   return { state: "published", snapshotId, metadata } as const;
 }

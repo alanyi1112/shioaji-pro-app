@@ -18,7 +18,7 @@ const ready: ScreenerResponseV3 = {
     byMarket: null, nextCursor: null,
     rows: [{
         code: '3008', symbol: '3008.TW', market: 'TWSE', kind: 'ordinary', name: '測試商品', verdict: 'pass', sources: ['測試 fixture'],
-        volume: { current: '300000', previous: '100000', multiple: 3, reason: 'none', turnover: { ntd: '12345600', wan: '1234.56', date: '2026-08-28', signalVerdict: 'pass', verdict: 'pass', reason: 'none' } },
+        volume: { current: '300000', previous: '100000', currentDate: '2026-08-28', previousDate: '2026-08-27', multiple: 3, reason: 'none', turnover: { ntd: '12345600', wan: '1234.56', date: '2026-08-28', signalVerdict: 'pass', verdict: 'pass', reason: 'none' } },
         holder: { mode: 'weekly-increase', current: '60.2', previous: '60', changePp: 0.2, reason: 'none', streakWeeks: 0, changesPp: [0.2],
             series: [{ date: '2026-08-21', ratio: '60' }, { date: '2026-08-28', ratio: '60.2' }],
             turnover: { ntd: '12345600', wan: '1234.56', date: '2026-08-28', signalVerdict: 'pass', verdict: 'pass', reason: 'none' } },

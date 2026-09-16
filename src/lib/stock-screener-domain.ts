@@ -35,6 +35,12 @@ export interface UniverseStock {
     kind: 'ordinary';
     listingDate?: string;
     classificationVersion?: string;
+    /** Official ordinary shares effective for this immutable universe revision. */
+    issuedCommonShares?: string | null;
+    issuedSharesSourceDate?: string | null;
+    issuedSharesSourceUrl?: string | null;
+    issuedSharesPayloadHash?: string | null;
+    issuedSharesNormalizationVersion?: string | null;
 }
 export interface VolumePoint {
     date: string;
@@ -155,11 +161,31 @@ export function validateCriteria(criteria: Criteria): boolean {
     });
 }
 
+/**
+ * 將保存偏好或 URL 草稿轉成真正會參與判定的條件。
+ * 成交值是主要條件的子條件；父條件關閉時，舊偏好留下的 true 不得污染
+ * fingerprint、資料需求、verdict 或結果呈現。
+ */
+export function effectiveCriteria(criteria: Criteria): Criteria {
+    return {
+        ...criteria,
+        volume: {
+            ...criteria.volume,
+            turnover: { ...criteria.volume.turnover, enabled: criteria.volume.enabled && criteria.volume.turnover.enabled },
+        },
+        holder: {
+            ...criteria.holder,
+            turnover: { ...criteria.holder.turnover, enabled: criteria.holder.enabled && criteria.holder.turnover.enabled },
+        },
+    };
+}
+
 export function criteriaFingerprint(criteria: Criteria): string {
     if (!validateCriteria(criteria)) throw new Error('invalid_criteria');
-    return [SCREENER_VERSION, criteria.mode,
-        criteria.volume.enabled ? `v:${hundredths(criteria.volume.threshold, 1000)}:${criteria.volume.turnover.enabled ? turnoverWanToNtd(criteria.volume.turnover.minimumWan) : 'toff'}` : 'v:off',
-        criteria.holder.enabled ? `h:${criteria.holder.mode}:${criteria.holder.streakWeeks}:${hundredths(criteria.holder.threshold)}:${criteria.holder.turnover.enabled ? turnoverWanToNtd(criteria.holder.turnover.minimumWan) : 'toff'}` : 'h:off',
+    const applied = effectiveCriteria(criteria);
+    return [SCREENER_VERSION, applied.mode,
+        applied.volume.enabled ? `v:${hundredths(applied.volume.threshold, 1000)}:${applied.volume.turnover.enabled ? turnoverWanToNtd(applied.volume.turnover.minimumWan) : 'toff'}` : 'v:off',
+        applied.holder.enabled ? `h:${applied.holder.mode}:${applied.holder.streakWeeks}:${hundredths(applied.holder.threshold)}:${applied.holder.turnover.enabled ? turnoverWanToNtd(applied.holder.turnover.minimumWan) : 'toff'}` : 'h:off',
     ].join('|');
 }
 
@@ -192,6 +218,24 @@ export function selectPeriodPair(
     const previous = periods[periods.indexOf(current) - 1];
     if (!previous || !publishedBySource.every((days) => days.includes(previous))) return null;
     return { current, previous };
+}
+
+/** Resolve the newest official session that both markets have fully published. */
+export function resolveEffectiveSessionPair(
+    officialSessions: readonly string[], publications: Readonly<Record<ScreenerMarket, readonly string[]>>, through: string,
+): PeriodPair | null {
+    return selectPeriodPair(officialSessions, [publications.TWSE, publications.TPEx], through);
+}
+
+/** Fail-closed invariant used before staging and immediately before CAS publication. */
+export function hasAlignedSessionEvidence(input: {
+    expectedSessionDate?: string | null;
+    daily?: PeriodPair | null;
+    technicalThrough?: string | null;
+    effectiveSessionDate?: string | null;
+}): boolean {
+    const dates = [input.expectedSessionDate, input.daily?.current, input.technicalThrough, input.effectiveSessionDate];
+    return dates.every(isIsoDate) && new Set(dates).size === 1;
 }
 
 export function evaluateVolume(
@@ -332,6 +376,7 @@ export function combineVerdicts(values: Verdict[], mode: Criteria['mode']): Verd
 
 export function screenStocks(inputs: ScreenerInput[], anchors: ScreenerAnchors, criteria: Criteria) {
     if (!validateCriteria(criteria)) throw new Error('invalid_criteria');
+    criteria = effectiveCriteria(criteria);
     if (inputs.some((stock) => !validateStock(stock)) || new Set(inputs.map((row) => row.code)).size !== inputs.length) throw new Error('invalid_universe');
     const emptyCounts = (): Counts => ({ total: 0, evaluated: 0, matched: 0, notMatched: 0, unknown: 0,
         missingByCondition: { 'volume-multiple': 0, 'large-holder-weekly-pp': 0 } });

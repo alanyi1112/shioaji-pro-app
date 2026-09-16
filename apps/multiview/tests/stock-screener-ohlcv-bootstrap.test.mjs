@@ -92,6 +92,30 @@ test('planner 與 progress 的 target/processed/remaining/failed/overdue/cursor 
   assert.ok(progress.cursor);
 });
 
+test('universe 改名／移除不重跑；新增商品只補上市後缺 row 的市場日期', () => {
+  const base = universe.filter((stock) => stock.code !== '7855');
+  const oldTargets = buildOhlcvTargets(base, sessions);
+  const receipts = oldTargets.map((target) => ({ ...target, status: 'collected', complete: true }));
+  const coverage = new Map(oldTargets.map((target) => [target.key, new Set(target.symbols)]));
+  const renamed = base.map((stock) => ({ ...stock, name: `新名${stock.name}` }));
+  assert.equal(planOhlcvBootstrap(renamed, sessions, receipts, coverage).remaining, 0);
+  const expanded = planOhlcvBootstrap(universe, sessions, receipts, coverage);
+  assert.deepEqual(expanded.work.map((target) => target.key).sort(),
+    [`TWSE|${sessions.at(-2)}`, `TWSE|${sessions.at(-1)}`].sort());
+});
+
+test('60 日視窗推進一日只新增最新 D 的兩市場 target', () => {
+  const oldSessions = sessions;
+  const next = new Date(Date.parse(`${sessions.at(-1)}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const shifted = [...sessions.slice(1), next];
+  const oldTargets = buildOhlcvTargets(universe, oldSessions);
+  const receipts = oldTargets.map((target) => ({ ...target, status: 'collected', complete: true }));
+  const coverage = new Map(oldTargets.map((target) => [target.key, new Set(target.symbols)]));
+  const plan = planOhlcvBootstrap(universe, shifted, receipts, coverage);
+  assert.deepEqual(plan.work.map((target) => target.key).sort(), [`TPEx|${next}`, `TWSE|${next}`]);
+  assert.equal(plan.processed, 118);
+});
+
 test('bounded operator 依 checkpoint 續跑，完整 market+session 批次可完成 120 targets', async () => {
   const db = setup(); let calls = 0;
   const fetcher = async (...args) => { calls++; return officialFetcher()(...args); };

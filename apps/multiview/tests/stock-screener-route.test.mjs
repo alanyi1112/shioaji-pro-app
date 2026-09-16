@@ -66,6 +66,7 @@ test("105 筆穩定分頁、快照條件綁定、未知原因與停用條件獨�
     assert.equal(first.universeRevision, 'fixture');
     assert.equal(first.formulaVersion, 'after-market-v2');
     assert.equal(typeof first.criteriaFingerprint, 'string');
+    assert.partialDeepStrictEqual(first.rows[0].volume, { previousDate: pair.previous, currentDate: pair.current });
     const second = await (await call(db, `${url}&cursor=${encodeURIComponent(first.nextCursor)}`)).json();
     const third = await (await call(db, `${url}&cursor=${encodeURIComponent(second.nextCursor)}`)).json();
     const codes = [...first.rows, ...second.rows, ...third.rows].map((row) => row.code);
@@ -77,6 +78,18 @@ test("105 筆穩定分頁、快照條件綁定、未知原因與停用條件獨�
     assert.equal(unknown.rows[0].holder.reason, "history_pending");
     await db.prepare("DELETE FROM screener_snapshots WHERE id = ?").bind(first.snapshotId).run();
     assert.equal((await call(db, `${url}&cursor=${encodeURIComponent(first.nextCursor)}`)).status, 409);
+  } finally { db.close(); }
+});
+
+test('父條件關閉時舊 holderTurnover=true 正規化為 inactive，fingerprint 與結果一致', async () => {
+  const db = await database();
+  try {
+    await publishScreenerSnapshot(db, metadata, inputs);
+    const clean = await (await call(db, `${url}&holderTurnover=false`)).json();
+    const legacy = await (await call(db, `${url}&holderTurnover=true&holderTurnoverMinimumWan=9999`)).json();
+    assert.equal(legacy.criteriaFingerprint, clean.criteriaFingerprint);
+    assert.deepEqual(legacy.rows, clean.rows);
+    assert.ok(legacy.rows.every((row) => row.holder.turnover.verdict === null));
   } finally { db.close(); }
 });
 test("schema pending、離線、hosted 與未知 API schema fail closed", async () => {
@@ -134,6 +147,28 @@ test('v2 status 接受 gateway 的唯一 version 參數，其他篩選仍 fail c
     assert.equal((await handleStockScreener(new Request('http://127.0.0.1:5174/api/stock-screener/status?version=2&holder=false'),{DB:db,DEPLOYMENT_TARGET:'local'})).status,400);
     assert.equal((await handleStockScreener(new Request('http://127.0.0.1:5174/api/stock-screener/status?version=2&version=2'),{DB:db,DEPLOYMENT_TARGET:'local'})).status,400);
   }finally{db.close();}
+});
+
+test('readiness 的 expected 晚於 immutable effective 時回 pending、逐市場狀態且不提供舊 rows',async()=>{
+  const db=await database();
+  try {
+    await publishScreenerSnapshot(db,{...metadata,expectedSessionDate:pair.current,effectiveSessionDate:pair.current},inputs);
+    const readiness={version:1,expectedSessionDate:'2026-08-31',effectiveSessionDate:pair.current,phase:'awaiting-publication',attempts:1,
+      nextAttemptAt:'2026-08-31T06:20:00.000Z',updatedAt:'2026-08-31T06:00:00.000Z',markets:{
+        TWSE:{status:'complete',reportDate:'2026-08-31',hash:'a'.repeat(64),total:1000,invalid:0,reason:null,checkedAt:'2026-08-31T06:00:00.000Z'},
+        TPEx:{status:'pending',reportDate:'2026-08-28',hash:null,total:null,invalid:null,reason:'source_not_published',checkedAt:'2026-08-31T06:00:00.000Z'},
+      }};
+    await db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES('screener-session-readiness','screener-session-readiness','awaiting-publication',?,?)")
+      .bind(JSON.stringify(readiness),readiness.updatedAt).run();
+    const result=await (await call(db)).json();
+    assert.equal(result.state,'pending');
+    assert.equal(result.reason,'awaiting_tpex');
+    assert.equal(result.expectedSessionDate,'2026-08-31');
+    assert.equal(result.effectiveSessionDate,'2026-08-28');
+    assert.equal(result.sessionReadiness.markets.TPEx.status,'pending');
+    assert.deepEqual(result.rows,[]);
+    assert.equal(result.nextCursor,null);
+  } finally {db.close();}
 });
 
 test("精確分數排序不使用浮點顯示值；未知永遠置底且代碼穩定排序", async () => {
@@ -195,12 +230,10 @@ test('官方下一交易日可發布已解釋缺期，不混用舊日期；同�
     assert.equal((await readScreenerSnapshot(db)).inputs[0].currentVolume,null);
   } finally {db.close();}
 });
-test('預期日已完成但來源只到較早共同日，不可將保留快照標為最新',async()=>{
+test('預期日與共同 D 不一致時 repository 拒絕 mixed-session snapshot',async()=>{
   const db=await database();
   try {
-    await publishScreenerSnapshot(db,{...metadata,expectedSessionDate:'2026-08-31'},inputs);
-    const result=await (await call(db)).json();
-    assert.equal(result.state,'pending');assert.equal(result.reason,'source_not_published');
-    assert.equal(result.anchors.daily.current,'2026-08-28');
+    await assert.rejects(publishScreenerSnapshot(db,{...metadata,expectedSessionDate:'2026-08-31'},inputs),/mixed_session_dates/);
+    assert.equal((await db.prepare("SELECT count(*) AS n FROM screener_snapshots").first()).n,0);
   }finally{db.close();}
 });
