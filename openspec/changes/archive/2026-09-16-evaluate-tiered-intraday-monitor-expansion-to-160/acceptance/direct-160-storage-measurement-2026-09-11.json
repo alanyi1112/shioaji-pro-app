@@ -1,0 +1,100 @@
+{
+  "assessedAt": "2026-09-11T06:12:48.866Z",
+  "budgetModel": {
+    "bundleAndTemporaryBytes": 268435456,
+    "capturesAndAtomicTemporaryBytes": 268435456,
+    "databaseAndWalReserveBytes": 67108864,
+    "fixturesAndTemporaryBytes": 268435456,
+    "logsAndMetadataBytes": 67108864,
+    "minimumFreeBytes": 8589934592,
+    "totalWorstCaseWorkingBytes": 939524096
+  },
+  "bundleBytes": 19017287,
+  "bundleReceipt": {
+    "bytes": 19017288,
+    "outputPath": "/tmp/realtimestock-direct160-storage-20260911-v2/synthetic-bundle.json",
+    "sha256": "f9f17867fe86a06e969a75a69859deb298eaf5a95f564e1d78ba5cdf2e9f8692"
+  },
+  "completeSyntheticDays": 2,
+  "evidenceClass": "synthetic_load_only",
+  "limitations": [
+    "NOT_LIVE_CAPACITY_EVIDENCE",
+    "NO_DATABASE_WRITE_BENCHMARK",
+    "NO_UI_BENCHMARK",
+    "NO_PROVIDER_SUBSCRIPTION",
+    "NO_SUSTAINED_LIVE_MEMORY_MEASUREMENT"
+  ],
+  "limits": {
+    "bundleCanonicalBytes": 134217728,
+    "bundleOutputBytes": 134217728,
+    "captureOutputBytes": 67108864,
+    "logBytes": 16777216,
+    "minimumAvailableDiskBytes": 8589934592,
+    "minuteCountPerDay": 43200,
+    "offlineFixtureBytes": 134217728,
+    "schemaVersion": "intraday-monitor-direct-160-storage/1",
+    "sessionCanonicalBytes": 33554432,
+    "streamFrameBytes": 131072,
+    "streamTotalBytes": 134217728,
+    "targetCount": 160
+  },
+  "minutesPerDay": 43200,
+  "replay": {
+    "consistent": true,
+    "minuteComparisonsPerRun": 43200,
+    "outputHash": "9ed289ac97e3fe8ced1c0bef88ca4580ab7b9f07437c5ccaae649380ba28f5ae",
+    "runs": 2,
+    "triggerCount": 64
+  },
+  "resources": {
+    "actualFileBytes": 38029766,
+    "availableDiskBytes": 373326155776,
+    "cpuSystemMicros": 61732,
+    "cpuUserMicros": 727041,
+    "currentRssBytes": 445775872,
+    "elapsedMs": 717,
+    "peakRssBytes": 445775872
+  },
+  "schemaVersion": "intraday-monitor-direct-160-storage-measurement/1",
+  "sessions": [
+    {
+      "canonicalBytes": 9506622,
+      "hash": "bb72db33abb1914406edd962c555ca0a70efdb460e3b01ebc1685991d6ce594b",
+      "prettyBytes": 14439282,
+      "receipt": {
+        "bytes": 9506623,
+        "outputPath": "/tmp/realtimestock-direct160-storage-20260911-v2/synthetic-day-1.json",
+        "sha256": "4fb35ab98e228265b603c7af4767a91a9f3869e7d0b3237a31dbae6a88ab98fb"
+      }
+    },
+    {
+      "canonicalBytes": 9505854,
+      "hash": "0a20b29389bc2c8bb2639a74322cab0fe56c6fc5d495097e4e04db09b4dbb29d",
+      "prettyBytes": 14438514,
+      "receipt": {
+        "bytes": 9505855,
+        "outputPath": "/tmp/realtimestock-direct160-storage-20260911-v2/synthetic-day-2.json",
+        "sha256": "d2c2e49c0e7039ba1840251cf344d470998dcad65339c782689b45ba93e368c9"
+      }
+    }
+  ],
+  "sourceFiles": [
+    {
+      "bytes": 1888441,
+      "sha256": "646b84a34743446ab103d1d8023aa68c4621a4d624b5f588f335adb46f732cb3",
+      "sourcePath": "openspec/changes/add-configurable-intraday-relative-volume-monitor/acceptance/kbar-shadow-2026-09-10.json"
+    },
+    {
+      "bytes": 1888345,
+      "sha256": "9ad77174a1dac5287e0946e4018ee8d43c135ff3d6977e658f72cc26b0981bc5",
+      "sourcePath": "openspec/changes/add-configurable-intraday-relative-volume-monitor/acceptance/kbar-shadow-2026-09-11.json"
+    }
+  ],
+  "targetCount": 160,
+  "earlierRunObservation": {
+    "assessedAt": "2026-09-11T06:07:57.097Z",
+    "peakRssBytes": 499449856,
+    "measurementPath": "/tmp/realtimestock-direct160-storage-20260911/measurement.json",
+    "note": "先前工作集估算未列 DB/WAL，第二次報告已補列；記憶體採兩次較高值規劃。"
+  }
+}

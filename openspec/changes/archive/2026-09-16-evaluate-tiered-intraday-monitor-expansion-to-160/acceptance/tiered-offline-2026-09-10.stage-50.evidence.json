@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "intraday-monitor-tiered-offline-load-evidence/1",
+  "evidenceClass": "synthetic_load_only",
+  "fixtureHash": "e538fb9179c00af5bd921af9a4b167758c9d636f6b246d2f5a2aeb4703c16b0b",
+  "targetCount": 50,
+  "replay": {
+    "runCount": 2,
+    "consistent": true,
+    "inputHash": "e538fb9179c00af5bd921af9a4b167758c9d636f6b246d2f5a2aeb4703c16b0b",
+    "outputHash": "e0beb73b18a353514235dc7b61b3011272db5d7a78845bc910b434d264efbfa2",
+    "triggerCount": 32,
+    "runs": [
+      {
+        "run": 1,
+        "elapsedMicros": 560,
+        "outputHash": "e0beb73b18a353514235dc7b61b3011272db5d7a78845bc910b434d264efbfa2"
+      },
+      {
+        "run": 2,
+        "elapsedMicros": 395,
+        "outputHash": "e0beb73b18a353514235dc7b61b3011272db5d7a78845bc910b434d264efbfa2"
+      }
+    ]
+  },
+  "resources": {
+    "cpuUserMicros": 1751,
+    "cpuSystemMicros": 38,
+    "rssBeforeBytes": 120913920,
+    "rssAfterBytes": 120979456,
+    "maxRssBytes": 120979456,
+    "databaseGrowthBytes": 0,
+    "diskBytes": 3452033,
+    "eventProcessingLatencyMicrosP95": 10
+  },
+  "operations": {
+    "networkRequests": 0,
+    "subscriptionMutations": 0,
+    "notificationDispatches": 0,
+    "brokerWrites": 0,
+    "productionTransitions": 0,
+    "serviceLifecycleMutations": 0,
+    "activeLimitMutations": 0
+  },
+  "provider": {
+    "physicalUsage": null,
+    "globalOwnershipComplete": null,
+    "releaseProven": null,
+    "headroom": null
+  },
+  "limitations": [
+    "NOT_FORMAL_MARKET_EVIDENCE",
+    "NOT_PROVIDER_CAPACITY_EVIDENCE",
+    "NOT_PROVIDER_PHYSICAL_USAGE_EVIDENCE"
+  ],
+  "createdAt": "2026-09-10T13:37:00+08:00",
+  "evidenceHash": "c6c0613ecb83608c8f76b5694705a2049bded51cf2012e9ebffcc226afac57d8"
+}

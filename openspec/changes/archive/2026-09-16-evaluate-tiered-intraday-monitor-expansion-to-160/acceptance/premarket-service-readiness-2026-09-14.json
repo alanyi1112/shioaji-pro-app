@@ -1,0 +1,80 @@
+{
+  "schemaVersion": "intraday-monitor-direct-160-premarket-service-readiness/1",
+  "scheduledFor": "2026-09-14T08:50:00+08:00",
+  "checkedAt": "2026-09-14T08:59:00+08:00",
+  "scheduledAutomation": {
+    "id": "160",
+    "kind": "heartbeat",
+    "targetThreadId": "01a08b13-4cd7-7c03-8f60-4616925e830d",
+    "turnCreatedAtScheduledTime": false,
+    "expiredAutomationDeletedAfterManualCheck": true
+  },
+  "runtime": {
+    "mode": "simulation",
+    "production": false,
+    "simulationApi": {
+      "port": 8080,
+      "pid": 926,
+      "listener": true,
+      "health": "healthy",
+      "businessSession": "available",
+      "marketSnapshot2330": "available"
+    },
+    "businessSessionWatchdog": {
+      "loaded": true,
+      "state": "healthy",
+      "consecutiveFailures": 0,
+      "restartCount": 0
+    },
+    "web": {
+      "port": 5173,
+      "pid": 907,
+      "listener": true
+    },
+    "multiView": {
+      "port": 5174,
+      "pid": 913,
+      "listener": true,
+      "realtimeSource": true,
+      "d1Integrity": "ok",
+      "d1Coverage": "ok"
+    },
+    "serviceRestartPerformed": false
+  },
+  "storage": {
+    "availableBytesApprox": 374735749120,
+    "minimumRequiredBytes": 8589934592,
+    "ready": true
+  },
+  "direct160Artifacts": {
+    "cohortCount": 160,
+    "baselineManifestCount": 160,
+    "baselineMinuteCount": 43200,
+    "manifestValid": true,
+    "planValid": true,
+    "baselineValidFor20260914": true,
+    "manifestHash": "e7743272b46c6a207313b2767a910ae6072ff956a8bdd2ff3ceee5c6cbaf6985",
+    "planHash": "b4af6c8eac10f7468a09318ef48f830ee5acff0dea5c8e4ef68867ed6ff4b026",
+    "baselineHash": "868bc0a51381362c155302a80f0acdd5334e3c91e00938f074b4f8873d11c54c"
+  },
+  "readiness": {
+    "servicesReady": true,
+    "artifactsReady": true,
+    "liveExecutionReady": false,
+    "decision": "NOT_READY",
+    "blockingReasons": [
+      "bounded_kbar_transport_rejects_more_than_20_symbols",
+      "kbar_shadow_session_recorder_rejects_more_than_20_symbols",
+      "direct_160_live_launcher_not_implemented",
+      "direct_160_live_storage_profile_not_connected",
+      "direct_160_db_ui_sustained_load_gate_incomplete"
+    ]
+  },
+  "safety": {
+    "liveStageStarted": false,
+    "subscriptionMutationPerformed": false,
+    "brokerWritePerformed": false,
+    "notificationDispatched": false,
+    "activeLimitChanged": false
+  }
+}

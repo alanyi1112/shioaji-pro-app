@@ -1,0 +1,122 @@
+{
+  "schemaVersion": "intraday-monitor-live-readiness-audit/1",
+  "startedAt": "2026-09-07T01:06:25.950Z",
+  "endedAt": "2026-09-07T01:06:41.011Z",
+  "api": {
+    "version": "1.7.1",
+    "simulationBefore": true,
+    "simulationAfter": true,
+    "streamPaths": [
+      "/api/v1/stream/data",
+      "/api/v1/stream/data/bidask_fop",
+      "/api/v1/stream/data/bidask_stk",
+      "/api/v1/stream/data/calculated_index",
+      "/api/v1/stream/data/contract_event",
+      "/api/v1/stream/data/index_contribution",
+      "/api/v1/stream/data/industry_contribution",
+      "/api/v1/stream/data/kbar",
+      "/api/v1/stream/data/order_event",
+      "/api/v1/stream/data/quote_fop",
+      "/api/v1/stream/data/quote_idx",
+      "/api/v1/stream/data/quote_stk",
+      "/api/v1/stream/data/scanner",
+      "/api/v1/stream/data/tick_fop",
+      "/api/v1/stream/data/tick_stk",
+      "/api/v1/stream/receivers",
+      "/api/v1/stream/status",
+      "/api/v1/stream/subscribe",
+      "/api/v1/stream/subscribe/calculated_index",
+      "/api/v1/stream/subscribe/index_contribution",
+      "/api/v1/stream/subscribe/industry_contribution",
+      "/api/v1/stream/subscribe/kbars",
+      "/api/v1/stream/subscribe/scanner",
+      "/api/v1/stream/unsubscribe",
+      "/api/v1/stream/unsubscribe/calculated_index",
+      "/api/v1/stream/unsubscribe/index_contribution",
+      "/api/v1/stream/unsubscribe/industry_contribution",
+      "/api/v1/stream/unsubscribe/kbars",
+      "/api/v1/stream/unsubscribe/scanner"
+    ],
+    "subscriptionResponseFields": [
+      "message",
+      "subscription",
+      "success"
+    ],
+    "publicStreamSchemaHash": "c8f3d084f445a297b6ff89b17a500546eaaf1cff1644ec9a6d495186e388e627"
+  },
+  "monitorBefore": {
+    "featureOff": true,
+    "configRevision": 0,
+    "configured": 0,
+    "active": 0,
+    "activeLeaseCount": 0,
+    "gate0EvidenceCurrent": false,
+    "globalOwnershipComplete": false,
+    "subscriptionTransportAuthority": false,
+    "confirmedPhysicalUsage": null,
+    "availableForMonitor": 0,
+    "evidenceRevision": 0,
+    "baselineComplete": false,
+    "baselineItemCount": 0,
+    "completedMinutePresent": false
+  },
+  "monitorAfter": {
+    "featureOff": true,
+    "configRevision": 0,
+    "configured": 0,
+    "active": 0,
+    "activeLeaseCount": 0,
+    "gate0EvidenceCurrent": false,
+    "globalOwnershipComplete": false,
+    "subscriptionTransportAuthority": false,
+    "confirmedPhysicalUsage": null,
+    "availableForMonitor": 0,
+    "evidenceRevision": 0,
+    "baselineComplete": false,
+    "baselineItemCount": 0,
+    "completedMinutePresent": false
+  },
+  "passiveCapture": {
+    "durationMs": 15000,
+    "captureStartedAt": "2026-09-07T01:06:25.991Z",
+    "captureEndedAt": "2026-09-07T01:06:40.997Z",
+    "streamOpened": true,
+    "captureEnd": "duration_limit",
+    "bytes": 110,
+    "tickEvents": 0,
+    "structurallyValidRegularTicks": 0,
+    "rejectedTicks": 0,
+    "observedSymbolCount": 0,
+    "provesContinuity": false,
+    "provesPhysicalOwnership": false,
+    "rawPayloadSaved": false,
+    "activeConnectionsBefore": 0,
+    "activeConnectionsAfter": 0
+  },
+  "assessment": {
+    "reasons": [
+      "gate0_evidence_missing",
+      "ownership_incomplete",
+      "transport_not_connected",
+      "physical_usage_unknown",
+      "cohort_not_configured",
+      "baseline_not_ready",
+      "completed_minute_missing"
+    ],
+    "gate0ApprovalIssued": false,
+    "pilotStarted": false,
+    "fullTradingDayRecorded": false,
+    "note": "唯讀可用性鑑識不能核准 Gate 0，也不計入分階段試辦完整交易日。"
+  },
+  "operations": {
+    "methods": [
+      "GET"
+    ],
+    "subscriptionMutations": 0,
+    "brokerWrites": 0,
+    "serviceRestarts": 0,
+    "newLogins": 0,
+    "notificationDispatches": 0,
+    "pollingFallback": false
+  }
+}

@@ -53,7 +53,7 @@ const SOURCE_DEFINITIONS = Object.freeze({
     }),
     repository_runtime: Object.freeze({
         path: 'scripts/smart-order-runtime/repository-worker.mjs',
-        sha256: 'sha256:4ae21d002325e6a4688456be1352b1f3b906a03ac24a6fd4b02578db453c20cb',
+        sha256: 'sha256:f85bc9b3b0a76ac92de771f8beaccce2619ae0d5c2b5bd8a6a71d6bfe3e35b36',
     }),
     controller_runtime: Object.freeze({
         path: 'scripts/smart-order-runtime/runtime-controller.mjs',
@@ -69,7 +69,7 @@ const SOURCE_DEFINITIONS = Object.freeze({
     }),
     repository_integration_tests: Object.freeze({
         path: 'scripts/smart-order-runtime/repository.test.mjs',
-        sha256: 'sha256:817c2d1d9389af6026c5ef6fe3a6feff6a908dcb439e30847d808472c000917c',
+        sha256: 'sha256:95b11478fbfe84ca20bdfb0144e0577b5467b4f56ec347c252a4bb6bcf17dc94',
     }),
     controller_integration_tests: Object.freeze({
         path: 'scripts/smart-order-runtime/runtime-controller.test.mjs',

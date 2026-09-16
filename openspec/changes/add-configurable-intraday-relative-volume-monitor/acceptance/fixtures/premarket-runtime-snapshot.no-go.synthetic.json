@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "intraday-monitor-premarket-runtime-snapshot/1",
+  "capturedAt": "2026-09-04T21:20:00+08:00",
+  "endpointUrl": "http://127.0.0.1:8080",
+  "simulation": true,
+  "production": false,
+  "featureEnabled": false,
+  "notificationsEnabled": false,
+  "gate0Decision": "no_go",
+  "gate0EvidenceCurrent": false,
+  "globalOwnershipComplete": false,
+  "confirmedActiveCapacity": 0,
+  "configRevision": 0,
+  "plannedTradeDate": "2026-09-07",
+  "calendarAuthorityReady": false,
+  "connectionGeneration": "synthetic_generation_0001",
+  "providerRequestAuthority": false,
+  "automaticSubscriptionAuthority": false,
+  "subscriptionTransportAuthority": false,
+  "serviceLifecycleAuthority": false,
+  "brokerWriteAuthority": false
+}

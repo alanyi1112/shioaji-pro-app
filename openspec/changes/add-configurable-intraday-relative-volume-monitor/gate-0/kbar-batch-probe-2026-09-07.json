@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "intraday-monitor-kbar-batch-probe/1",
+  "startedAt": "2026-09-07T01:29:28.932Z",
+  "endedAt": "2026-09-07T01:30:24.252Z",
+  "api": {
+    "version": "1.7.1",
+    "simulationBefore": true,
+    "simulationAfter": true
+  },
+  "batch": {
+    "requestedSymbolCount": 2,
+    "symbols": [
+      "2330.TW",
+      "2454.TW"
+    ],
+    "oneSubscribeRequest": true,
+    "oneUnsubscribeRequest": true
+  },
+  "transport": {
+    "streamOpened": true,
+    "streamEnd": "duration_limit",
+    "subscribe": {
+      "httpStatus": 200,
+      "accepted": true
+    },
+    "unsubscribe": {
+      "httpStatus": 200,
+      "accepted": true
+    },
+    "activeConnectionsBefore": 7,
+    "activeConnectionsAfter": 8,
+    "providerPhysicalUsageProven": false,
+    "providerReleaseProven": false
+  },
+  "capture": {
+    "bytes": 584,
+    "kbarEvents": 2,
+    "rejectedEvents": 2,
+    "unexpectedSymbols": 0,
+    "symbols": {
+      "2330": {
+        "events": 1,
+        "validCompletedMinutes": 0,
+        "firstMinute": null,
+        "lastMinute": null,
+        "accumulatedVolume": 0
+      },
+      "2454": {
+        "events": 1,
+        "validCompletedMinutes": 0,
+        "firstMinute": null,
+        "lastMinute": null,
+        "accumulatedVolume": 0
+      }
+    },
+    "rawPayloadSaved": false
+  },
+  "assessment": {
+    "observedAllSymbols": false,
+    "functionalInputPathProven": false,
+    "quotaCountingDimensionProven": false,
+    "gate0Approved": false,
+    "note": "本探針只證明單一多商品 KBar request 的實際資料路徑；HTTP accepted 不等於 provider physical receipt。"
+  },
+  "operations": {
+    "simulationOnly": true,
+    "subscriptionMutations": 2,
+    "brokerWrites": 0,
+    "productionLogins": 0,
+    "serviceRestarts": 0,
+    "rawPayloadSaved": false
+  }
+}

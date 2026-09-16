@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "intraday-monitor-pilot-cohort-receipts/1",
+  "changeId": "add-configurable-intraday-relative-volume-monitor",
+  "sourceEndpoint": "http://127.0.0.1:8080/api/v1/data/contracts?security_type=STK&region=TW",
+  "sourceVersion": "1.7.1",
+  "verifiedAt": "2026-09-07T03:54:25.338Z",
+  "cohort": [
+    "8027.TWO",
+    "3441.TWO",
+    "3026.TW",
+    "3037.TW",
+    "3189.TW",
+    "8046.TW",
+    "3149.TW",
+    "3131.TWO",
+    "3481.TW",
+    "3008.TW",
+    "2308.TW",
+    "2301.TW",
+    "3363.TWO",
+    "3081.TWO",
+    "3163.TWO",
+    "3090.TW",
+    "2368.TW",
+    "2454.TW",
+    "2449.TW",
+    "8103.TW"
+  ],
+  "receipts": [
+    {
+      "canonicalSymbol": "8027.TWO",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "OTC",
+      "code": "8027",
+      "receiptHash": "6493b4c40650d962a9e2548bd221f01497e7cd252f2145b715e15d75bc75cf8e"
+    },
+    {
+      "canonicalSymbol": "3441.TWO",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "OTC",
+      "code": "3441",
+      "receiptHash": "0d1c8185423d492780c1202154975fc0d6abb356cc124a1f9a2c2dff0340ca8b"
+    },
+    {
+      "canonicalSymbol": "3026.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3026",
+      "receiptHash": "1f9035f555116ba32750debe11435738e41ceb790ecda50010e68917bf570420"
+    },
+    {
+      "canonicalSymbol": "3037.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3037",
+      "receiptHash": "5be30a5011e3026f426820569c3d7e47dd093bcfb13fb47783076a8584da277a"
+    },
+    {
+      "canonicalSymbol": "3189.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3189",
+      "receiptHash": "d43afd2be3d36f26e8741c865353a14d0b8b1d5c8cc21751bc411fc6f5682205"
+    },
+    {
+      "canonicalSymbol": "8046.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "8046",
+      "receiptHash": "e1bca030d8e62deac7a504ac77a44ad796ef6cff7db8a8cc804b2163299970ed"
+    },
+    {
+      "canonicalSymbol": "3149.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3149",
+      "receiptHash": "8fb81437f55102618fa960994d2b63f4cff7cf63cdb2f2dd54ea94c7070eed73"
+    },
+    {
+      "canonicalSymbol": "3131.TWO",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "OTC",
+      "code": "3131",
+      "receiptHash": "4af32ca9dec68038daf1da413b5b21ab71bc7cfab4e1cc8370d6d9c04daf111b"
+    },
+    {
+      "canonicalSymbol": "3481.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3481",
+      "receiptHash": "4d05e6f016ead3f6253785b83d5bbd8266742e59dab7e874faaf2ac4ca8d62fe"
+    },
+    {
+      "canonicalSymbol": "3008.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3008",
+      "receiptHash": "528d33f5635ec297a4bbc5c3e40709e4b9b4c98766395c6a46cade3185873e9d"
+    },
+    {
+      "canonicalSymbol": "2308.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "2308",
+      "receiptHash": "ce639e4dc89694b5d952ca1cd4309e95b9b9517ee161dab02ce31898e6475f2a"
+    },
+    {
+      "canonicalSymbol": "2301.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "2301",
+      "receiptHash": "2e79acd604fbb122c714a75698935c10125cc341eca98c7c94f6b4fb8f999f23"
+    },
+    {
+      "canonicalSymbol": "3363.TWO",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "OTC",
+      "code": "3363",
+      "receiptHash": "dbca7360fbebe42ba76cf52b5a2a2217970cb65faa22d061bee00bea11669deb"
+    },
+    {
+      "canonicalSymbol": "3081.TWO",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "OTC",
+      "code": "3081",
+      "receiptHash": "544511c5f04893e1596875adfc58fd6a1d641b5e70ca6dce5c8267465f5a64f2"
+    },
+    {
+      "canonicalSymbol": "3163.TWO",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "OTC",
+      "code": "3163",
+      "receiptHash": "adbd41d603ba77ee28000ae825fe389c321b016ebf92cbb8c061ef02cb4006d0"
+    },
+    {
+      "canonicalSymbol": "3090.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "3090",
+      "receiptHash": "c8ec03ff3bff145f2d2a983bf6043c1295f70a9ef8876738f74824a748d4cd45"
+    },
+    {
+      "canonicalSymbol": "2368.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "2368",
+      "receiptHash": "fb997ba4b4894af6220ce119beeed11d8b0a2dc1efe51d44f2515b3e5a157070"
+    },
+    {
+      "canonicalSymbol": "2454.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "2454",
+      "receiptHash": "a5c63db2af31cc4855ea063a8865b9e4053fdd430f015046fac86b48c792a490"
+    },
+    {
+      "canonicalSymbol": "2449.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "2449",
+      "receiptHash": "bb70969b4b8b08699759d61a07103ff37486392010383b33230d74609d00f594"
+    },
+    {
+      "canonicalSymbol": "8103.TW",
+      "securityType": "STK",
+      "region": "TW",
+      "exchange": "TSE",
+      "code": "8103",
+      "receiptHash": "a11ec4905ab752a5cae6d6a6e8b684f380a1490a16ca4531e829bb15a7459f86"
+    }
+  ],
+  "providerRequestAuthority": false,
+  "subscriptionTransportAuthority": false,
+  "serviceLifecycleAuthority": false,
+  "brokerWriteAuthority": false,
+  "manifestHash": "3cd6de0bf92d0cafeb21ebfcc451253402dccb0429abf1ecb202e26ea0fd06a5"
+}

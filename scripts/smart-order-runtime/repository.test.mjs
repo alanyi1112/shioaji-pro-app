@@ -607,6 +607,7 @@ function protectedEntryReconciliation({
 function completeAccountReconciliationProjection({
     accountBrokerRef = 'broker-A',
     accountIdRef = 'account-A',
+    tradeDate = '2026-08-11',
     asOfEpochMs = 1_786_377_600_700,
     candidates = [],
     quantityShares = 1_000,
@@ -649,6 +650,7 @@ function completeAccountReconciliationProjection({
                 ...runtimeWorkingOrders,
             ],
         }),
+        tradeDate,
         account: {
             brokerId: accountBrokerRef,
             accountId: accountIdRef,
@@ -15997,6 +15999,179 @@ describe('smart-order SQLite repository worker', () => {
                 .reconciliation_evidence_hash,
         ).toMatch(/^sha256:[a-f0-9]{64}$/);
         database.close();
+    });
+
+    it('releases a prior-trade-date external claim when the current complete set no longer contains it', async () => {
+        const initialized = await openRepository();
+        await startReadyRuntime(initialized.client, {
+            runtimeEpochId: 'runtime-cross-date-external-release',
+            senderFence: 'fence-cross-date-external-release',
+            apiGeneration: 'generation-cross-date-external-release',
+        });
+        const priorCandidate = {
+            brokerOrderId: 'external-prior-day-sell',
+            contractKey: 'TSE:2330:STK:Common',
+            quantityShares: 500,
+        };
+        priorCandidate.candidateId = externalSellCandidateId(priorCandidate);
+        const identityAdmission = await signedIdentityAdmission({
+            identityKeyPath: initialized.identityKeyPath,
+            issuedAtEpochMs: 1_786_377_600_700,
+        });
+        const request = (reconciliation, nowEpochMs) =>
+            initialized.client.request('recordAccountReconciliation', {
+                runtimeEpochId: 'runtime-cross-date-external-release',
+                senderFence: 'fence-cross-date-external-release',
+                apiGeneration: 'generation-cross-date-external-release',
+                expectedFixedAccountCount: 1,
+                identityAdmission,
+                nowEpochMs,
+                reconciliation,
+            });
+
+        await expect(
+            request(
+                completeAccountReconciliationProjection({
+                    asOfEpochMs: 1_786_377_600_750,
+                    candidates: [priorCandidate],
+                }),
+                1_786_377_600_800,
+            ),
+        ).resolves.toMatchObject({
+            externalSellClaimCount: 1,
+            releasedExternalSellClaimCount: 0,
+            brokerWriteAuthority: false,
+        });
+        await expect(
+            request(
+                completeAccountReconciliationProjection({
+                    tradeDate: '2026-08-12',
+                    asOfEpochMs: 1_786_464_000_750,
+                    dealIds: ['next-day-deal-1'],
+                }),
+                1_786_464_000_800,
+            ),
+        ).resolves.toMatchObject({
+            externalSellClaimCount: 0,
+            releasedExternalSellClaimCount: 1,
+            brokerWriteAuthority: false,
+        });
+
+        await initialized.client.close();
+        openClients.delete(initialized.client);
+        const database = new DatabaseSync(initialized.databasePath, {
+            readOnly: true,
+        });
+        expect(
+            database.prepare(`
+                SELECT state, terminal_at_epoch_ms, revision
+                  FROM exit_claims WHERE exit_claim_id=?
+            `).get(priorCandidate.candidateId),
+        ).toEqual({
+            state: 'released',
+            terminal_at_epoch_ms: 1_786_464_000_800,
+            revision: 1,
+        });
+        expect(
+            database.prepare(`
+                SELECT reason_code, summary_code
+                  FROM event_journal
+                 WHERE entity_kind='exit_claim' AND entity_id=?
+                 ORDER BY local_monotonic_sequence DESC LIMIT 1
+            `).get(priorCandidate.candidateId),
+        ).toEqual({
+            reason_code: 'PRIOR_TRADE_DATE_EXTERNAL_ORDER_EXPIRED',
+            summary_code: 'external_exit_claim_released',
+        });
+        database.close();
+    });
+
+    it('provides a bounded offline repair for prior-date external claims with fresh empty-set evidence', async () => {
+        const initialized = await openRepository({
+            testOnlyExternalSellVisibilityHeads: [],
+        });
+        const oldClaimId = 'external-maintenance-prior-day';
+        const seed = new DatabaseSync(initialized.databasePath);
+        seed.prepare(`
+            INSERT INTO external_sell_visibility_heads(
+                account_broker_ref, account_id_ref, trade_date, contract_key,
+                source_revision, source_sequence, source_evidence_hash,
+                position_revision, position_shares, working_set_hash,
+                collection_complete, observed_at_epoch_ms,
+                valid_until_epoch_ms, updated_at_epoch_ms, revision
+            ) VALUES ('broker-A', 'account-A', '2026-08-11',
+                      'TSE:2330:STK:Common', 'maintenance-source', 1, ?,
+                      'maintenance-position', 1000, ?, 1,
+                      1786377600000, 1786377605000, 1786377600000, 0)
+        `).run(DIGEST_A, DIGEST_B);
+        seed.prepare(`
+            INSERT INTO exit_claims(
+                exit_claim_id, obligation_id, intent_id, external_lineage,
+                account_broker_ref, account_id_ref, contract_key,
+                position_lineage_id, remainder_generation,
+                allocation_start_share, quantity_shares, state,
+                evidence_hash, created_at_epoch_ms, updated_at_epoch_ms,
+                terminal_at_epoch_ms, revision
+            ) VALUES (?, NULL, NULL, 1, 'broker-A', 'account-A',
+                      'TSE:2330:STK:Common', 'maintenance-position', 0,
+                      0, 1000, 'broker_working', ?,
+                      1786377600000, 1786377600000, NULL, 0)
+        `).run(oldClaimId, DIGEST_A);
+        seed.prepare(`
+            INSERT INTO exit_claim_visibility_bindings(
+                exit_claim_id, account_broker_ref, account_id_ref,
+                trade_date, contract_key, source_revision, source_sequence,
+                source_evidence_hash, position_revision, position_shares,
+                working_set_hash, binding_kind, visibility_head_revision,
+                created_at_epoch_ms, updated_at_epoch_ms, revision
+            ) VALUES (?, 'broker-A', 'account-A', '2026-08-11',
+                      'TSE:2330:STK:Common', 'maintenance-source', 1, ?,
+                      'maintenance-position', 1000, ?,
+                      'external_projection', 0,
+                      1786377600000, 1786377600000, 0)
+        `).run(oldClaimId, DIGEST_A, DIGEST_B);
+        seed.close();
+
+        await expect(
+            initialized.client.request('releasePriorTradeDateExternalClaims', {
+                accountBrokerRef: 'broker-A',
+                accountIdRef: 'account-A',
+                currentTradeDate: '2026-08-12',
+                currentTradeRecordCount: 1,
+                nowEpochMs: 1_786_464_000_800,
+                observedAtEpochMs: 1_786_464_000_750,
+                sourceEvidenceSha256: DIGEST_B,
+            }),
+        ).rejects.toThrow('requires an empty current broker trade set');
+        await expect(
+            initialized.client.request('releasePriorTradeDateExternalClaims', {
+                accountBrokerRef: 'broker-A',
+                accountIdRef: 'account-A',
+                currentTradeDate: '2026-08-12',
+                currentTradeRecordCount: 0,
+                nowEpochMs: 1_786_464_000_800,
+                observedAtEpochMs: 1_786_464_000_750,
+                sourceEvidenceSha256: DIGEST_B,
+            }),
+        ).resolves.toMatchObject({
+            state: 'recorded',
+            releasedExternalSellClaimCount: 1,
+            currentTradeRecordCount: 0,
+            brokerWriteAuthority: false,
+            writeMasterAuthority: false,
+        });
+
+        await initialized.client.close();
+        openClients.delete(initialized.client);
+        const verified = new DatabaseSync(initialized.databasePath, {
+            readOnly: true,
+        });
+        expect(
+            verified.prepare(
+                'SELECT state, revision FROM exit_claims WHERE exit_claim_id=?',
+            ).get(oldClaimId),
+        ).toEqual({ state: 'released', revision: 1 });
+        verified.close();
     });
 
     it('rejects durable Share-position exchange or canonical contract revision drift before replacing reconciliation state', async () => {

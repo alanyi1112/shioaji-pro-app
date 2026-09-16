@@ -1,0 +1,66 @@
+{
+  "gate0": {
+    "decision": "bounded_go",
+    "report": "gate-0/kbar-batch-alternative-decision-2026-09-07.md",
+    "reviewerSignoff": true,
+    "reviewedAt": "2026-09-11T13:42:00+08:00"
+  },
+  "stage20": {
+    "decision": "go",
+    "approvedActiveMonitorCount": 20,
+    "plan": "acceptance/pilot-stage-plan-20-2026-09-07.json",
+    "bundle": "acceptance/pilot-evidence-bundle-2026-09-10_2026-09-11.json",
+    "review": "acceptance/pilot-stage-review-2026-09-11.md",
+    "reviewerSignoff": true,
+    "reviewedAt": "2026-09-11T13:42:00+08:00"
+  },
+  "categories": {
+    "dataQuality": [
+      "gate-0/kbar-batch-probe-final-2026-09-07.json",
+      "gate-0/kbar-completion-semantics-2026-09-07.json",
+      "acceptance/kbar-shadow-failure-2026-09-08.md",
+      "acceptance/kbar-shadow-failure-2026-09-09.md",
+      "acceptance/post-close-historical-repair-offline-verification-2026-09-09.md",
+      "acceptance/kbar-shadow-2026-09-10.json",
+      "acceptance/kbar-shadow-2026-09-11.json",
+      "acceptance/pilot-evidence-bundle-2026-09-10_2026-09-11.json"
+    ],
+    "resources": [
+      "gate-0/bootstrap-capacity-probe-2026-09-04.md",
+      "acceptance/passive-chart-freshness-2026-09-08.json",
+      "acceptance/pilot-runtime-assurance-2026-09-08-v6.json",
+      "acceptance/intraday-progress-2026-09-08.md",
+      "acceptance/passive-chart-freshness-2026-09-11.json",
+      "acceptance/pilot-runtime-assurance-2026-09-11.json"
+    ],
+    "ui": [
+      "acceptance/offhours-ui-and-regression-2026-09-04.md",
+      "acceptance/compact-left-panel-ui-2026-09-07.md",
+      "acceptance/passive-chart-freshness-2026-09-11.json"
+    ],
+    "accessibility": [
+      "acceptance/offhours-ui-and-regression-2026-09-04.md"
+    ],
+    "rollback": [
+      "design.md"
+    ],
+    "tests": [
+      "acceptance/pilot-stage-runbook.md",
+      "acceptance/intraday-progress-2026-09-08.md",
+      "acceptance/post-close-historical-repair-offline-verification-2026-09-09.md",
+      "acceptance/tomorrow-final-assembly-checklist.md",
+      "acceptance/pilot-stage-review-2026-09-11.md",
+      "acceptance/final-verification-2026-09-11.md"
+    ]
+  },
+  "formalActiveMonitorLimit": 20,
+  "unresolvedRisks": [
+    "Shioaji provider physical counting、global ownership、release confirmation 與 headroom 保持 unknown，本案不以 request／SSE count 推算。",
+    "第二個完整盤中日尚未執行；依最新規格它只屬非阻擋穩定性追蹤，若後續發現退化必須重新開啟風險與修正工作。",
+    "2026-09-11 SSE latency p95 為 2,532 ms、在 10,000 ms 預算內，但單筆 max 曾達 39,809 ms；不得宣稱每筆事件都低於 10 秒。",
+    "一個與最終採信測試重疊執行的 smart-order repository watchdog timing case 曾單次失敗；同版本最終採信 run 已通過 2,369／2,369，仍保留為非阻擋測試排程風險。"
+  ],
+  "unresolvedRisksReviewed": true,
+  "finalReviewerSignoff": true,
+  "finalReviewedAt": "2026-09-11T13:42:00+08:00"
+}

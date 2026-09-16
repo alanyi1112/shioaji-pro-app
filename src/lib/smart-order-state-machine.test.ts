@@ -421,7 +421,7 @@ describe('smart-order state registry', () => {
         );
         const reviewedArtifact = readFileSync(
             new URL(
-                '../../openspec/changes/add-durable-smart-order-panel-and-protective-exits/smart-order-state-transition-tables.md',
+                '../../openspec/changes/archive/2026-08-27-add-durable-smart-order-panel-and-protective-exits/smart-order-state-transition-tables.md',
                 import.meta.url,
             ),
         );

@@ -1,0 +1,27 @@
+{
+  "review": {
+    "schemaVersion": "intraday-monitor-tiered-capacity-prerequisite-review/1",
+    "sourceChange": "add-configurable-intraday-relative-volume-monitor",
+    "sourceBundleSha256": "ea92d7e650cd86ad9da5f6dd2c1a4ee4e0a50b6d64883ca972df9179cfe3fc98",
+    "approvedActiveLimit": 20,
+    "decision": "GO",
+    "reviewerSignoff": true,
+    "reviewedAt": "2026-09-11T13:42:00+08:00",
+    "reviewHash": "c4e92ca08a44f63728a36d099d94334fd22d922a4f20c571b86c93a7d61b7137"
+  },
+  "assessment": {
+    "valid": true,
+    "liveStage50Eligible": true,
+    "liveStage160Eligible": true,
+    "offlinePlaneEligible": true,
+    "reasons": [],
+    "providerPhysicalUsage": null,
+    "globalOwnershipComplete": null,
+    "providerReleaseProven": null,
+    "providerHeadroom": null,
+    "providerRequestAuthority": false,
+    "subscriptionTransportAuthority": false,
+    "automaticStagePromotionAuthority": false
+  },
+  "reviewSource": "../add-configurable-intraday-relative-volume-monitor/acceptance/pilot-stage-review-2026-09-11.md"
+}

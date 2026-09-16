@@ -1,0 +1,680 @@
+{
+  "schemaVersion": "intraday-monitor-bounded-kbar-capture/1",
+  "captureMode": "partial-rehearsal",
+  "cohortReceiptManifestHash": "cd8d663992f60f95b711a471b9e5302407600598e7f9cb4e730997afe2442702",
+  "session": {
+    "schemaVersion": "intraday-monitor-kbar-shadow-session/1",
+    "tradeDate": "2026-09-07",
+    "startedAt": "2026-09-07T03:49:25.174Z",
+    "endedAt": "2026-09-07T03:52:25.186Z",
+    "connectionGeneration": "kbar_1788752965174_cd8d663992f60f95b711a471",
+    "cohort": [
+      "8027.TWO",
+      "3441.TWO",
+      "3026.TW",
+      "3037.TW",
+      "3189.TW",
+      "8046.TW",
+      "3149.TW",
+      "3131.TWO",
+      "3481.TW",
+      "3008.TW",
+      "2308.TW",
+      "2301.TW",
+      "3363.TWO",
+      "3081.TWO",
+      "3163.TWO",
+      "3090.TW",
+      "2368.TW",
+      "0050.TW",
+      "0056.TW",
+      "2454.TW"
+    ],
+    "cohortHash": "sha256:6e5ef1a3f3474419c02ec0bf22b69da0984a9df4c2fe9727d8e5ae19399376f1",
+    "expectedMinuteCountPerSymbol": 270,
+    "symbols": [
+      {
+        "canonicalSymbol": "8027.TWO",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "8027.TWO",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 1,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "8027.TWO",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 2,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.583Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3441.TWO",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3441.TWO",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 23,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3441.TWO",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 29,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.586Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3026.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3026.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 3,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.513Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3026.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 7,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.587Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3037.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3037.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 19,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3037.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 37,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.587Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3189.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3189.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 52,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.512Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3189.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 74,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.585Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "8046.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "8046.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 3,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "8046.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 7,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.584Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3149.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3149.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 0,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.512Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3149.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 7,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.585Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3131.TWO",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3131.TWO",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 0,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.511Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3131.TWO",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 0,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.584Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3481.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3481.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 174,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3481.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 310,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.586Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3008.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3008.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 0,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.513Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3008.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 42,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.587Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "2308.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "2308.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 7,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.513Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "2308.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 13,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.586Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "2301.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "2301.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 21,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.513Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "2301.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 46,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.586Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3363.TWO",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3363.TWO",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 8,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.513Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3363.TWO",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 12,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.588Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3081.TWO",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3081.TWO",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 24,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3081.TWO",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 38,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.588Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3163.TWO",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3163.TWO",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 4,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.512Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3163.TWO",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 9,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.585Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "3090.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "3090.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 12,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "3090.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 17,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.588Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "2368.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "2368.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 3,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.513Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "2368.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 9,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.586Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      },
+      {
+        "canonicalSymbol": "0050.TW",
+        "complete": false,
+        "minuteCount": 0,
+        "firstMinute": null,
+        "lastMinute": null,
+        "rows": []
+      },
+      {
+        "canonicalSymbol": "0056.TW",
+        "complete": false,
+        "minuteCount": 0,
+        "firstMinute": null,
+        "lastMinute": null,
+        "rows": []
+      },
+      {
+        "canonicalSymbol": "2454.TW",
+        "complete": false,
+        "minuteCount": 2,
+        "firstMinute": "11:50",
+        "lastMinute": "11:51",
+        "rows": [
+          {
+            "canonicalSymbol": "2454.TW",
+            "minuteKey": "11:50",
+            "cumulativeVolume": 7,
+            "sequence": 1,
+            "receivedTime": "2026-09-07T03:51:02.514Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          },
+          {
+            "canonicalSymbol": "2454.TW",
+            "minuteKey": "11:51",
+            "cumulativeVolume": 16,
+            "sequence": 2,
+            "receivedTime": "2026-09-07T03:52:02.587Z",
+            "sourceVersion": "shioaji-http-1.7.1",
+            "unit": "common_lot",
+            "completeness": "complete"
+          }
+        ]
+      }
+    ],
+    "close": {
+      "attempted": true,
+      "accepted": false,
+      "sealedCount": 0,
+      "expectedCount": 20
+    },
+    "adapter": {
+      "rejectionCounts": {
+        "close_authority_invalid": 1
+      },
+      "sinkRejections": 0,
+      "providerPhysicalUsage": null
+    },
+    "assessment": {
+      "fullSession": false,
+      "baselineEligible": false,
+      "notificationEligible": false,
+      "note": "partial evidence 不得成為 baseline 或觸發通知。"
+    },
+    "operations": {
+      "notificationDispatchCount": 0,
+      "brokerWriteAttemptCount": 0,
+      "productionTransitionCount": 0,
+      "serviceLifecycleMutationCount": 0,
+      "pollingFallback": false,
+      "rawPayloadSaved": false
+    },
+    "evidenceHash": "sha256:40c7800b1a3bdfc03d62cbccc6d142c922d757c457e1281ac53f1efd92353d33"
+  },
+  "transport": {
+    "startReceipt": {
+      "started": true,
+      "cohortHash": "sha256:1ae6e07174f071eba27c840a82b293de6e23739e8153f7d877d95a99d10a9046",
+      "cohortSize": 20,
+      "subscribeAccepted": true,
+      "providerPhysicalUsage": null,
+      "brokerWriteAuthority": false,
+      "productionAuthority": false,
+      "serviceLifecycleAuthority": false
+    },
+    "stopReceipt": {
+      "stopped": true,
+      "unsubscribeAccepted": true,
+      "providerReleaseProven": false,
+      "cohortHash": "sha256:1ae6e07174f071eba27c840a82b293de6e23739e8153f7d877d95a99d10a9046",
+      "brokerWriteAuthority": false,
+      "productionAuthority": false,
+      "serviceLifecycleAuthority": false
+    },
+    "finalStatus": {
+      "schemaVersion": "intraday-monitor-bounded-kbar-transport/1",
+      "phase": "stopped",
+      "cohortHash": "sha256:1ae6e07174f071eba27c840a82b293de6e23739e8153f7d877d95a99d10a9046",
+      "cohortSize": 20,
+      "connectionGeneration": "kbar_1788752965174_cd8d663992f60f95b711a471",
+      "bytes": 10075,
+      "kbarFrames": 54,
+      "malformedFrames": 0,
+      "deliveredEvents": 54,
+      "subscribeAccepted": true,
+      "unsubscribeAccepted": true,
+      "providerPhysicalUsage": null,
+      "providerReleaseProven": false,
+      "pollingFallbackAllowed": false,
+      "brokerWriteAuthority": false,
+      "productionAuthority": false,
+      "serviceLifecycleAuthority": false
+    }
+  },
+  "rehearsal": {
+    "formalAcceptanceEvidence": false,
+    "baselineEligible": false,
+    "notificationAuthority": false,
+    "durationMs": 180012,
+    "kbarLatencyMs": {
+      "sampleCount": 54,
+      "p50": 2586,
+      "p95": 2623,
+      "max": 2623
+    },
+    "resources": {
+      "cpuBasisPoints": 12,
+      "rssBeforeBytes": 55050240,
+      "rssAfterBytes": 79216640,
+      "rssDeltaBytes": 24166400,
+      "maxRssBytes": 81608704,
+      "heapUsedBeforeBytes": 5701816,
+      "heapUsedAfterBytes": 8482904,
+      "maxHeapUsedBytes": 9764664
+    },
+    "existingSnapshotAvailability": {
+      "before": {
+        "available": true,
+        "httpStatus": 200,
+        "latencyMs": 62
+      },
+      "after": {
+        "available": true,
+        "httpStatus": 200,
+        "latencyMs": 128
+      },
+      "provesVisualChartFreshness": false
+    }
+  },
+  "interrupted": false
+}

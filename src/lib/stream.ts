@@ -319,8 +319,10 @@ function connect() {
     if (es) es.close();
     setStatus('connecting');
     es = new EventSource(`${getApiBase()}/api/v1/stream/data`);
+    const connection = es;
 
     es.onopen = () => {
+        if (es !== connection) return;
         retryDelay = 1000;
         setStatus('live');
         if (everDown) {
@@ -330,7 +332,9 @@ function connect() {
     };
 
     for (const ev of ['tick_stk', 'tick_fop']) {
-        es.addEventListener(ev, (e) => handleTick((e as MessageEvent).data));
+        es.addEventListener(ev, (e) => {
+            if (es === connection) handleTick((e as MessageEvent).data);
+        });
     }
     for (const ev of ['bidask_stk', 'bidask_fop']) {
         es.addEventListener(ev, (e) => handleBidAsk((e as MessageEvent).data));
@@ -347,11 +351,13 @@ function connect() {
         if (report) orderEventListeners.forEach((l) => l(report));
     });
     es.addEventListener('heartbeat', () => {
+        if (es !== connection) return;
         lastHeartbeat = Date.now();
         setStatus('live');
     });
 
     es.onerror = () => {
+        if (es !== connection) return;
         everDown = true;
         setStatus('down');
         es?.close();

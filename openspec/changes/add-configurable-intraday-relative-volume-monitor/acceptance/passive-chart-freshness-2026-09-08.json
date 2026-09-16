@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "candle-chart-passive-freshness-evidence/1",
+  "tradeDate": "2026-09-08",
+  "sourceUrl": "http://127.0.0.1:5173/?layout=intraday-stock-selection",
+  "canonicalSymbol": "IX0001",
+  "timeframeMinutes": 5,
+  "firstObservation": {
+    "observedAt": "2026-09-08T04:00:26.244Z",
+    "lastVisualCommitAt": "2026-09-08T04:00:24.974Z",
+    "lastSourceTime": "2026-09-08T12:00:00.000Z",
+    "freshnessMs": 1270
+  },
+  "secondObservation": {
+    "observedAt": "2026-09-08T04:00:40.243Z",
+    "lastVisualCommitAt": "2026-09-08T04:00:40.022Z",
+    "lastSourceTime": "2026-09-08T12:00:00.000Z",
+    "freshnessMs": 221
+  },
+  "visualCommitAdvanced": true,
+  "geometry": {
+    "observedAt": "2026-09-08T04:00:54.241Z",
+    "chartCount": 1,
+    "canvasCount": 19,
+    "largestCanvasWidth": 928,
+    "largestCanvasHeight": 431,
+    "allCanvasesVisible": true
+  },
+  "operations": {
+    "domReads": 3,
+    "networkRequests": 0,
+    "navigationCount": 0,
+    "reloadCount": 0,
+    "clickCount": 0,
+    "subscriptionMutations": 0,
+    "notificationDispatches": 0,
+    "brokerWrites": 0,
+    "productionTransitions": 0,
+    "serviceLifecycleMutations": 0
+  },
+  "provider": {
+    "physicalUsage": null,
+    "globalOwnershipComplete": null,
+    "releaseProven": null,
+    "headroom": null
+  },
+  "evidenceHash": "b45895d7cf17b05ab3d087cd2638e7c84d22fa0a62b8d29f7ccf17039376cd38"
+}

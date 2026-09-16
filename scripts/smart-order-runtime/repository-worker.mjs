@@ -26132,12 +26132,14 @@ function recordAccountReconciliation(database, input) {
             ),
         );
         const priorBindings = database.prepare(`
-            SELECT bindings.exit_claim_id, claims.state, claims.revision
+            SELECT bindings.exit_claim_id, bindings.trade_date,
+                   bindings.source_evidence_hash,
+                   claims.state, claims.revision
               FROM exit_claim_visibility_bindings AS bindings
               JOIN exit_claims AS claims USING(exit_claim_id)
              WHERE bindings.account_broker_ref=?
                AND bindings.account_id_ref=?
-               AND bindings.trade_date=?
+               AND bindings.trade_date<=?
                AND bindings.binding_kind='external_projection'
         `).all(
             projection.account.brokerId,
@@ -26161,6 +26163,21 @@ function recordAccountReconciliation(database, input) {
             if (Number(release.changes) !== 1) {
                 throw new Error('external sell claim release lost its CAS');
             }
+            insertTransitionJournalEvent(database, {
+                entityKind: 'exit_claim',
+                entityId: prior.exit_claim_id,
+                revision: prior.revision + 1,
+                reasonCode: prior.trade_date === projection.tradeDate
+                    ? 'EXTERNAL_ORDER_ABSENT_FROM_COMPLETE_SET'
+                    : 'PRIOR_TRADE_DATE_EXTERNAL_ORDER_EXPIRED',
+                summaryCode: 'external_exit_claim_released',
+                nowEpochMs: now,
+                payloadHash: sha256Digest(
+                    prior.source_evidence_hash,
+                    'external claim source evidence hash',
+                ),
+                eventSuffix: `complete-set-release-${projection.tradeDate}`,
+            });
         }
         for (const [contractKey, candidates] of candidatesByContract) {
             const position = projection.positions.find(
@@ -26557,6 +26574,11 @@ function recordAccountReconciliation(database, input) {
             accountReconciliationCurrent,
             externalSellClaimCount:
                 durableExternalCandidates.length,
+            releasedExternalSellClaimCount: priorBindings.filter(
+                (prior) =>
+                    !currentCandidateIds.has(prior.exit_claim_id) &&
+                    !['consumed', 'released'].includes(prior.state),
+            ).length,
             fullDayTotals: projection.fullDayTotals,
             headRevision,
             canonicalPnlCurrent,
@@ -26590,6 +26612,136 @@ function recordAccountReconciliation(database, input) {
             parentChildBlockedCount: parentChildSettlement.blockedCount,
             ...protectionDrift,
             brokerWriteAuthority: false,
+        });
+    });
+}
+
+function releasePriorTradeDateExternalClaims(database, input) {
+    rejectCallerSuppliedJournalEvent(input);
+    if (
+        !exactKeys(input, [
+            'accountBrokerRef',
+            'accountIdRef',
+            'currentTradeDate',
+            'currentTradeRecordCount',
+            'nowEpochMs',
+            'observedAtEpochMs',
+            'sourceEvidenceSha256',
+        ])
+    ) {
+        throw new TypeError(
+            'prior-trade-date external claim release input schema is invalid',
+        );
+    }
+    const accountBrokerRef = boundedToken(
+        input.accountBrokerRef,
+        'priorExternalRelease.accountBrokerRef',
+    );
+    const accountIdRef = boundedToken(
+        input.accountIdRef,
+        'priorExternalRelease.accountIdRef',
+    );
+    const currentTradeDate = taipeiTradeDate(input.currentTradeDate);
+    const currentTradeRecordCount = safeInteger(
+        input.currentTradeRecordCount,
+        'priorExternalRelease.currentTradeRecordCount',
+    );
+    if (currentTradeRecordCount !== 0) {
+        throw new Error(
+            'prior-trade-date external claim release requires an empty current broker trade set',
+        );
+    }
+    const observedAtEpochMs = safeInteger(
+        input.observedAtEpochMs,
+        'priorExternalRelease.observedAtEpochMs',
+    );
+    const now = safeInteger(
+        input.nowEpochMs,
+        'priorExternalRelease.nowEpochMs',
+    );
+    if (
+        observedAtEpochMs > now ||
+        now - observedAtEpochMs > 10_000
+    ) {
+        throw new Error(
+            'prior-trade-date external claim release evidence is stale',
+        );
+    }
+    const sourceEvidenceSha256 = sha256Digest(
+        input.sourceEvidenceSha256,
+        'priorExternalRelease.sourceEvidenceSha256',
+    );
+    return transaction(database, () => {
+        const candidates = database.prepare(`
+            SELECT claims.exit_claim_id, claims.revision,
+                   bindings.trade_date
+              FROM exit_claims AS claims
+              JOIN exit_claim_visibility_bindings AS bindings
+                USING(exit_claim_id)
+              JOIN external_sell_visibility_heads AS heads
+                ON heads.account_broker_ref=bindings.account_broker_ref
+               AND heads.account_id_ref=bindings.account_id_ref
+               AND heads.trade_date=bindings.trade_date
+               AND heads.contract_key=bindings.contract_key
+             WHERE claims.account_broker_ref=?
+               AND claims.account_id_ref=?
+               AND claims.external_lineage=1
+               AND claims.obligation_id IS NULL
+               AND claims.intent_id IS NULL
+               AND claims.state IN ('broker_working','unknown')
+               AND bindings.binding_kind='external_projection'
+               AND bindings.trade_date<?
+               AND heads.collection_complete=1
+             ORDER BY bindings.trade_date, claims.exit_claim_id
+             LIMIT 33
+        `).all(accountBrokerRef, accountIdRef, currentTradeDate);
+        if (candidates.length > 32) {
+            throw new Error(
+                'prior-trade-date external claim release exceeds its bounded set',
+            );
+        }
+        for (const candidate of candidates) {
+            const release = database.prepare(`
+                UPDATE exit_claims
+                   SET state='released', updated_at_epoch_ms=?,
+                       terminal_at_epoch_ms=?, revision=revision+1
+                 WHERE exit_claim_id=? AND revision=?
+                   AND external_lineage=1
+                   AND obligation_id IS NULL AND intent_id IS NULL
+                   AND state IN ('broker_working','unknown')
+            `).run(
+                now,
+                now,
+                candidate.exit_claim_id,
+                candidate.revision,
+            );
+            if (Number(release.changes) !== 1) {
+                throw new Error(
+                    'prior-trade-date external claim release lost its CAS',
+                );
+            }
+            insertTransitionJournalEvent(database, {
+                entityKind: 'exit_claim',
+                entityId: candidate.exit_claim_id,
+                revision: candidate.revision + 1,
+                reasonCode: 'PRIOR_TRADE_DATE_EXTERNAL_ORDER_EXPIRED',
+                summaryCode: 'external_exit_claim_released',
+                nowEpochMs: now,
+                payloadHash: sourceEvidenceSha256,
+                eventSuffix: `maintenance-release-${currentTradeDate}`,
+            });
+        }
+        if (candidates.length > 0) {
+            advanceLifecycleSideEffectRevision(database);
+        }
+        return Object.freeze({
+            state: 'recorded',
+            releasedExternalSellClaimCount: candidates.length,
+            currentTradeDate,
+            currentTradeRecordCount: 0,
+            sourceEvidenceSha256,
+            brokerWriteAuthority: false,
+            writeMasterAuthority: false,
         });
     });
 }
@@ -34538,6 +34690,7 @@ const handlers = {
     beginBrokerEventReconciliation,
     recordCanonicalBrokerEvent,
     recordAccountReconciliation,
+    releasePriorTradeDateExternalClaims,
     recordBrokerOrderEvidence,
     materializeProtectedEntryFill,
     recordQuickQuoteObservation,

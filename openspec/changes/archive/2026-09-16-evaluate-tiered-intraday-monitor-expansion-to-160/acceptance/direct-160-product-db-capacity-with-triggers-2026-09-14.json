@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "intraday-monitor-direct-160-product-db-capacity/1",
+  "evidenceClass": "synthetic_load_only",
+  "scenario": "all_symbols_trigger_when_first_comparable",
+  "measuredAt": "2026-09-14T02:07:33.193Z",
+  "manifestHash": "e7743272b46c6a207313b2767a910ae6072ff956a8bdd2ff3ceee5c6cbaf6985",
+  "baselineHash": "868bc0a51381362c155302a80f0acdd5334e3c91e00938f074b4f8873d11c54c",
+  "configRevision": 4,
+  "globalThreshold": "2",
+  "exactCohortCount": 160,
+  "baselineMinuteCount": 43200,
+  "observationCount": 43200,
+  "triggerCount": 160,
+  "measurement": {
+    "durationMs": 15120,
+    "maxObservationPersistenceMs": 145.402,
+    "p95ObservationPersistenceMs": 0.146,
+    "p99ObservationPersistenceMs": 2.19,
+    "finalDatabasePlusWalBytes": 38260736,
+    "maximumDatabasePlusWalBytes": 42327712
+  },
+  "budget": {
+    "maxDatabaseGrowthBytes": 67108864,
+    "headroomBytes": 24781152,
+    "headroomRatio": 1.59
+  },
+  "limitations": {
+    "providerCapacityEvidence": false,
+    "liveLatencyEvidence": false,
+    "formalAcceptanceEvidence": false
+  },
+  "operations": {
+    "networkRequests": 0,
+    "subscriptionMutations": 0,
+    "notificationDispatches": 0,
+    "brokerWrites": 0,
+    "productionTransitions": 0,
+    "serviceLifecycleMutations": 0,
+    "activeLimitMutations": 0
+  }
+}

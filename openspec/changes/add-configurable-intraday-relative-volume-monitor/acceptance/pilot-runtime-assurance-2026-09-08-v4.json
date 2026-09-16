@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "intraday-monitor-pilot-runtime-assurance/1",
+  "tradeDate": "2026-09-08",
+  "previousTradeDate": "2026-09-07",
+  "observedAt": "2026-09-08T01:57:02.780Z",
+  "simulation": true,
+  "chart": {
+    "canonicalSymbol": "8027.TWO",
+    "sourceUrl": "http://127.0.0.1:5173/",
+    "firstObservedAt": "2026-09-08T01:57:02.169Z",
+    "lastObservedAt": "2026-09-08T01:57:02.713Z",
+    "freshnessMs": 896,
+    "canvasCount": 7,
+    "canvasWidth": 876,
+    "canvasHeight": 402,
+    "beforeSha256": "39e102eeca8984c8ae1da2f9b934b87abca801f02b49bb813236b4541d831e65",
+    "afterSha256": "39e102eeca8984c8ae1da2f9b934b87abca801f02b49bb813236b4541d831e65",
+    "changed": true
+  },
+  "reconnect": {
+    "transport": "intraday-monitor-trigger-sse",
+    "attempted": true,
+    "recovered": true,
+    "clientGenerationBefore": "probe_1788832621128_dd42e1a8febc4765",
+    "clientGenerationAfter": "probe_1788832621135_d068bf2e1d174059",
+    "generationAdvanced": true,
+    "serverGenerationBefore": "local_qQ-0aHj-v8WEot6Bl5zR4WhoecprbIq4",
+    "serverGenerationAfter": "local_qQ-0aHj-v8WEot6Bl5zR4WhoecprbIq4",
+    "cursorBefore": "eyJnZW5lcmF0aW9uIjoibG9jYWxfcVEtMGFIai12OFdFb3Q2Qmw1elI0V2hvZWNwcmJJcTQiLCJvZmZzZXQiOjAsInRyYWRlRGF0ZSI6IjIwMjYtMDktMDgifQ.IjuvsQxZuupe0Cz3rrY2GZa-LK-UPIX-1VEof3EdT6o",
+    "cursorAfter": "eyJnZW5lcmF0aW9uIjoibG9jYWxfcVEtMGFIai12OFdFb3Q2Qmw1elI0V2hvZWNwcmJJcTQiLCJvZmZzZXQiOjAsInRyYWRlRGF0ZSI6IjIwMjYtMDktMDgifQ.IjuvsQxZuupe0Cz3rrY2GZa-LK-UPIX-1VEof3EdT6o",
+    "cursorPreserved": true,
+    "oldConnectionClosed": true,
+    "replayedEventCount": 0,
+    "duplicateNotificationCount": 0
+  },
+  "existingFeatures": {
+    "chartFresh": true,
+    "watchlistHealthy": true,
+    "alertHealthy": true,
+    "smartOrderHealthy": true,
+    "simulationRuntimeHealthy": true
+  },
+  "regressionEvidenceRefs": [
+    {
+      "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+      "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+    },
+    {
+      "path": "acceptance/compact-left-panel-ui-2026-09-07.md",
+      "sha256": "efc523b0cb2a8cfe83b3f7ef01793387650d373c16f0c71c594fd916050eec0d"
+    }
+  ],
+  "operations": {
+    "methods": [
+      "GET"
+    ],
+    "subscriptionMutations": 0,
+    "notificationDispatches": 0,
+    "brokerWrites": 0,
+    "productionTransitions": 0,
+    "serviceLifecycleMutations": 0
+  },
+  "assuranceHash": "fa47f6084ae87114b6f3990d6af9c12c74bfc9ceb549dba5f36429d95c35afe1"
+}

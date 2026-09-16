@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "intraday-monitor-tiered-acceptance-dossier-manifest/1",
+  "changeId": "evaluate-tiered-intraday-monitor-expansion-to-160",
+  "prerequisite": {
+    "stage20Bundle": null,
+    "stage20Review": null
+  },
+  "offlineLoad": {
+    "stage50Evidence": null,
+    "stage100Evidence": null,
+    "stage160Evidence": null,
+    "ui160Evidence": "browser:test:intraday-monitor-panel:offline-160"
+  },
+  "liveStages": {
+    "stage50": { "plan": "acceptance/tiered-stage-plan-50.json", "bundle": null, "review": null },
+    "stage100": { "plan": "acceptance/tiered-stage-plan-100.json", "bundle": null, "review": null },
+    "stage160": { "plan": "acceptance/tiered-stage-plan-160.json", "bundles": [], "review": null }
+  },
+  "categories": {
+    "dataQuality": [],
+    "resources": [],
+    "ui": [],
+    "accessibility": [],
+    "rollback": ["acceptance/rollback-matrix.md"],
+    "tests": []
+  },
+  "reviewerSignoff": false,
+  "finalActiveLimit": 20,
+  "unresolvedRisks": [
+    "provider physical usage/global ownership/release/headroom remain unknown",
+    "live Stage 50/100/160 evidence not yet collected"
+  ]
+}

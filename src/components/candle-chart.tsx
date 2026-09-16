@@ -288,6 +288,7 @@ export function CandleChart({
     onOrdersChanged?: () => void;
     initialDaily?: boolean;
 }) {
+    const diagnosticRef = useRef<HTMLDivElement>(null);
     const hostRef = useRef<HTMLDivElement>(null);
     const chartRef = useRef<IChartApi | null>(null);
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -314,6 +315,40 @@ export function CandleChart({
             ? rawReference
             : undefined;
     const tf = TIMEFRAMES[tfIdx] ?? TIMEFRAMES[1];
+    const markPassiveVisualCommit = (sourceTime: number | undefined) => {
+        const node = diagnosticRef.current;
+        if (!node) return;
+        node.dataset.chartLastVisualCommitAt = new Date().toISOString();
+        delete node.dataset.chartLastVisualErrorAt;
+        delete node.dataset.chartLastVisualError;
+        if (Number.isFinite(sourceTime)) {
+            node.dataset.chartLastSourceTime = new Date(Number(sourceTime) * 1_000).toISOString();
+        } else {
+            delete node.dataset.chartLastSourceTime;
+        }
+    };
+    const markPassiveSourceReceipt = (sourceTime: number) => {
+        const node = diagnosticRef.current;
+        if (!node) return;
+        node.dataset.chartLastSourceReceivedAt = new Date().toISOString();
+        node.dataset.chartLastReceivedSourceTime = new Date(sourceTime * 1_000).toISOString();
+    };
+    const markPassiveVisualError = () => {
+        const node = diagnosticRef.current;
+        if (!node) return;
+        node.dataset.chartLastVisualErrorAt = new Date().toISOString();
+        node.dataset.chartLastVisualError = 'series_update_and_resync_failed';
+    };
+    useLayoutEffect(() => {
+        const node = diagnosticRef.current;
+        if (!node) return;
+        delete node.dataset.chartLastVisualCommitAt;
+        delete node.dataset.chartLastSourceTime;
+        delete node.dataset.chartLastSourceReceivedAt;
+        delete node.dataset.chartLastReceivedSourceTime;
+        delete node.dataset.chartLastVisualErrorAt;
+        delete node.dataset.chartLastVisualError;
+    }, [contract.code, tf.minutes]);
     const fibonacciIdentityValue = fibonacciIdentity({
         securityType: contract.security_type,
         exchange: contract.exchange,
@@ -1844,6 +1879,7 @@ export function CandleChart({
             invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
+            markPassiveVisualCommit(bars.at(-1)?.time);
         };
 
         if (exactTargetObservation) {
@@ -2089,6 +2125,7 @@ export function CandleChart({
             turnoverDeltaTwd = cursor.turnoverDeltaTwd;
         }
         if (!Number.isFinite(volumeDelta) || volumeDelta < 0) return;
+        markPassiveSourceReceipt(tickTime);
         const rawTail = rawRef.current[rawRef.current.length - 1];
         if (!rawTail || rawMinuteTime > rawTail.time) {
             rawRef.current.push({
@@ -2163,9 +2200,28 @@ export function CandleChart({
                 value: bar.volume,
                 color: bar.close >= bar.open ? colors.upVol : colors.downVol,
             });
+            markPassiveVisualCommit(bar.time);
         } catch {
-            // a rejected update (e.g. timestamp older than the series tail)
-            // must never take the app down — history reload will resync
+            // Recover a rejected incremental update from the already-canonical
+            // in-memory bars. Only record a visual commit after both series
+            // accept the resynchronised data.
+            try {
+                series.setData(barsRef.current.map((item) => ({
+                    time: item.time as UTCTimestamp,
+                    open: item.open,
+                    high: item.high,
+                    low: item.low,
+                    close: item.close,
+                })));
+                volSeriesRef.current?.setData(barsRef.current.map((item) => ({
+                    time: item.time as UTCTimestamp,
+                    value: item.volume,
+                    color: item.close >= item.open ? colors.upVol : colors.downVol,
+                })));
+                markPassiveVisualCommit(bar.time);
+            } catch {
+                markPassiveVisualError();
+            }
         }
     }, [
         liveQuote,
@@ -3639,7 +3695,15 @@ export function CandleChart({
         );
     });
     return (
-        <div className={styles.wrap}>
+        <div
+            className={styles.wrap}
+            ref={diagnosticRef}
+            data-chart-diagnostic-schema='candle-chart-passive-freshness/1'
+            data-chart-code={contract.code}
+            data-chart-timeframe-minutes={tf.minutes}
+            data-chart-observation-mode='passive-dom'
+            data-chart-provider-physical-usage='unknown'
+        >
             <div className={styles.toolbar}>
                 {TIMEFRAMES.map((t, i) => (
                     <button

@@ -1,0 +1,26 @@
+{
+  "contracts": [
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1001" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1002" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1003" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1004" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1005" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1006" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1007" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1008" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1009" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1010" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1011" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1012" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1013" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1014" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1015" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1016" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1017" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1018" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1019" },
+    { "security_type": "STK", "region": "TW", "exchange": "TSE", "code": "1020" }
+  ],
+  "synthetic": true,
+  "warning": "只供 CLI 與 schema 測試，不代表正式商品、contract export 或行情證據。"
+}

@@ -1,0 +1,88 @@
+{
+  "schemaVersion": "intraday-monitor-kbar-batch-probe/1",
+  "startedAt": "2026-09-07T01:35:28.949Z",
+  "endedAt": "2026-09-07T01:36:24.258Z",
+  "api": {
+    "version": "1.7.1",
+    "simulationBefore": true,
+    "simulationAfter": true
+  },
+  "batch": {
+    "requestedSymbolCount": 2,
+    "symbols": [
+      "2330.TW",
+      "2454.TW"
+    ],
+    "oneSubscribeRequest": true,
+    "oneUnsubscribeRequest": true
+  },
+  "transport": {
+    "streamOpened": true,
+    "streamEnd": "duration_limit",
+    "subscribe": {
+      "httpStatus": 200,
+      "accepted": true
+    },
+    "unsubscribe": {
+      "httpStatus": 200,
+      "accepted": true
+    },
+    "activeConnectionsBefore": 8,
+    "activeConnectionsAfter": 8,
+    "providerPhysicalUsageProven": false,
+    "providerReleaseProven": false
+  },
+  "capture": {
+    "bytes": 586,
+    "kbarEvents": 2,
+    "rejectedEvents": 0,
+    "unexpectedSymbols": 0,
+    "payloadShapes": [
+      "amount:number,close:number,code:string,date:string,high:number,low:number,open:number,tick_count:number,time:string,volume:number"
+    ],
+    "payloadFormats": [
+      "date=yyyy/mm/dd,time=hh:mm:ss,volume=safe-integer"
+    ],
+    "rejectionReasons": {},
+    "symbols": {
+      "2330": {
+        "events": 1,
+        "validCompletedMinutes": 1,
+        "firstMinute": "2026-09-07T09:36",
+        "lastMinute": "2026-09-07T09:36",
+        "firstObservedAt": "2026-09-07T01:36:02.521Z",
+        "lastObservedAt": "2026-09-07T01:36:02.521Z",
+        "minimumArrivalLagSeconds": 2.521,
+        "maximumArrivalLagSeconds": 2.521,
+        "accumulatedVolume": 33
+      },
+      "2454": {
+        "events": 1,
+        "validCompletedMinutes": 1,
+        "firstMinute": "2026-09-07T09:36",
+        "lastMinute": "2026-09-07T09:36",
+        "firstObservedAt": "2026-09-07T01:36:02.522Z",
+        "lastObservedAt": "2026-09-07T01:36:02.522Z",
+        "minimumArrivalLagSeconds": 2.522,
+        "maximumArrivalLagSeconds": 2.522,
+        "accumulatedVolume": 326
+      }
+    },
+    "rawPayloadSaved": false
+  },
+  "assessment": {
+    "observedAllSymbols": true,
+    "functionalInputPathProven": true,
+    "quotaCountingDimensionProven": false,
+    "gate0Approved": false,
+    "note": "本探針只證明單一多商品 KBar request 的實際資料路徑；HTTP accepted 不等於 provider physical receipt。"
+  },
+  "operations": {
+    "simulationOnly": true,
+    "subscriptionMutations": 2,
+    "brokerWrites": 0,
+    "productionLogins": 0,
+    "serviceRestarts": 0,
+    "rawPayloadSaved": false
+  }
+}

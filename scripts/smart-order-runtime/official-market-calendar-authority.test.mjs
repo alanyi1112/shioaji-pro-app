@@ -78,6 +78,13 @@ beforeEach(() => {
 });
 
 describe('official TWSE/TPEx market calendar authority', () => {
+    it('accepts the explicit bond rowspan label while rejecting unknown single-cell rows', () => {
+        const withRow = text => ({ data: { html: TPEX_PAYLOAD.data.html.replace('</table>', `</table><table><tr><td>${text}</td></tr></table>`) } });
+        expect(parseTpexOfficialCalendar(withRow('農曆春節前債券等殖成交系統（含比對系統）最後交易日'), 2026).closedDates)
+            .toEqual(parseTpexOfficialCalendar(TPEX_PAYLOAD, 2026).closedDates);
+        expect(() => parseTpexOfficialCalendar(withRow('未知股票休市列'), 2026)).toThrow(/schema changed/);
+    });
+
     it('rejects an explicitly missing or forged controller authority', async () => {
         await expect(
             startSmartOrderRuntimeController({

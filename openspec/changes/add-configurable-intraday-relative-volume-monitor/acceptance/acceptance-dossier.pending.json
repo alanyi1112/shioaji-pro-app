@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "intraday-monitor-acceptance-dossier/2",
+  "changeId": "add-configurable-intraday-relative-volume-monitor",
+  "createdAt": "2026-09-07T01:58:18.430Z",
+  "gate0": {
+    "decision": "bounded_go",
+    "report": {
+      "path": "gate-0/kbar-batch-alternative-decision-2026-09-07.md",
+      "sha256": "a09123b066291f7c9bad418f14054f09d21ad281971fe9e5593afedb35e08d26"
+    },
+    "reviewerSignoff": false,
+    "reviewedAt": null
+  },
+  "stages": [
+    {
+      "stage": 20,
+      "decision": "pending",
+      "approvedActiveMonitorCount": null,
+      "plan": null,
+      "bundle": null,
+      "review": null,
+      "reviewerSignoff": false,
+      "reviewedAt": null
+    }
+  ],
+  "categories": {
+    "dataQuality": [
+      {
+        "path": "gate-0/kbar-batch-probe-final-2026-09-07.json",
+        "sha256": "18c436fa13301443ac6f61fe86b860f925817cc1e3301dcfe079c641fdd9bfc0"
+      },
+      {
+        "path": "gate-0/kbar-completion-semantics-2026-09-07.json",
+        "sha256": "1eec3288ee5826065e45d9a47909e454220601fa2fd66a10ba20f1b3ab1bec32"
+      }
+    ],
+    "resources": [
+      {
+        "path": "gate-0/bootstrap-capacity-probe-2026-09-04.md",
+        "sha256": "82fd517f09780274f0088c1c21394701c5a1922f86da143c39b238029ef1b041"
+      }
+    ],
+    "ui": [
+      {
+        "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+        "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+      }
+    ],
+    "accessibility": [
+      {
+        "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+        "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+      }
+    ],
+    "rollback": [
+      {
+        "path": "design.md",
+        "sha256": "5ac5ee6f28248670f4cced934ad3cdc656c67d0922bfd56301d602f8cd78aa0c"
+      }
+    ],
+    "tests": [
+      {
+        "path": "acceptance/pilot-stage-runbook.md",
+        "sha256": "8c70ba98b7987949fb2ad02976caee1255eb61a296505aaadf3eb12e586fc2fa"
+      }
+    ]
+  },
+  "formalActiveMonitorLimit": null,
+  "unresolvedRisks": [
+    "Shioaji provider physical counting、release 與 headroom 仍未知，且本案不以 request／SSE count 推算。",
+    "20 檔正式 cohort 尚未由使用者設定及核定。",
+    "尚未完成兩個完整交易日；第一日只可建立自有 baseline。",
+    "2026-09-07 證據是 2 檔盤中功能探針，不是完整交易日。"
+  ],
+  "unresolvedRisksReviewed": false,
+  "finalReviewerSignoff": false,
+  "finalReviewedAt": null,
+  "productionAuthorized": false,
+  "brokerWriteAuthorized": false,
+  "serviceLifecycleAuthorized": false,
+  "dossierHash": "d91dd30bd80f5cadafaddc17585bc3c68ab44baa3791bdd754cd8265736b10b3"
+}

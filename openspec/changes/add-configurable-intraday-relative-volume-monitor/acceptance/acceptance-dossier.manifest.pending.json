@@ -1,0 +1,57 @@
+{
+  "gate0": {
+    "decision": "bounded_go",
+    "report": "gate-0/kbar-batch-alternative-decision-2026-09-07.md",
+    "reviewerSignoff": false,
+    "reviewedAt": null
+  },
+  "stage20": {
+    "decision": "pending",
+    "approvedActiveMonitorCount": null,
+    "plan": "acceptance/pilot-stage-plan-20-2026-09-07.json",
+    "bundle": null,
+    "review": null,
+    "reviewerSignoff": false,
+    "reviewedAt": null
+  },
+  "categories": {
+    "dataQuality": [
+      "gate-0/kbar-batch-probe-final-2026-09-07.json",
+      "gate-0/kbar-completion-semantics-2026-09-07.json",
+      "acceptance/kbar-shadow-failure-2026-09-08.md",
+      "acceptance/kbar-shadow-failure-2026-09-09.md",
+      "acceptance/post-close-historical-repair-offline-verification-2026-09-09.md"
+    ],
+    "resources": [
+      "gate-0/bootstrap-capacity-probe-2026-09-04.md",
+      "acceptance/passive-chart-freshness-2026-09-08.json",
+      "acceptance/pilot-runtime-assurance-2026-09-08-v6.json",
+      "acceptance/intraday-progress-2026-09-08.md"
+    ],
+    "ui": [
+      "acceptance/offhours-ui-and-regression-2026-09-04.md",
+      "acceptance/compact-left-panel-ui-2026-09-07.md"
+    ],
+    "accessibility": [
+      "acceptance/offhours-ui-and-regression-2026-09-04.md"
+    ],
+    "rollback": [
+      "design.md"
+    ],
+    "tests": [
+      "acceptance/pilot-stage-runbook.md",
+      "acceptance/intraday-progress-2026-09-08.md",
+      "acceptance/post-close-historical-repair-offline-verification-2026-09-09.md",
+      "acceptance/tomorrow-final-assembly-checklist.md"
+    ]
+  },
+  "formalActiveMonitorLimit": null,
+  "unresolvedRisks": [
+    "Shioaji provider physical counting、release 與 headroom 保持 unknown，本案不以 request／SSE count 推算。",
+    "2026-09-08 與 2026-09-09 均為失敗證據，仍需完成兩個新的不同完整交易日；第一個成功日只建立自有 baseline。",
+    "20 檔 evidence 尚待人工審閱與明確簽核。"
+  ],
+  "unresolvedRisksReviewed": false,
+  "finalReviewerSignoff": false,
+  "finalReviewedAt": null
+}

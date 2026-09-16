@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "intraday-monitor-acceptance-dossier/2",
+  "changeId": "add-configurable-intraday-relative-volume-monitor",
+  "createdAt": "2026-09-09T08:27:47.172Z",
+  "gate0": {
+    "decision": "bounded_go",
+    "report": {
+      "path": "gate-0/kbar-batch-alternative-decision-2026-09-07.md",
+      "sha256": "a09123b066291f7c9bad418f14054f09d21ad281971fe9e5593afedb35e08d26"
+    },
+    "reviewerSignoff": false,
+    "reviewedAt": null
+  },
+  "stages": [
+    {
+      "stage": 20,
+      "decision": "pending",
+      "approvedActiveMonitorCount": null,
+      "plan": {
+        "path": "acceptance/pilot-stage-plan-20-2026-09-07.json",
+        "sha256": "b37c2eaf063a9ce3efb542a6b1fde758de81c5695dad4c9caadaf2663e6ebdee"
+      },
+      "bundle": null,
+      "review": null,
+      "reviewerSignoff": false,
+      "reviewedAt": null
+    }
+  ],
+  "categories": {
+    "dataQuality": [
+      {
+        "path": "gate-0/kbar-batch-probe-final-2026-09-07.json",
+        "sha256": "18c436fa13301443ac6f61fe86b860f925817cc1e3301dcfe079c641fdd9bfc0"
+      },
+      {
+        "path": "gate-0/kbar-completion-semantics-2026-09-07.json",
+        "sha256": "1eec3288ee5826065e45d9a47909e454220601fa2fd66a10ba20f1b3ab1bec32"
+      },
+      {
+        "path": "acceptance/kbar-shadow-failure-2026-09-08.md",
+        "sha256": "6736e85edbdf9db277c8a813d47de79d75409e6577b7fb7169f5b1f384ee9bb4"
+      },
+      {
+        "path": "acceptance/kbar-shadow-failure-2026-09-09.md",
+        "sha256": "e9be64668b6a7ff957b610dd56b1277b5f7b97b4404c9ad57475df866cef2f80"
+      },
+      {
+        "path": "acceptance/post-close-historical-repair-offline-verification-2026-09-09.md",
+        "sha256": "204657fb818b24cda1ca4bdec9f13e4430ee2cf4c5d81cde81165b3621a9be15"
+      }
+    ],
+    "resources": [
+      {
+        "path": "gate-0/bootstrap-capacity-probe-2026-09-04.md",
+        "sha256": "82fd517f09780274f0088c1c21394701c5a1922f86da143c39b238029ef1b041"
+      },
+      {
+        "path": "acceptance/passive-chart-freshness-2026-09-08.json",
+        "sha256": "b033308c27c68d8b086bbb6edab8f79d9072d6efd9bb93d481b58577784e74bd"
+      },
+      {
+        "path": "acceptance/pilot-runtime-assurance-2026-09-08-v6.json",
+        "sha256": "dd300193f6ea618562db595dfb41de1369fe40501994a76f08091545a78eaf15"
+      },
+      {
+        "path": "acceptance/intraday-progress-2026-09-08.md",
+        "sha256": "d2437b53727f6e8a915ab2dc88b8b54391af71a2f6530ce7ef7f4898689ed621"
+      }
+    ],
+    "ui": [
+      {
+        "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+        "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+      },
+      {
+        "path": "acceptance/compact-left-panel-ui-2026-09-07.md",
+        "sha256": "efc523b0cb2a8cfe83b3f7ef01793387650d373c16f0c71c594fd916050eec0d"
+      }
+    ],
+    "accessibility": [
+      {
+        "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+        "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+      }
+    ],
+    "rollback": [
+      {
+        "path": "design.md",
+        "sha256": "a0a0d6c5e7e0e9254972b3074d6429db87301a691c6b093ff1ba5acc27713271"
+      }
+    ],
+    "tests": [
+      {
+        "path": "acceptance/pilot-stage-runbook.md",
+        "sha256": "fd38e79c32131908b75eb06b4df7241983d99a048194c548fb17bfb261cf8653"
+      },
+      {
+        "path": "acceptance/intraday-progress-2026-09-08.md",
+        "sha256": "d2437b53727f6e8a915ab2dc88b8b54391af71a2f6530ce7ef7f4898689ed621"
+      },
+      {
+        "path": "acceptance/post-close-historical-repair-offline-verification-2026-09-09.md",
+        "sha256": "204657fb818b24cda1ca4bdec9f13e4430ee2cf4c5d81cde81165b3621a9be15"
+      },
+      {
+        "path": "acceptance/tomorrow-final-assembly-checklist.md",
+        "sha256": "bf81bc042e63e13cef8623b2c0bcd104e3f06f24214e93fb91377d1f43cf1cd5"
+      }
+    ]
+  },
+  "formalActiveMonitorLimit": null,
+  "unresolvedRisks": [
+    "Shioaji provider physical counting、release 與 headroom 保持 unknown，本案不以 request／SSE count 推算。",
+    "2026-09-08 與 2026-09-09 均為失敗證據，仍需完成兩個新的不同完整交易日；第一個成功日只建立自有 baseline。",
+    "20 檔 evidence 尚待人工審閱與明確簽核。"
+  ],
+  "unresolvedRisksReviewed": false,
+  "finalReviewerSignoff": false,
+  "finalReviewedAt": null,
+  "productionAuthorized": false,
+  "brokerWriteAuthorized": false,
+  "serviceLifecycleAuthorized": false,
+  "dossierHash": "1555bde57733b58497a6978a9efe8ebd687f26e9a89b5d0371448780c82672ba"
+}

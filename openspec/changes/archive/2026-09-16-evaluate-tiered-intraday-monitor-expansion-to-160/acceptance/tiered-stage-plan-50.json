@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "intraday-monitor-tiered-stage-plan/1",
+  "stage": 50,
+  "manifestHash": "d80e3531792d1ac028ff9dbe3ba6299a8b71f4dca71aefae88458e5629c3386c",
+  "exactCohortCount": 50,
+  "minimumCompleteTradingDays": 1,
+  "budgets": {
+    "maxCpuBasisPoints": 2500,
+    "maxRssBytes": 268435456,
+    "maxDatabaseGrowthBytes": 33554432,
+    "minimumAvailableDiskBytes": 2147483648,
+    "maxEventToSealLatencyMs": 10000,
+    "maxChartFreshnessMs": 10000,
+    "reconnectRequired": true,
+    "existingFeaturesRequired": true
+  },
+  "simulationOnly": true,
+  "featureEnabled": false,
+  "notificationsEnabled": false,
+  "provider": {
+    "physicalUsage": null,
+    "globalOwnershipComplete": null,
+    "releaseProven": null,
+    "headroom": null
+  },
+  "operations": {
+    "networkWrites": 0,
+    "subscriptionMutations": 0,
+    "notificationDispatches": 0,
+    "brokerWrites": 0,
+    "productionTransitions": 0,
+    "serviceLifecycleMutations": 0,
+    "activeLimitMutations": 0
+  },
+  "createdAt": "2026-09-08T11:50:00+08:00",
+  "planHash": "7e02093a4176239dfe8e5da268e832ab1fd7f03721f5ecfb46c6ad1740b00010"
+}

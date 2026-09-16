@@ -11,13 +11,18 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test } from 'vitest';
+import { afterAll, test } from 'vitest';
 import {
-    DEFAULT_TASK_14_7_MANIFEST_PATH,
-    DEFAULT_TASK_14_7_REPO_ROOT,
+    DEFAULT_TASK_14_7_MANIFEST_PATH as ORIGINAL_MANIFEST_PATH,
+    DEFAULT_TASK_14_7_REPO_ROOT as ORIGINAL_REPO_ROOT,
     computeTask147AcceptanceManifestSha256,
     validateTask147AcceptanceManifest,
 } from './task-14-7-acceptance-validator.mjs';
+import { archivedAcceptanceTestFixture } from './archived-acceptance-test-fixture.mjs';
+const archivedFixture = await archivedAcceptanceTestFixture(ORIGINAL_REPO_ROOT, ORIGINAL_MANIFEST_PATH);
+const DEFAULT_TASK_14_7_MANIFEST_PATH = archivedFixture.manifestPath;
+const DEFAULT_TASK_14_7_REPO_ROOT = archivedFixture.root;
+afterAll(() => archivedFixture.close());
 
 async function loadManifest() {
     return JSON.parse(

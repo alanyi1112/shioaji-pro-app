@@ -13,6 +13,7 @@ import {
 } from './src/lib/runtime-mode-shared';
 import { smartOrderSameOriginGateway } from './scripts/smart-order-runtime/vite-same-origin-gateway.mjs';
 import { stockScreenerGateway } from './scripts/stock-screener-gateway.mjs';
+import { intradayMonitorLocalApiGateway } from './scripts/intraday-monitor-runtime/vite-local-api-gateway.mjs';
 
 function runtimeModeFile() {
     return (
@@ -182,6 +183,9 @@ export default defineConfig(({ command, mode, isPreview }) => {
             ...(isManagedLocalServe
                 ? [
                       stockScreenerGateway(),
+                      intradayMonitorLocalApiGateway({
+                          appSupportRoot: smartOrderAppSupportRoot(),
+                      }),
                       smartOrderSameOriginGateway({
                           appSupportRoot: smartOrderAppSupportRoot(),
                       }),

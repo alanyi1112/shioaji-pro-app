@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "intraday-monitor-tiered-stage-plan/2",
+  "stage": 160,
+  "manifestHash": "527c5216f9dac4a407d9ddaa3c816b0fe61e1b72ac15a5707195efa0686eb9d4",
+  "exactCohortCount": 160,
+  "minimumCompleteTradingDays": 2,
+  "budgets": {
+    "maxCpuBasisPoints": 2500,
+    "maxRssBytes": 1073741824,
+    "maxDatabaseGrowthBytes": 33554432,
+    "minimumAvailableDiskBytes": 8589934592,
+    "maxEventToSealLatencyMs": 10000,
+    "maxChartFreshnessMs": 10000,
+    "reconnectRequired": true,
+    "existingFeaturesRequired": true
+  },
+  "executionPath": "direct_20_to_160",
+  "storageProfile": {
+    "schemaVersion": "intraday-monitor-direct-160-storage/1",
+    "targetCount": 160,
+    "minuteCountPerDay": 43200,
+    "sessionCanonicalBytes": 33554432,
+    "captureOutputBytes": 67108864,
+    "bundleCanonicalBytes": 134217728,
+    "bundleOutputBytes": 134217728,
+    "offlineFixtureBytes": 134217728,
+    "streamTotalBytes": 134217728,
+    "streamFrameBytes": 131072,
+    "logBytes": 16777216,
+    "minimumAvailableDiskBytes": 8589934592
+  },
+  "simulationOnly": true,
+  "featureEnabled": false,
+  "notificationsEnabled": false,
+  "provider": {
+    "physicalUsage": null,
+    "globalOwnershipComplete": null,
+    "releaseProven": null,
+    "headroom": null
+  },
+  "operations": {
+    "networkWrites": 0,
+    "subscriptionMutations": 0,
+    "notificationDispatches": 0,
+    "brokerWrites": 0,
+    "productionTransitions": 0,
+    "serviceLifecycleMutations": 0,
+    "activeLimitMutations": 0
+  },
+  "createdAt": "2026-09-11T06:11:55.911Z",
+  "planHash": "5880745d0293faeb1c4ad4aae34ac30bdb234017c7a15be8db31fc2e71a1c327"
+}

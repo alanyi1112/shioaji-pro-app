@@ -111,6 +111,9 @@ SMART_ORDER_LAUNCH_AGENT_INSTALLER="${REPO_DIR}/scripts/smart-order-runtime/laun
 SMART_ORDER_MODE_LEASE_HOLDER="${REPO_DIR}/scripts/smart-order-runtime/mode-execution-lease-holder.mjs"
 SMART_ORDER_PLATFORM_SUPPORT="${REPO_DIR}/scripts/smart-order-runtime/trading-runtime-platform-support.mjs"
 SMART_ORDER_RUNTIME_SOURCE="${REPO_DIR}/scripts/realtimestock-runtime"
+SERVICE_LOG_WRAPPER_SOURCE="${REPO_DIR}/scripts/intraday-monitor-runtime/service-log-wrapper.mjs"
+SERVICE_LOG_WRAPPER="${INSTALLED_BIN_DIR}/service-log-wrapper.mjs"
+RUNTIME_LOG_DIR="${APP_SUPPORT}/logs"
 SMART_ORDER_ROOT="${APP_SUPPORT}/smart-order"
 SMART_ORDER_DATABASE_PATH="${SMART_ORDER_ROOT}/database/smart-orders.sqlite3"
 SMART_ORDER_CAPABILITY_PATH="${SMART_ORDER_ROOT}/private/gateway-capability.bin"
@@ -737,7 +740,11 @@ EOF
 
 write_plists() {
     ensure_private_app_support_root
-    mkdir -p "${GENERATED_DIR}" "${USER_LAUNCH_AGENTS}"
+    mkdir -p "${GENERATED_DIR}" "${USER_LAUNCH_AGENTS}" "${RUNTIME_LOG_DIR}"
+    chmod 700 "${RUNTIME_LOG_DIR}"
+    if [[ -f "${SERVICE_LOG_WRAPPER_SOURCE}" ]]; then
+        install -m 600 "${SERVICE_LOG_WRAPPER_SOURCE}" "${SERVICE_LOG_WRAPPER}"
+    fi
     umask 077
 
     cat > "${SIM_PLIST}" <<EOF
@@ -745,7 +752,7 @@ write_plists() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${SIM_LABEL}</string>
-<key>ProgramArguments</key><array><string>${INSTALLED_SCRIPT}</string><string>service-api-simulation</string></array>
+<key>ProgramArguments</key><array><string>${APP_NODE_BIN}</string><string>${SERVICE_LOG_WRAPPER}</string><string>--log=${RUNTIME_LOG_DIR}/simulation-api.jsonl</string><string>--</string><string>${INSTALLED_SCRIPT}</string><string>service-api-simulation</string></array>
 <key>WorkingDirectory</key><string>${REPO_DIR}</string>
 <key>EnvironmentVariables</key><dict>
 <key>HOME</key><string>${HOME}</string>
@@ -1041,7 +1048,7 @@ smart_order_sidecar_status() {
                     (.disposition | type == "string"))) and
             (.drainRecordsTruncated | type == "boolean") and
             (.drainRecords | type == "array" and length <= 100 and
-                to_entries | all(
+                (to_entries | all(
                     (.value | type == "object") and
                     ((.value | keys | sort) == [
                         "disposition", "kind", "ordinal", "quantityShares",
@@ -1058,7 +1065,7 @@ smart_order_sidecar_status() {
                      then .value.quantityShares == null
                      else (.value.quantityShares | type == "number" and
                            floor == . and . >= 0)
-                     end)))
+                     end))))
         ' >/dev/null 2>&1; then
             health_state='authenticated'
             obligation_state="$(print -r -- "${diagnostics}" | jq -r '.activeObligationCount')"
@@ -1488,6 +1495,7 @@ restart_multiview() {
     fi
     mkdir -p "${INSTALLED_BIN_DIR}"
     install -m 700 "${SCRIPT_PATH}" "${INSTALLED_SCRIPT}"
+    install -m 600 "${SERVICE_LOG_WRAPPER_SOURCE}" "${SERVICE_LOG_WRAPPER}"
     [[ -f "${MULTIVIEW_PLIST}" ]] || write_plists
     write_multiview_tdcc_watcher_plist
     bootout_job "${MULTIVIEW_LABEL}"

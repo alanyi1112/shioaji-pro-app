@@ -83,7 +83,7 @@ const SOURCE_DEFINITIONS = Object.freeze({
     'TASK-13-4-ACCEPTANCE': Object.freeze({
         kind: 'feature_acceptance',
         path: `${CHANGE_ROOT_RELATIVE}/task-13-4-feature-acceptance.json`,
-        sha256: 'sha256:509cd75bc0520d01fb4d33da223ac7ef551c1b14926b076ea05a876ef196200d',
+        sha256: 'sha256:9620dd8d07f0e8de65a21fe1d0ff22d3d4f09922b14842c14f4aecf8b5a0f546',
     }),
 });
 

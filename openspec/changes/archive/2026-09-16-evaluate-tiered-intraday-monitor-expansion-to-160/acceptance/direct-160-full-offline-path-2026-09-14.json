@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "intraday-monitor-direct-160-storage-measurement/2",
+  "evidenceClass": "synthetic_load_only",
+  "assessedAt": "2026-09-14T01:12:43.387Z",
+  "targetCount": 160,
+  "minutesPerDay": 43200,
+  "completeSyntheticDays": 2,
+  "replay": {
+    "consistent": true,
+    "minuteComparisonsPerRun": 43200,
+    "outputHash": "9ed289ac97e3fe8ced1c0bef88ca4580ab7b9f07437c5ccaae649380ba28f5ae",
+    "runs": 2,
+    "triggerCount": 64
+  },
+  "database": {
+    "databaseBytes": 27508736,
+    "expectedRowCount": 86400,
+    "growthBytes": 27508736,
+    "journalMode": "wal",
+    "peakWorkingBytes": 55191048,
+    "perDayCounts": [
+      {
+        "count": 43200,
+        "tradeDate": "2026-09-10"
+      },
+      {
+        "count": 43200,
+        "tradeDate": "2026-09-11"
+      }
+    ],
+    "rowCount": 86400,
+    "synchronous": "full",
+    "walFinalBytes": 0,
+    "walPeakBytes": 27682312,
+    "writeMicros": 157415
+  },
+  "ui": {
+    "interactionRuns": 100,
+    "itemCount": 160,
+    "maxMicros": 5009,
+    "operations": [
+      "ratio_sort",
+      "symbol_search",
+      "selection"
+    ],
+    "p95Micros": 22
+  },
+  "resources": {
+    "actualFileBytes": 38029766,
+    "availableDiskBytes": 374656532480,
+    "cpuSystemMicros": 87327,
+    "cpuUserMicros": 885035,
+    "currentRssBytes": 452100096,
+    "elapsedMs": 890,
+    "peakRssBytes": 452100096
+  },
+  "limits": {
+    "bundleCanonicalBytes": 134217728,
+    "bundleOutputBytes": 134217728,
+    "captureOutputBytes": 67108864,
+    "logBytes": 16777216,
+    "minimumAvailableDiskBytes": 8589934592,
+    "minuteCountPerDay": 43200,
+    "offlineFixtureBytes": 134217728,
+    "schemaVersion": "intraday-monitor-direct-160-storage/1",
+    "sessionCanonicalBytes": 33554432,
+    "streamFrameBytes": 131072,
+    "streamTotalBytes": 134217728,
+    "targetCount": 160
+  },
+  "limitations": [
+    "NOT_LIVE_CAPACITY_EVIDENCE",
+    "NO_PROVIDER_SUBSCRIPTION",
+    "NO_SUSTAINED_LIVE_MEMORY_MEASUREMENT"
+  ],
+  "outputDirectory": "/Users/alanyi/Library/Application Support/RealTimeStock/direct-160-offline/2026-09-14-v4"
+}

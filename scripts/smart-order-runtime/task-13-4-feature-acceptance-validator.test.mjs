@@ -2,13 +2,18 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test } from 'vitest';
+import { afterAll, test } from 'vitest';
 import {
     computeTask134AcceptanceManifestSha256,
-    DEFAULT_TASK_13_4_MANIFEST_PATH,
-    DEFAULT_TASK_13_4_REPO_ROOT,
+    DEFAULT_TASK_13_4_MANIFEST_PATH as ORIGINAL_MANIFEST_PATH,
+    DEFAULT_TASK_13_4_REPO_ROOT as ORIGINAL_REPO_ROOT,
     validateTask134AcceptanceManifest,
 } from './task-13-4-feature-acceptance-validator.mjs';
+import { archivedAcceptanceTestFixture } from './archived-acceptance-test-fixture.mjs';
+const archivedFixture = await archivedAcceptanceTestFixture(ORIGINAL_REPO_ROOT, ORIGINAL_MANIFEST_PATH);
+const DEFAULT_TASK_13_4_MANIFEST_PATH = archivedFixture.manifestPath;
+const DEFAULT_TASK_13_4_REPO_ROOT = archivedFixture.root;
+afterAll(() => archivedFixture.close());
 
 async function loadManifest() {
     return JSON.parse(

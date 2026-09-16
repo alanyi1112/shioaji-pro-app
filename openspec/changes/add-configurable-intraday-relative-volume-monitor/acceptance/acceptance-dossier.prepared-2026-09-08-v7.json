@@ -1,0 +1,104 @@
+{
+  "schemaVersion": "intraday-monitor-acceptance-dossier/2",
+  "changeId": "add-configurable-intraday-relative-volume-monitor",
+  "createdAt": "2026-09-08T04:06:01.232Z",
+  "gate0": {
+    "decision": "bounded_go",
+    "report": {
+      "path": "gate-0/kbar-batch-alternative-decision-2026-09-07.md",
+      "sha256": "a09123b066291f7c9bad418f14054f09d21ad281971fe9e5593afedb35e08d26"
+    },
+    "reviewerSignoff": false,
+    "reviewedAt": null
+  },
+  "stages": [
+    {
+      "stage": 20,
+      "decision": "pending",
+      "approvedActiveMonitorCount": null,
+      "plan": {
+        "path": "acceptance/pilot-stage-plan-20-2026-09-07.json",
+        "sha256": "b37c2eaf063a9ce3efb542a6b1fde758de81c5695dad4c9caadaf2663e6ebdee"
+      },
+      "bundle": null,
+      "review": null,
+      "reviewerSignoff": false,
+      "reviewedAt": null
+    }
+  ],
+  "categories": {
+    "dataQuality": [
+      {
+        "path": "gate-0/kbar-batch-probe-final-2026-09-07.json",
+        "sha256": "18c436fa13301443ac6f61fe86b860f925817cc1e3301dcfe079c641fdd9bfc0"
+      },
+      {
+        "path": "gate-0/kbar-completion-semantics-2026-09-07.json",
+        "sha256": "1eec3288ee5826065e45d9a47909e454220601fa2fd66a10ba20f1b3ab1bec32"
+      }
+    ],
+    "resources": [
+      {
+        "path": "gate-0/bootstrap-capacity-probe-2026-09-04.md",
+        "sha256": "82fd517f09780274f0088c1c21394701c5a1922f86da143c39b238029ef1b041"
+      },
+      {
+        "path": "acceptance/passive-chart-freshness-2026-09-08.json",
+        "sha256": "b033308c27c68d8b086bbb6edab8f79d9072d6efd9bb93d481b58577784e74bd"
+      },
+      {
+        "path": "acceptance/pilot-runtime-assurance-2026-09-08-v6.json",
+        "sha256": "dd300193f6ea618562db595dfb41de1369fe40501994a76f08091545a78eaf15"
+      },
+      {
+        "path": "acceptance/intraday-progress-2026-09-08.md",
+        "sha256": "6105f99a2770efc85d5083624b86d4286ee3a2f32b8fbcd891035a3555025cf3"
+      }
+    ],
+    "ui": [
+      {
+        "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+        "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+      },
+      {
+        "path": "acceptance/compact-left-panel-ui-2026-09-07.md",
+        "sha256": "efc523b0cb2a8cfe83b3f7ef01793387650d373c16f0c71c594fd916050eec0d"
+      }
+    ],
+    "accessibility": [
+      {
+        "path": "acceptance/offhours-ui-and-regression-2026-09-04.md",
+        "sha256": "1e96248b4a08c0c4b92de33d4259ae0f292a9e35cb1081bd0b6a1ccd2fd2a7e7"
+      }
+    ],
+    "rollback": [
+      {
+        "path": "design.md",
+        "sha256": "788013e61236419896b3226f3c6d3089d6a96a0f9570741fd218d98d28704150"
+      }
+    ],
+    "tests": [
+      {
+        "path": "acceptance/pilot-stage-runbook.md",
+        "sha256": "6cb1682f87a2231c45c38aa08147101b360c10053f230ab3958a398cfbe45612"
+      },
+      {
+        "path": "acceptance/intraday-progress-2026-09-08.md",
+        "sha256": "6105f99a2770efc85d5083624b86d4286ee3a2f32b8fbcd891035a3555025cf3"
+      }
+    ]
+  },
+  "formalActiveMonitorLimit": null,
+  "unresolvedRisks": [
+    "Shioaji provider physical counting、release 與 headroom 保持 unknown，本案不以 request／SSE count 推算。",
+    "仍需完成兩個不同的完整交易日；第一日只建立自有 baseline。",
+    "20 檔 evidence 尚待人工審閱與明確簽核。"
+  ],
+  "unresolvedRisksReviewed": false,
+  "finalReviewerSignoff": false,
+  "finalReviewedAt": null,
+  "productionAuthorized": false,
+  "brokerWriteAuthorized": false,
+  "serviceLifecycleAuthorized": false,
+  "dossierHash": "a978554de391c1c5ed6d9701c9cd41f52d5e94748af4d3003caf11073e63ca35"
+}

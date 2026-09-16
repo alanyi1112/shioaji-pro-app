@@ -203,7 +203,11 @@ export function parseTpexOfficialCalendar(payload, expectedYear) {
                 cells.length === 1 &&
                 rowText.includes(String(year - 1911)) &&
                 rowText.includes('開（休）市日期表');
-            if (annualTitleRow || rowText.length === 0) continue;
+            // TPEx 將債券等殖成交系統與上一列股票日期共用 rowspan。
+            // 這一列只有債券名稱，不得當作新的股票休市日期或忽略未知單欄列。
+            const bondRowspanLabel = cells.length === 1 &&
+                cells[0] === '農曆春節前債券等殖成交系統（含比對系統）最後交易日';
+            if (annualTitleRow || bondRowspanLabel || rowText.length === 0) continue;
             throw new Error('TPEx official special-date row schema changed');
         }
         const malformedUnclosedDescription =

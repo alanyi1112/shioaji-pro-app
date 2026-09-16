@@ -1,7 +1,7 @@
 {
   "schemaVersion": "smart-order-task-14-7-acceptance-manifest/2026-08-12.1",
   "manifestId": "smart-order-task-14-7/offline/2026-08-12.1",
-  "manifestSha256": "sha256:024879f2d7739ba517954a08c8f052881c50648c7fe12000456cae9cea79e7a5",
+  "manifestSha256": "sha256:20cb46ba1bc0157f5f73ec9920e766b8b2e946333cb67d8884965d1e75a844f1",
   "changeId": "add-durable-smart-order-panel-and-protective-exits",
   "scope": {
     "assessmentMode": "offline",
@@ -59,7 +59,7 @@
     {
       "id": "TASK-13-4-ACCEPTANCE",
       "path": "openspec/changes/add-durable-smart-order-panel-and-protective-exits/task-13-4-feature-acceptance.json",
-      "sha256": "sha256:509cd75bc0520d01fb4d33da223ac7ef551c1b14926b076ea05a876ef196200d"
+      "sha256": "sha256:9620dd8d07f0e8de65a21fe1d0ff22d3d4f09922b14842c14f4aecf8b5a0f546"
     }
   ],
   "companionMatrix": {
