@@ -258,6 +258,11 @@
     const MAX_KBAR_CACHE_ENTRIES = 16;
     const TURNOVER_SCHEMA_REVISION = turnover?.TURNOVER_SCHEMA_REVISION || "turnover-contract-unavailable";
     const TURNOVER_SOURCE_IDENTITY = turnover?.TURNOVER_SOURCE_IDENTITY || "local-shioaji-simulation";
+    // Shioaji labels each one-minute Kbar with the interval end (09:01 means
+    // 09:00–09:01). Canonical chart time always represents the interval start.
+    // Include this contract in the cache identity so a page never reuses rows
+    // created under the old start-labelled assumption.
+    const KBAR_TIME_SEMANTICS_REVISION = "shioaji-end-to-canonical-start/1";
     let source;
     let sourceOpen = false;
     let enabled = options.enabled !== false;
@@ -306,10 +311,11 @@
       return "closed";
     }
 
-    function dispatchSession(symbol, points) {
+    function dispatchSession(symbol, points, representation = "minute") {
       if (!Array.isArray(points) || !points.length) return;
       for (const item of subscriptions.values()) {
         if (item.symbol !== symbol) continue;
+        if (representation === "daily" && item.interval !== "1d") continue;
         try { item.onSession?.(points); } catch { /* isolate panels */ }
       }
     }
@@ -456,18 +462,69 @@
           else totalTurnoverTwd = nextTotal;
         }
         return [{
-          time: Math.floor(sourceTime / 1000), sourceTime, sessionDate: nextDate,
+          time: Math.floor(sourceTime / 1000) - 60, sourceTime, sessionDate: nextDate,
           open, high, low, close,
           averagePrice: totalVolume > 0 ? weightedAmount / totalVolume : close,
           volume, totalVolume, turnoverTwd,
           totalTurnoverTwd: totalTurnoverAvailable ? totalTurnoverTwd : null,
           turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
           turnoverSourceIdentity: TURNOVER_SOURCE_IDENTITY,
+          kbarTimeSemanticsRevision: KBAR_TIME_SEMANTICS_REVISION,
           continuity: "complete", provider: "shioaji-kbars",
           sourceVolumeUnit: "common_lot", canonicalVolumeUnit: "common_lot",
           normalizationRevision: "taiwan-stock-common-lot/1",
         }];
       });
+    }
+
+    function dailyFromKbars(payload) {
+      const datetimes = Array.isArray(payload?.datetime) ? payload.datetime : [];
+      const opens = Array.isArray(payload?.Open) ? payload.Open : [];
+      const highs = Array.isArray(payload?.High) ? payload.High : [];
+      const lows = Array.isArray(payload?.Low) ? payload.Low : [];
+      const closes = Array.isArray(payload?.Close) ? payload.Close : [];
+      const volumes = Array.isArray(payload?.Volume) ? payload.Volume : [];
+      const amounts = Array.isArray(payload?.Amount) ? payload.Amount : null;
+      if (![opens, highs, lows, closes, volumes].every((values) => values.length === datetimes.length)) return [];
+      const amountColumnsAligned = amounts !== null && amounts.length === datetimes.length;
+      const sessions = new Map();
+      for (let index = 0; index < datetimes.length; index += 1) {
+        const rawDateTime = String(datetimes[index] || "").trim();
+        const normalizedDateTime = rawDateTime.replace(" ", "T");
+        const sourceTime = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/.test(normalizedDateTime)
+          ? normalizedDateTime
+          : `${normalizedDateTime}+08:00`);
+        const open = numeric(opens[index]); const high = numeric(highs[index]); const low = numeric(lows[index]); const close = numeric(closes[index]);
+        const volume = Math.max(0, numeric(volumes[index]));
+        if (!Number.isFinite(sourceTime) || !validOhlc(open, high, low, close) || !Number.isFinite(volume)) continue;
+        const date = /^\d{4}-\d{2}-\d{2}/.test(normalizedDateTime)
+          ? normalizedDateTime.slice(0, 10)
+          : sessionDate(new Date(sourceTime).toISOString());
+        const rowTurnover = amountColumnsAligned ? turnover?.parseTurnoverTwd(amounts[index]) ?? null : null;
+        const current = sessions.get(date);
+        if (!current) {
+          sessions.set(date, {
+            time: Math.floor(Date.parse(`${date}T00:00:00+08:00`) / 1000),
+            sessionDate: date,
+            open, high, low, close, volume,
+            turnoverTwd: rowTurnover,
+            turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+            sourceTime,
+            provider: "shioaji-kbars",
+            continuity: "complete",
+          });
+          continue;
+        }
+        current.high = Math.max(current.high, high);
+        current.low = Math.min(current.low, low);
+        current.close = close;
+        current.volume += volume;
+        current.sourceTime = Math.max(current.sourceTime, sourceTime);
+        current.turnoverTwd = current.turnoverTwd === null || rowTurnover === null
+          ? null
+          : turnover.addTurnoverTwd(current.turnoverTwd, rowTurnover);
+      }
+      return [...sessions.values()];
     }
 
     function rawField(row, name) {
@@ -542,17 +599,18 @@
       return normalized;
     }
 
-    function clonePoints(points) {
-      return points.map((point) => Object.freeze({ ...point }));
+    function freezePoints(points) {
+      return Object.freeze(points.map((point) => Object.freeze({ ...point })));
     }
 
-    async function loadKbarRange(symbol, contract, start, end) {
-      const cacheIdentity = `${TURNOVER_SOURCE_IDENTITY}|${TURNOVER_SCHEMA_REVISION}|${symbol}`;
+    async function loadKbarRange(symbol, contract, start, end, representation = "minute") {
+      const cacheIdentity = `${TURNOVER_SOURCE_IDENTITY}|${TURNOVER_SCHEMA_REVISION}|${KBAR_TIME_SEMANTICS_REVISION}|${symbol}|${representation}`;
       const entries = kbarRangeCache.get(cacheIdentity) || [];
       const covering = entries.find((entry) => entry.sourceIdentity === TURNOVER_SOURCE_IDENTITY
         && entry.turnoverSchemaRevision === TURNOVER_SCHEMA_REVISION
+        && entry.kbarTimeSemanticsRevision === KBAR_TIME_SEMANTICS_REVISION
         && entry.start <= start && entry.end >= end);
-      if (covering) return clonePoints(covering.points.filter((point) => {
+      if (covering) return covering.points.filter((point) => {
         const numericSourceTime = Number(point.sourceTime);
         const sourceTime = Number.isFinite(numericSourceTime)
           ? numericSourceTime
@@ -560,19 +618,22 @@
         if (!Number.isFinite(sourceTime)) return false;
         const date = sessionDate(new Date(sourceTime).toISOString());
         return date >= start && date <= end;
-      }));
+      });
       const key = `${cacheIdentity}|${start}|${end}`;
-      if (kbarInflight.has(key)) return clonePoints(await kbarInflight.get(key));
+      if (kbarInflight.has(key)) return [...await kbarInflight.get(key)];
       const task = api("/api/v1/data/kbars", {
         method: "POST",
         body: JSON.stringify({ contract, start, end }),
       }).then((payload) => {
         const size = Array.isArray(payload?.datetime) ? payload.datetime.length : 0;
         if (size > 100_000) throw new Error("shioaji_kbars_response_too_large");
-        const points = clonePoints(sessionFromKbars(payload));
+        const points = freezePoints(representation === "daily"
+          ? dailyFromKbars(payload)
+          : sessionFromKbars(payload));
         const nextEntries = [...entries, {
           sourceIdentity: TURNOVER_SOURCE_IDENTITY,
           turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
+          kbarTimeSemanticsRevision: KBAR_TIME_SEMANTICS_REVISION,
           start,
           end,
           points,
@@ -584,7 +645,7 @@
         return points;
       }).finally(() => kbarInflight.delete(key));
       kbarInflight.set(key, task);
-      return clonePoints(await task);
+      return [...await task];
     }
 
     function validTargetDateRequest(request) {
@@ -623,7 +684,7 @@
         const info = await api("/api/v1/info");
         if (info?.simulation !== true) throw new Error("simulation_required");
         const contract = await resolveContract(request.symbol);
-        const points = await loadKbarRange(request.symbol, contract, request.targetDate, request.targetDate);
+        const points = await loadKbarRange(request.symbol, contract, request.targetDate, request.targetDate, "minute");
         if (points.length > request.maxCandles) throw new Error("shioaji_kbars_response_too_large");
         const exactTurnoverRows = points.filter((point) => point.turnoverTwd !== null).length;
         const turnoverAvailability = exactTurnoverRows === 0
@@ -640,8 +701,9 @@
           timeZone: "Asia/Taipei",
           turnoverSchemaRevision: TURNOVER_SCHEMA_REVISION,
           turnoverSourceIdentity: TURNOVER_SOURCE_IDENTITY,
+          kbarTimeSemanticsRevision: KBAR_TIME_SEMANTICS_REVISION,
           turnoverAvailability,
-          candles: Object.freeze(clonePoints(points)),
+          candles: Object.freeze([...points]),
         });
       })().finally(() => {
         if (targetDateInflight.get(request.singleFlightKey) === task) targetDateInflight.delete(request.singleFlightKey);
@@ -652,8 +714,11 @@
 
     async function loadAndDispatchHistory(symbol, contract, end) {
       const start = dateDaysAgo(end, historyDaysForSymbol(symbol));
-      const points = await loadKbarRange(symbol, contract, start, end);
-      dispatchSession(symbol, points);
+      const needsMinuteHistory = [...subscriptions.values()].some((item) => item.symbol === symbol
+        && ["intraday", "1m", "5m", "15m", "1h"].includes(item.interval));
+      const representation = needsMinuteHistory ? "minute" : "daily";
+      const points = await loadKbarRange(symbol, contract, start, end, representation);
+      dispatchSession(symbol, points, representation);
       return points;
     }
 
@@ -668,9 +733,15 @@
       const snapshot = Array.isArray(rows) ? snapshotFromRest(symbol, contract, rows[0] || {}) : null;
       if (!snapshot) throw new Error("shioaji_snapshot_invalid");
       if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
+      // Panels need the snapshot before the historical Kbars callback. During
+      // closing/closed phases the history is the drawable Shioaji source, while
+      // the snapshot supplies its session identity and quote metadata. Delivering
+      // history first left the accumulator populated but unpainted until another
+      // live event arrived, which may never happen after the market closes.
+      dispatch(snapshot);
+      if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
       const points = await loadAndDispatchHistory(symbol, contract, snapshot.sessionDate);
       if (!enabled || currentGeneration !== generation || !desiredSymbols().includes(symbol)) return false;
-      dispatch(snapshot);
       if (!points.length) notifyState(symbol, "degraded", "shioaji_kbars_partial");
       activeSymbols.add(symbol);
       return true;

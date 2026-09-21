@@ -1,12 +1,18 @@
 import { computeIndicators, type Candle, type IndicatorParameters } from "./indicators";
 import { inferTaiwanMarketPhase, inferUnitedStatesMarketPhase, type MarketPhase } from "./market-phase";
-import { isStructurallyValidCandle, type CandleHistoryCacheMetadata, type HistoryCandle } from "./candle-history";
+import { isStructurallyValidCandle, keepTaiwanDailySessions, type CandleHistoryCacheMetadata, type HistoryCandle } from "./candle-history";
 import { buildTraditionalPivotIndicator, pivotReferenceInterval, referencePeriodKey, type PivotMode } from "./pivot-points";
 import { isTaiwanRegularStockSymbol, normalizeTaiwanStockCandleRows } from "./taiwan-stock-volume";
 
 const INTERVAL_SECONDS: Record<string, number> = { "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400, "1wk": 604800, "1mo": 2592000 };
 const YAHOO_RANGE: Record<string, string> = { "1m": "1d", "3m": "5d", "5m": "5d", "15m": "5d", "30m": "1mo", "1h": "3mo", "4h": "1y", "1d": "2y", "1wk": "10y", "1mo": "25y" };
 const YAHOO_TAIL_RANGE: Record<string, string> = { "1d": "5d", "1wk": "3mo", "1mo": "1y" };
+const TAIWAN_INTRADAY_SESSION: Record<string, { stepMinutes: number; firstMinute: number; lastMinute: number; expectedRows: number }> = {
+  "1m": { stepMinutes: 1, firstMinute: 9 * 60, lastMinute: 13 * 60 + 29, expectedRows: 270 },
+  "5m": { stepMinutes: 5, firstMinute: 9 * 60, lastMinute: 13 * 60 + 25, expectedRows: 54 },
+  "15m": { stepMinutes: 15, firstMinute: 9 * 60, lastMinute: 13 * 60 + 15, expectedRows: 18 },
+  "1h": { stepMinutes: 60, firstMinute: 9 * 60, lastMinute: 13 * 60, expectedRows: 5 },
+};
 
 type YahooQuote = {
   open?: unknown[];
@@ -40,6 +46,122 @@ function sessionDateInTimeZone(time: number, timeZone: string) {
   } catch {
     return new Date(time * 1000).toISOString().slice(0, 10);
   }
+}
+
+function taipeiClock(time: number) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Taipei",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(time * 1000)).reduce<Record<string, string>>((result, part) => {
+      if (part.type !== "literal") result[part.type] = part.value;
+      return result;
+    }, {});
+    return {
+      date: `${parts.year}-${parts.month}-${parts.day}`,
+      minute: Number(parts.hour) * 60 + Number(parts.minute),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatSessionMinute(value: number) {
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+export type TaiwanIntradayContinuityMetadata = {
+  status: "complete" | "partial" | "unknown";
+  checkedFrom: string | null;
+  checkedThrough: string | null;
+  checkedAt: string;
+  verifiedThrough: string | null;
+  missingSessionCount: number;
+  missingSessionDates: string[];
+  excludedSessionDates: string[];
+  missingBoundaryIntervals: string[];
+  sparseSessionDates: string[];
+  reasonCode: string | null;
+  interval: string;
+  sourceProvider: string;
+};
+
+export function auditTaiwanIntradayContinuity(
+  symbol: string,
+  interval: string,
+  rows: HistoryCandle[],
+  provider: string,
+  now = new Date(),
+): TaiwanIntradayContinuityMetadata | undefined {
+  const contract = TAIWAN_INTRADAY_SESSION[interval];
+  if (!contract || !/\.(TW|TWO)$/i.test(symbol)) return undefined;
+  const sessions = new Map<string, number[]>();
+  for (const row of rows) {
+    if (!isStructurallyValidCandle(row)) continue;
+    const clock = taipeiClock(row.time);
+    if (!clock) continue;
+    sessions.set(clock.date, [...(sessions.get(clock.date) ?? []), clock.minute]);
+  }
+  const nowClock = taipeiClock(Math.floor(now.getTime() / 1000));
+  const completed = [...sessions.entries()]
+    .filter(([date]) => Boolean(nowClock) && (date < nowClock!.date || (date === nowClock!.date && nowClock!.minute >= 13 * 60 + 30)))
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (!completed.length) {
+    return {
+      status: "unknown", checkedFrom: null, checkedThrough: null, checkedAt: now.toISOString(), verifiedThrough: null,
+      missingSessionCount: 0, missingSessionDates: [], excludedSessionDates: [], missingBoundaryIntervals: [], sparseSessionDates: [],
+      reasonCode: sessions.size ? "session_in_progress" : "source_not_returned", interval, sourceProvider: provider,
+    };
+  }
+  const missingSessionDates: string[] = [];
+  const missingBoundaryIntervals: string[] = [];
+  const sparseSessionDates: string[] = [];
+  const completeSessionDates: string[] = [];
+  for (const [date, values] of completed) {
+    const minutes = [...new Set(values)].sort((left, right) => left - right);
+    const first = minutes[0];
+    const last = minutes.at(-1)!;
+    let incomplete = false;
+    if (first > contract.firstMinute) {
+      incomplete = true;
+      missingBoundaryIntervals.push(`${date} ${formatSessionMinute(contract.firstMinute)}–${formatSessionMinute(first)}`);
+    }
+    if (last < contract.lastMinute) {
+      incomplete = true;
+      missingBoundaryIntervals.push(`${date} ${formatSessionMinute(last + contract.stepMinutes)}–13:30`);
+    }
+    if (minutes.length < contract.expectedRows && !incomplete) {
+      incomplete = true;
+      sparseSessionDates.push(date);
+    }
+    if (incomplete) missingSessionDates.push(date);
+    else completeSessionDates.push(date);
+  }
+  const checkedFrom = completed[0][0];
+  const checkedThrough = completed.at(-1)![0];
+  const partial = missingSessionDates.length > 0;
+  return {
+    status: partial ? "partial" : "complete",
+    checkedFrom,
+    checkedThrough,
+    checkedAt: now.toISOString(),
+    verifiedThrough: partial ? (completeSessionDates.at(-1) ?? null) : checkedThrough,
+    missingSessionCount: missingSessionDates.length,
+    missingSessionDates: missingSessionDates.slice(0, 32),
+    excludedSessionDates: [],
+    missingBoundaryIntervals: missingBoundaryIntervals.slice(0, 32),
+    sparseSessionDates: sparseSessionDates.slice(0, 32),
+    reasonCode: missingBoundaryIntervals.length
+      ? "intraday_boundary_gap"
+      : sparseSessionDates.length ? "intraday_sparse_or_no_trade" : null,
+    interval,
+    sourceProvider: provider,
+  };
 }
 
 export function sampleCandles(symbol: string, interval: string, count = 280): Candle[] {
@@ -164,7 +286,7 @@ async function yahooCandles(symbol: string, interval: string, mode: "full" | "ta
     rows[rows.length - 1].marketSession = String(result?.meta?.marketState ?? "unknown").toLowerCase();
     rows[rows.length - 1].sourceTimeZone = String(result?.meta?.exchangeTimezoneName || "") || undefined;
   }
-  return rows;
+  return keepTaiwanDailySessions(symbol, interval, rows);
 }
 
 async function hyperliquidCandles(symbol: string, interval: string): Promise<Candle[]> {
@@ -198,6 +320,12 @@ export async function candlePayload(symbol: string, interval: string, displayCou
   return candlePayloadFromRows(symbol, interval, rows, provider, displayCount);
 }
 
+export type QuoteVerification = {
+  status: string; provider: string | null; reason?: string; scope?: string;
+  referenceSessionDate?: string | null; checkedAt?: string;
+  fieldResults?: Record<string, string>; mismatchFields?: string[];
+};
+
 export function candlePayloadFromRows(
   symbol: string,
   interval: string,
@@ -214,15 +342,16 @@ export function candlePayloadFromRows(
   const taiwanStockVolume = isTaiwanRegularStockSymbol(symbol)
     ? normalizeTaiwanStockCandleRows(rows, provider)
     : undefined;
-  rows = taiwanStockVolume?.rows ?? rows;
+  rows = keepTaiwanDailySessions(symbol, interval, taiwanStockVolume?.rows ?? rows);
   const rawLatest = rows[rows.length - 1];
   const ignoredSessionDates: string[] = [];
   const invalidCandleSessionDates: string[] = [];
   const isTaiwanDaily = interval === "1d" && /\.(TW|TWO)$/.test(symbol.toUpperCase());
   const normalizedRows = rows.reduce<HistoryCandle[]>((accepted, row) => {
+    const rowTime = row?.time;
     if (!isStructurallyValidCandle(row)) {
-      if (Number.isFinite(row?.time) && row.time > 0) {
-        invalidCandleSessionDates.push(sessionDateInTimeZone(row.time, isTaiwanDaily ? "Asia/Taipei" : "UTC"));
+      if (Number.isFinite(rowTime) && rowTime > 0) {
+        invalidCandleSessionDates.push(sessionDateInTimeZone(rowTime, isTaiwanDaily ? "Asia/Taipei" : "UTC"));
       }
       return accepted;
     }
@@ -250,6 +379,13 @@ export function candlePayloadFromRows(
   const latest = displayRows[displayRows.length - 1];
   const quoteTime = Number.isFinite(Number(rawLatest?.quoteTime)) ? Number(rawLatest?.quoteTime) : null;
   const sourceProvider = provider === "yahoo-chart" || provider.startsWith("yfinance-") ? "yfinance" : provider;
+  const intradayContinuity = auditTaiwanIntradayContinuity(symbol, interval, normalizedRows, sourceProvider, now);
+  const payloadContinuity = intradayContinuity ?? cache?.continuity;
+  const effectiveCache = cache
+    ? intradayContinuity
+      ? { ...cache, continuity: intradayContinuity, fullWindowComplete: intradayContinuity.status === "complete" }
+      : cache
+    : undefined;
   const marketSession = rawLatest?.marketSession ?? "unknown";
   const sessionDate = latest?.time ? sessionDateInTimeZone(latest.time, sourceTimeZone) : null;
   const isUnitedStatesDaily = interval === "1d" && sourceTimeZone === "America/New_York";
@@ -311,10 +447,10 @@ export function candlePayloadFromRows(
   indicators.val = displayProfile.val;
   const dataQuality = {
     ignoredSessionDates,
-    ...(cache?.continuity ? {
-      continuity: cache.continuity,
-      missingSessionDates: cache.continuity.missingSessionDates,
-      excludedSessionDates: cache.continuity.excludedSessionDates,
+    ...(payloadContinuity ? {
+      continuity: payloadContinuity,
+      missingSessionDates: payloadContinuity.missingSessionDates,
+      excludedSessionDates: payloadContinuity.excludedSessionDates,
     } : {}),
     ...(invalidCandleSessionDates.length ? { invalidCandleSessionDates } : {}),
     ...(invalidCandleSessionDates.length && ignoredSessionDates.length
@@ -337,6 +473,8 @@ export function candlePayloadFromRows(
       : {}),
   };
   const volumeAvailability = dataQuality.volumeAvailability;
+  const verification: QuoteVerification = { status: "unverified", provider: null, reason: interval === "1d" ? "provider_not_configured" : "unsupported_interval" };
+  const extensibleQuality: typeof dataQuality & { verificationMismatchFields?: string[] } = dataQuality;
   return {
     symbol, interval, candles: displayRows, quoteTime,
     ...(taiwanStockVolume ? { volumeContract: taiwanStockVolume.contract } : {}),
@@ -349,12 +487,12 @@ export function candlePayloadFromRows(
       marketSession,
       marketPhase,
       freshness,
-      verification: { status: "unverified", provider: null, reason: interval === "1d" ? "provider_not_configured" : "unsupported_interval" },
+      verification,
       ...(volumeAvailability ? { volumeAvailability } : {}),
-      dataQuality,
+      dataQuality: extensibleQuality,
     },
-    dataQuality,
+    dataQuality: extensibleQuality,
     marketSession, indicators,
-    dataWindow: { rawCandles: normalizedRows.length, displayCandles: displayRows.length, requestedDisplayCandles: requested, hasMoreBefore: normalizedRows.length > displayRows.length, warmupCandles: 120, availableWarmupCandles: Math.max(0, normalizedRows.length - displayRows.length), insufficientWarmup: normalizedRows.length - displayRows.length < 120, warmupStatus: normalizedRows.length - displayRows.length < 120 ? "insufficient" : "sufficient", displayFrom: displayRows[0]?.time ?? null, displayTo: latest?.time ?? null, sourceFingerprint: taiwanStockVolume?.contract.sourceFingerprint ?? provider, ...(cache?.continuity ? { continuity: cache.continuity } : {}), cache: cache ?? { store: "worker-memory", state: "miss", source: provider, historyStore: "worker-memory", persistent: false, rows: normalizedRows.length } },
+    dataWindow: { rawCandles: normalizedRows.length, displayCandles: displayRows.length, requestedDisplayCandles: requested, hasMoreBefore: normalizedRows.length > displayRows.length, warmupCandles: 120, availableWarmupCandles: Math.max(0, normalizedRows.length - displayRows.length), insufficientWarmup: normalizedRows.length - displayRows.length < 120, warmupStatus: normalizedRows.length - displayRows.length < 120 ? "insufficient" : "sufficient", displayFrom: displayRows[0]?.time ?? null, displayTo: latest?.time ?? null, sourceFingerprint: taiwanStockVolume?.contract.sourceFingerprint ?? provider, ...(payloadContinuity ? { continuity: payloadContinuity } : {}), cache: effectiveCache ?? { store: "worker-memory", state: "miss", source: provider, historyStore: "worker-memory", persistent: false, rows: normalizedRows.length, ...(intradayContinuity ? { continuity: intradayContinuity, fullWindowComplete: intradayContinuity.status === "complete" } : {}) } },
   };
 }

@@ -4998,9 +4998,17 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const visibleMissingDates = displayFrom && displayThrough
       ? missingDates.filter((date) => date >= displayFrom && date <= displayThrough)
       : [];
-    const message = continuityStatus === "partial" && visibleMissingDates.length
-      ? `日 K 資料不完整（缺 ${visibleMissingDates.length} 個交易日）`
-      : "";
+    const missingBoundaryIntervals = Array.isArray(continuity?.missingBoundaryIntervals)
+      ? continuity.missingBoundaryIntervals.map(String).filter(Boolean).slice(0, 3)
+      : [];
+    const isMinuteInterval = ["1m", "5m", "15m", "1h"].includes(String(payload?.interval || intervalSelect.value));
+    const message = continuityStatus === "partial" && isMinuteInterval && missingBoundaryIntervals.length
+      ? `分鐘 K 資料不完整（缺 ${missingBoundaryIntervals.join("、")}）`
+      : continuityStatus === "partial" && isMinuteInterval
+        ? `分鐘 K 資料不完整（${visibleMissingDates.length || Number(continuity?.missingSessionCount) || 1} 個交易日）`
+        : continuityStatus === "partial" && visibleMissingDates.length
+          ? `日 K 資料不完整（缺 ${visibleMissingDates.length} 個交易日）`
+          : "";
     candleContinuityNote.textContent = message;
     candleContinuityNote.title = message;
     candleContinuityNote.setAttribute("aria-label", message);
@@ -8531,7 +8539,34 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       volumeAvailability: snapshot.volumeAvailable === false
         ? { status: "unavailable", reason: "source_not_provided", message: "此指數即時來源未提供成交量" }
         : { status: "available", reason: null, message: "" },
-      verification: { status: "not_applicable", provider: null, reason: "market_open" },
+      verification: {
+        status: "not_applicable",
+        provider: null,
+        reason: ["closing", "closed"].includes(displayState) ? "shioaji_waiting_canonical" : "market_open",
+      },
+    };
+  }
+
+  function shioajiHistoryQuote(candles, displayState) {
+    const latest = candles.at(-1);
+    const sourceTimeMs = Number(latest?.sourceTime);
+    const fallbackTimeMs = Number(latest?.time) * 1000;
+    const sourceTime = Number.isFinite(sourceTimeMs)
+      ? new Date(sourceTimeMs).toISOString()
+      : Number.isFinite(fallbackTimeMs) ? new Date(fallbackTimeMs).toISOString() : null;
+    const phase = ["closing", "closed"].includes(displayState) ? displayState : "open";
+    return {
+      kind: phase === "open" ? "intraday" : "session-close",
+      sourceProvider: "shioaji",
+      sourceQuoteTime: sourceTime,
+      sourceTimeZone: "Asia/Taipei",
+      sessionDate: String(latest?.sessionDate || ""),
+      marketPhase: phase,
+      marketSession: phase === "open" ? "open" : "closed",
+      freshness: "historical",
+      realtimeState: phase === "open" ? "degraded" : phase,
+      volumeAvailability: { status: "available", reason: null, message: "" },
+      verification: { status: "not_applicable", provider: "shioaji", reason: "shioaji_kbars_history" },
     };
   }
 
@@ -8574,25 +8609,35 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   }
 
   function renderDailyKlines(snapshot = latestRealtimeSnapshot) {
-    if (!dailyKlineAccumulator || !snapshot || !candleSeries) return;
+    if (!dailyKlineAccumulator || !candleSeries) return;
     const model = dailyKlineAccumulator.snapshot();
     const candles = Array.from(model.candles || [], (row) => ({ ...row })).slice(-MAX_HISTORY_DISPLAY_CANDLES);
     if (!candles.length) return;
     const contract = window.QuoteChartVolumeContract.contractForProvider("shioaji");
-    const indicators = window.QuoteChartRealtimeIndicators.compute(candles, state.indicatorParameters, { volumeAvailable: true });
+    const quote = snapshot
+      ? realtimeQuote(snapshot, realtimeDisplayState)
+      : shioajiHistoryQuote(candles, realtimeDisplayState);
     const oldCandleCount = Number(lastPayload?.candles?.length) || candles.length;
     const preserveVisibleLogicalRange = chart?.timeScale?.().getVisibleLogicalRange?.();
+    const previousLatest = lastPayload?.candles?.at(-1);
+    const latest = candles.at(-1);
+    const sameSessionUpdate = Boolean(
+      previousLatest
+      && normalizeChartTime(previousLatest.time) === normalizeChartTime(latest.time)
+      && oldCandleCount === candles.length
+    );
     const payload = {
       ...(canonicalPayload || {}),
       symbol: symbolSelect.value,
       interval: "1d",
       candles,
-      indicators,
+      indicators: lastPayload?.indicators || canonicalPayload?.indicators || {},
       volumeContract: contract,
       realtimeDailyHistory: candles,
-      quote: realtimeQuote(snapshot, realtimeDisplayState),
-      quoteTime: Math.floor(Date.parse(snapshot.sourceTime) / 1000),
-      marketSession: "open",
+      quote,
+      quoteTime: snapshot ? Math.floor(Date.parse(snapshot.sourceTime) / 1000) : candles.at(-1).time,
+      marketSession: quote.marketSession,
+      realtimeProvider: "shioaji",
       dataWindow: {
         ...(canonicalPayload?.dataWindow || {}),
         rawCandles: model.candles.length,
@@ -8609,12 +8654,49 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         },
       },
     };
-    applyPayload(payload, { preserveVisibleLogicalRange, oldCandleCount });
+    if (sameSessionUpdate) {
+      // A daily snapshot can arrive many times per second. Re-applying the
+      // entire payload rebuilds every main/technical/chip series and can grow
+      // a multi-panel Chrome renderer by gigabytes. Keep the canonical rows
+      // current, update the last bar in place, and let the latest-wins
+      // indicator scheduler coalesce the expensive derived-series refresh.
+      lastPayload = payload;
+      candleSeries.update(latest);
+      chipPaneManager?.updateCandles?.(candles);
+      const selectedMain = getSelectedMainIndicators();
+      if (selectedMain.has("volume")) {
+        volumeSeries?.update({
+          time: latest.time,
+          value: Math.max(0, Number(latest.volume) || 0),
+          color: latest.close >= latest.open ? "rgba(220, 38, 38, 0.72)" : "rgba(22, 163, 74, 0.72)",
+        });
+      }
+      if (snapshot) scheduleRealtimeIndicatorRefresh(snapshot);
+      updateVolumeAvailability(payload, selectedMain.has("volume"));
+      updateCandleContinuity(payload);
+      updateQuoteDataTime(payload.quote, payload.quoteTime);
+      updateLatestPriceState(latest.close, candles.at(-2)?.close, payload);
+      updateLatestPriceLabel(payload);
+      if (state.mainReadoutMode === MAIN_READOUT_MODES.fixed) restoreLatestMainReadout();
+      scheduleRenderedAxisSafeWidthSync();
+      renderVisibleRangeExtrema();
+    } else {
+      const indicators = window.QuoteChartRealtimeIndicators.compute(candles, state.indicatorParameters, { volumeAvailable: true });
+      payload.indicators = indicators;
+      applyPayload(payload, { preserveVisibleLogicalRange, oldCandleCount });
+    }
     if (realtimeDisplayState === "live") {
       status.textContent = `${symbolSelect.value} / 日 已載入 Shioaji`;
       status.classList.remove("is-visible");
     } else if (realtimeDisplayState === "degraded") {
-      status.textContent = "即時連線不穩，顯示最後可用行情";
+      status.textContent = snapshot
+        ? "即時連線不穩，顯示最後可用行情"
+        : "已載入 Shioaji Kbars，等待即時 snapshot";
+      status.classList.add("is-visible");
+    } else if (["closing", "closed"].includes(realtimeDisplayState)) {
+      status.textContent = realtimeDisplayState === "closing"
+        ? "收盤整理中，顯示 Shioaji Kbars；等待 canonical 日 K 核對"
+        : "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對";
       status.classList.add("is-visible");
     }
   }
@@ -8684,16 +8766,33 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const previousLatestTime = normalizeChartTime(lastPayload?.candles?.at(-1)?.time);
     const selectedMain = getSelectedMainIndicators();
     const volumeContract = window.QuoteChartVolumeContract.contractForProvider("shioaji");
+    const continuity = window.QuoteChartRealtimeCharts.auditMinuteCandleContinuity(
+      candles,
+      intervalSelect.value,
+    );
+    const quote = snapshot ? realtimeQuote(snapshot, realtimeDisplayState) : canonicalPayload?.quote;
     lastPayload = {
       ...(canonicalPayload || lastPayload || {}),
+      interval: intervalSelect.value,
       candles,
-      quote: snapshot ? realtimeQuote(snapshot, realtimeDisplayState) : canonicalPayload?.quote,
+      dataQuality: {
+        ...(canonicalPayload?.dataQuality || {}),
+        ...(continuity ? { continuity } : {}),
+      },
+      quote: quote ? {
+        ...quote,
+        dataQuality: {
+          ...(quote.dataQuality || {}),
+          ...(continuity ? { continuity } : {}),
+        },
+      } : quote,
       quoteTime: snapshot ? Math.floor(Date.parse(snapshot.sourceTime) / 1000) : candles.at(-1).time,
       marketSession: snapshot ? "open" : canonicalPayload?.marketSession,
       realtimeProvider: "shioaji",
       volumeContract,
       dataWindow: {
         ...(canonicalPayload?.dataWindow || {}),
+        ...(continuity ? { continuity } : {}),
         sourceFingerprint: volumeContract.sourceFingerprint,
         cache: { store: "worker-memory", state: "refreshed", source: "shioaji", historyStore: "worker-memory", persistent: false, rows: candles.length },
       },
@@ -8716,6 +8815,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       });
     }
     if (snapshot) scheduleRealtimeIndicatorRefresh(snapshot);
+    updateCandleContinuity(lastPayload);
     updateQuoteDataTime(lastPayload.quote, lastPayload.quoteTime);
     const latest = candles.at(-1);
     const previous = candles.at(-2);
@@ -8823,7 +8923,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     status.classList.add("is-visible");
     realtimeDisplayState = "degraded";
     state.panelStreamSubscriptionCount += 1;
-    realtimeUpdateCleanup = realtimeCoordinator.subscribe(panelSubscriptionId, { symbol }, (nextSnapshot) => {
+    realtimeUpdateCleanup = realtimeCoordinator.subscribe(panelSubscriptionId, { symbol, interval: "intraday" }, (nextSnapshot) => {
       if (destroyed || currentLoadToken !== loadToken || intervalSelect.value !== "intraday") return;
       latestRealtimeSnapshot = nextSnapshot;
       applyPendingIntradaySession(nextSnapshot);
@@ -8900,15 +9000,23 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
           lastPayload.quote = realtimeQuote(latestRealtimeSnapshot, realtimeDisplayState);
           updateQuoteDataTime(lastPayload.quote, lastPayload.quoteTime);
         }
-        status.textContent = realtimeDisplayState === "closing" ? "收盤整理中，等待 canonical 日 K 核對" : "已收盤，等待 canonical 日 K 核對";
+        const hasShioajiKbars = lastPayload?.realtimeProvider === "shioaji"
+          || lastPayload?.dataWindow?.cache?.source === "shioaji";
+        status.textContent = realtimeDisplayState === "closing"
+          ? hasShioajiKbars ? "收盤整理中，顯示 Shioaji Kbars；等待 canonical 日 K 核對" : "收盤整理中，等待 canonical 日 K 核對"
+          : hasShioajiKbars ? "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對" : "已收盤，等待 canonical 日 K 核對";
         status.classList.add("is-visible");
       }
       return;
     }
     if (state.sourceMode === "shioaji" && ["fallback", "stale", "unavailable"].includes(realtimeDisplayState)) {
-      status.textContent = "Shioaji 即時行情目前不可用；可切換為自動或 Yahoo 延遲";
+      const hasShioajiKbars = lastPayload?.realtimeProvider === "shioaji"
+        || lastPayload?.dataWindow?.cache?.source === "shioaji";
+      status.textContent = hasShioajiKbars
+        ? "Shioaji 即時行情目前不可用；保留最近 Shioaji Kbars"
+        : "Shioaji 即時行情目前不可用；可切換為自動或 Yahoo 延遲";
       status.classList.add("is-visible");
-      if (isMinuteKlineInterval(intervalSelect.value) || intervalSelect.value === "1d") {
+      if (!hasShioajiKbars && (isMinuteKlineInterval(intervalSelect.value) || intervalSelect.value === "1d")) {
         candleSeries?.setData([]);
         volumeSeries?.setData([]);
         volumeMovingAverageSeries.forEach((series) => series?.setData([]));
@@ -8920,7 +9028,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         refreshDayBoundaries([]);
       }
       if (lastPayload?.quote) {
-        lastPayload.quote = { ...lastPayload.quote, realtimeState: "unavailable", freshness: "unavailable" };
+        lastPayload.quote = {
+          ...lastPayload.quote,
+          realtimeState: hasShioajiKbars ? "degraded" : "unavailable",
+          freshness: hasShioajiKbars ? "stale" : "unavailable",
+        };
         updateQuoteDataTime(lastPayload.quote, lastPayload.quoteTime);
       }
       return;
@@ -9868,7 +9980,16 @@ function formatQuoteDataState(quote, fallbackTime) {
   if (realtimeState === "degraded") return { full: `${sourceLabel || "--"}・連線不穩`, compact: `${sourceCompact || "--"} 不穩`, status: "degraded", title: "即時行情連線不穩，顯示最後已接受行情" };
   if (realtimeState === "fallback") return { full: `${sourceLabel || "--"}・延遲備援`, compact: `${sourceCompact || "--"} 備援`, status: "fallback", title: "即時行情不可用，已原子切換 Yahoo 延遲行情" };
   if (realtimeState === "closing") return { full: `${sourceLabel || "--"}・收盤整理`, compact: `${sourceCompact || "--"} 整理`, status: "closing", title: "收盤整理中，等待 canonical 日 K 核對" };
-  if (realtimeState === "closed") return { full: `${sourceLabel || "--"}・已收盤`, compact: `${sourceCompact || "--"} 收盤`, status: "closed", title: "已由 canonical 收盤資料接手" };
+  if (realtimeState === "closed") {
+    const shioajiHistory = value.sourceProvider === "shioaji"
+      && value.verification?.reason === "shioaji_kbars_history";
+    return {
+      full: `${sourceLabel || "--"}・已收盤`,
+      compact: `${sourceCompact || "--"} 收盤`,
+      status: "closed",
+      title: shioajiHistory ? "Shioaji Kbars 盤後資料；等待 canonical 日 K 核對" : "已由 canonical 收盤資料接手",
+    };
+  }
   let base = sourceLabel || "時間未驗證";
   let compact = sourceCompact || "未驗證";
   if (intradayDisplay && !sourceLabel) {

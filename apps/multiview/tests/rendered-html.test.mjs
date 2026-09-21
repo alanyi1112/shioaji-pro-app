@@ -1173,16 +1173,49 @@ test("週末與已知平日休市可辨識，海外商品不套用台股休市",
   assert.equal(isTaiwanMarketClosedDay({ ...fridayQuote, sourceTimeZone: "America/New_York" }, new Date("2026-07-18T00:30:00.000Z")), false);
 });
 
-test("台股盤中 quote contract 不呼叫任何官方收盤來源且 candles 與 stream 一致", async () => {
+test("Yahoo 台股分鐘 K 缺開收盤邊界時 payload 明確標示 partial 且不補造", async () => {
+  const originalFetch = globalThis.fetch;
+  const start = Date.parse("2026-09-18T09:02:00+08:00") / 1000;
+  const end = Date.parse("2026-09-18T13:24:00+08:00") / 1000;
+  globalThis.fetch = async (input) => {
+    const url = new URL(typeof input === "string" ? input : input.url);
+    assert.equal(url.hostname, "query1.finance.yahoo.com");
+    assert.equal(url.searchParams.get("interval"), "1m");
+    return Response.json({ chart: { result: [{
+      timestamp: [start, end],
+      meta: { regularMarketTime: end, marketState: "CLOSED", exchangeTimezoneName: "Asia/Taipei" },
+      indicators: { quote: [{ open: [100, 101], high: [101, 102], low: [99, 100], close: [100.5, 101.5], volume: [1000, 2000] }] },
+    }] } });
+  };
+  try {
+    const response = await (await worker()).fetch(new Request("http://localhost/api/candles?symbol=2330.TW&interval=1m&display_count=20"), environment(), context);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.candles.length, 2);
+    assert.equal(payload.dataQuality.continuity.status, "partial");
+    assert.equal(payload.dataQuality.continuity.reasonCode, "intraday_boundary_gap");
+    assert.deepEqual(payload.dataQuality.continuity.missingBoundaryIntervals, [
+      "2026-09-18 09:00–09:02",
+      "2026-09-18 13:25–13:30",
+    ]);
+    assert.equal(payload.dataWindow.cache.fullWindowComplete, false);
+    assert.deepEqual(payload.candles.map((row) => row.time), [start, end]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("台股盤中 quote contract 不呼叫任何官方收盤來源且 candles 與 stream 一致", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-09-21T02:05:00.000Z") });
   const originalFetch = globalThis.fetch;
   const upstreamCalls = { yahoo: 0, twse: 0, tpex: 0, mis: 0, massive: 0 };
-  const sourceQuoteTime = Math.floor(Date.now() / 1000);
+  const sourceQuoteTime = Date.parse("2026-09-21T02:04:00.000Z") / 1000;
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
     if (url.hostname === "query1.finance.yahoo.com") {
       upstreamCalls.yahoo += 1;
       return Response.json({ chart: { result: [{
-        timestamp: [sourceQuoteTime - 86400, sourceQuoteTime],
+        timestamp: [Date.parse("2026-09-18T02:04:00.000Z") / 1000, sourceQuoteTime],
         meta: { regularMarketTime: sourceQuoteTime, marketState: "REGULAR", exchangeTimezoneName: "Asia/Taipei" },
         indicators: { quote: [{ open: [99, 100], high: [101, 102], low: [98, 99], close: [100, 101], volume: [1200, 800] }] },
       }] } });

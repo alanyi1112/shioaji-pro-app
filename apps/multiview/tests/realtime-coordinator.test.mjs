@@ -127,7 +127,7 @@ function localHarness({
       return Response.json([{ datetime: "2026-08-06 09:01:00", open: 100, high: 102, low: 99, close: 101, average_price: 100.5, volume: 3, total_volume: 12, total_amount: 1_219_000 }]);
     }
     if (url.pathname.endsWith("/api/v1/data/kbars")) return Response.json(kbarPayload || {
-      datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
+      datetime: ["2026-08-06 09:01:00", "2026-08-06 09:02:00"],
       Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7], Amount: [505_000, "714000.00"],
     });
     throw new Error(`unexpected ${url.pathname}`);
@@ -239,7 +239,14 @@ test("本機 coordinator 共用一條 SSE，先送 Snapshot 再交付當日 Kbar
   const h = localHarness();
   const snapshots = [];
   const sessions = [];
-  h.coordinator.subscribe("panel-0", { symbol: "2330.TW" }, (item) => snapshots.push(item), () => {}, (items) => sessions.push(items));
+  const events = [];
+  h.coordinator.subscribe("panel-0", { symbol: "2330.TW", interval: "1m" }, (item) => {
+    events.push("snapshot");
+    snapshots.push(item);
+  }, () => {}, (items) => {
+    events.push("session");
+    sessions.push(items);
+  });
   await settle();
   assert.equal(h.sources.length, 1);
   h.sources[0].open();
@@ -248,9 +255,18 @@ test("本機 coordinator 共用一條 SSE，先送 Snapshot 再交付當日 Kbar
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0].canonicalSymbol, "2330.TW");
   assert.equal(sessions.length, 1);
+  assert.deepEqual(events, ["snapshot", "session"]);
   assert.deepEqual(Array.from(sessions[0], (item) => item.totalVolume), [5, 12]);
   assert.deepEqual(Array.from(sessions[0], (item) => item.turnoverTwd), [505_000, 714_000]);
   assert.deepEqual(Array.from(sessions[0], (item) => item.totalTurnoverTwd), [505_000, 1_219_000]);
+  assert.deepEqual(Array.from(sessions[0], (item) => new Date(item.time * 1000).toISOString()), [
+    "2026-08-06T01:00:00.000Z",
+    "2026-08-06T01:01:00.000Z",
+  ]);
+  assert.deepEqual(Array.from(sessions[0], (item) => new Date(item.sourceTime).toISOString()), [
+    "2026-08-06T01:01:00.000Z",
+    "2026-08-06T01:02:00.000Z",
+  ]);
   assert.ok(sessions[0].every((item) => item.turnoverSchemaRevision === "multiview-kbar-turnover/1"));
   assert.deepEqual(h.requests.filter((item) => item.method === "POST").map((item) => item.path), [
     "/local-shioaji/api/v1/stream/subscribe",
@@ -271,6 +287,48 @@ test("Kbars Amount從coordinator經分鐘聚合到chart payload保持同一curre
   assert.equal(prepared.candles.length, 1);
   assert.equal(prepared.candles[0].turnoverTwd, 1_219_000);
   assert.equal(prepared.candles[0].turnoverSchemaRevision, "multiview-kbar-turnover/1");
+});
+
+test("Shioaji 09:01–13:30 end-labelled Kbars 正規化為 09:00–13:29，聚合邊界完整", async () => {
+  const datetime = Array.from({ length: 270 }, (_, index) => {
+    const minute = 9 * 60 + 1 + index;
+    return `2026-08-06 ${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00`;
+  });
+  const h = localHarness({
+    now: "2026-08-06T08:00:00.000Z",
+    kbarPayload: {
+      datetime,
+      Open: datetime.map((_, index) => 100 + index / 100),
+      High: datetime.map((_, index) => 101 + index / 100),
+      Low: datetime.map((_, index) => 99 + index / 100),
+      Close: datetime.map((_, index) => 100.5 + index / 100),
+      Volume: datetime.map(() => 1),
+      Amount: datetime.map(() => 100_000),
+    },
+  });
+  let session;
+  h.coordinator.subscribe("panel-1m-full", { symbol: "2330.TW", interval: "1m" }, () => {}, () => {}, (items) => { session = items; });
+  await settle();
+  h.sources[0].open();
+  await settle();
+  assert.equal(session.length, 270);
+  assert.equal(new Date(session[0].time * 1000).toISOString(), "2026-08-06T01:00:00.000Z");
+  assert.equal(new Date(session.at(-1).time * 1000).toISOString(), "2026-08-06T05:29:00.000Z");
+  assert.equal(new Date(session[0].sourceTime).toISOString(), "2026-08-06T01:01:00.000Z");
+  assert.equal(new Date(session.at(-1).sourceTime).toISOString(), "2026-08-06T05:30:00.000Z");
+  assert.ok(session.every((row) => row.kbarTimeSemanticsRevision === "shioaji-end-to-canonical-start/1"));
+  const five = h.sandbox.QuoteChartRealtimeCharts.aggregateMinuteCandles(session, "5m");
+  const fifteen = h.sandbox.QuoteChartRealtimeCharts.aggregateMinuteCandles(session, "15m");
+  const hourly = h.sandbox.QuoteChartRealtimeCharts.aggregateMinuteCandles(session, "1h");
+  assert.equal(five.length, 54);
+  assert.equal(fifteen.length, 18);
+  assert.equal(hourly.length, 5);
+  assert.equal(new Date(five[0].time * 1000).toISOString(), "2026-08-06T01:00:00.000Z");
+  assert.equal(new Date(five.at(-1).time * 1000).toISOString(), "2026-08-06T05:25:00.000Z");
+  assert.equal(h.sandbox.QuoteChartRealtimeCharts.auditMinuteCandleContinuity(session, "1m", Date.parse("2026-08-06T08:00:00Z")).status, "complete");
+  assert.equal(h.sandbox.QuoteChartRealtimeCharts.auditMinuteCandleContinuity(five, "5m", Date.parse("2026-08-06T08:00:00Z")).status, "complete");
+  assert.equal(h.sandbox.QuoteChartRealtimeCharts.auditMinuteCandleContinuity(fifteen, "15m", Date.parse("2026-08-06T08:00:00Z")).status, "complete");
+  assert.equal(h.sandbox.QuoteChartRealtimeCharts.auditMinuteCandleContinuity(hourly, "1h", Date.parse("2026-08-06T08:00:00Z")).status, "complete");
 });
 
 test("本機SSE Tick保留amount／total_amount與connection generation，舊source事件fail closed", async () => {
@@ -310,7 +368,7 @@ test("Amount缺漏、長度不符或單列非法只關閉精確值，不丟棄�
     [[505_000, Number.MAX_SAFE_INTEGER + 1], [505_000, null]],
   ]) {
     const h = localHarness({ kbarPayload: {
-      datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
+      datetime: ["2026-08-06 09:01:00", "2026-08-06 09:02:00"],
       Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7],
       ...(amount === undefined ? {} : { Amount: amount }),
     } });
@@ -354,7 +412,8 @@ test("分鐘歷史依最長 interval 共用 range request，相同商品多 pane
 
 test("日 K 本機來源以有界 365 日視窗載入 1 分 Kbars，保留 100,000 rows guard 前的單次 range request", async () => {
   const h = localHarness();
-  h.coordinator.subscribe("panel-daily", { symbol: "2330.TW", interval: "1d" }, () => {}, () => {}, () => {});
+  let dailySession;
+  h.coordinator.subscribe("panel-daily", { symbol: "2330.TW", interval: "1d" }, () => {}, () => {}, (items) => { dailySession = items; });
   await settle();
   h.sources[0].open();
   await settle();
@@ -362,6 +421,10 @@ test("日 K 本機來源以有界 365 日視窗載入 1 分 Kbars，保留 100,0
   assert.equal(requests.length, 1);
   assert.equal(requests[0].body.start, "2025-08-07");
   assert.equal(requests[0].body.end, "2026-08-06");
+  assert.equal(dailySession.length, 1);
+  assert.equal(dailySession[0].sessionDate, "2026-08-06");
+  assert.equal(dailySession[0].volume, 12);
+  assert.equal(dailySession[0].turnoverTwd, 1_219_000);
 });
 
 function targetDateRequest(generation = 7) {
@@ -404,13 +467,14 @@ test("單圖日 K 指定日期先重驗 simulation，再只讀同日 1 分 Kbars
   assert.deepEqual(Array.from(response.candles, (row) => row.turnoverTwd), [505_000, 714_000]);
   assert.equal(response.turnoverSchemaRevision, "multiview-kbar-turnover/1");
   assert.equal(response.turnoverSourceIdentity, "local-shioaji-simulation");
+  assert.equal(response.kbarTimeSemanticsRevision, "shioaji-end-to-canonical-start/1");
   assert.equal(response.turnoverAvailability, "available");
   assert.ok(response.candles.every((row) => row.turnoverSchemaRevision === response.turnoverSchemaRevision));
 });
 
 test("指定日期Amount缺漏只標記unavailable並保留合法同日OHLCV", async () => {
   const h = localHarness({ kbarPayload: {
-    datetime: ["2026-08-06 09:00:00", "2026-08-06 09:01:00"],
+    datetime: ["2026-08-06 09:01:00", "2026-08-06 09:02:00"],
     Open: [100, 101], High: [102, 103], Low: [99, 100], Close: [101, 102], Volume: [5, 7],
   } });
   const response = await h.coordinator.loadTargetDate(targetDateRequest());
@@ -431,7 +495,7 @@ test("單圖指定日期相同 identity 跨 generation 共用一次 info 與 Kba
   assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 1);
 });
 
-test("一般日 K 已填入 covering cache 時，單圖 exact-date 安全重用 sourceTime", async () => {
+test("一般日 K 只快取日聚合，單圖 exact-date 另取分鐘資料避免錯用壓縮 cache", async () => {
   const h = localHarness();
   h.coordinator.subscribe("panel-daily", { symbol: "2330.TW", interval: "1d" }, () => {}, () => {}, () => {});
   await settle();
@@ -439,7 +503,7 @@ test("一般日 K 已填入 covering cache 時，單圖 exact-date 安全重用 
   await settle();
   assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 1);
   const response = await h.coordinator.loadTargetDate(targetDateRequest());
-  assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 1);
+  assert.equal(h.requests.filter((item) => item.path.endsWith("/data/kbars")).length, 2);
   assert.equal(response.candles.length, 2);
   assert.deepEqual(Array.from(response.candles, (row) => row.sessionDate), ["2026-08-06", "2026-08-06"]);
 });

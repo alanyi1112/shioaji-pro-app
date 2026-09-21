@@ -9,6 +9,7 @@ import {
   changedCandleHistoryTail,
   clearCandleHistoryRuntimeState,
   isStructurallyValidCandle,
+  keepTaiwanDailySessions,
   mergeCandleHistory,
   readCandleHistory,
   readCandleHistoryState,
@@ -77,6 +78,27 @@ function candle(time, close = time, extra = {}) {
 function candles(count, start = 1) {
   return Array.from({ length: count }, (_, index) => candle(start + index));
 }
+
+test("台股週日的 Yahoo 日 K 不寫入、不讀出，也不出現在圖表", async () => {
+  const friday = candle(Date.parse("2026-09-18T01:00:00Z") / 1000, 20);
+  const sunday = candle(Date.parse("2026-09-20T04:00:00Z") / 1000, 21);
+  assert.deepEqual(keepTaiwanDailySessions("00878.TW", "1d", [friday, sunday]), [friday]);
+  assert.equal(keepTaiwanDailySessions("BTC", "1d", [friday, sunday]).length, 2);
+  const db = new SqliteD1();
+  try {
+    applyDrizzleSql(db, migration);
+    applyDrizzleSql(db, stateMigration);
+    applyDrizzleSql(db, continuityMigration);
+    const identity = candleHistoryIdentity("yfinance", "00878.TW", "1d");
+    assert.equal((await upsertCandleHistory(db, identity, [friday, sunday], "yahoo-chart")).rows, 1);
+    assert.equal((await readCandleHistory(db, identity, 10)).rows.length, 1);
+    db.database.prepare(`INSERT INTO candle_history
+      (provider,symbol,interval,time,open,high,low,close,volume,source,fetched_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run("yfinance", "00878.TW", "1d", sunday.time,
+      sunday.open, sunday.high, sunday.low, sunday.close, sunday.volume, "yahoo-chart", new Date().toISOString());
+    assert.equal((await readCandleHistory(db, identity, 10)).rows.length, 1);
+  } finally { db.close(); }
+});
 
 test("candle_history migration 建立必要欄位、唯一鍵與 lookup index，重跑仍安全", async () => {
   const db = new SqliteD1();

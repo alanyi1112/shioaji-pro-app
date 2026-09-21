@@ -54,9 +54,31 @@ test("1 分 canonical 依台北交易日聚合 5／15／60 分且不補造缺口
   assert.equal(five[0].turnoverTwd, 1_200_000);
   assert.equal(five[1].turnoverTwd, null);
   assert.equal(five[1].continuity, "partial");
+  assert.equal(five[1].time, Date.parse("2026-08-07T09:05:00+08:00") / 1000);
   assert.equal(five[2].time, rows[3].time);
   assert.equal(api.aggregateMinuteCandles(rows, "1h").length, 2);
   assert.equal(api.aggregateMinuteCandles(rows, "1wk").length, 0);
+});
+
+test("分鐘 continuity 揭露來源邊界缺口，不把盤中尚未完成的 session 誤報缺棒", () => {
+  const point = (iso) => ({
+    time: Date.parse(iso) / 1000,
+    open: 100, high: 101, low: 99, close: 100, volume: 1,
+  });
+  const partial = [
+    point("2026-09-21T09:02:00+08:00"),
+    point("2026-09-21T13:24:00+08:00"),
+  ];
+  const audit = api.auditMinuteCandleContinuity(partial, "1m", Date.parse("2026-09-21T15:00:00+08:00"));
+  assert.equal(audit.status, "partial");
+  assert.equal(audit.reasonCode, "intraday_boundary_gap");
+  assert.deepEqual(Array.from(audit.missingBoundaryIntervals), [
+    "2026-09-21 09:00–09:02",
+    "2026-09-21 13:25–13:30",
+  ]);
+  const inProgress = api.auditMinuteCandleContinuity(partial, "1m", Date.parse("2026-09-21T10:00:00+08:00"));
+  assert.equal(inProgress.status, "unknown");
+  assert.equal(inProgress.reasonCode, "session_in_progress");
 });
 
 test("Shioaji 1 分 Kbars 依台北日期聚合完整日 K，volume 維持 common_lot identity", () => {
@@ -291,6 +313,8 @@ test("fallback／closed 不套 realtime overlay，保留完整 Yahoo snapshot", 
 test("收盤 overlay 只在同交易日 canonical 官方核對完成後交接", () => {
   assert.equal(api.canonicalHandoffReady({ quote: { sessionDate: "2026-07-31", verification: { status: "verified" } } }, snapshot()), true);
   assert.equal(api.canonicalHandoffReady({ quote: { sessionDate: "2026-07-31", verification: { status: "pending" } } }, snapshot()), false);
+  assert.equal(api.canonicalHandoffReady({ quote: { sessionDate: "2026-07-31", verification: { status: "verified", scope: "close", mismatchFields: ["high", "volume"] } } }, snapshot()), false);
+  assert.equal(api.canonicalHandoffReady({ quote: { sessionDate: "2026-07-31", verification: { status: "verified", fieldResults: { close: "match", volume: "mismatch" } } } }, snapshot()), false);
   assert.equal(api.canonicalHandoffReady({ realtimeCanonicalHandoff: { sessionDate: "2026-07-31", verificationStatus: "verified" } }, snapshot()), true);
   assert.equal(api.canonicalHandoffReady({ realtimeCanonicalHandoff: { sessionDate: "2026-07-30", verificationStatus: "verified" } }, snapshot()), false);
 });

@@ -230,6 +230,18 @@ test("即時日 K 新增日期會同步技術、分日線與籌碼時間錨點�
   assert.doesNotMatch(updateCandlesBlock, /\bload\(\)|sharedChipRequest|fetch\(/);
 });
 
+test("同交易日即時日 K 只增量更新最後一棒，避免多圖完整重繪耗盡 renderer", () => {
+  const dailyBlock = appSource.slice(
+    appSource.indexOf("  function renderDailyKlines(snapshot = latestRealtimeSnapshot) {"),
+    appSource.indexOf("\n  function applyRealtimeSnapshot(snapshot) {")
+  );
+  assert.match(dailyBlock, /const sameSessionUpdate = Boolean\(/);
+  assert.match(dailyBlock, /if \(sameSessionUpdate\) \{[\s\S]*?candleSeries\.update\(latest\);/);
+  assert.match(dailyBlock, /chipPaneManager\?\.updateCandles\?\.\(candles\);/);
+  assert.match(dailyBlock, /scheduleRealtimeIndicatorRefresh\(snapshot\);/);
+  assert.match(dailyBlock, /\} else \{[\s\S]*?applyPayload\(payload, \{ preserveVisibleLogicalRange, oldCandleCount \}\);/);
+});
+
 test("大戶散戶縱軸與同日新價位都會維持 autoscale", () => {
   const paneOptionsBlock = chipSource.slice(
     chipSource.indexOf("  function paneChartInteractionOptions("),

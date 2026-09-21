@@ -17,6 +17,15 @@ export type CandleHistoryIdentity = {
   interval: string;
 };
 
+/** Yahoo can emit a moving 1d candle on a Taiwanese weekend. It is not a market session. */
+export function keepTaiwanDailySessions<T extends { time: number }>(symbol: string, interval: string, rows: T[]): T[] {
+  if (interval !== "1d" || !/\.(TW|TWO)$/i.test(symbol)) return rows;
+  return rows.filter((row) => {
+    const taipeiDay = new Date((row.time + 8 * 3600) * 1000).getUTCDay();
+    return taipeiDay !== 0 && taipeiDay !== 6;
+  });
+}
+
 export type CandleHistoryCacheState = "hit" | "miss" | "backfilled" | "refreshed" | "stale" | "disabled" | "write_failed";
 export type CandleHistoryContinuityStatus = "complete" | "partial" | "unknown";
 
@@ -309,7 +318,8 @@ export async function readCandleHistory(db: D1Database | undefined, identity: Ca
     const result = await db.prepare(`SELECT provider,symbol,interval,time,open,high,low,close,volume,quote_time,source,source_updated_at,market_session,source_time_zone,fetched_at
       FROM candle_history WHERE provider=? AND symbol=? AND interval=? ORDER BY time DESC LIMIT ?`)
       .bind(identity.provider, identity.symbol, identity.interval, Math.max(1, limit)).all<CandleHistoryRow>();
-    const rows = result.results.map(rowToCandle).filter((row): row is HistoryCandle => Boolean(row)).reverse();
+    const rows = keepTaiwanDailySessions(identity.symbol, identity.interval,
+      result.results.map(rowToCandle).filter((row): row is HistoryCandle => Boolean(row))).reverse();
     const fetchedAt = result.results.reduce((latest, row) => Math.max(latest, Date.parse(row.fetched_at || "") / 1000 || 0), 0);
     return { ok: true as const, rows, fetchedAt };
   } catch {
@@ -376,7 +386,7 @@ async function saveCandleHistoryState(
   continuity?: CandleHistoryContinuityMetadata,
 ) {
   if (!db) return false;
-  const normalized = mergeCandleHistory([], rows);
+  const normalized = keepTaiwanDailySessions(identity.symbol, identity.interval, mergeCandleHistory([], rows));
   const nowText = now.toISOString();
   const normalizedContinuity = normalizeContinuityMetadata(continuity);
   const isTaiwanDaily = identity.interval === "1d" && /\.(TW|TWO)$/i.test(identity.symbol);
@@ -391,7 +401,7 @@ async function saveCandleHistoryState(
       ON CONFLICT(provider,symbol,interval) DO UPDATE SET
         full_window_complete=excluded.full_window_complete,
         coverage_start=CASE WHEN candle_history_state.coverage_start IS NULL OR excluded.coverage_start<candle_history_state.coverage_start THEN excluded.coverage_start ELSE candle_history_state.coverage_start END,
-        coverage_end=CASE WHEN candle_history_state.coverage_end IS NULL OR excluded.coverage_end>candle_history_state.coverage_end THEN excluded.coverage_end ELSE candle_history_state.coverage_end END,
+        coverage_end=CASE WHEN ?=1 THEN excluded.coverage_end WHEN candle_history_state.coverage_end IS NULL OR excluded.coverage_end>candle_history_state.coverage_end THEN excluded.coverage_end ELSE candle_history_state.coverage_end END,
         available_rows=MAX(candle_history_state.available_rows,excluded.available_rows),status=excluded.status,reason_code=excluded.reason_code,
         last_full_fetch_at=COALESCE(excluded.last_full_fetch_at,candle_history_state.last_full_fetch_at),
         last_tail_fetch_at=COALESCE(excluded.last_tail_fetch_at,candle_history_state.last_tail_fetch_at),
@@ -414,6 +424,7 @@ async function saveCandleHistoryState(
         JSON.stringify(isTaiwanDaily ? normalizedContinuity.missingSessionDates : []),
         JSON.stringify(isTaiwanDaily ? normalizedContinuity.excludedSessionDates : []),
         isTaiwanDaily ? normalizedContinuity.reasonCode : null,
+        isTaiwanDaily ? 1 : 0,
       ).run();
     return true;
   } catch {
@@ -431,7 +442,7 @@ export async function upsertCandleHistory(
   if (!db || !shouldPersistCandleHistory(identity.provider, identity.interval)) {
     return { ok: false as const, rows: 0, reason: "d1_unavailable" as const };
   }
-  const normalizedRows = mergeCandleHistory([], rows);
+  const normalizedRows = keepTaiwanDailySessions(identity.symbol, identity.interval, mergeCandleHistory([], rows));
   const fetchedAt = now.toISOString();
   try {
     for (let index = 0; index < normalizedRows.length; index += CANDLE_HISTORY_WRITE_BATCH) {
@@ -580,7 +591,7 @@ export async function acquireCandleHistory(options: {
       const fetched = await options.fetcher({ mode, requiredRows, ...(startTime ? { startTime } : {}) });
       let merged = mergeCandleHistory(existingRows, fetched.rows);
       if (!merged.length) throw new Error("provider_unavailable");
-      let finalAudit = options.continuityAudit ? await options.continuityAudit(merged, requiredRows) : continuity;
+      let finalAudit: CandleHistoryContinuityAuditResult | undefined = options.continuityAudit ? await options.continuityAudit(merged, requiredRows) : continuity;
       const officialRepairRows = finalAudit?.repairRows ?? [];
       if (officialRepairRows.length) {
         merged = mergeCandleHistory(merged, officialRepairRows);

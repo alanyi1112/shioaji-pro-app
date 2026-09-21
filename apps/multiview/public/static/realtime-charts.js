@@ -3,6 +3,12 @@
   const TURNOVER_SCHEMA_REVISION = turnover?.TURNOVER_SCHEMA_REVISION || "turnover-contract-unavailable";
   const REALTIME_INTERVALS = new Set(["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
   const MINUTE_INTERVAL_SECONDS = Object.freeze({ "1m": 60, "5m": 300, "15m": 900, "1h": 3600 });
+  const TAIWAN_MINUTE_SESSION = Object.freeze({
+    "1m": { stepMinutes: 1, expectedFirstMinute: 9 * 60, expectedLastMinute: 13 * 60 + 29, expectedRows: 270 },
+    "5m": { stepMinutes: 5, expectedFirstMinute: 9 * 60, expectedLastMinute: 13 * 60 + 25, expectedRows: 54 },
+    "15m": { stepMinutes: 15, expectedFirstMinute: 9 * 60, expectedLastMinute: 13 * 60 + 15, expectedRows: 18 },
+    "1h": { stepMinutes: 60, expectedFirstMinute: 9 * 60, expectedLastMinute: 13 * 60, expectedRows: 5 },
+  });
   const LOCAL_INTERVALS = new Set(["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
 
   function normalizeLocalInterval(value) {
@@ -61,7 +67,7 @@
       if (!existing) {
         const turnoverTwd = exactTurnover(point);
         buckets.set(key, {
-          time: point.time,
+          time: bucketStart,
           open: Number(point.open), high: Number(point.high), low: Number(point.low), close: Number(point.close),
           volume: Math.max(0, Number(point.volume)),
           turnoverTwd,
@@ -461,6 +467,96 @@
     return `${parts.year}-${parts.month}-${parts.day}`;
   }
 
+  function taipeiClockParts(value) {
+    const timestamp = typeof value === "number" ? value * 1000 : Date.parse(value);
+    if (!Number.isFinite(timestamp)) return null;
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(new Date(timestamp)).reduce((result, part) => {
+      if (part.type !== "literal") result[part.type] = part.value;
+      return result;
+    }, {});
+    return {
+      date: `${parts.year}-${parts.month}-${parts.day}`,
+      minute: Number(parts.hour) * 60 + Number(parts.minute),
+    };
+  }
+
+  function formatSessionMinute(value) {
+    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  }
+
+  function auditMinuteCandleContinuity(points, interval, now = Date.now()) {
+    const contract = TAIWAN_MINUTE_SESSION[interval];
+    if (!contract) return undefined;
+    const sessions = new Map();
+    for (const point of points || []) {
+      if (!validMinutePoint(point)) continue;
+      const clock = taipeiClockParts(Number(point.time));
+      if (!clock) continue;
+      const rows = sessions.get(clock.date) || [];
+      rows.push({ minute: clock.minute, time: Number(point.time) });
+      sessions.set(clock.date, rows);
+    }
+    const nowClock = taipeiClockParts(Number(now) / 1000);
+    const completed = [...sessions.entries()]
+      .filter(([date]) => nowClock && (date < nowClock.date || (date === nowClock.date && nowClock.minute >= 13 * 60 + 30)))
+      .sort(([left], [right]) => left.localeCompare(right));
+    if (!completed.length) {
+      return {
+        status: "unknown", checkedFrom: null, checkedThrough: null,
+        checkedAt: new Date(Number(now)).toISOString(), verifiedThrough: null,
+        missingSessionCount: 0, missingSessionDates: [], excludedSessionDates: [],
+        missingBoundaryIntervals: [], reasonCode: sessions.size ? "session_in_progress" : "source_not_returned",
+        interval,
+      };
+    }
+    const missingSessionDates = [];
+    const missingBoundaryIntervals = [];
+    const sparseSessionDates = [];
+    const completeSessionDates = [];
+    for (const [date, rows] of completed) {
+      const minutes = [...new Set(rows.map((row) => row.minute))].sort((left, right) => left - right);
+      const first = minutes[0];
+      const last = minutes.at(-1);
+      let incomplete = false;
+      if (first > contract.expectedFirstMinute) {
+        incomplete = true;
+        missingBoundaryIntervals.push(`${date} ${formatSessionMinute(contract.expectedFirstMinute)}–${formatSessionMinute(first)}`);
+      }
+      if (last < contract.expectedLastMinute) {
+        incomplete = true;
+        missingBoundaryIntervals.push(`${date} ${formatSessionMinute(last + contract.stepMinutes)}–13:30`);
+      }
+      if (minutes.length < contract.expectedRows && !incomplete) {
+        incomplete = true;
+        sparseSessionDates.push(date);
+      }
+      if (incomplete) missingSessionDates.push(date);
+      else completeSessionDates.push(date);
+    }
+    const checkedFrom = completed[0][0];
+    const checkedThrough = completed.at(-1)[0];
+    const partial = missingSessionDates.length > 0;
+    return {
+      status: partial ? "partial" : "complete",
+      checkedFrom,
+      checkedThrough,
+      checkedAt: new Date(Number(now)).toISOString(),
+      verifiedThrough: partial ? (completeSessionDates.at(-1) || null) : checkedThrough,
+      missingSessionCount: missingSessionDates.length,
+      missingSessionDates: missingSessionDates.slice(0, 32),
+      excludedSessionDates: [],
+      missingBoundaryIntervals: missingBoundaryIntervals.slice(0, 32),
+      sparseSessionDates: sparseSessionDates.slice(0, 32),
+      reasonCode: missingBoundaryIntervals.length
+        ? "intraday_boundary_gap"
+        : sparseSessionDates.length ? "intraday_sparse_or_no_trade" : null,
+      interval,
+    };
+  }
+
   function periodKey(interval, sessionDate) {
     if (interval === "1d") return sessionDate;
     if (interval === "1mo") return sessionDate.slice(0, 7);
@@ -483,14 +579,22 @@
 
   function canonicalHandoffReady(payload, snapshot) {
     if (!payload || !validSnapshot(snapshot)) return false;
+    const verificationPayload = payload.quote?.verification;
     const verification = String(
       payload.realtimeCanonicalHandoff?.verificationStatus
-      || payload.quote?.verification?.status
-      || payload.quote?.verification
+      || verificationPayload?.status
+      || verificationPayload
       || "",
     ).toLowerCase();
     const sessionDate = String(payload.realtimeCanonicalHandoff?.sessionDate || payload.quote?.sessionDate || "");
-    return verification === "verified" && sessionDate >= snapshot.sessionDate;
+    const mismatchFields = payload.realtimeCanonicalHandoff?.mismatchFields
+      || verificationPayload?.mismatchFields
+      || payload.quote?.dataQuality?.verificationMismatchFields;
+    const fieldResults = verificationPayload?.fieldResults;
+    const hasFieldMismatch = (Array.isArray(mismatchFields) && mismatchFields.length > 0)
+      || (fieldResults && typeof fieldResults === "object"
+        && Object.values(fieldResults).some((result) => String(result).toLowerCase() === "mismatch"));
+    return verification === "verified" && !hasFieldMismatch && sessionDate >= snapshot.sessionDate;
   }
 
   function aggregateCompletedDaily(dailyHistory, interval, sessionDate) {
@@ -652,6 +756,7 @@
     aggregateCompletedDaily,
     aggregateDailyCandles,
     aggregateMinuteCandles,
+    auditMinuteCandleContinuity,
     canonicalHandoffReady,
     createCommonLotVolumeCursor,
     createDailyKlineAccumulator,
