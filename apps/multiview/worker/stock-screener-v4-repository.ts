@@ -39,15 +39,21 @@ export async function publishScreenerV4Snapshot(
   if (previous) {
     if (previous.metadata.technicalAnchors.through > metadata.technicalAnchors.through) throw new Error("snapshot_regression");
     if (previous.metadata.technicalAnchors.through === metadata.technicalAnchors.through) {
+      // A versioned validation repair may invalidate old signals that skipped missing
+      // sessions. Once migrated, the usual sparse-regression guard remains strict.
+      const alignmentRepair = metadata.sessionAlignmentVersion === "official-sessions-v1"
+        && previous.metadata.sessionAlignmentVersion !== "official-sessions-v1";
       const before = new Map(previous.inputs.map((row) => [row.symbol, row.technicalV4]));
       for (const row of inputs) {
         const prior = before.get(row.symbol);
         if (!prior) continue;
-        if (prior.ma.verdict !== "unknown" && row.technicalV4.ma.verdict === "unknown") throw new Error("snapshot_sparse_regression");
+        if (prior.ma.verdict !== "unknown" && row.technicalV4.ma.verdict === "unknown"
+          && !(alignmentRepair && row.technicalV4.ma.reason === "non_adjacent_sessions")) throw new Error("snapshot_sparse_regression");
         for (const source of Object.keys(prior.divergence)) {
           for (const key of ["bullish", "bearish", "bullishZeroReset", "bearishZeroReset"] as const) {
             if (prior.divergence[source]?.[key].verdict !== "unknown"
-              && row.technicalV4.divergence[source]?.[key].verdict === "unknown") throw new Error("snapshot_sparse_regression");
+              && row.technicalV4.divergence[source]?.[key].verdict === "unknown"
+              && !(alignmentRepair && row.technicalV4.divergence[source]?.[key].reason === "non_adjacent_sessions")) throw new Error("snapshot_sparse_regression");
           }
         }
       }

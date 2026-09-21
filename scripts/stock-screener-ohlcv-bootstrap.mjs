@@ -59,14 +59,14 @@ export function selectOhlcvSessions(officialCommonSessions, through, receipts = 
     return sessions;
 }
 
-export function planOhlcvBootstrap(universe, sessions, receipts = [], coverageByTarget = new Map()) {
+export function planOhlcvBootstrap(universe, sessions, receipts = [], coverageByTarget) {
     const targets = buildOhlcvTargets(universe, sessions);
     if (!Array.isArray(receipts)) throw new Error('invalid_ohlcv_receipts');
     const byKey = new Map(receipts.map((receipt) => [`${receipt.market}|${receipt.sessionDate}`, receipt]));
     const complete = (target) => {
         const receipt = byKey.get(target.key);
         if (receipt?.status !== 'collected' || receipt.complete !== true) return false;
-        if (receipt.expectedHash === target.expectedHash && receipt.universeEligible === target.universeEligible) return true;
+        if (!coverageByTarget) return receipt.expectedHash === target.expectedHash && receipt.universeEligible === target.universeEligible;
         // Universe metadata, removals and renames do not invalidate an official
         // market/session receipt. Re-open only when a currently eligible symbol
         // is not covered by a canonical row or an explicit invalid/missing outcome.
@@ -133,7 +133,7 @@ export async function prepareScreenerOhlcv(db, {
     catch (error) { if (/no such table.*screener_daily_ohlcv/.test(String(error))) throw new Error('schema_pending'); throw error; }
     const existingRows = (await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE scope='screener-ohlcv-period'").all()).results ?? [];
     const receipts = parseReceiptRows(existingRows);
-    const rowCoverage = (await db.prepare(`SELECT symbol,data_date,market FROM screener_daily_ohlcv WHERE data_date IN (${sessions.map(() => '?').join(',')}) AND validation='canonical-complete-v1'`).bind(...sessions).all()).results ?? [];
+    const rowCoverage = (await db.prepare(`SELECT symbol,data_date,market FROM screener_daily_ohlcv WHERE data_date IN (${sessions.map(() => '?').join(',')}) AND validation IN ('canonical-complete-v1','canonical-complete-v2')`).bind(...sessions).all()).results ?? [];
     let coverage = buildCoverage(rowCoverage, receipts);
     let plan = planOhlcvBootstrap(universe, sessions, receipts, coverage);
     let requested = 0;
@@ -191,7 +191,7 @@ export async function prepareScreenerOhlcv(db, {
     }
     const afterRows = (await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE scope='screener-ohlcv-period'").all()).results ?? [];
     const afterReceipts = parseReceiptRows(afterRows);
-    const afterCoverageRows = (await db.prepare(`SELECT symbol,data_date,market FROM screener_daily_ohlcv WHERE data_date IN (${sessions.map(() => '?').join(',')}) AND validation='canonical-complete-v1'`).bind(...sessions).all()).results ?? [];
+    const afterCoverageRows = (await db.prepare(`SELECT symbol,data_date,market FROM screener_daily_ohlcv WHERE data_date IN (${sessions.map(() => '?').join(',')}) AND validation IN ('canonical-complete-v1','canonical-complete-v2')`).bind(...sessions).all()).results ?? [];
     coverage = buildCoverage(afterCoverageRows, afterReceipts);
     plan = planOhlcvBootstrap(universe, sessions, afterReceipts, coverage);
     plan.receipts = new Map(afterReceipts.map((receipt) => [`${receipt.market}|${receipt.sessionDate}`, receipt]));
@@ -216,7 +216,7 @@ export async function pruneScreenerOhlcv(db, sessions) {
         }
     }
     const values = [...keep].sort();
-    await db.prepare(`DELETE FROM screener_daily_ohlcv WHERE data_date NOT IN (${values.map(() => '?').join(',')})`).bind(...values).run();
+    await db.prepare(`DELETE FROM screener_daily_ohlcv WHERE validation='canonical-complete-v1' AND data_date NOT IN (${values.map(() => '?').join(',')})`).bind(...values).run();
     return values;
 }
 
@@ -255,7 +255,7 @@ export function buildOhlcvV4Targets(universe, sessions) {
     return targets;
 }
 
-export function planOhlcvV4Bootstrap(universe, sessions, receipts = [], coverageByTarget = new Map()) {
+export function planOhlcvV4Bootstrap(universe, sessions, receipts = [], coverageByTarget) {
     const targets = buildOhlcvV4Targets(universe, sessions);
     if (!Array.isArray(receipts)) throw new Error('invalid_ohlcv_v4_receipts');
     const byKey = new Map(receipts.filter((receipt) => receipt?.dataCapability === OHLCV_V4_CAPABILITY)
@@ -264,7 +264,7 @@ export function planOhlcvV4Bootstrap(universe, sessions, receipts = [], coverage
         const receipt = byKey.get(target.key);
         if (receipt?.status !== 'collected' || receipt.complete !== true
             || receipt.sourceMappingVersion !== target.sourceMappingVersion) return false;
-        if (receipt.expectedHash === target.expectedHash && receipt.universeEligible === target.universeEligible) return true;
+        if (!coverageByTarget) return receipt.expectedHash === target.expectedHash && receipt.universeEligible === target.universeEligible;
         const coverage = coverageByTarget.get(target.key);
         return coverage instanceof Set && target.symbols.every((symbol) => coverage.has(symbol));
     };

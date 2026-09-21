@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
     combineVerdicts, criteriaFingerprint, DEFAULT_CRITERIA, evaluateHolder, evaluateHolderSeries, evaluateTurnover, evaluateVolume,
-    formatTurnoverWan, hundredths,
-    isIsoDate, screenStocks, selectPeriodPair, validateCriteria, validateStock, validateTdcc,
+    effectiveCriteria, formatTurnoverWan, hasAlignedSessionEvidence, hundredths,
+    isIsoDate, resolveEffectiveSessionPair, screenStocks, selectPeriodPair, validateCriteria, validateStock, validateTdcc,
     turnoverWanToNtd,
     type HolderPoint, type Provenance, type ScreenerInput, type Verdict, type VolumePoint,
 } from './stock-screener-domain';
@@ -39,6 +39,25 @@ describe('收盤後選股精確契約', () => {
         expect(selectPeriodPair([pair.previous, pair.current], [[pair.previous, pair.current]], pair.current)).toEqual(pair);
         expect(selectPeriodPair(days, [days], '2026-08-23')).toEqual({ current: '2026-08-21', previous: '2026-08-20' });
         expect(() => selectPeriodPair(['2026-02-30'], [[]], pair.current)).toThrow('invalid_calendar');
+    });
+    it('effectiveSessionDate 只取兩市場正式共同日，mixed-session 一律拒絕', () => {
+        const sessions = ['2026-08-31', '2026-09-01', '2026-09-02'];
+        const resolved = resolveEffectiveSessionPair(sessions, {
+            TWSE: sessions, TPEx: sessions.slice(0, 2),
+        }, '2026-09-02');
+        expect(resolved).toEqual({ previous: '2026-08-31', current: '2026-09-01' });
+        expect(hasAlignedSessionEvidence({ expectedSessionDate: '2026-09-01', daily: resolved,
+            technicalThrough: '2026-09-01', effectiveSessionDate: '2026-09-01' })).toBe(true);
+        expect(hasAlignedSessionEvidence({ expectedSessionDate: '2026-09-02', daily: resolved,
+            technicalThrough: '2026-09-01', effectiveSessionDate: '2026-09-02' })).toBe(false);
+    });
+    it('1409 在 D 推進到 09-02 後只比較 09-01→09-02，不延續舊窗 5.6393 倍', () => {
+        const aug31 = volume('11610980', '2026-08-31');
+        const sep1 = volume('65478367', '2026-09-01');
+        const sep2 = volume('25510372', '2026-09-02');
+        expect(evaluateVolume(sep1, aug31, { previous: '2026-08-31', current: '2026-09-01' }, '3').verdict).toBe('pass');
+        expect(evaluateVolume(sep2, sep1, { previous: '2026-09-01', current: '2026-09-02' }, '3').verdict).toBe('fail');
+        expect(evaluateVolume(sep1, aug31, { previous: '2026-09-01', current: '2026-09-02' }, '3').reason).toBe('date_mismatch');
     });
     it('成交量精確比較、不以畫面四捨五入或 IEEE 浮點比較', () => {
         const prev = volume('100000', pair.previous);
@@ -135,5 +154,16 @@ describe('收盤後選股精確契約', () => {
         const base=criteriaFingerprint(DEFAULT_CRITERIA);
         expect(criteriaFingerprint({...DEFAULT_CRITERIA,volume:{...DEFAULT_CRITERIA.volume,turnover:{enabled:true,minimumWan:'1000'}}})).not.toBe(base);
         expect(criteriaFingerprint({...DEFAULT_CRITERIA,holder:{...DEFAULT_CRITERIA.holder,mode:'decrease-to-increase',streakWeeks:4}})).not.toBe(base);
+    });
+    it('父條件關閉時成交值子條件不參與 effective criteria、fingerprint 或 verdict', () => {
+        const legacy = { ...DEFAULT_CRITERIA,
+            holder: { ...DEFAULT_CRITERIA.holder, enabled: false, turnover: { enabled: true, minimumWan: '9999' } } };
+        const normalized = effectiveCriteria(legacy);
+        expect(normalized.holder.turnover.enabled).toBe(false);
+        expect(criteriaFingerprint(legacy)).toBe(criteriaFingerprint({ ...legacy,
+            holder: { ...legacy.holder, turnover: { ...legacy.holder.turnover, enabled: false, minimumWan: '1' } } }));
+        const stock: ScreenerInput = { code: '1409', symbol: '1409.TW', name: '新纖', market: 'TWSE', kind: 'ordinary',
+            currentVolume: volume('300', pair.current), previousVolume: volume('100', pair.previous), currentHolder: null, previousHolder: null };
+        expect(screenStocks([stock], { daily: pair, weekly: null }, legacy).rows[0]).toMatchObject({ verdict: 'pass', holder: null });
     });
 });

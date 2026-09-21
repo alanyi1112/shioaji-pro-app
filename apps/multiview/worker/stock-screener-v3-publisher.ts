@@ -28,7 +28,7 @@ export async function buildTechnicalSnapshotEvidence(
 async function readOhlcvWindow(db: ScreenerDatabase, first: string, last: string) {
   const rows: OhlcvRow[] = [];
   for (let offset = 0; ; offset += 5000) {
-    const page = (await db.prepare("SELECT symbol,data_date,market,open,high,low,close FROM screener_daily_ohlcv WHERE data_date>=? AND data_date<=? AND validation='canonical-complete-v1' ORDER BY symbol,data_date LIMIT ? OFFSET ?")
+    const page = (await db.prepare("SELECT symbol,data_date,market,open,high,low,close FROM screener_daily_ohlcv WHERE data_date>=? AND data_date<=? AND validation IN ('canonical-complete-v1','canonical-complete-v2') ORDER BY symbol,data_date LIMIT ? OFFSET ?")
       .bind(first, last, 5000, offset).all<OhlcvRow>()).results ?? [];
     rows.push(...page);
     if (page.length < 5000) break;
@@ -67,8 +67,8 @@ export async function publishPreparedScreenerV3(db: ScreenerDatabase, now = new 
   const receiptPlan = planOhlcvBootstrap(base.inputs, sessions, receipts, coverage);
   if (receiptPlan.remaining !== 0 || receiptPlan.failed !== 0 || receiptPlan.processed !== receiptPlan.target)
     return { state: "pending", reason: "universe_coverage_pending", progress: checkpoint } as const;
-  const receiptsHash = await technicalEvidenceHash(receipts.filter((receipt) => sessions.includes(receipt.sessionDate))
-    .sort((a, b) => `${a.market}|${a.sessionDate}`.localeCompare(`${b.market}|${b.sessionDate}`)));
+  const receiptsHash = await technicalEvidenceHash({ readerVersion: "ohlc-compatible-v2", receipts: receipts.filter((receipt) => sessions.includes(receipt.sessionDate))
+    .sort((a, b) => `${a.market}|${a.sessionDate}`.localeCompare(`${b.market}|${b.sessionDate}`)) });
   const previous = await readScreenerV3Snapshot(db);
   if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) return { state: "unchanged", snapshotId: previous.id } as const;
 

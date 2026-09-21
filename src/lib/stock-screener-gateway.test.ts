@@ -7,12 +7,16 @@ describe('選股 allowlist 不接觸 broker', () => {
         expect(validateScreenerGatewayRequest(req)?.url).toBe('http://127.0.0.1:5174/api/stock-screener/results');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=2&holderMode=decrease-to-increase&holderStreakWeeks=4&holderTurnover=true&holderTurnoverMinimumWan=1000' })?.url).toContain('holderStreakWeeks=4');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=3&fractal=true&fractalAlgorithm=chan-containment&fractalDirection=any&bollReversal=true&bollMode=any' })?.url).toContain('fractalAlgorithm=chan-containment');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=4&ma=true&maMode=golden-cross&compressionDays=3&maxSpreadPct=1&divergence=true&divergenceSource=obv&divergenceDirection=bullish&requireZeroReset=false' })?.url).toContain('divergenceSource=obv');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=5&largeHolderTrendEnabled=true&largeHolderTrendMinimumRatioPct=10&largeHolderTrendMaximumRatioPct=80&largeHolderTrendWeeks=3&largeHolderTrendMinimumIncreasePp=0.1&sort=largeHolderRatio' })?.url).toContain('largeHolderTrendEnabled=true');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=2' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=2');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=3' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=3');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=4' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=4');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=5' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=5');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/v1/contracts' })).toBeNull();
         for (const extra of [
             { method: 'POST' }, { url: '/api/stock-screener/delete' }, { url: '/api/stock-screener/results?url=http://evil' },
-            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=4' },
+            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=6' },
             { url: '/api/stock-screener/results?limit=101' }, { url: '/api/stock-screener/results?limit=1&limit=2' },
             { headers: { host: 'example.com' } }, { headers: { ...req.headers, origin: 'https://evil.example' } },
         ]) expect(validateScreenerGatewayRequest({ ...req, ...extra })?.reason).toBeTruthy();
@@ -41,5 +45,23 @@ describe('選股 allowlist 不接觸 broker', () => {
         expect(res.end).toHaveBeenCalledOnce();
         const body = JSON.parse(res.end.mock.calls[0]![0] as string);
         expect(body).toMatchObject({ version: 3, state: 'unavailable', technicalAnchors: null, preparation: null });
+    });
+    it('v4 離線回應保留 v4 schema 與 source mapping', async () => {
+        let middleware: Function = () => {};
+        const plugin = stockScreenerGateway(vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch, 10);
+        (plugin.configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+        const res = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+        await middleware({ ...req, url: '/api/stock-screener/status?version=4' }, res, vi.fn());
+        const body = JSON.parse(res.end.mock.calls[0]![0] as string);
+        expect(body).toMatchObject({ version: 4, state: 'unavailable', sourceMappingVersion: 'official-daily-ohlcv-v2' });
+    });
+    it('v5 離線回應保留籌碼 schema 與來源 mapping', async () => {
+        let middleware: Function = () => {};
+        const plugin = stockScreenerGateway(vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch, 10);
+        (plugin.configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+        const res = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+        await middleware({ ...req, url: '/api/stock-screener/status?version=5' }, res, vi.fn());
+        const body = JSON.parse(res.end.mock.calls[0]![0] as string);
+        expect(body).toMatchObject({ version: 5, state: 'unavailable', sourceMappingVersion: 'official-market-chip-v1', chipCoverage: null });
     });
 });

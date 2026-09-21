@@ -78,13 +78,9 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
   const candidateRows = await readPaged<TdccRow>(db,
     `SELECT symbol,data_date,payload FROM screener_tdcc_weekly WHERE validation='full-17'
      AND data_date>=? AND data_date<=? ORDER BY symbol,data_date`, [candidateDates.at(-1)!.data_date, candidateDates[0]!.data_date]);
-  const presentByDate = new Map<string, Set<string>>();
-  for (const row of candidateRows) {
-    const present = presentByDate.get(row.data_date) ?? new Set<string>();
-    present.add(row.symbol); presentByDate.set(row.data_date, present);
-  }
-  const tdccPeriods = candidateDates.filter(({ data_date }) => base.inputs.every((input) => input.listingDate && input.listingDate > data_date
-    || presentByDate.get(data_date)?.has(input.symbol))).map((row) => row.data_date).slice(0, 13).sort();
+  // Keep official periods even when one symbol is missing; never compress a gap into a weekly transition.
+  const tdccPeriods = [...new Set([...candidateDates.map((row) => row.data_date),
+    ...(base.metadata.anchors.weeklyPeriods ?? [])])].filter((date) => date <= effective).sort().slice(-13);
   if (tdccPeriods.length < 4) return { state: "pending", reason: "tdcc_universe_coverage_pending" } as const;
   const tdccRows = candidateRows.filter((row) => tdccPeriods.includes(row.data_date));
   const provenanceRows = await readPaged<{ symbol: string; data_date: string; receipt_id: string | null }>(db,
@@ -115,7 +111,7 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
       investmentTrustNetShares: row.investment_trust_net_shares, marginTodayBalanceLots: row.margin_today_balance_lots,
       shortTodayBalanceLots: row.short_today_balance_lots, institutionalReceiptId: row.institutional_receipt_id,
       marginReceiptId: row.margin_receipt_id }));
-    const evidence = { dailySessions: sessions, tdccWeeks: weeks, daily, closes: closeBySymbol.get(input.symbol) ?? [],
+    const evidence = { dailySessions: sessions, tdccPeriods, tdccWeeks: weeks, daily, closes: closeBySymbol.get(input.symbol) ?? [],
       issuedCommonShares: { shares, asOfDate: universe?.issued_shares_source_date ?? fallback.issuedSharesSourceDate ?? null,
         sourceUrl: universe?.issued_shares_source_url ?? fallback.issuedSharesSourceUrl ?? null,
         payloadHash: universe?.issued_shares_payload_hash ?? fallback.issuedSharesPayloadHash ?? null,
@@ -124,8 +120,8 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
       mappingVersion: SCREENER_CHIP_MAPPING_VERSION };
     inputs.push({ ...input, chipV5: { ...evidence, evidenceHash: await technicalEvidenceHash(evidence) } });
   }
-  const receiptsHash = await technicalEvidenceHash(verified.map((row) => ({ id: row.id, hash: row.payload_hash,
-    date: row.source_date, market: row.market, dataset: row.dataset })));
+  const receiptsHash = await technicalEvidenceHash({ readerVersion: "adjacent-tdcc-v2", tdccPeriods, evidenceHashes: inputs.map((input) => input.chipV5.evidenceHash), receipts: verified.map((row) => ({ id: row.id, hash: row.payload_hash,
+    date: row.source_date, market: row.market, dataset: row.dataset })) });
   const previous = await readScreenerV5Snapshot(db);
   if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) return { state: "unchanged", snapshotId: previous.id } as const;
   const marketTargets = { TWSE: base.inputs.filter((row) => row.market === "TWSE").length,

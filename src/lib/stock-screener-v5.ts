@@ -85,6 +85,7 @@ export interface IssuedSharesEvidence {
 export interface ChipSnapshotEvidenceV5 {
     dailySessions: string[];
     tdccWeeks: TdccChipWeek[];
+    tdccPeriods?: string[];
     daily: DailyChipPoint[];
     closes: ClosePoint[];
     issuedCommonShares: IssuedSharesEvidence;
@@ -120,6 +121,12 @@ function tdccTail(feature: ChipSnapshotEvidenceV5, transitions: number): TdccChi
     const points = feature.tdccWeeks.slice(-transitions - 1);
     if (points.length !== transitions + 1 || points.some((point, index) => !iso(point.date)
         || index > 0 && point.date <= points[index - 1]!.date)) return null;
+    if (points.at(-1)?.date !== feature.weeklyThrough) return null;
+    if (feature.tdccPeriods) {
+        const expected = feature.tdccPeriods.slice(-transitions - 1);
+        if (expected.length !== points.length || points.some((point, index) => point.date !== expected[index])) return null;
+    } else if (points.some((point, index) => index > 0
+        && Date.parse(point.date) - Date.parse(points[index - 1]!.date) !== 7 * 86400000)) return null;
     return points;
 }
 

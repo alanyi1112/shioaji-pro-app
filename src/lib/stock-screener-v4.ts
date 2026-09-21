@@ -122,6 +122,7 @@ export interface ScreenerV4Counts extends Omit<Counts, 'missingByCondition'> {
     };
 }
 export interface ScreenerV4Metadata {
+    sessionAlignmentVersion?: 'official-sessions-v1';
     version: 4;
     schemaVersion: 4;
     formulaVersion: typeof SCREENER_V4_FORMULA_VERSION;
@@ -181,7 +182,11 @@ export function canonicalOhlcvCandles(bars: readonly CanonicalOhlcv[]): Candle[]
     return rows;
 }
 
-export function buildMaFeatures(bars: readonly CanonicalOhlcv[]): V4Outcome<MaFeatureEvidence> {
+export function buildMaFeatures(bars: readonly CanonicalOhlcv[], sessions?: readonly string[]): V4Outcome<MaFeatureEvidence> {
+    // SMA20 plus the latest eleven feature days requires thirty adjacent sessions.
+    if (sessions && sessions.slice(-(20 + MA_FEATURE_DAYS - 1)).some(date => !bars.some(bar => bar.sessionDate === date))) {
+        return { verdict: 'unknown', reason: 'non_adjacent_sessions' };
+    }
     const candles = canonicalOhlcvCandles(bars);
     if (!candles) return { verdict: 'unknown', reason: 'invalid_ohlcv' };
     if (candles.length < 20) return { verdict: 'unknown', reason: 'insufficient_history' };
@@ -322,12 +327,13 @@ function evaluateDivergenceDirection(
     return { verdict: pass ? 'pass' : 'fail', reason: 'none', evidence };
 }
 
-export function buildDivergenceMatrix(bars: readonly CanonicalOhlcv[]): DivergenceMatrix {
+export function buildDivergenceMatrix(bars: readonly CanonicalOhlcv[], sessions?: readonly string[]): DivergenceMatrix {
     const candles = canonicalOhlcvCandles(bars);
     const invalid = (reason: V4UnknownReason): DivergenceMatrix => Object.fromEntries(DIVERGENCE_SOURCES.map((source) => [source, {
         bullish: { verdict: 'unknown', reason }, bearish: { verdict: 'unknown', reason },
         bullishZeroReset: { verdict: 'unknown', reason }, bearishZeroReset: { verdict: 'unknown', reason },
     }])) as DivergenceMatrix;
+    if (sessions && sessions.some(date => !bars.some(bar => bar.sessionDate === date))) return invalid('non_adjacent_sessions');
     if (!candles) return invalid('invalid_ohlcv');
     if (bars.length < 35) return invalid('insufficient_history');
     return Object.fromEntries(DIVERGENCE_SOURCES.map((source) => [source, {
@@ -351,8 +357,8 @@ export function selectStoredDivergence(matrix: DivergenceMatrix, criteria: Diver
     return { verdict, reason: verdict === 'unknown' ? selected.reason : 'none', ...(selected.evidence ? { evidence: selected.evidence } : {}) };
 }
 
-export async function buildTechnicalSnapshotEvidenceV4(bars: readonly CanonicalOhlcv[]): Promise<TechnicalSnapshotEvidenceV4> {
-    const evidence = { ma: buildMaFeatures(bars), divergence: buildDivergenceMatrix(bars) };
+export async function buildTechnicalSnapshotEvidenceV4(bars: readonly CanonicalOhlcv[], sessions?: readonly string[]): Promise<TechnicalSnapshotEvidenceV4> {
+    const evidence = { ma: buildMaFeatures(bars, sessions), divergence: buildDivergenceMatrix(bars, sessions) };
     return { ...evidence, evidenceHash: await technicalEvidenceHash(evidence) };
 }
 
@@ -442,6 +448,7 @@ export function validateScreenerV4Progress(progress: ScreenerV4Progress): boolea
 export function validateScreenerV4Metadata(metadata: ScreenerV4Metadata): boolean {
     const sessions = metadata?.technicalAnchors?.sessions;
     return !!metadata && metadata.version === 4 && metadata.schemaVersion === 4
+        && (metadata.sessionAlignmentVersion === undefined || metadata.sessionAlignmentVersion === 'official-sessions-v1')
         && metadata.formulaVersion === SCREENER_V4_FORMULA_VERSION
         && metadata.sourceMappingVersion === SCREENER_OHLCV_V4_MAPPING_VERSION && metadata.sourceReview === 'verified'
         && !!metadata.universeRevision && /^[\w-]{36}$/.test(metadata.baseSnapshotId)

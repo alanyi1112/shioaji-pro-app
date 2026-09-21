@@ -64,7 +64,7 @@ export async function publishPreparedScreenerV4(db: ScreenerDatabase, now = new 
   }
   const relevantReceipts = receipts.filter((receipt) => receipt.dataCapability === "ohlcv-v4" && sessions.includes(receipt.sessionDate))
     .sort((a, b) => `${a.market}|${a.sessionDate}`.localeCompare(`${b.market}|${b.sessionDate}`));
-  const receiptsHash = await technicalEvidenceHash(relevantReceipts);
+  const receiptsHash = await technicalEvidenceHash({ readerVersion: "session-aligned-v2", receipts: relevantReceipts });
   const previous = await readScreenerV4Snapshot(db);
   if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) {
     return { state: "unchanged", snapshotId: previous.id } as const;
@@ -83,7 +83,7 @@ export async function publishPreparedScreenerV4(db: ScreenerDatabase, now = new 
   for (const input of base.inputs as ScreenerInputV3[]) {
     const eligibleSessions = sessions.filter((date) => !input.listingDate || date >= input.listingDate);
     const bars = (bySymbol.get(input.symbol) ?? []).filter((bar) => eligibleSessions.includes(bar.sessionDate));
-    inputs.push({ ...input, technicalV4: await buildTechnicalSnapshotEvidenceV4(bars) });
+    inputs.push({ ...input, technicalV4: await buildTechnicalSnapshotEvidenceV4(bars, eligibleSessions) });
   }
   if (inputs.length !== base.metadata.total) throw new Error("snapshot_incomplete");
   const legacy = screenStocks(base.inputs, base.metadata.anchors, DEFAULT_CRITERIA);
@@ -102,7 +102,7 @@ export async function publishPreparedScreenerV4(db: ScreenerDatabase, now = new 
   const progress = { version: 4 as const, target: checkpoint.target, processed: checkpoint.processed,
     remaining: checkpoint.remaining, failed: checkpoint.failed, overdue: checkpoint.overdue,
     cursor: checkpoint.cursor ?? null, markets: checkpoint.markets };
-  const metadata: ScreenerV4Metadata = { version: 4, schemaVersion: 4,
+  const metadata: ScreenerV4Metadata = { version: 4, schemaVersion: 4, sessionAlignmentVersion: "official-sessions-v1",
     formulaVersion: SCREENER_V4_FORMULA_VERSION, sourceMappingVersion: SCREENER_OHLCV_V4_MAPPING_VERSION,
     anchors: base.metadata.anchors, technicalAnchors: { sessions, through: sessions.at(-1)! },
     baseSnapshotId: base.id, receiptsHash, universeRevision: base.metadata.universeRevision,

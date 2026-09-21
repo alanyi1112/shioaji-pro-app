@@ -6,7 +6,7 @@ import { prepareScreenerOhlcv, pruneScreenerOhlcv, selectOhlcvSessions } from '.
 import { readScreenerSnapshot } from '../apps/multiview/worker/stock-screener-repository.ts';
 import { publishPreparedScreenerV3 } from '../apps/multiview/worker/stock-screener-v3-publisher.ts';
 
-export async function resumeScreenerOhlcv(db, { limit = 120, pauseMs = 2000, log = () => {} } = {}) {
+export async function resumeScreenerOhlcv(db, { limit = 120, pauseMs = 2000, log = () => {}, fetcher = fetch } = {}) {
     const base = await readScreenerSnapshot(db, undefined, 2);
     if (!base || base.metadata.version !== 2 || !base.metadata.anchors?.daily?.current) throw new Error('v2_snapshot_pending');
     const calendarRow = await db.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-period-evidence' AND status='verified'").first();
@@ -17,7 +17,7 @@ export async function resumeScreenerOhlcv(db, { limit = 120, pauseMs = 2000, log
     const sessions = selectOhlcvSessions(calendar.sessions, base.metadata.anchors.daily.current, receipts);
     const result = await prepareScreenerOhlcv(db, { universe: base.inputs, sessions,
         universeRevision: base.metadata.universeRevision, validThrough: base.metadata.validThrough,
-        limit, pauseMs, log });
+        limit, pauseMs, log, fetcher });
     const snapshot = result.state === 'complete' ? await publishPreparedScreenerV3(db) : { state: 'pending', reason: 'ohlcv_bootstrap_pending' };
     if (result.state === 'complete') await pruneScreenerOhlcv(db, sessions);
     return { ...result, technicalSnapshot: snapshot };

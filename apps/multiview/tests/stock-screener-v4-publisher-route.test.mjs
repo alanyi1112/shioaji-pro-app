@@ -6,7 +6,7 @@ import { buildOhlcvTargets, buildOhlcvV4Targets } from '../../../scripts/stock-s
 import { publishScreenerSnapshot } from '../worker/stock-screener-repository.ts';
 import { publishPreparedScreenerV3 } from '../worker/stock-screener-v3-publisher.ts';
 import { publishPreparedScreenerV4 } from '../worker/stock-screener-v4-publisher.ts';
-import { readScreenerV4Snapshot } from '../worker/stock-screener-v4-repository.ts';
+import { readScreenerV4Snapshot, publishScreenerV4Snapshot } from '../worker/stock-screener-v4-repository.ts';
 import { handleStockScreener } from '../worker/stock-screener-route.ts';
 
 const migrations = await Promise.all(['0027_pale_randall_flagg.sql', '0028_early_sir_ram.sql', '0029_plain_strong_guy.sql',
@@ -117,5 +117,25 @@ test('新條件全關投影 v3；任一新條件開啟但 v4 未 ready 時 rows 
     assert.equal(projected.version, 3);
     const pending = await (await handleStockScreener(new Request('http://127.0.0.1/api/stock-screener/results?version=4&volume=false&holder=false&ma=true&divergence=false'), { DB: db, DEPLOYMENT_TARGET: 'local' })).json();
     assert.equal(pending.version, 4); assert.equal(pending.state, 'pending'); assert.equal(pending.reason, 'v4_preparation_pending'); assert.deepEqual(pending.rows, []);
+  } finally { db.close(); }
+});
+
+
+test('只有舊日期契約可撤回缺日訊號，同契約稀疏回歸仍拒絕', async () => {
+  const { technicalEvidenceHash } = await import('../../../src/lib/stock-screener-technical-patterns.ts');
+  const db = setup();
+  try {
+    await seed(db);
+    await publishPreparedScreenerV4(db);
+    const snapshot = await readScreenerV4Snapshot(db);
+    const inputs = structuredClone(snapshot.inputs);
+    inputs[0].technicalV4.ma = { verdict: 'unknown', reason: 'non_adjacent_sessions' };
+    const { evidenceHash, ...evidence } = inputs[0].technicalV4;
+    inputs[0].technicalV4.evidenceHash = await technicalEvidenceHash(evidence);
+    await assert.rejects(publishScreenerV4Snapshot(db, snapshot.metadata, inputs), /snapshot_sparse_regression/);
+    const legacy = { ...snapshot.metadata }; delete legacy.sessionAlignmentVersion;
+    await db.prepare('UPDATE screener_snapshots SET metadata=? WHERE id=?').bind(JSON.stringify(legacy), snapshot.id).run();
+    await publishScreenerV4Snapshot(db, snapshot.metadata, inputs);
+    assert.equal((await readScreenerV4Snapshot(db)).inputs[0].technicalV4.ma.reason, 'non_adjacent_sessions');
   } finally { db.close(); }
 });

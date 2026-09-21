@@ -176,3 +176,25 @@ test('mixed-session 拒絕發布；純量查詢改投影最新 v2，技術查詢
     assert.deepEqual(waiting.rows,[]);
   } finally { db.close(); }
 });
+
+
+test('OHLC 升級 v2 後分型及布林仍可判定且不重新下載', async () => {
+  const db = setup();
+  try {
+    await seedPrepared(db);
+    const first = await publishPreparedScreenerV3(db);
+    assert.equal(first.state, 'published');
+    await db.prepare("UPDATE screener_daily_ohlcv SET validation='canonical-complete-v2',mapping_version='official-daily-ohlcv-v2'").run();
+    // 模擬舊讀取契約快照；base 與來源收據均未變。
+    const old = await readScreenerV3Snapshot(db);
+    old.metadata.receiptsHash = '0'.repeat(64);
+    await db.prepare('UPDATE screener_snapshots SET metadata=? WHERE id=?').bind(JSON.stringify(old.metadata), old.id).run();
+    const repaired = await publishPreparedScreenerV3(db);
+    assert.equal(repaired.state, 'published');
+    const snapshot = await readScreenerV3Snapshot(db);
+    const row = snapshot.inputs.find(row => row.code === '1101');
+    assert.equal(row.technical.rawBottom.verdict, 'pass');
+    assert.notEqual(row.technical.lowerBullish.verdict, 'unknown');
+    assert.equal((await publishPreparedScreenerV3(db)).state, 'unchanged');
+  } finally { db.close(); }
+});

@@ -19,19 +19,35 @@ export const row = style({
     color: vars.color.foreground,
     ':hover': { background: vars.color.muted },
 });
+export const rowTop = style({
+    display: 'flex', alignItems: 'flex-start', gap: 8, minWidth: 0,
+});
 export const rowAction = style({
     display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 4, textAlign: 'left',
-    whiteSpace: 'normal', overflowWrap: 'anywhere', width: '100%', padding: 8,
+    whiteSpace: 'normal', overflowWrap: 'anywhere', flex: 1, minWidth: 0, padding: 8,
     border: 0, borderRadius: 0, background: 'transparent', color: 'inherit', cursor: 'pointer', font: 'inherit',
 });
+export const addButton = style({
+    flex: '0 0 auto',
+    margin: 8,
+    transition: 'background-color 120ms ease, border-color 120ms ease, color 120ms ease',
+});
+export const addStatus = style({ color: vars.color.mutedForeground, margin: '0 8px 6px', overflowWrap: 'anywhere' });
+export const addError = style({ color: vars.color.danger, margin: '0 8px 6px', overflowWrap: 'anywhere' });
 globalStyle(`${row} details`, { margin: '0 8px 8px' });
 globalStyle(`${row} details span`, { display: 'block', overflowWrap: 'anywhere' });
+globalStyle(`${row} details pre`, { margin: '6px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', font: 'inherit' });
 globalStyle(`${root} input[type="number"]`, { width: '5.5rem', maxWidth: '100%' });
 globalStyle(`${root} label`, { display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 4,
     minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' });
 globalStyle(`${root} input, ${root} select, ${root} button:not(.${rowAction})`, {
     font: 'inherit', color: vars.color.foreground, background: vars.color.muted,
     border: `1px solid ${vars.color.border}`, borderRadius: 4, padding: '5px 7px', maxWidth: '100%', boxSizing: 'border-box',
+});
+globalStyle(`${root} ${addButton}:not(:disabled):hover`, {
+    color: vars.color.accent,
+    borderColor: vars.color.accent,
+    background: vars.color.accentDim,
 });
 globalStyle(`${root} :focus-visible`, { outline: `2px solid ${vars.color.foreground}`, outlineOffset: 2 });
 globalStyle(`${root} button:disabled`, { opacity: 0.5, cursor: 'not-allowed' });

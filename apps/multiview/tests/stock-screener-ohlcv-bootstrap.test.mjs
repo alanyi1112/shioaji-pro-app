@@ -127,6 +127,11 @@ test('bounded operator 依 checkpoint 續跑，完整 market+session 批次可�
     assert.deepEqual({ target: second.progress.target, processed: second.progress.processed, remaining: second.progress.remaining, failed: second.progress.failed, overdue: second.progress.overdue },
       { target: 120, processed: 120, remaining: 0, failed: 0, overdue: 0 });
     assert.equal(calls, 120);
+    await db.prepare("UPDATE screener_daily_ohlcv SET validation='canonical-complete-v2'").run();
+    const upgraded = await prepareScreenerOhlcv(db, { universe, sessions, universeRevision: 'r1', validThrough: '2099-01-01T00:00:00Z', limit: 120, pauseMs: 0, fetcher });
+    assert.equal(upgraded.requested, 0);
+    assert.equal(upgraded.state, 'complete');
+    assert.equal(calls, 120);
     assert.equal((await db.prepare('SELECT count(*) AS n FROM screener_daily_ohlcv').first()).n, 122);
     assert.equal((await db.prepare("SELECT count(*) AS n FROM screener_runs WHERE scope='screener-ohlcv-period' AND status='collected'").first()).n, 120);
   } finally { db.close(); }
@@ -169,7 +174,9 @@ test('retention 只清理 OHLC 舊列，保留 60 日、兩版 v3 anchors 與其
   all.forEach((migration) => applyDrizzleSql(db, migration));
   const insertOhlcv = (date) => db.prepare("INSERT INTO screener_daily_ohlcv(symbol,data_date,market,open,high,low,close,currency,price_basis,mapping_version,source_url,payload_hash,fetched_at,validation) VALUES('1101.TW',?,'TWSE','10','11','9','10','TWD','official-unadjusted-after-market-twd','official-daily-ohlcv-v1','https://www.twse.com.tw/x',?,'2026-09-01T00:00:00Z','canonical-complete-v1')").bind(date, 'a'.repeat(64)).run();
   try {
-    await insertOhlcv('2025-01-01'); await insertOhlcv('2026-05-31'); await insertOhlcv(sessions[0]);
+    await insertOhlcv('2025-01-01'); await insertOhlcv('2026-03-16');
+    await db.prepare("UPDATE screener_daily_ohlcv SET validation='canonical-complete-v2' WHERE data_date='2026-03-16'").run();
+    await insertOhlcv('2026-05-31'); await insertOhlcv(sessions[0]);
     await db.prepare("INSERT INTO screener_snapshots(id,created_at,status,metadata,schema_version) VALUES('v3','2026-09-01','published',?,3)")
       .bind(JSON.stringify({ technicalAnchors: { sessions: ['2026-05-31'] } })).run();
     await db.prepare("INSERT INTO screener_daily_volume(symbol,data_date,payload) VALUES('1101.TW','2026-08-31','{}')").run();
@@ -182,9 +189,22 @@ test('retention 只清理 OHLC 舊列，保留 60 日、兩版 v3 anchors 與其
     };
     const kept = await pruneScreenerOhlcv(db, sessions);
     assert.ok(kept.includes('2026-05-31'));
-    assert.deepEqual((await db.prepare('SELECT data_date FROM screener_daily_ohlcv ORDER BY data_date').all()).results.map((row) => row.data_date), ['2026-05-31', sessions[0]]);
+    assert.deepEqual((await db.prepare('SELECT data_date FROM screener_daily_ohlcv ORDER BY data_date').all()).results.map((row) => row.data_date), ['2026-03-16', '2026-05-31', sessions[0]]);
     assert.deepEqual({ volume: (await db.prepare('SELECT count(*) AS n FROM screener_daily_volume').first()).n,
       tabs: (await db.prepare('SELECT count(*) AS n FROM user_tabs').first()).n,
       candles: (await db.prepare('SELECT count(*) AS n FROM candle_history').first()).n }, before);
   } finally { db.close(); }
+});
+
+
+test('成功收據不能掩蓋已被刪除的實際資料列', () => {
+  const targets = buildOhlcvTargets(universe, sessions);
+  const receipts = targets.map(target => ({ ...target, status: 'collected', complete: true }));
+  const coverage = new Map(targets.map(target => [target.key, new Set(target.symbols)]));
+  assert.equal(planOhlcvBootstrap(universe, sessions, receipts, coverage).remaining, 0);
+  coverage.delete(targets[0].key);
+  const repaired = planOhlcvBootstrap(universe, sessions, receipts, coverage);
+  assert.equal(repaired.remaining, 1);
+  assert.equal(repaired.processed, 119);
+  assert.deepEqual(repaired.work.map(target => target.key), [targets[0].key]);
 });

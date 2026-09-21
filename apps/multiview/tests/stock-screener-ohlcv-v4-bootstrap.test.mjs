@@ -112,3 +112,16 @@ test("v4 retention 只刪 130 日外 OHLCV 並保留 v3 snapshot anchor", async 
     assert.deepEqual((await db.prepare("SELECT data_date FROM screener_daily_ohlcv ORDER BY data_date").all()).results.map((row) => row.data_date), ["2025-12-31", sessions[0]]);
   } finally { db.close(); }
 });
+
+
+test('成功收據不能掩蓋已被刪除的實際資料列', () => {
+  const targets = buildOhlcvV4Targets(universe, sessions);
+  const receipts = targets.map(target => ({ ...target, status: 'collected', complete: true }));
+  const coverage = new Map(targets.map(target => [target.key, new Set(target.symbols)]));
+  assert.equal(planOhlcvV4Bootstrap(universe, sessions, receipts, coverage).remaining, 0);
+  coverage.delete(targets[0].key);
+  const repaired = planOhlcvV4Bootstrap(universe, sessions, receipts, coverage);
+  assert.equal(repaired.remaining, 1);
+  assert.equal(repaired.processed, 259);
+  assert.deepEqual(repaired.work.map(target => target.key), [targets[0].key]);
+});

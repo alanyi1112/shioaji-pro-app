@@ -46,6 +46,7 @@ describe('原始三 K 與纏論包含關係', () => {
         const top = [bar(sessions[0]!, '12', '8'), bar(sessions[1]!, '14', '10'), bar(sessions[2]!, '13', '9')];
         expect(evaluateRawFractal(top, sessions, 'top').verdict).toBe('pass');
         expect(evaluateRawFractal([{ ...bottom[0]!, high: '11', close: '11' }, bottom[1]!, bottom[2]!], sessions, 'bottom').verdict).toBe('fail');
+        expect(evaluateRawFractal([{ ...top[0]!, low: '10', open: '10' }, top[1]!, top[2]!], sessions, 'top').verdict).toBe('fail');
     });
 
     it('缺左右棒、非官方相鄰 session 與未完成右棒皆 fail closed', () => {
@@ -122,10 +123,32 @@ describe('canonical BOLL(20,2) 首次穿越', () => {
         expect(evaluateBollReversal(doji, sessions, 'upper-bearish').verdict).toBe('fail');
         const noShadow = upper.map((row) => ({ ...row })); noShadow[20] = { ...noShadow[20]!, high: '12' };
         expect(evaluateBollReversal(noShadow, sessions, 'upper-bearish').verdict).toBe('fail');
+        const wrongUpperColor = upper.map((row) => ({ ...row })); wrongUpperColor[20] = { ...wrongUpperColor[20]!, open: '10.9', low: '10.8' };
+        expect(evaluateBollReversal(wrongUpperColor, sessions, 'upper-bearish').verdict).toBe('fail');
+        const lower = flatSeries(sessions); lower[20] = { sessionDate: sessions[20]!, open: '8', high: '9.2', low: '7', close: '9' };
+        const wrongLowerColor = lower.map((row) => ({ ...row })); wrongLowerColor[20] = { ...wrongLowerColor[20]!, open: '9.1', high: '9.2' };
+        expect(evaluateBollReversal(wrongLowerColor, sessions, 'lower-bullish').verdict).toBe('fail');
+        const noLowerShadow = lower.map((row) => ({ ...row })); noLowerShadow[20] = { ...noLowerShadow[20]!, low: '8' };
+        expect(evaluateBollReversal(noLowerShadow, sessions, 'lower-bullish').verdict).toBe('fail');
         const priorOutside = upper.map((row) => ({ ...row })); priorOutside[19] = { ...priorOutside[19]!, open: '12', high: '13', low: '11', close: '12' };
         expect(evaluateBollReversal(priorOutside, sessions, 'upper-bearish').verdict).toBe('fail');
         const onBand = flatSeries(sessions);
         expect(evaluateBollReversal(onBand, sessions, 'any').verdict).toBe('fail');
+    });
+
+    it('1409 確認日推進到 09-02 後重新取最後三棒，不沿用 09-01 窗口', () => {
+        const sessions = ['2026-08-28', '2026-08-31', '2026-09-01', '2026-09-02'];
+        const bars: CanonicalOhlc[] = [
+            { sessionDate: sessions[0]!, open: '24.80', high: '25.10', low: '24.30', close: '24.50' },
+            { sessionDate: sessions[1]!, open: '24.05', high: '24.65', low: '23.70', close: '24.60' },
+            { sessionDate: sessions[2]!, open: '25.00', high: '27.05', low: '25.00', close: '25.65' },
+            { sessionDate: sessions[3]!, open: '25.25', high: '26.60', low: '25.25', close: '25.35' },
+        ];
+        const old = evaluateRawFractal(bars.slice(0, 3), sessions.slice(0, 3), 'bottom');
+        const current = evaluateRawFractal(bars, sessions, 'bottom');
+        expect(old.evidence?.confirmationDate).toBe('2026-09-01');
+        expect(current.evidence?.confirmationDate).toBe('2026-09-02');
+        expect(current.verdict).toBe('fail');
     });
 });
 
@@ -158,6 +181,10 @@ describe('v3 criteria、版本、hash 與排序', () => {
         expect(isV3Cursor({ ...cursor, version: 2 })).toBe(false);
         expect(isV3Preference({ version: 3, query: { criteria: technicalOnly, sort: 'algorithm', direction: 'asc', resultState: 'pass' } })).toBe(true);
         expect(isV3Preference({ version: 2, query: { criteria: technicalOnly, sort: 'algorithm', direction: 'asc', resultState: 'pass' } })).toBe(false);
+        const disabledHolder = { ...technicalOnly, holder: { ...technicalOnly.holder, enabled: false,
+            turnover: { enabled: true, minimumWan: '9999' } } };
+        expect(criteriaFingerprintV3(disabledHolder)).toBe(criteriaFingerprintV3({ ...disabledHolder,
+            holder: { ...disabledHolder.holder, turnover: { enabled: false, minimumWan: '1' } } }));
     });
 
     it('evidence hash 不受 object key order 影響，任何證據變更都會改 hash', async () => {

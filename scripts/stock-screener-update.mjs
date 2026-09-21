@@ -98,6 +98,7 @@ export function parseDailyReport(payload, market, date, source) {
                 [market === 'TWSE' ? 'TradeValue' : 'TransactionAmount']: String(row[turnoverIndex]).replaceAll(',', '') };
         });
     });
+    if (!rows.length) throw new Error("empty_report");
     return parseDailyVolumes(rows, market, source);
 }
 
@@ -112,7 +113,11 @@ export function parseCandidateDailyReport(payload, market, date, source) {
         error.reportDate = reportDate;
         throw error;
     }
-    return parseDailyReport(payload, market, date, source);
+    try { return parseDailyReport(payload, market, date, source); }
+    catch (error) {
+        if (error.message !== "empty_report") throw error;
+        const pending = new Error("source_not_published"); pending.reportDate = reportDate; throw pending;
+    }
 }
 
 const readinessOutcome = error => {
@@ -199,7 +204,8 @@ export async function collectOfficialDailyPeriods(db, { sessions, expectedSessio
 }
 
 export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchive = false, scheduled = false, limit = 64,
-    ohlcvLimit = 8, ohlcvV4Limit = 4, recoverInvalidSession = null, log = () => {}, fetcher = fetch } = {}) {
+    ohlcvLimit = 8, ohlcvV4Limit = 4, recoverInvalidSession = null, recoverBlockedSource = false, log = () => {}, fetcher = fetch } = {}) {
+    if (recoverBlockedSource && scheduled) throw new Error('invalid_recovery_options');
     if (recoverInvalidSession !== null && (scheduled || bootstrapWeek || bootstrapArchive
         || !/^\d{4}-\d{2}-\d{2}$/.test(recoverInvalidSession)
         || recoverInvalidSession !== new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10))) throw new Error('invalid_recovery_options');
@@ -237,7 +243,14 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
         if (prior) {
             const policy = JSON.parse(prior.checkpoint);
             attempts = policy.day === day ? policy.attempts : 0;
-            if (prior.status === 'blocked') return { state:'pending',reason:'source_blocked' };
+            if (prior.status === 'blocked') {
+                if (!recoverBlockedSource || !(Date.parse(policy.nextAttemptAt) <= started)) return { state:'pending',reason:'source_blocked' };
+                // Explicit operator recovery preserves the original evidence. Normal
+                // schedules never retry a CAPTCHA or bypass a source access boundary.
+                await batch([db.prepare(runSql).bind(`screener-source-recovery:${owner}`,
+                    'screener-source-recovery', 'consumed', JSON.stringify({ original: prior,
+                        recoveredAt: stamp(), originalHash: hashText(prior.checkpoint) }), stamp())]);
+            }
             // An explicitly authorized pinned mirror is independent of the blocked
             // per-symbol form. It may bypass that path's cooldown, never its validation.
             if ((Date.parse(policy.nextAttemptAt) > started && !bootstrapArchive && !(bootstrapWeek && prior.status === 'idle')) || attempts >= 3 && !bootstrapArchive) return { state:'skipped',reason:'backoff',nextAttemptAt:policy.nextAttemptAt };
@@ -447,7 +460,7 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     const args = process.argv.slice(2), database = args.find(arg => arg.startsWith('--database='))?.slice(11);
-    if (!database || args.some(arg => !/^(?:--database=\/.+|--bootstrap-week|--bootstrap-history|--scheduled|--enable-schedule|--disable-schedule|--limit=\d+|--ohlcv-limit=\d+|--ohlcv-v4-limit=\d+|--recover-invalid-session=\d{4}-\d{2}-\d{2})$/.test(arg))
+    if (!database || args.some(arg => !/^(?:--database=\/.+|--bootstrap-week|--bootstrap-history|--scheduled|--enable-schedule|--disable-schedule|--recover-blocked-source|--limit=\d+|--ohlcv-limit=\d+|--ohlcv-v4-limit=\d+|--recover-invalid-session=\d{4}-\d{2}-\d{2})$/.test(arg))
         || args.includes('--disable-schedule') && args.some(arg=>['--enable-schedule','--scheduled','--bootstrap-week','--bootstrap-history'].includes(arg))) throw new Error('使用方式：--database=/absolute/local.sqlite [--bootstrap-history] [--limit=64] [--ohlcv-limit=8] [--scheduled|--enable-schedule|--disable-schedule]');
     const recoveryArgs = args.filter(arg => arg.startsWith('--recover-invalid-session='));
     if (recoveryArgs.length > 1 || recoveryArgs.length && args.some(arg => ['--enable-schedule','--disable-schedule','--scheduled','--bootstrap-week','--bootstrap-history'].includes(arg))) throw new Error('invalid_recovery_options');
@@ -465,7 +478,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
                 || !(Date.parse(metadata.validThrough) > Date.now())) throw new Error('invalid_bootstrap_not_complete');
             await db.prepare(runSql).bind('screener-enabled','screener-configuration','enabled',JSON.stringify({version:2,bootstrapHistory:true}),stamp()).run();
         }
-        const result = await updateScreener(db, { bootstrapWeek: args.includes('--bootstrap-week') || args.includes('--bootstrap-history'), bootstrapArchive: args.includes('--bootstrap-history'), scheduled:args.includes('--scheduled'), recoverInvalidSession: recoveryArgs[0]?.split('=')[1] ?? null, limit: Number(args.find(arg => arg.startsWith('--limit='))?.slice(8) ?? 64), ohlcvLimit: Number(args.find(arg => arg.startsWith('--ohlcv-limit='))?.slice(14) ?? 8), ohlcvV4Limit: Number(args.find(arg => arg.startsWith('--ohlcv-v4-limit='))?.slice(17) ?? 4), log: value => console.log(JSON.stringify(value)) });
+        const result = await updateScreener(db, { bootstrapWeek: args.includes('--bootstrap-week') || args.includes('--bootstrap-history'), bootstrapArchive: args.includes('--bootstrap-history'), scheduled:args.includes('--scheduled'), recoverInvalidSession: recoveryArgs[0]?.split('=')[1] ?? null, recoverBlockedSource: args.includes('--recover-blocked-source'), limit: Number(args.find(arg => arg.startsWith('--limit='))?.slice(8) ?? 64), ohlcvLimit: Number(args.find(arg => arg.startsWith('--ohlcv-limit='))?.slice(14) ?? 8), ohlcvV4Limit: Number(args.find(arg => arg.startsWith('--ohlcv-v4-limit='))?.slice(17) ?? 4), log: value => console.log(JSON.stringify(value)) });
         console.log(JSON.stringify(result));
         if (result.state === 'pending') process.exitCode = 2;
         }

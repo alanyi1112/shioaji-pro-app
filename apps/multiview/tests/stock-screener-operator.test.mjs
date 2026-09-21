@@ -199,3 +199,28 @@ test('底稿保留必要六期與既有快照錨點，只清理選股自身資�
     assert.equal((await db.prepare('PRAGMA integrity_check').first()).integrity_check,'ok');
   }finally{db.close();}
 });
+
+test('本期合法空報表等待發布，錯誤欄位仍拒絕', () => {
+  const payload={stat:'ok',date:'20260918',tables:[
+    {fields:['代號','成交股數','成交金額(元)'],data:[]},
+    {fields:['代號','成交股數','成交金額(元)'],data:[]}]};
+  assert.throws(()=>parseCandidateDailyReport(payload,'TPEx','2026-09-18',{}),/source_not_published/);
+  assert.throws(()=>parseDailyReport(payload,'TPEx','2026-09-18',{}),/empty_report/);
+  assert.throws(()=>parseCandidateDailyReport({...payload,tables:[]},'TPEx','2026-09-18',{}),/invalid_report_schema/);
+});
+test('明確恢復保留封鎖證據，仍走正常來源且重新封鎖', async t => {
+  const db=setup(); let calls=0;
+  t.mock.timers.enable({apis:['Date'],now:new Date('2026-09-18T10:00:00Z')});
+  try {
+    const fetcher=async()=>{calls++;return new Response('captcha',{status:403});};
+    await updateScreener(db,{fetcher});
+    assert.equal((await updateScreener(db,{fetcher,recoverBlockedSource:true})).reason,'source_blocked');
+    assert.equal(calls,1);
+    t.mock.timers.setTime(Date.parse('2026-09-19T10:00:00Z'));
+    assert.equal((await updateScreener(db,{fetcher,recoverBlockedSource:true})).reason,'source_blocked');
+    assert.equal(calls,2);
+    const rows=(await db.prepare("SELECT checkpoint FROM screener_runs WHERE scope='screener-source-recovery'").all()).results;
+    assert.equal(rows.length,1);
+    assert.equal(JSON.parse(rows[0].checkpoint).original.status,'blocked');
+  } finally {db.close();}
+});

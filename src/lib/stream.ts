@@ -3,6 +3,7 @@
 // via useSyncExternalStore without prop drilling.
 
 import { getApiBase } from './runtime';
+import { createStreamSource, type StreamSource } from './shared-event-source';
 import { apiPost } from './api';
 import type { SseBidAsk, SseIndexQuote, SseTick } from './types/market';
 import {
@@ -308,17 +309,18 @@ async function resubscribeAll() {
     }
 }
 
-let es: EventSource | null = null;
-let contractEs: EventSource | null = null;
+let es: StreamSource | null = null;
+let contractEs: StreamSource | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let contractRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = 1000;
 let everDown = false;
 
 function connect() {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) { setStatus('down'); return; }
     if (es) es.close();
     setStatus('connecting');
-    es = new EventSource(`${getApiBase()}/api/v1/stream/data`);
+    es = createStreamSource(`${getApiBase()}/api/v1/stream/data`);
     const connection = es;
 
     es.onopen = () => {
@@ -369,8 +371,9 @@ function connect() {
 }
 
 function connectContractEvents() {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
     contractEs?.close();
-    contractEs = new EventSource(
+    contractEs = createStreamSource(
         `${getApiBase()}/api/v1/stream/data/contract_event?region=TW`,
     );
     contractEs.onopen = () => {
@@ -422,13 +425,36 @@ async function watchMaintenance() {
 }
 
 let started = false;
+const lifecycle = new AbortController();
+let maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 export function ensureStream() {
     if (!started) {
         started = true;
+        if (typeof window !== 'undefined') {
+            window.addEventListener('offline', () => {
+                // Browser offline mode may leave a streaming response open.
+                // Invalidate this page's transport immediately, never the server.
+                everDown = true;
+                if (retryTimer) clearTimeout(retryTimer);
+                if (contractRetryTimer) clearTimeout(contractRetryTimer);
+                retryTimer = null;
+                contractRetryTimer = null;
+                es?.close(); es = null;
+                contractEs?.close(); contractEs = null;
+                setStatus('down');
+            }, { signal: lifecycle.signal });
+            window.addEventListener('pageshow', (event) => {
+                if ((event as PageTransitionEvent).persisted) { connect(); connectContractEvents(); }
+            }, { signal: lifecycle.signal });
+            window.addEventListener('online', () => {
+                connect();
+                connectContractEvents();
+            }, { signal: lifecycle.signal });
+        }
         connect();
         connectContractEvents();
         void watchMaintenance();
-        setInterval(watchMaintenance, 60000);
+        maintenanceTimer = setInterval(watchMaintenance, 60000);
     }
 }
 
@@ -491,3 +517,13 @@ export function onContractEvent(
         contractEventListeners.delete(listener);
     };
 }
+
+// Dispose only this page's transport during development hot replacement.
+if (import.meta.hot) import.meta.hot.dispose(() => {
+    lifecycle.abort();
+    if (maintenanceTimer) clearInterval(maintenanceTimer);
+    if (resubscribeRetryTimer) clearTimeout(resubscribeRetryTimer);
+    if (retryTimer) clearTimeout(retryTimer);
+    if (contractRetryTimer) clearTimeout(contractRetryTimer);
+    es?.close(); contractEs?.close();
+});
