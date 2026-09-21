@@ -9,6 +9,8 @@ export interface Tick {
 }
 
 export interface HistoryTicks {
+    intraday_odd?: boolean[];
+    simtrade?: boolean[];
     datetime: string[];
     close: number[];
     volume: number[];

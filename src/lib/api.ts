@@ -82,3 +82,60 @@ export async function apiDelete<T>(path: string, body?: unknown): Promise<T> {
     if (!res.ok) await throwApiError(res);
     return res.json() as Promise<T>;
 }
+
+export class BoundedApiError extends Error {
+    constructor(public readonly status: number, public readonly retryAfterMs: number | null) {
+        super(`歷史成交查詢失敗 (${status})`);
+        this.name = 'BoundedApiError';
+    }
+}
+
+function retryAfterMs(response: Response): number | null {
+    const value = response.headers.get('retry-after');
+    if (!value) return null;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? Math.max(0, at - Date.now()) : null;
+}
+
+// Bounded historical payloads: timeout covers headers AND body consumption.
+export async function apiPostBounded<T>(path: string, body: unknown, maxBytes: number, timeoutMs: number): Promise<T> {
+    assertRuntimeAllowsRequest(path, 'POST');
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const request = async () => {
+        const response = await doFetch(base() + path, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body), signal: controller.signal,
+        });
+        if (!response.ok) {
+            void response.body?.cancel().catch(() => undefined);
+            throw new BoundedApiError(response.status, retryAfterMs(response));
+        }
+        if (Number(response.headers.get('content-length')) > maxBytes) throw new Error('歷史成交超過回應容量預算');
+        if (!response.body) throw new Error('歷史成交回應沒有內容串流');
+        const reader = response.body.getReader();
+        activeReader = reader;
+        const decoder = new TextDecoder();
+        const parts: string[] = [];
+        let bytes = 0;
+        try {
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                bytes += value.byteLength;
+                if (bytes > maxBytes) throw new Error('歷史成交超過回應容量預算');
+                parts.push(decoder.decode(value, { stream: true }));
+            }
+            parts.push(decoder.decode());
+            return JSON.parse(parts.join('')) as T;
+        } finally { void reader.cancel().catch(() => undefined); }
+    };
+    try {
+        return await Promise.race([request(), new Promise<never>((_, reject) => {
+            timer = setTimeout(() => { controller.abort(); reject(new Error('歷史成交查詢逾時')); }, timeoutMs);
+        })]);
+    } finally { clearTimeout(timer!); controller.abort(); void activeReader?.cancel().catch(() => undefined); }
+}

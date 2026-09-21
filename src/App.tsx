@@ -70,8 +70,9 @@ import {
     fetchPositions,
     fetchSnapshots,
     fetchTrades,
+    subscribeQuote,
 } from './lib/shioaji';
-import { onOrderEvent } from './lib/stream';
+import { ensureStream, onOrderEvent } from './lib/stream';
 import { notify } from './lib/trade';
 import type { ContractInfo } from './lib/types/contract';
 import type { Snapshot } from './lib/types/market';
@@ -432,12 +433,20 @@ function PopoutView({
     useEffect(() => {
         if (code) ensureContract(code).catch(() => undefined);
     }, [code]);
+    useEffect(() => {
+        if (type !== 'tape' || !contract) return;
+        ensureStream();
+        // A standalone tape has no quote board to start its stream. Keep the
+        // shared upstream subscription alive when this view is closed.
+        void subscribeQuote(contract, 'Tick').catch(error => console.warn('成交明細行情訂閱失敗', error));
+    }, [type, contract]);
     // popouts can run 8+ at once (閃電全開) — longer intervals with a
     // per-window jitter so they don't hammer the upstream accounting
     // rate limit (25 req/5s) in lockstep
     const [pollJitter] = useState(() => Math.floor(Math.random() * 6000));
     const tradesPoll = usePoll<Trade[]>(
         useCallback(async () => {
+            if (type === 'tape') return [];
             const [s, f] = await Promise.allSettled([
                 fetchTrades('S'),
                 fetchTrades('F'),
@@ -446,11 +455,12 @@ function PopoutView({
                 ...(s.status === 'fulfilled' ? s.value : []),
                 ...(f.status === 'fulfilled' ? f.value : []),
             ];
-        }, []),
+        }, [type]),
         12000 + pollJitter,
     );
     const popoutPositionsPoll = usePoll<Position[]>(
         useCallback(async () => {
+            if (type === 'tape') return [];
             const [st, fu] = await Promise.allSettled([
                 fetchPositions('S'),
                 fetchPositions('F'),
@@ -459,7 +469,7 @@ function PopoutView({
                 ...(st.status === 'fulfilled' ? st.value : []),
                 ...(fu.status === 'fulfilled' ? fu.value : []),
             ];
-        }, []),
+        }, [type]),
         20000 + pollJitter,
     );
     const meta = BLOCK_META[type];
@@ -1137,4 +1147,8 @@ function TradingApp() {
     );
 }
 
-export default TradingApp;
+export default function App() {
+    // A read-only tape does not need TradingApp's account polls/watchlist boot.
+    if (POPOUT_TYPE === 'tape') return <PopoutView type='tape' code={POPOUT_CODE} />;
+    return <TradingApp />;
+}

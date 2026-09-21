@@ -179,7 +179,7 @@ describe('自選清單模糊搜尋與成交明細大單頁籤', () => {
         const historyLoader = vi.fn(async () => ({
             datetime,
             close: Array(31).fill(100),
-            volume: [...Array(30).fill(4), 5],
+            volume: [...Array(30).fill(4), 10],
             bid_price: [], bid_volume: [], ask_price: [], ask_volume: [],
             tick_type: Array(31).fill(1),
         }));
@@ -198,12 +198,52 @@ describe('自選清單模糊搜尋與成交明細大單頁籤', () => {
             .find((button) => button.textContent?.includes('大單'))!;
         expect(largeTab.textContent).toContain('大單 1');
         await act(async () => largeTab.click());
-        expect(host.textContent).toContain('大單條件：單筆成交金額 ≥ 50 萬元');
-        expect(host.textContent).toContain('門檻＝40 萬元、5 張價值、近 120 筆 P70 三者取高');
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="成交明細資訊"]')!.click());
+        expect(host.textContent).toContain('大單條件：金額 ≥ 100 萬元');
+        expect(host.textContent).toContain('張數 ≥ 10 張 且 前 120 筆 P80');
         expect(host.textContent).not.toContain('大戶');
         expect(host.textContent).not.toContain('大單成交篩選，並非交易者身分判定');
         expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
         expect(tickSubscriber).toHaveBeenCalledOnce();
+    });
+
+    it('大單成交量沿用同列成交價的漲跌顏色', async () => {
+        const datetime = Array.from({ length: 32 }, (_, index) =>
+            `2026-09-10 10:00:${String(index).padStart(2, '0')}`,
+        );
+        const host = document.createElement('div');
+        document.body.append(host);
+        root = createRoot(host);
+        await act(async () => {
+            root?.render(createElement(TickTape, {
+                contract: stock,
+                historyLoader: async () => ({
+                    datetime,
+                    close: Array(32).fill(100),
+                    volume: [...Array(30).fill(4), 10, 10],
+                    bid_price: [], bid_volume: [], ask_price: [], ask_volume: [],
+                    tick_type: [...Array(30).fill(1), 1, 2],
+                }),
+                tickSubscriber: () => () => undefined,
+            }));
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        const largeTab = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+            .find((button) => button.textContent?.includes('大單'))!;
+        expect(largeTab.textContent).toContain('大單 2');
+        await act(async () => largeTab.click());
+        const rows = [...host.querySelectorAll<HTMLElement>('[data-tape-row]')];
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+            const spans = [...row.querySelectorAll<HTMLElement>('span')];
+            expect(spans).toHaveLength(3);
+            const price = spans[1]!;
+            const volume = spans[2]!;
+            expect([...price.classList].some((className) => volume.classList.contains(className))).toBe(true);
+            expect(getComputedStyle(volume).color).toBe(getComputedStyle(price).color);
+        }
     });
 
     it('大單頁籤在暖機且尚無大單時顯示進度與空狀態', async () => {
@@ -229,6 +269,7 @@ describe('自選清單模糊搜尋與成交明細大單頁籤', () => {
         const largeTab = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
             .find((button) => button.textContent?.includes('大單'))!;
         await act(async () => largeTab.click());
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="成交明細資訊"]')!.click());
         expect(host.textContent).toContain('動態門檻暖機中 1/30');
         expect(host.textContent).toContain('目前尚無符合條件的大單');
     });

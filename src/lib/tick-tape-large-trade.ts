@@ -2,14 +2,6 @@ import type { ContractBase } from './types/contract';
 import type { SseTick } from './types/market';
 import type { HistoryTicks } from './types/tick';
 
-export const TICK_TAPE_MAX_ROWS = 120;
-export const LARGE_TRADE_MAX_ROWS = 500;
-export const LARGE_TRADE_SAMPLE_SIZE = 120;
-export const LARGE_TRADE_WARMUP_SIZE = 30;
-export const LARGE_TRADE_MINIMUM_TWD = 400_000;
-export const LARGE_TRADE_RULE_VERSION = 'tw-large-trade/2026-09-10.1';
-
-const MAX_SEEN_KEYS = 2_000;
 const DATE_PATTERN = /^(\d{4})[-/](\d{2})[-/](\d{2})$/u;
 const TIME_PATTERN = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/u;
 
@@ -32,6 +24,8 @@ export interface TickTapeEventInput {
     close: number | string;
     volume: number;
     tickType: number;
+    sourceSequence?: string;
+    sourceCumulativeVolume?: number;
     intradayOdd?: boolean;
     simtrade?: boolean;
 }
@@ -55,18 +49,7 @@ export interface TickTapeRow extends NormalizedTickTapeEvent {
     thresholdAtDetection: number | null;
     isLarge: boolean;
     eligibilityReason: LargeTradeEligibilityReason;
-    ruleVersion: typeof LARGE_TRADE_RULE_VERSION;
-}
-
-export interface TickTapeLargeTradeState {
-    contractKey: string;
-    generation: number;
-    tradeDate: string | null;
-    rows: TickTapeRow[];
-    largeRows: TickTapeRow[];
-    sampleAmounts: number[];
-    seenKeys: string[];
-    currentThresholdTwd: number | null;
+    ruleVersion: string;
 }
 
 function contractKey(contract: ContractBase): string {
@@ -148,137 +131,20 @@ export function largeTradeEligibility(
     return 'eligible';
 }
 
-export function nearestRankP70(values: number[]): number | null {
-    if (values.length === 0) return null;
-    const sorted = [...values].sort((left, right) => left - right);
-    const index = Math.max(0, Math.ceil(sorted.length * 0.7) - 1);
-    return sorted[index] ?? null;
-}
-
-export function largeTradeThresholdTwd(
-    price: number,
-    previousAmounts: number[],
-): number {
-    const fixedFloor = Math.max(
-        LARGE_TRADE_MINIMUM_TWD,
-        Math.round(price * 5 * 1_000),
-    );
-    if (previousAmounts.length < LARGE_TRADE_WARMUP_SIZE) return fixedFloor;
-    return Math.max(fixedFloor, nearestRankP70(previousAmounts) ?? fixedFloor);
-}
-
-export function createTickTapeLargeTradeState(
-    contract: ContractBase,
-    generation: number,
-): TickTapeLargeTradeState {
-    return {
-        contractKey: contractKey(contract),
-        generation,
-        tradeDate: null,
-        rows: [],
-        largeRows: [],
-        sampleAmounts: [],
-        seenKeys: [],
-        currentThresholdTwd: null,
-    };
-}
-
-function resetStateFor(
-    state: TickTapeLargeTradeState,
-    event: NormalizedTickTapeEvent,
-): TickTapeLargeTradeState {
-    return {
-        contractKey: state.contractKey,
-        generation: event.generation,
-        tradeDate: event.tradeDate,
-        rows: [],
-        largeRows: [],
-        sampleAmounts: [],
-        seenKeys: [],
-        currentThresholdTwd: null,
-    };
-}
-
-export function ingestTickTapeEvent(
-    state: TickTapeLargeTradeState,
-    input: TickTapeEventInput,
-): TickTapeLargeTradeState {
-    const event = normalizeTickTapeEvent(input);
-    if (!event || event.contractKey !== state.contractKey) return state;
-    if (event.generation < state.generation) return state;
-
-    let current = state;
-    if (event.generation > state.generation) {
-        current = resetStateFor(state, event);
-    } else if (state.tradeDate && event.tradeDate < state.tradeDate) {
-        return state;
-    } else if (state.tradeDate && event.tradeDate > state.tradeDate) {
-        current = resetStateFor(state, event);
-    }
-    if (current.seenKeys.includes(event.tradeKey)) return current;
-
-    const eligibilityReason = largeTradeEligibility(event);
-    const tradeAmountTwd = Number.isFinite(event.close) && Number.isFinite(event.volume)
-        ? Math.round(event.close * event.volume * 1_000)
-        : 0;
-    const thresholdAtDetection = eligibilityReason === 'eligible'
-        ? largeTradeThresholdTwd(event.close, current.sampleAmounts)
-        : null;
-    const isLarge = thresholdAtDetection !== null
-        && tradeAmountTwd >= thresholdAtDetection;
-    const row: TickTapeRow = {
-        ...event,
-        tradeAmountTwd,
-        thresholdAtDetection,
-        isLarge,
-        eligibilityReason,
-        ruleVersion: LARGE_TRADE_RULE_VERSION,
-    };
-    const rows = [row, ...current.rows].slice(0, TICK_TAPE_MAX_ROWS);
-    const largeRows = isLarge
-        ? [row, ...current.largeRows].slice(0, LARGE_TRADE_MAX_ROWS)
-        : current.largeRows;
-    const sampleAmounts = eligibilityReason === 'eligible'
-        ? [...current.sampleAmounts, tradeAmountTwd].slice(-LARGE_TRADE_SAMPLE_SIZE)
-        : current.sampleAmounts;
-    const seenKeys = [...current.seenKeys, event.tradeKey].slice(-MAX_SEEN_KEYS);
-    return {
-        ...current,
-        tradeDate: current.tradeDate ?? event.tradeDate,
-        rows,
-        largeRows,
-        sampleAmounts,
-        seenKeys,
-        currentThresholdTwd: thresholdAtDetection ?? current.currentThresholdTwd,
-    };
-}
-
-export function replayTickTapeEvents(
-    contract: ContractBase,
-    generation: number,
-    inputs: TickTapeEventInput[],
-): TickTapeLargeTradeState {
-    return [...inputs]
-        .sort((left, right) =>
-            left.date.localeCompare(right.date)
-            || left.time.localeCompare(right.time)
-            || (left.source === right.source ? 0 : left.source === 'history' ? -1 : 1))
-        .reduce(
-            (state, input) => ingestTickTapeEvent(state, input),
-            createTickTapeLargeTradeState(contract, generation),
-        );
-}
-
 export function historyTickTapeInputs(
     contract: ContractBase,
     history: HistoryTicks,
     generation: number,
+    deriveCumulativeSequence = false,
 ): TickTapeEventInput[] {
     const inputs: TickTapeEventInput[] = [];
+    let cumulativeVolume = 0;
     for (let index = 0; index < history.datetime.length; index += 1) {
         const datetime = history.datetime[index]?.trim();
         if (!datetime) continue;
         const [date = '', time = ''] = datetime.split(/[T ]/u, 2);
+        const volume = history.volume[index] ?? Number.NaN;
+        if (deriveCumulativeSequence && Number.isFinite(volume) && volume > 0) cumulativeVolume += volume;
         inputs.push({
             contract,
             generation,
@@ -286,8 +152,12 @@ export function historyTickTapeInputs(
             date,
             time,
             close: history.close[index] ?? Number.NaN,
-            volume: history.volume[index] ?? Number.NaN,
+            volume,
             tickType: history.tick_type[index] ?? 0,
+            intradayOdd: history.intraday_odd?.[index],
+            simtrade: history.simtrade?.[index],
+            sourceCumulativeVolume: deriveCumulativeSequence ? cumulativeVolume : undefined,
+            sourceSequence: deriveCumulativeSequence && cumulativeVolume > 0 ? `${date}|regular|${cumulativeVolume}` : undefined,
         });
     }
     return inputs;
@@ -309,5 +179,7 @@ export function liveTickTapeInput(
         tickType: tick.tick_type,
         intradayOdd: tick.intraday_odd,
         simtrade: tick.simtrade,
+        sourceCumulativeVolume: Number.isFinite(tick.total_volume) && tick.total_volume > 0 ? tick.total_volume : undefined,
+        sourceSequence: Number.isFinite(tick.total_volume) && tick.total_volume > 0 ? `${tick.date}|regular|${tick.total_volume}` : undefined,
     };
 }
