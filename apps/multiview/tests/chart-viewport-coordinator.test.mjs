@@ -40,6 +40,83 @@ function eventTarget(ownerWindow) {
   };
 }
 
+function candles(count, start = 0) {
+  return Array.from({ length: count }, (_, index) => ({ time: start + index }));
+}
+
+test("來源交接由 524 根縮為 242 根時 viewport 收斂到新資料，不保留右側空白", () => {
+  const runtime = loadInteractions();
+  const range = runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 0,
+    toTime: 523,
+    fromFraction: 0,
+    toFraction: 2,
+    span: 525,
+    rightAttached: true,
+  }, candles(242), { rightOffsetBars: 2 });
+  assert.deepEqual(plain(range), { from: 0, to: 243 });
+});
+
+test("來源交接由 242 根擴為 524 根時保留右側日期窗口，不自動拉寬", () => {
+  const runtime = loadInteractions();
+  const range = runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 0,
+    toTime: 241,
+    fromFraction: 0,
+    toFraction: 2,
+    span: 243,
+    rightAttached: true,
+    userInteracted: true,
+  }, candles(524), { rightOffsetBars: 2 });
+  assert.deepEqual(plain(range), { from: 282, to: 525 });
+});
+
+test("尚未互動的初始完整視圖會一次展開到新來源全部 K 棒", () => {
+  const runtime = loadInteractions();
+  const range = runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 0,
+    toTime: 159,
+    fromFraction: 0,
+    toFraction: 2,
+    span: 161,
+    rightAttached: true,
+    userInteracted: false,
+  }, candles(242), { rightOffsetBars: 2 });
+  assert.deepEqual(plain(range), { from: 0, to: 243 });
+});
+
+test("局部日期錨點跨資料集合保留小數位置與跨度", () => {
+  const runtime = loadInteractions();
+  const range = runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 120,
+    toTime: 140,
+    fromFraction: 0.25,
+    toFraction: 0.75,
+    span: 20.5,
+    rightAttached: false,
+  }, candles(100, 100), { rightOffsetBars: 2 });
+  assert.deepEqual(plain(range), { from: 20.25, to: 40.75 });
+});
+
+test("日期錨點只剩一側或全部缺少時仍產生有界範圍", () => {
+  const runtime = loadInteractions();
+  const target = candles(100, 100);
+  assert.deepEqual(plain(runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 1,
+    toTime: 150,
+    fromFraction: 0,
+    toFraction: 0.5,
+    span: 20,
+    rightAttached: false,
+  }, target, { rightOffsetBars: 2 })), { from: 30.5, to: 50.5 });
+  assert.deepEqual(plain(runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 1,
+    toTime: 2,
+    span: 20,
+    rightAttached: false,
+  }, target, { rightOffsetBars: 2 })), { from: 0, to: 101 });
+});
+
 test("程式性 range callback 不會污染最後接受範圍並排程回復", () => {
   const runtime = loadInteractions();
   const restored = [];

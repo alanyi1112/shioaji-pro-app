@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "realtimestock.multiview-live-viewport-acceptance/v1",
+  "capturedAt": "2026-09-22T09:48:15+08:00",
+  "runtime": "simulation",
+  "page": {
+    "url": "http://127.0.0.1:5174/?view=single&symbol=00929.TW&interval=1d&tab=taiwan-stock",
+    "sourceMode": "auto",
+    "symbol": "00929.TW",
+    "interval": "1d",
+    "chartCount": 1,
+    "status": "00929.TW / 日 已載入 Shioaji"
+  },
+  "bootstrap": {
+    "initialState": "等待 Shioaji Kbars",
+    "loadedState": "完整 Shioaji 日線一次顯示",
+    "panelRenderGeneration": 1,
+    "dataRequestCount": 1,
+    "streamSubscriptionCount": 2,
+    "realtimeConnectionCount": 1
+  },
+  "observations": [
+    { "displayTime": "09/22 09:45", "close": 29.31, "volumeCommonLots": 12451 },
+    { "displayTime": "09/22 09:45", "close": 29.31, "volumeCommonLots": 12456 },
+    { "displayTime": "09/22 09:45", "close": 29.30, "volumeCommonLots": 12459 },
+    { "displayTime": "09/22 09:46", "close": 29.30, "volumeCommonLots": 12481 },
+    { "displayTime": "09/22 09:48", "close": 29.30, "volumeCommonLots": 12811 },
+    { "displayTime": "09/22 09:48", "close": 29.30, "volumeCommonLots": 12820 }
+  ],
+  "viewport": {
+    "mainPlotCssRect": { "x": 9, "y": 137, "width": 1420, "height": 396 },
+    "technicalPlotCssRect": { "x": 9, "y": 586.046875, "width": 1420, "height": 78 },
+    "visibleShiftObserved": false,
+    "largeEmptyLogicalAreaObserved": false,
+    "mainAndSubchartStayedAligned": true
+  },
+  "browser": {
+    "consoleErrors": 0,
+    "consoleWarnings": 0
+  },
+  "services": {
+    "api": "up",
+    "apiSimulation": true,
+    "businessSession": "available",
+    "watchdog": "healthy",
+    "web5173": "up",
+    "multiview5174": "up",
+    "production": "stopped",
+    "writeMaster": "disabled"
+  },
+  "result": "pass"
+}

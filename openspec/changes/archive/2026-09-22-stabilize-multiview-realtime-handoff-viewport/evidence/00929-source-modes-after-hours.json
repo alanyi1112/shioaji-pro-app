@@ -1,0 +1,349 @@
+{
+  "schemaVersion": "multiview-handoff-browser-evidence/5",
+  "generatedAt": "2026-09-21T13:34:17.219Z",
+  "origin": "http://127.0.0.1:5174",
+  "modes": [
+    {
+      "requestedMode": "auto",
+      "final": {
+        "atMs": 301,
+        "actualMode": "auto",
+        "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+        "loaded": true,
+        "count": 242,
+        "range": {
+          "from": 0,
+          "to": 243
+        },
+        "invariantPass": true,
+        "realtimeState": "closed"
+      },
+      "samples": [
+        {
+          "atMs": 7,
+          "actualMode": "auto",
+          "status": "載入資料中",
+          "loaded": false,
+          "count": 0,
+          "range": null,
+          "invariantPass": false,
+          "realtimeState": "unavailable"
+        },
+        {
+          "atMs": 44,
+          "actualMode": "auto",
+          "status": "00929.TW / 日 等待 Shioaji Kbars",
+          "loaded": false,
+          "count": 0,
+          "range": null,
+          "invariantPass": false,
+          "realtimeState": "closed"
+        },
+        {
+          "atMs": 301,
+          "actualMode": "auto",
+          "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+          "loaded": true,
+          "count": 242,
+          "range": {
+            "from": 0,
+            "to": 243
+          },
+          "invariantPass": true,
+          "realtimeState": "closed"
+        }
+      ],
+      "requests": [
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/info",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/stream/data",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/data/contracts/00929",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/stream/subscribe",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/api/candles/batch",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/local-shioaji/api/v1/data/snapshots",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/local-shioaji/api/v1/data/kbars",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        }
+      ],
+      "consoleErrors": []
+    },
+    {
+      "requestedMode": "shioaji",
+      "final": {
+        "atMs": 266,
+        "actualMode": "shioaji",
+        "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+        "loaded": true,
+        "count": 242,
+        "range": {
+          "from": 0,
+          "to": 243
+        },
+        "invariantPass": true,
+        "realtimeState": "closed"
+      },
+      "samples": [
+        {
+          "atMs": 6,
+          "actualMode": "shioaji",
+          "status": "00929.TW / 日 等待 Shioaji Kbars",
+          "loaded": false,
+          "count": 0,
+          "range": null,
+          "invariantPass": false,
+          "realtimeState": "closed"
+        },
+        {
+          "atMs": 190,
+          "actualMode": "shioaji",
+          "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+          "loaded": true,
+          "count": 242,
+          "range": {
+            "from": -10.333333333333343,
+            "to": 243
+          },
+          "invariantPass": false,
+          "realtimeState": "closed"
+        },
+        {
+          "atMs": 229,
+          "actualMode": "shioaji",
+          "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+          "loaded": true,
+          "count": 242,
+          "range": {
+            "from": 0,
+            "to": 243
+          },
+          "invariantPass": false,
+          "realtimeState": "closed"
+        },
+        {
+          "atMs": 266,
+          "actualMode": "shioaji",
+          "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+          "loaded": true,
+          "count": 242,
+          "range": {
+            "from": 0,
+            "to": 243
+          },
+          "invariantPass": true,
+          "realtimeState": "closed"
+        }
+      ],
+      "requests": [
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/info",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/stream/data",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/data/contracts/00929",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/local-shioaji/api/v1/stream/subscribe",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/api/candles/batch",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/local-shioaji/api/v1/data/snapshots",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/local-shioaji/api/v1/data/kbars",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        }
+      ],
+      "consoleErrors": []
+    },
+    {
+      "requestedMode": "yahoo",
+      "final": {
+        "atMs": 17,
+        "actualMode": "yahoo",
+        "status": "00929.TW / 日 已載入",
+        "loaded": true,
+        "count": 160,
+        "range": {
+          "from": -2.842170943040401e-14,
+          "to": 161
+        },
+        "invariantPass": true,
+        "realtimeState": "unavailable"
+      },
+      "samples": [
+        {
+          "atMs": 17,
+          "actualMode": "yahoo",
+          "status": "00929.TW / 日 已載入",
+          "loaded": true,
+          "count": 160,
+          "range": {
+            "from": -2.842170943040401e-14,
+            "to": 161
+          },
+          "invariantPass": true,
+          "realtimeState": "unavailable"
+        }
+      ],
+      "requests": [
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/api/candles/batch",
+          "status": 200,
+          "method": "POST"
+        },
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        },
+        {
+          "path": "/api/candles",
+          "status": 200,
+          "method": "GET"
+        }
+      ],
+      "consoleErrors": []
+    }
+  ],
+  "delayedKbars": {
+    "delayMs": 2200,
+    "samples": [
+      {
+        "atMs": 7,
+        "actualMode": "auto",
+        "status": "00929.TW / 日 等待 Shioaji Kbars",
+        "loaded": false,
+        "count": 0,
+        "range": null,
+        "invariantPass": false,
+        "realtimeState": "degraded"
+      },
+      {
+        "atMs": 46,
+        "actualMode": "auto",
+        "status": "00929.TW / 日 等待 Shioaji Kbars",
+        "loaded": false,
+        "count": 0,
+        "range": null,
+        "invariantPass": false,
+        "realtimeState": "closed"
+      },
+      {
+        "atMs": 1547,
+        "actualMode": "auto",
+        "status": "Shioaji Kbars 載入逾時，暫以 Yahoo 延遲備援顯示",
+        "loaded": true,
+        "count": 160,
+        "range": {
+          "from": 0,
+          "to": 161
+        },
+        "invariantPass": true,
+        "realtimeState": "closed"
+      },
+      {
+        "atMs": 1621,
+        "actualMode": "auto",
+        "status": "Shioaji Kbars 載入逾時，暫以 Yahoo 延遲備援顯示",
+        "loaded": true,
+        "count": 160,
+        "range": {
+          "from": -2.842170943040401e-14,
+          "to": 161
+        },
+        "invariantPass": true,
+        "realtimeState": "closed"
+      },
+      {
+        "atMs": 2497,
+        "actualMode": "auto",
+        "status": "已收盤，顯示 Shioaji Kbars；等待 canonical 日 K 核對",
+        "loaded": true,
+        "count": 242,
+        "range": {
+          "from": 0,
+          "to": 243
+        },
+        "invariantPass": true,
+        "realtimeState": "closed"
+      }
+    ]
+  }
+}

@@ -84,6 +84,7 @@ const PANEL_CANDLE_LOAD_TIMEOUT_MS = 30000;
 const PANEL_PREFETCH_TIMEOUT_MS = 18000;
 const PANEL_HISTORY_LOAD_TIMEOUT_MS = 30000;
 const PANEL_LOAD_RETRY_DELAYS_MS = [5000, 20000];
+const SHIOAJI_BOOTSTRAP_FALLBACK_GRACE_MS = 1500;
 const DAILY_MINUTE_SOURCE_IDENTITY = "local-shioaji-simulation";
 const FIXED_PROFILE_STATES = {
   idle: "idle",
@@ -3436,6 +3437,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   let canonicalPayload = null;
   let latestRealtimeSnapshot = null;
   let realtimeDisplayState = "unavailable";
+  let shioajiHistoryReady = false;
+  let shioajiBootstrapFallbackTimer = 0;
   let lastPayload = null;
   let lastPayloadRenderSignature = "";
   let crosshairPayloadRevision = 0;
@@ -4644,6 +4647,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }, retryDelay);
   }
 
+  function prefersShioajiDisplay(symbol, interval) {
+    return state.sourceMode !== "yahoo"
+      && realtimeEligible(symbol, interval)
+      && (isMinuteKlineInterval(interval) || interval === "1d");
+  }
+
   async function load(options = {}) {
     if (!isPanelActive()) return;
     realtimeIndicatorScheduler.cancel();
@@ -4654,6 +4663,11 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     realtimeUpdateCleanup = undefined;
     latestRealtimeSnapshot = null;
     realtimeDisplayState = "unavailable";
+    shioajiHistoryReady = false;
+    if (shioajiBootstrapFallbackTimer) {
+      panelLifecycle.clearTimer(shioajiBootstrapFallbackTimer);
+      shioajiBootstrapFallbackTimer = 0;
+    }
     if (eventSource) {
       eventSource.close();
       eventSource = undefined;
@@ -4672,15 +4686,13 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       return;
     }
     restoreEstimatedMarginCostSelection(symbol, interval);
-    const shioajiOnlyDisplay = state.sourceMode === "shioaji"
-      && realtimeEligible(symbol, interval)
-      && (isMinuteKlineInterval(interval) || interval === "1d");
+    const shioajiPreferredDisplay = prefersShioajiDisplay(symbol, interval);
     updateChipIndicatorOptionsAvailability();
     chipPaneManager?.setContext({ symbol, interval, tabId: state.activeMarketTabId, candles: [] });
     const pivotMode = selectedPivotMode();
     const cachedPayload = readPanelPayloadCache(symbol, interval, pivotMode);
     let hasCachedPayload = false;
-    if (cachedPayload && !shioajiOnlyDisplay) {
+    if (cachedPayload && !shioajiPreferredDisplay) {
       try {
         applyCachedPayload(cachedPayload);
         hasCachedPayload = true;
@@ -4714,10 +4726,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (destroyed || currentLoadToken !== loadToken) return;
       const preparedPayload = applyPayloadStep("prepare", () => preparePanelPayload(payload));
       const nextRenderSignature = window.QuoteChartPayload.renderSignature(preparedPayload);
-      if (!shioajiOnlyDisplay && nextRenderSignature !== lastPayloadRenderSignature) {
+      if (!shioajiPreferredDisplay && nextRenderSignature !== lastPayloadRenderSignature) {
         restoreFixedProfileState(preparedPayload.candles || []);
         applyPayload(preparedPayload, { prepared: true });
-      } else if (!shioajiOnlyDisplay) {
+      } else if (!shioajiPreferredDisplay) {
         lastPayload = preparedPayload;
         lastPayloadRenderSignature = nextRenderSignature;
       }
@@ -4725,12 +4737,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       canonicalPayload = preparedPayload;
       writePanelPayloadCache(symbol, interval, preparedPayload, pivotMode);
       connectStream(symbol, interval);
-      status.textContent = shioajiOnlyDisplay
+      status.textContent = shioajiPreferredDisplay
         ? `${symbol} / ${formatIntervalLabel(interval)} 等待 Shioaji Kbars`
         : `${symbol} / ${formatIntervalLabel(interval)} 已載入`;
       delete status.dataset.chartApplyStage;
-      status.classList.toggle("is-visible", shioajiOnlyDisplay);
-      if (shioajiOnlyDisplay && latestRealtimeSnapshot) {
+      status.classList.toggle("is-visible", shioajiPreferredDisplay);
+      if (shioajiPreferredDisplay && latestRealtimeSnapshot) {
         applyRealtimeState({ state: realtimeDisplayState });
       }
       recordPanelNavigationPaint("kline", symbol);
@@ -5919,6 +5931,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       toFraction: Number(range.to) - toIndex,
       span: Number(range.to) - Number(range.from),
       rightAttached: Number(range.to) >= candles.length - 1 + RIGHT_OFFSET_BARS - 1,
+      userInteracted: Boolean(viewportCoordinator?.hasUserInteracted?.()),
       barSpacing: Number(chart?.timeScale().options?.().barSpacing),
     };
   }
@@ -5926,25 +5939,10 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   function restoreViewportSnapshot(snapshot, candles = []) {
     if (!snapshot || !candles.length || !chart) return;
     if (Number.isFinite(snapshot.barSpacing)) chart.timeScale().applyOptions({ barSpacing: snapshot.barSpacing });
-    const timeIndex = new Map(candles.map((row, index) => [normalizeChartTime(row.time), index]));
-    const fromIndex = timeIndex.get(snapshot.fromTime);
-    const toIndex = timeIndex.get(snapshot.toTime);
-    let range;
-    if (snapshot.rightAttached) {
-      const to = candles.length - 1 + RIGHT_OFFSET_BARS;
-      range = { from: to - snapshot.span, to };
-    } else if (Number.isFinite(fromIndex) && Number.isFinite(toIndex)) {
-      range = {
-        from: fromIndex + snapshot.fromFraction,
-        to: toIndex + snapshot.toFraction,
-      };
-    } else if (Number.isFinite(toIndex)) {
-      const to = toIndex + snapshot.toFraction;
-      range = { from: to - snapshot.span, to };
-    } else if (Number.isFinite(fromIndex)) {
-      const from = fromIndex + snapshot.fromFraction;
-      range = { from, to: from + snapshot.span };
-    }
+    const range = window.QuoteChartInteractions.viewportRangeFromSnapshot(snapshot, candles, {
+      rightOffsetBars: RIGHT_OFFSET_BARS,
+      normalizeTime: normalizeChartTime,
+    });
     if (isFiniteLogicalRange(range)) setSynchronizedVisibleLogicalRange(range);
   }
 
@@ -8618,7 +8616,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       ? realtimeQuote(snapshot, realtimeDisplayState)
       : shioajiHistoryQuote(candles, realtimeDisplayState);
     const oldCandleCount = Number(lastPayload?.candles?.length) || candles.length;
-    const preserveVisibleLogicalRange = chart?.timeScale?.().getVisibleLogicalRange?.();
+    const viewportSnapshot = captureViewportSnapshot(lastPayload?.candles || []);
     const previousLatest = lastPayload?.candles?.at(-1);
     const latest = candles.at(-1);
     const sameSessionUpdate = Boolean(
@@ -8683,7 +8681,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     } else {
       const indicators = window.QuoteChartRealtimeIndicators.compute(candles, state.indicatorParameters, { volumeAvailable: true });
       payload.indicators = indicators;
-      applyPayload(payload, { preserveVisibleLogicalRange, oldCandleCount });
+      applyPayload(payload, { viewportSnapshot, oldCandleCount });
     }
     if (realtimeDisplayState === "live") {
       status.textContent = `${symbolSelect.value} / 日 已載入 Shioaji`;
@@ -8970,8 +8968,45 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
   }
 
+  function applyCanonicalFallback(statusText = "即時行情中斷，已切換 Yahoo 延遲備援") {
+    if (!canonicalPayload) return false;
+    const viewportSnapshot = captureViewportSnapshot(lastPayload?.candles || []);
+    const fallbackPayload = {
+      ...canonicalPayload,
+      candles: (canonicalPayload.candles || []).map((row) => ({ ...row })),
+      quote: canonicalPayload.quote ? { ...canonicalPayload.quote, realtimeState: "fallback" } : canonicalPayload.quote,
+    };
+    applyPayload(fallbackPayload, { viewportSnapshot });
+    updateQuoteDataTime(lastPayload?.quote, lastPayload?.quoteTime);
+    status.textContent = statusText;
+    status.classList.add("is-visible");
+    return true;
+  }
+
+  function scheduleShioajiBootstrapFallback(currentLoadToken) {
+    if (state.sourceMode !== "auto" || shioajiBootstrapFallbackTimer) return;
+    shioajiBootstrapFallbackTimer = panelLifecycle.setTimer(() => {
+      shioajiBootstrapFallbackTimer = 0;
+      if (destroyed || currentLoadToken !== loadToken || shioajiHistoryReady || state.sourceMode !== "auto") return;
+      applyCanonicalFallback("Shioaji Kbars 載入逾時，暫以 Yahoo 延遲備援顯示");
+    }, SHIOAJI_BOOTSTRAP_FALLBACK_GRACE_MS);
+  }
+
   function applyRealtimeState(next) {
     realtimeDisplayState = String(next?.state || "unavailable");
+    const waitingForShioajiHistory = prefersShioajiDisplay(symbolSelect.value, intervalSelect.value)
+      && !shioajiHistoryReady;
+    if (waitingForShioajiHistory && state.sourceMode === "auto") {
+      scheduleShioajiBootstrapFallback(loadToken);
+      status.textContent = `${symbolSelect.value} / ${formatIntervalLabel(intervalSelect.value)} 等待 Shioaji Kbars`;
+      status.classList.add("is-visible");
+      return;
+    }
+    if (waitingForShioajiHistory && ["live", "degraded", "closing", "closed"].includes(realtimeDisplayState)) {
+      status.textContent = `${symbolSelect.value} / ${formatIntervalLabel(intervalSelect.value)} 等待 Shioaji Kbars`;
+      status.classList.add("is-visible");
+      return;
+    }
     if (["live", "degraded"].includes(realtimeDisplayState) && latestRealtimeSnapshot) {
       applyRealtimeSnapshot(latestRealtimeSnapshot);
       if (realtimeDisplayState === "degraded") {
@@ -8988,11 +9023,12 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         return;
       }
       if (canonicalHandoffReady()) {
+        const viewportSnapshot = captureViewportSnapshot(lastPayload?.candles || []);
         applyPayload({
           ...canonicalPayload,
           candles: (canonicalPayload.candles || []).map((row) => ({ ...row })),
           quote: canonicalPayload.quote ? { ...canonicalPayload.quote, realtimeState: "closed" } : canonicalPayload.quote,
-        });
+        }, { viewportSnapshot });
         latestRealtimeSnapshot = null;
         status.classList.remove("is-visible");
       } else {
@@ -9038,15 +9074,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       return;
     }
     if (canonicalPayload && ["fallback", "stale", "unavailable"].includes(realtimeDisplayState)) {
-      const fallbackPayload = {
-        ...canonicalPayload,
-        candles: (canonicalPayload.candles || []).map((row) => ({ ...row })),
-        quote: canonicalPayload.quote ? { ...canonicalPayload.quote, realtimeState: "fallback" } : canonicalPayload.quote,
-      };
-      applyPayload(fallbackPayload);
-      updateQuoteDataTime(lastPayload?.quote, lastPayload?.quoteTime);
-      status.textContent = "即時行情中斷，已切換 Yahoo 延遲備援";
-      status.classList.add("is-visible");
+      applyCanonicalFallback();
     }
   }
 
@@ -9061,6 +9089,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     liveUpdateCleanup = undefined;
     realtimeUpdateCleanup?.();
     realtimeUpdateCleanup = undefined;
+    shioajiHistoryReady = false;
     minuteKlineAccumulator = isMinuteKlineInterval(interval)
       ? window.QuoteChartRealtimeCharts.createMinuteKlineAccumulator({ interval, identity: `${symbol}|${interval}|${streamLoadToken}` })
       : undefined;
@@ -9080,7 +9109,9 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (payload) canonicalPayload = payload;
       if (["closing", "closed"].includes(realtimeDisplayState)) applyRealtimeState({ state: realtimeDisplayState });
       else if (latestRealtimeSnapshot && ["live", "degraded"].includes(realtimeDisplayState)) applyRealtimeSnapshot(latestRealtimeSnapshot);
-      else if (candle) applyLiveEvent({ type: "candle", candle, indicators: payload.indicators, quote: payload.quote });
+      else if (candle && !prefersShioajiDisplay(symbol, interval)) {
+        applyLiveEvent({ type: "candle", candle, indicators: payload.indicators, quote: payload.quote });
+      }
     }, () => {
       if (!destroyed && streamLoadToken === loadToken) status.textContent = "批次更新暫時中斷";
     });
@@ -9090,12 +9121,18 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       realtimeUpdateCleanup = realtimeCoordinator.subscribe(panelSubscriptionId, { symbol, interval }, (snapshot) => {
         if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
         latestRealtimeSnapshot = snapshot;
+        if (prefersShioajiDisplay(symbol, interval) && !shioajiHistoryReady) return;
         if (["live", "degraded"].includes(realtimeDisplayState)) applyRealtimeSnapshot(snapshot);
       }, (next) => {
         if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
         applyRealtimeState(next);
       }, (points) => {
         if (destroyed || streamLoadToken !== loadToken || symbol !== symbolSelect.value || interval !== intervalSelect.value) return;
+        shioajiHistoryReady = Array.isArray(points) && points.length > 0;
+        if (shioajiHistoryReady && shioajiBootstrapFallbackTimer) {
+          panelLifecycle.clearTimer(shioajiBootstrapFallbackTimer);
+          shioajiBootstrapFallbackTimer = 0;
+        }
         if (minuteKlineAccumulator) {
           minuteKlineAccumulator.bootstrap(points);
           if (latestRealtimeSnapshot) minuteKlineAccumulator.append(latestRealtimeSnapshot);

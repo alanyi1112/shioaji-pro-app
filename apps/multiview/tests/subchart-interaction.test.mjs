@@ -239,7 +239,9 @@ test("同交易日即時日 K 只增量更新最後一棒，避免多圖完整�
   assert.match(dailyBlock, /if \(sameSessionUpdate\) \{[\s\S]*?candleSeries\.update\(latest\);/);
   assert.match(dailyBlock, /chipPaneManager\?\.updateCandles\?\.\(candles\);/);
   assert.match(dailyBlock, /scheduleRealtimeIndicatorRefresh\(snapshot\);/);
-  assert.match(dailyBlock, /\} else \{[\s\S]*?applyPayload\(payload, \{ preserveVisibleLogicalRange, oldCandleCount \}\);/);
+  assert.match(dailyBlock, /const viewportSnapshot = captureViewportSnapshot\(lastPayload\?\.candles \|\| \[\]\);/);
+  assert.match(dailyBlock, /\} else \{[\s\S]*?applyPayload\(payload, \{ viewportSnapshot, oldCandleCount \}\);/);
+  assert.doesNotMatch(dailyBlock, /preserveVisibleLogicalRange/);
 });
 
 test("大戶散戶縱軸與同日新價位都會維持 autoscale", () => {

@@ -104,6 +104,58 @@
       : null;
   }
 
+  function viewportRangeFromSnapshot(snapshot, candles = [], options = {}) {
+    if (!snapshot || !Array.isArray(candles) || candles.length === 0) return null;
+    const rightOffsetBars = Math.max(0, Number(options.rightOffsetBars) || 0);
+    const normalizeTime = typeof options.normalizeTime === "function"
+      ? options.normalizeTime
+      : (value) => String(value ?? "");
+    const maximumTo = candles.length - 1 + rightOffsetBars;
+    const maximumSpan = Math.max(1, maximumTo);
+    const requestedSpan = Number(snapshot.span);
+    const span = Math.min(
+      Number.isFinite(requestedSpan) && requestedSpan > 0 ? requestedSpan : maximumSpan,
+      maximumSpan,
+    );
+    const clampRange = (range) => {
+      if (!isFiniteLogicalRange(range)) return null;
+      let from = Number(range.from);
+      let to = Number(range.to);
+      if (to > maximumTo) {
+        from -= to - maximumTo;
+        to = maximumTo;
+      }
+      if (from < 0) {
+        to = Math.min(maximumTo, to - from);
+        from = 0;
+      }
+      if (to <= from) return null;
+      return { from, to };
+    };
+    if (snapshot.rightAttached && snapshot.userInteracted !== true) {
+      return { from: 0, to: maximumTo };
+    }
+    if (snapshot.rightAttached) {
+      return clampRange({ from: maximumTo - span, to: maximumTo });
+    }
+    const timeIndex = new Map(candles.map((row, index) => [normalizeTime(row?.time), index]));
+    const fromIndex = timeIndex.get(normalizeTime(snapshot.fromTime));
+    const toIndex = timeIndex.get(normalizeTime(snapshot.toTime));
+    const fromFraction = Number.isFinite(Number(snapshot.fromFraction)) ? Number(snapshot.fromFraction) : 0;
+    const toFraction = Number.isFinite(Number(snapshot.toFraction)) ? Number(snapshot.toFraction) : 0;
+    let range;
+    if (Number.isFinite(fromIndex) && Number.isFinite(toIndex)) {
+      range = { from: fromIndex + fromFraction, to: toIndex + toFraction };
+    } else if (Number.isFinite(toIndex)) {
+      const to = toIndex + toFraction;
+      range = { from: to - span, to };
+    } else if (Number.isFinite(fromIndex)) {
+      const from = fromIndex + fromFraction;
+      range = { from, to: from + span };
+    }
+    return clampRange(range) || { from: 0, to: maximumTo };
+  }
+
   function createViewportCoordinator(options = {}) {
     const requestFrame = options.requestFrame || global.requestAnimationFrame || ((callback) => global.setTimeout(callback, 0));
     const cancelFrame = options.cancelFrame || global.cancelAnimationFrame || global.clearTimeout;
@@ -260,6 +312,7 @@
     bindWheelRouting,
     bindViewportIntent,
     createViewportCoordinator,
+    viewportRangeFromSnapshot,
     measureInitialViewportInvariant,
   };
 })(window);
