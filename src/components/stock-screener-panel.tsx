@@ -19,7 +19,7 @@ import {
     criteriaFingerprintV6, effectiveCriteriaV6, isV6Preference, migrateCriteriaV5ToV6, validateCriteriaV6,
     type CriteriaV6, type V6Reason,
 } from '../lib/stock-screener-v6';
-import type { ScreenerWatchlistResult } from '../lib/stock-screener-watchlist';
+import type { ScreenerListSyncResult } from '../lib/stock-screener-list-sync';
 import { stockScreenerVolumeComparison } from '../lib/stock-screener-volume-comparison';
 import {
     disableAllStockScreenerConditions, enabledStockScreenerConditions,
@@ -209,12 +209,12 @@ export interface StockScreenerPanelProps {
     onPick: (stock: UniverseStock, targetId: string) => Promise<boolean>;
     onOpenChart: () => Promise<string | undefined> | string | undefined;
     onTargetChange: () => void;
-    onAddToWatchlist: (stock: UniverseStock) => Promise<ScreenerWatchlistResult>;
+    onAddToWatchlist: (stock: UniverseStock) => Promise<ScreenerListSyncResult>;
     chartConnectionMessage?: string;
     snapshotVolumesByCode?: Record<string, { date: string | null; lots: number }>;
 }
 
-type AddState = { status: 'pending' | 'added' | 'already_present' | 'error'; message: string };
+type AddState = { status: 'pending' | ScreenerListSyncResult['status']; message: string };
 
 export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, chartConnectionMessage, snapshotVolumesByCode }: StockScreenerPanelProps) {
     const initialDraft = useRef<ScreenerQueryV6 | null>(null);
@@ -308,12 +308,12 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             const result = await onAddToWatchlist(stock);
             setAddStates((old) => ({ ...old, [stock.symbol]: {
                 status: result.status,
-                message: result.status === 'already_present' ? '原已在「選股」清單' : '已加入「選股」清單',
+                message: result.message,
             } }));
         } catch (cause) {
             setAddStates((old) => ({ ...old, [stock.symbol]: {
-                status: 'error',
-                message: cause instanceof Error ? cause.message : '加入「選股」清單失敗',
+                status: 'failed',
+                message: cause instanceof Error ? cause.message : '加入 Shioaji 與 MultiView 清單失敗，可重試',
             } }));
         } finally {
             pendingAdds.current.delete(stock.symbol);
@@ -466,13 +466,13 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                 <span className={styles.note}>{row.sources.join('、')}</span>
                 </button>
                 <button type='button' className={styles.addButton}
-                    aria-label={`將 ${row.code} ${row.name} 加入選股清單`}
-                    disabled={!responseOperational || addState?.status === 'pending' || addState?.status === 'added' || addState?.status === 'already_present'}
+                    aria-label={`將 ${row.code} ${row.name} 加入 Shioaji 選股與 MultiView 選股篩選清單`}
+                    disabled={!responseOperational || addState?.status === 'pending' || addState?.status === 'complete'}
                     onClick={(event) => { event.stopPropagation(); void addToWatchlist(row); }}>
-                    {addState?.status === 'pending' ? '加入中…' : addState?.status === 'added' || addState?.status === 'already_present' ? '已加入' : '加入清單'}
+                    {addState?.status === 'pending' ? '加入中…' : addState?.status === 'complete' ? '已加入' : addState?.status === 'partial' || addState?.status === 'failed' ? '重試加入' : '加入清單'}
                 </button>
                 </div>
-                {addState && <span className={addState.status === 'error' ? styles.addError : styles.addStatus} role={addState.status === 'error' ? 'alert' : 'status'} aria-live='polite'>{addState.message}</span>}
+                {addState && <span className={addState.status === 'partial' || addState.status === 'failed' ? styles.addError : styles.addStatus} role={addState.status === 'partial' || addState.status === 'failed' ? 'alert' : 'status'} aria-live='polite'>{addState.message}</span>}
                 {applied?.criteria.fractal.enabled && row.technical.fractal?.evidence?.normalizedBars && <details><summary>分型日期映射</summary>{row.technical.fractal.evidence.normalizedBars.map((bar) => <span key={`${bar.rawFrom}-${bar.rawTo}`}>{bar.low}–{bar.high}：{bar.rawDates.join('、')}</span>)}</details>}
                 {applied?.criteria.bollReversal.enabled && row.technical.bollReversal?.evidence && <details><summary>P／D OHLC 與 BOLL 證據</summary>
                     {([['P', row.technical.bollReversal.evidence.previous], ['D', row.technical.bollReversal.evidence.current]] as const).map(([label, point]) => <span key={label}>{label} {point.sessionDate} O {point.open} H {point.high} L {point.low} C {point.close} · upper {point.upper} / mid {point.middle} / lower {point.lower}</span>)}
@@ -502,7 +502,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             <button type='button' disabled={!response?.nextCursor || busy || dirty} onClick={() => void run(applied, response?.nextCursor ?? '', page + 1)}>下一頁</button>
         </div>}
         <details className={styles.methodDetails}><summary>計算口徑與資料來源</summary>
-            <p className={styles.note}>千張大戶為 TDCC 第 15 級（1,000,001 股以上），10 張以下散戶為第 1–3 級合計；投信條件使用官方 signed 買賣超與同一 universe revision 的已發行普通股數，券資比使用同日融券餘額除以融資餘額。技術條件只使用官方未還原日 OHLCV。點選商品內容只更換指定圖表；只有明確按下「加入清單」才會加入「選股」清單，不變更下單商品。</p>
+            <p className={styles.note}>千張大戶為 TDCC 第 15 級（1,000,001 股以上），10 張以下散戶為第 1–3 級合計；投信條件使用官方 signed 買賣超與同一 universe revision 的已發行普通股數，券資比使用同日融券餘額除以融資餘額。技術條件只使用官方未還原日 OHLCV。點選商品內容只更換指定圖表；只有明確按下「加入清單」才會同步加入 Shioaji「選股」與 MultiView「選股篩選」，不變更下單商品或目前圖表。</p>
             <p className={styles.note}>來源：<a href='https://openapi.twse.com.tw/' target='_blank' rel='noopener noreferrer'>臺灣證券交易所</a>、<a href='https://www.tpex.org.tw/openapi/' target='_blank' rel='noopener noreferrer'>證券櫃檯買賣中心</a>、<a href='https://data.gov.tw/en/datasets/11452' target='_blank' rel='noopener noreferrer'>臺灣集中保管結算所</a>。僅供資料篩選。</p>
         </details>
     </div>;

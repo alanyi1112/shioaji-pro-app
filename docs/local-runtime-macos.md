@@ -148,6 +148,15 @@ MultiView 都以 `common_lot`（張）呈現：Shioaji lot 不換算，Yahoo／T
 shares 除以 1,000。只有同一批 Shioaji Kbars 要求跨畫面 daily OHLCV 完全一致；
 fallback 不冒充跨 provider 數值 parity，且 Shioaji 本機 display 不取代收盤核定。
 
+收盤後選股結果的「加入清單」會同時要求寫入 Shioaji「選股」與 MultiView
+「選股篩選」。5173 僅接受 loopback、same-origin 的固定 POST gateway，payload 只含
+canonical `.TW`／`.TWO` symbol，並只轉送至固定 5174 integration endpoint；不接受
+任意 target、path、method 或 caller credentials。MultiView 以 server-side catalog、
+固定 tab identity 與 D1 unique key 冪等建立頁籤／商品，多個同名頁籤或 identity
+衝突時 fail closed。兩端任一失敗時介面保留另一端已確認結果並允許重試，不做補償
+刪除；整個流程不建立委託、行情訂閱、籌碼預熱／回補或 runtime 啟停。已開啟的
+MultiView 在回到前景時只做 single-flight 唯讀清單刷新，不切換目前頁籤或圖表。
+
 ## 主交易畫面指定日期 drill-down
 
 日 K 觀察模式可雙擊有效 K 棒進入該 `Asia/Taipei` 日期的 exact-date 1 分 K。

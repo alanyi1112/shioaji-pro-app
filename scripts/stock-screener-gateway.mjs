@@ -1,5 +1,10 @@
 const PREFIX = '/api/stock-screener';
 const TARGET = 'http://127.0.0.1:5174';
+export const STOCK_SCREENER_MULTIVIEW_LIST_PATH = '/local-multiview/api/v1/stock-screener-list/items';
+const STOCK_SCREENER_MULTIVIEW_LIST_TARGET = 'http://127.0.0.1:5174/api/integrations/stock-screener-list/items';
+const STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA = 'multiview-stock-screener-list-sync/1';
+const STOCK_SCREENER_MULTIVIEW_LIST_MAX_BODY_BYTES = 512;
+const rejectedProxyHeaders = new Set(['forwarded', 'via', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'x-real-ip', 'true-client-ip', 'cf-connecting-ip', 'cf-ray', 'cdn-loop']);
 const paths = new Set([`${PREFIX}/status`, `${PREFIX}/results`]);
 const keys = new Set(['version','mode','volume','volumeThreshold','volumeTurnover','volumeTurnoverMinimumWan',
     'holder','holderThreshold','holderMode','holderStreakWeeks','holderTurnover','holderTurnoverMinimumWan',
@@ -43,6 +48,75 @@ const unavailablePayload = (version) => version === 6
         expectedSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
         counts: null, byMarket: null, rows: [], nextCursor: null };
 
+const isLoopbackAddress = (value) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(value);
+
+export function validateStockScreenerMultiViewListRequest(req) {
+    const raw = req.url ?? '/';
+    let url;
+    try { url = new URL(raw, 'http://127.0.0.1'); } catch { return { status: 400, reason: 'invalid_url' }; }
+    if (!(raw === STOCK_SCREENER_MULTIVIEW_LIST_PATH || raw.startsWith(`${STOCK_SCREENER_MULTIVIEW_LIST_PATH}?`))) return null;
+    if (raw !== STOCK_SCREENER_MULTIVIEW_LIST_PATH || url.search !== '' || /%(?:2f|5c|2e|00)/i.test(raw)) return { status: 400, reason: 'invalid_url' };
+    if (req.method !== 'POST') return { status: 405, reason: 'method_not_allowed' };
+    if (!isLoopbackAddress(req.socket?.remoteAddress) || !isLoopbackAddress(req.socket?.localAddress)) return { status: 403, reason: 'loopback_required' };
+    const headers = req.headers ?? {};
+    const host = headers.host ?? '';
+    if (!/^(?:127\.0\.0\.1|localhost|\[::1\]):(?:[1-9]\d{0,4})$/.test(host)) return { status: 403, reason: 'local_only' };
+    if (headers.origin !== undefined && headers.origin !== `http://${host}`) return { status: 403, reason: 'same_origin_required' };
+    if (headers['sec-fetch-site'] === 'cross-site') return { status: 403, reason: 'same_origin_required' };
+    if ([...rejectedProxyHeaders].some((name) => headers[name] !== undefined)) return { status: 403, reason: 'hosted_target_disabled' };
+    if (String(headers['content-type'] ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return { status: 415, reason: 'json_required' };
+    const declaredLength = headers['content-length'];
+    if (declaredLength !== undefined && (!/^\d+$/.test(String(declaredLength)) || Number(declaredLength) > STOCK_SCREENER_MULTIVIEW_LIST_MAX_BODY_BYTES)) return { status: 413, reason: 'payload_too_large' };
+    return { url: STOCK_SCREENER_MULTIVIEW_LIST_TARGET };
+}
+
+export function validateStockScreenerMultiViewListPayload(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const keys = Object.keys(value);
+    if (keys.length !== 1 || keys[0] !== 'symbol') return null;
+    const symbol = String(value.symbol ?? '').normalize('NFKC').trim().toUpperCase().replace(/\s+/g, '');
+    return /^[0-9A-Z]{4,8}\.(TW|TWO)$/.test(symbol) ? { symbol } : null;
+}
+
+function readJsonBody(request, timeoutMs = 3000) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let size = 0;
+        let settled = false;
+        const finish = (callback) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            callback();
+        };
+        const timer = setTimeout(() => finish(() => reject(new Error('body_timeout'))), timeoutMs);
+        timer.unref?.();
+        request.on('data', (chunk) => {
+            if (settled) return;
+            const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            size += buffer.length;
+            if (size > STOCK_SCREENER_MULTIVIEW_LIST_MAX_BODY_BYTES) return finish(() => reject(new Error('payload_too_large')));
+            chunks.push(buffer);
+        });
+        request.once('end', () => finish(() => {
+            try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
+            catch { reject(new Error('invalid_json')); }
+        }));
+        request.once('error', () => finish(() => reject(new Error('invalid_request'))));
+    });
+}
+
+function safeMultiViewListResponse(status, value) {
+    const body = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    if (status >= 200 && status < 300 && body.ok === true && ['added', 'already_present'].includes(body.status)
+        && /^[0-9A-Z]{4,8}\.(TW|TWO)$/.test(String(body.symbol || ''))
+        && typeof body.tabId === 'string' && typeof body.tabLabel === 'string') {
+        return { status, body: { schemaVersion: STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA, ok: true, status: body.status, symbol: body.symbol, tabId: body.tabId, tabLabel: body.tabLabel } };
+    }
+    const reason = typeof body.reason === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(body.reason) ? body.reason : 'multiview_rejected';
+    return { status: status >= 400 && status <= 599 ? status : 502, body: { schemaVersion: STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA, ok: false, reason, retryable: body.retryable === true || status >= 500 } };
+}
+
 export function validateScreenerGatewayRequest(req) {
     const raw = req.url ?? '/';
     let url;
@@ -68,6 +142,41 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
         name: 'realtimestock-local-stock-screener',
         configureServer(server) {
             server.middlewares.use(async (req, res, next) => {
+                const multiviewChecked = validateStockScreenerMultiViewListRequest(req);
+                if (multiviewChecked) {
+                    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+                    res.setHeader('Cache-Control', 'no-store');
+                    res.setHeader('X-Content-Type-Options', 'nosniff');
+                    const reply = (status, body) => { res.statusCode = status; res.end(JSON.stringify(body)); };
+                    if (multiviewChecked.reason) return reply(multiviewChecked.status, { schemaVersion: STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA, ok: false, reason: multiviewChecked.reason, retryable: false });
+                    let payload;
+                    try { payload = validateStockScreenerMultiViewListPayload(await readJsonBody(req)); }
+                    catch (error) {
+                        const reason = error?.message === 'payload_too_large' ? 'payload_too_large' : 'invalid_json';
+                        return reply(reason === 'payload_too_large' ? 413 : 400, { schemaVersion: STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA, ok: false, reason, retryable: false });
+                    }
+                    if (!payload) return reply(400, { schemaVersion: STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA, ok: false, reason: 'invalid_payload', retryable: false });
+                    const controller = new AbortController();
+                    let timer;
+                    try {
+                        const result = await Promise.race([
+                            (async () => {
+                                const response = await fetcher(multiviewChecked.url, {
+                                    method: 'POST', signal: controller.signal, redirect: 'error',
+                                    headers: { accept: 'application/json', 'content-type': 'application/json' },
+                                    body: JSON.stringify(payload),
+                                });
+                                const rawBody = await response.text();
+                                if (Buffer.byteLength(rawBody) > 64 * 1024) throw new Error('response_too_large');
+                                return safeMultiViewListResponse(response.status, JSON.parse(rawBody));
+                            })(),
+                            new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),
+                        ]);
+                        return reply(result.status, result.body);
+                    } catch {
+                        return reply(503, { schemaVersion: STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA, ok: false, reason: 'multiview_unavailable', retryable: true });
+                    } finally { clearTimeout(timer); controller.abort(); }
+                }
                 const checked = validateScreenerGatewayRequest(req);
                 if (!checked) return next();
                 res.setHeader('Content-Type', 'application/json');

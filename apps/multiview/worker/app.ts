@@ -142,6 +142,14 @@ import { recordCacheEvent, runtimeUsageSummary } from "./runtime-usage";
 import { localShioajiAdapterHealth } from "./local-shioaji-adapter";
 import { notifyRealtimeWatchlistSymbols, readRealtimeHealth, realtimeViewerCapability, type RealtimeEnv } from "./realtime-routing";
 import { auditTaiwanDailyContinuity, cacheTaiwanOfficialMonthPayload } from "./taiwan-daily-continuity";
+import {
+  STOCK_SCREENER_LIST_SYNC_SCHEMA_VERSION,
+  STOCK_SCREENER_MULTIVIEW_TAB_LABEL,
+  catalogEntryFromVerifiedScreenerUniverse,
+  parseStockScreenerListSyncInput,
+  resolveStockScreenerCatalogEntry,
+  resolveStockScreenerTargetTab,
+} from "./stock-screener-list-sync";
 
 type ImagesBinding = {
   input(stream: ReadableStream): {
@@ -467,9 +475,9 @@ async function seedLocalizedCatalog(db: D1Database) {
   await runD1Batch(db, statements);
 }
 
-async function personalTabRows(db: D1Database | undefined, uid: string): Promise<UserTabRow[]> {
+async function personalTabRows(db: D1Database | undefined, uid: string, ensureSchema = true): Promise<UserTabRow[]> {
   if (!db) return [];
-  await ensureDb(db);
+  if (ensureSchema) await ensureDb(db);
   const result = await db.prepare("SELECT * FROM user_tabs WHERE user_id = ? ORDER BY sort_order, label").bind(uid).all<UserTabRow>();
   return result.results;
 }
@@ -570,6 +578,43 @@ async function readInstrumentCatalog(db?: D1Database) {
   await ensureDb(db);
   const result = await db.prepare("SELECT * FROM instrument_catalog WHERE active = 1").all<CatalogDbRow>();
   return result.results.map(rowToCatalogEntry).filter((item): item is CatalogEntry => Boolean(item));
+}
+
+async function readStockScreenerSyncCatalog(db: D1Database, symbol: string) {
+  const direct = await db.prepare("SELECT * FROM instrument_catalog WHERE active = 1 AND symbol = ?")
+    .bind(symbol).all<CatalogDbRow>();
+  if (direct.results.length) {
+    return direct.results.map(rowToCatalogEntry).filter((item): item is CatalogEntry => Boolean(item));
+  }
+  const snapshots = await db.prepare(
+    "SELECT metadata FROM screener_snapshots WHERE status='published' ORDER BY created_at DESC LIMIT 12",
+  ).all<{ metadata?: string | null }>();
+  let expectedRevision = "";
+  for (const row of snapshots.results) {
+    try {
+      const metadata = JSON.parse(String(row.metadata || "{}")) as { sourceReview?: unknown; universeRevision?: unknown };
+      const revision = String(metadata.universeRevision || "").trim();
+      if (metadata.sourceReview === "verified" && /^[a-f0-9]{64}$/.test(revision)) {
+        expectedRevision = revision;
+        break;
+      }
+    } catch { /* Ignore malformed historical metadata and continue fail closed. */ }
+  }
+  if (!expectedRevision) return [];
+  const fallback = await db.prepare(
+    "SELECT revision,symbol,market,data_date,payload FROM screener_universe WHERE revision=? AND symbol=? LIMIT 2",
+  ).bind(expectedRevision, symbol).all<{ revision?: unknown; symbol?: unknown; market?: unknown; data_date?: unknown; payload?: unknown }>();
+  return fallback.results.flatMap((row) => {
+    const entry = catalogEntryFromVerifiedScreenerUniverse(symbol, {
+      expectedRevision,
+      revision: row.revision,
+      symbol: row.symbol,
+      market: row.market,
+      dataDate: row.data_date,
+      payload: row.payload,
+    });
+    return entry ? [entry] : [];
+  });
 }
 
 function localCatalogEntry(item: Instrument): CatalogEntry {
@@ -2364,6 +2409,90 @@ async function saveInstrument(request: Request, env: Env, list?: SaveInstrumentI
   return json({ ...(await instrumentPayload(request, env)), ok: true, realtime });
 }
 
+async function syncStockScreenerListItem(request: Request, env: Env) {
+  const failure = (reason: string, status: number, retryable = false) => json({
+    schemaVersion: STOCK_SCREENER_LIST_SYNC_SCHEMA_VERSION,
+    ok: false,
+    reason,
+    retryable,
+  }, status);
+  if (!env.DB) return failure("persistence_unavailable", 503, true);
+  const uid = identifiedUserId(request);
+  if (!uid) return failure("authentication_required", 401);
+  let input;
+  try {
+    const raw = await request.text();
+    if (new TextEncoder().encode(raw).byteLength > 512) return failure("payload_too_large", 413);
+    input = parseStockScreenerListSyncInput(JSON.parse(raw));
+  } catch {
+    return failure("invalid_payload", 400);
+  }
+  if (!input) return failure("invalid_payload", 400);
+
+  try {
+    const catalog = resolveStockScreenerCatalogEntry(input.symbol, await readStockScreenerSyncCatalog(env.DB, input.symbol));
+    if (!catalog.ok) return failure(catalog.reason, 422);
+
+    const initialTabs = await personalTabRows(env.DB, uid, false);
+    const initialTarget = resolveStockScreenerTargetTab(initialTabs);
+    if (!initialTarget.ok) return failure(initialTarget.reason, 409);
+    const tabId = initialTarget.tabId;
+    const existingItem = await env.DB.prepare(
+      "SELECT item_id FROM user_instruments WHERE user_id=? AND symbol=? AND tab_id=? LIMIT 1",
+    ).bind(uid, input.symbol, tabId).first<ExistingWatchlistRow>();
+    const maxTabOrder = initialTarget.mode === "create"
+      ? await env.DB.prepare("SELECT COALESCE(MAX(sort_order),0) AS max_order FROM user_tabs WHERE user_id=?").bind(uid).first<{ max_order?: number | null }>()
+      : null;
+    const maxItemOrder = await env.DB.prepare(
+      "SELECT COALESCE(MAX(sort_order),0) AS max_order FROM user_instruments WHERE user_id=? AND tab_id=?",
+    ).bind(uid, tabId).first<{ max_order?: number | null }>();
+    const itemOrder = Number(maxItemOrder?.max_order || 0) + 1;
+    const entry = catalog.entry;
+    const statements: D1PreparedStatement[] = [];
+    if (initialTarget.mode === "create") {
+      statements.push(env.DB.prepare(
+        "INSERT INTO user_tabs (user_id,id,label,sort_order,enabled,is_default,source_tab_id) VALUES (?,?,?,?,1,0,'') ON CONFLICT(user_id,id) DO NOTHING",
+      ).bind(uid, tabId, STOCK_SCREENER_MULTIVIEW_TAB_LABEL, Number(maxTabOrder?.max_order || 0) + 1));
+      statements.push(env.DB.prepare(`INSERT INTO user_instruments
+        (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender)
+        SELECT ?,?,?,?,?,?,?,?,?,1,?,?, 'known','server',''
+        WHERE EXISTS (SELECT 1 FROM user_tabs WHERE user_id=? AND id=? AND label=? AND source_tab_id='')
+        ON CONFLICT(user_id,symbol,tab_id) DO NOTHING`).bind(
+        uid, newWatchlistItemId(), input.symbol, entry.localizedName, entry.provider, tabId,
+        STOCK_SCREENER_MULTIVIEW_TAB_LABEL, entry.group, entry.market, itemOrder, taipeiCalendarDate(),
+        uid, tabId, STOCK_SCREENER_MULTIVIEW_TAB_LABEL,
+      ));
+    } else {
+      statements.push(env.DB.prepare(`INSERT INTO user_instruments
+        (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender)
+        VALUES (?,?,?,?,?,?,?,?,?,1,?,?,'known','server','')
+        ON CONFLICT(user_id,symbol,tab_id) DO NOTHING`).bind(
+        uid, newWatchlistItemId(), input.symbol, entry.localizedName, entry.provider, tabId,
+        STOCK_SCREENER_MULTIVIEW_TAB_LABEL, entry.group, entry.market, itemOrder, taipeiCalendarDate(),
+      ));
+    }
+    await env.DB.batch(statements);
+
+    const confirmedTarget = resolveStockScreenerTargetTab(await personalTabRows(env.DB, uid, false));
+    if (!confirmedTarget.ok) return failure(confirmedTarget.reason, 409);
+    if (confirmedTarget.tabId !== tabId) return failure("target_tab_changed", 409, true);
+    const confirmedItem = await env.DB.prepare(
+      "SELECT item_id FROM user_instruments WHERE user_id=? AND symbol=? AND tab_id=? LIMIT 1",
+    ).bind(uid, input.symbol, tabId).first<ExistingWatchlistRow>();
+    if (!confirmedItem) return failure("write_not_confirmed", 503, true);
+    return json({
+      schemaVersion: STOCK_SCREENER_LIST_SYNC_SCHEMA_VERSION,
+      ok: true,
+      status: existingItem ? "already_present" : "added",
+      symbol: input.symbol,
+      tabId,
+      tabLabel: STOCK_SCREENER_MULTIVIEW_TAB_LABEL,
+    });
+  } catch {
+    return failure("persistence_unavailable", 503, true);
+  }
+}
+
 async function syncRealtimeWatchlist(request: Request, env: Env, uid: string) {
   if (!env.DB || !realtimeViewerCapability(request, env)) {
     return notifyRealtimeWatchlistSymbols(request, env, []);
@@ -3074,6 +3203,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   const personalPath = path === "/api/instruments"
     || path.startsWith("/api/instruments/")
     || path.startsWith("/api/watchlist-items/")
+    || path === "/api/integrations/stock-screener-list/items"
     || path === "/api/taiwan-stock-chip/backfill"
     || path === "/api/tabs"
     || path.startsWith("/api/tabs/")
@@ -3111,6 +3241,10 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   }
   if (path === "/api/instruments" && request.method === "GET") {
     const payload = await instrumentPayload(request, env);
+    if (url.searchParams.get("mode") === "read-only"
+      && url.searchParams.get("purpose") === "stock-screener-list-sync-refresh") {
+      return json({ ...payload, realtime: { status: "not-requested", acceptedSymbolCount: 0 } });
+    }
     const uid = identifiedUserId(request);
     const realtime = uid ? await syncRealtimeWatchlist(request, env, uid) : { status: "not-authorized", acceptedSymbolCount: 0 };
     return json({ ...payload, realtime });
@@ -3155,6 +3289,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   }
   if (path === "/api/instruments" && request.method === "POST") return saveInstrument(request, env, undefined, context);
   if (path === "/api/instruments/reorder" && request.method === "POST") return reorderInstruments(request, env);
+  if (path === "/api/integrations/stock-screener-list/items" && request.method === "POST") return syncStockScreenerListItem(request, env);
   const watchlistMetadataMatch = path.match(/^\/api\/watchlist-items\/([^/]+)\/metadata$/);
   if (watchlistMetadataMatch && request.method === "PATCH") return updateWatchlistMetadata(request, env, decodeURIComponent(watchlistMetadataMatch[1]));
   const instrumentMatch = path.match(/^\/api\/instruments\/(.+)$/);

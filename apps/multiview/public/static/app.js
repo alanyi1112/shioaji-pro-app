@@ -287,6 +287,7 @@ const state = {
   indicatorParameters: JSON.parse(JSON.stringify(DEFAULT_INDICATOR_PARAMETERS)),
 };
 let watchlistSearchTimer;
+let personalListRefreshPromise;
 
 const liveBatchCoordinator = window.QuoteChartLiveBatch.createLiveBatchCoordinator();
 const realtimeCoordinator = window.QuoteChartRealtime.createLocalShioajiCoordinator({ enabled: state.sourceMode !== "yahoo" });
@@ -357,6 +358,7 @@ async function init() {
   renderMarketTabs();
   renderCategoryPagination();
   renderPanels(Number(countSelect.value));
+  wireStockScreenerListRefresh();
 }
 
 function cloneIndicatorParameters(parameters = DEFAULT_INDICATOR_PARAMETERS) {
@@ -874,6 +876,29 @@ async function loadInstruments() {
   updateConnectionStatus();
   renderCategoryPagination();
   renderWatchlistManager();
+}
+
+function refreshPersonalListsFromServer() {
+  if (personalListRefreshPromise) return personalListRefreshPromise;
+  personalListRefreshPromise = (async () => {
+    const response = await fetch("/api/instruments?mode=read-only&purpose=stock-screener-list-sync-refresh", { headers: getAuthHeaders() });
+    const payload = await response.json();
+    if (!response.ok || payload.error) throw new Error(payload.error || "個人清單重新整理失敗");
+    applyInstrumentSetupPayload(payload);
+    return payload;
+  })().finally(() => { personalListRefreshPromise = undefined; });
+  return personalListRefreshPromise;
+}
+
+function wireStockScreenerListRefresh() {
+  if (document.documentElement.dataset.stockScreenerListRefreshWired === "true") return;
+  document.documentElement.dataset.stockScreenerListRefreshWired = "true";
+  const refresh = () => {
+    if (document.visibilityState === "hidden") return;
+    void refreshPersonalListsFromServer().catch(() => undefined);
+  };
+  window.addEventListener("focus", refresh);
+  document.addEventListener("visibilitychange", refresh);
 }
 
 function getAuthHeaders() {

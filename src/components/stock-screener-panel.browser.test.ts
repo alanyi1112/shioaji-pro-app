@@ -5,6 +5,7 @@ import { page, userEvent } from 'vitest/browser';
 import { StockScreenerPanel } from './stock-screener-panel';
 import type { ScreenerResponseV3, ScreenerResponseV4, ScreenerResponseV5 } from '../lib/stock-screener-api';
 import { DEFAULT_CRITERIA as DEFAULT_V2 } from '../lib/stock-screener-domain';
+import type { ScreenerListSyncResult } from '../lib/stock-screener-list-sync';
 import { darkTwClass } from '../theme.css';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -118,7 +119,12 @@ async function mount(
     host.style.cssText = 'width:320px;height:550px;display:flex;flex-direction:column;font-size:24px';
     document.body.append(host); root = createRoot(host);
     const onPick = vi.fn(async () => true), onOpenChart = vi.fn(() => 'new-chart'), onTargetChange = vi.fn();
-    const onAddToWatchlist = vi.fn(async () => ({ status: 'added' as const, listId: 'screener-list' }));
+    const onAddToWatchlist = vi.fn(async (): Promise<ScreenerListSyncResult> => ({
+        status: 'complete' as const,
+        shioaji: { status: 'added' as const, result: { status: 'added' as const, listId: 'screener-list' } },
+        multiview: { status: 'added' as const, result: { status: 'added' as const, symbol: '3008.TW', tabId: 'stock-screener-filtered', tabLabel: '選股篩選' } },
+        message: '已加入 Shioaji「選股」與 MultiView「選股篩選」',
+    }));
     const fetcher = vi.fn(async (url: string) => url.includes('/status?') && initialStatus ? initialStatus
         : Response.json(url.includes('version=5') ? readyV5 : url.includes('version=4') ? readyV4 : ready)); vi.stubGlobal('fetch', fetcher);
     await act(async () => {
@@ -265,7 +271,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         await act(async () => add.click());
         expect(onAddToWatchlist).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ code: '3008' }));
         expect(onPick).not.toHaveBeenCalled();
-        expect(host.textContent).toContain('已加入「選股」清單');
+        expect(host.textContent).toContain('已加入 Shioaji「選股」與 MultiView「選股篩選」');
         expect(button(host, '已加入').disabled).toBe(true);
 
         const row = host.querySelector<HTMLButtonElement>('[aria-label="在指定 K 線圖開啟 3008 測試商品"]')!;
@@ -284,7 +290,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
             backgroundColor: before.backgroundColor,
         };
         const locator = page.getByRole('button', {
-            name: '將 3008 測試商品 加入選股清單',
+            name: '將 3008 測試商品 加入 Shioaji 選股與 MultiView 選股篩選清單',
         });
         await locator.hover();
         await new Promise((resolve) => setTimeout(resolve, 180));
@@ -307,18 +313,39 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         await act(async () => button(host, '開始篩選').click());
         await act(async () => button(host, '加入清單').click());
         expect(host.querySelector('[role=alert]')?.textContent).toContain('伺服器拒絕寫入');
-        expect(button(host, '加入清單').disabled).toBe(false);
+        expect(button(host, '重試加入').disabled).toBe(false);
+    });
+    it('部分成功會指出未完成端並允許重試', async () => {
+        const { host, onAddToWatchlist } = await mount();
+        onAddToWatchlist.mockResolvedValueOnce({
+            status: 'partial',
+            shioaji: { status: 'added', result: { status: 'added', listId: 'screener-list' } },
+            multiview: { status: 'error', message: 'MultiView 本機服務無法使用' },
+            message: 'Shioaji「選股」已完成；MultiView「選股篩選」未完成：MultiView 本機服務無法使用。可重試',
+        });
+        await act(async () => button(host, '開始篩選').click());
+        await act(async () => button(host, '加入清單').click());
+        expect(host.querySelector('[role=alert]')?.textContent).toContain('Shioaji「選股」已完成');
+        expect(host.querySelector('[role=alert]')?.textContent).toContain('MultiView「選股篩選」未完成');
+        expect(button(host, '重試加入').disabled).toBe(false);
+        await act(async () => button(host, '重試加入').click());
+        expect(onAddToWatchlist).toHaveBeenCalledTimes(2);
     });
     it('加入 pending 期間的快速重按只送出一次 mutation', async () => {
         const { host, onAddToWatchlist } = await mount();
-        let resolveAdd: ((value: { status: 'added'; listId: string }) => void) | undefined;
+        let resolveAdd: ((value: Awaited<ReturnType<typeof onAddToWatchlist>>) => void) | undefined;
         onAddToWatchlist.mockImplementationOnce(() => new Promise((resolve) => { resolveAdd = resolve; }));
         await act(async () => button(host, '開始篩選').click());
         const add = button(host, '加入清單');
         await act(async () => { add.click(); add.click(); });
         expect(onAddToWatchlist).toHaveBeenCalledOnce();
         expect(button(host, '加入中…').disabled).toBe(true);
-        await act(async () => resolveAdd?.({ status: 'added', listId: 'screener-list' }));
+        await act(async () => resolveAdd?.({
+            status: 'complete',
+            shioaji: { status: 'added', result: { status: 'added', listId: 'screener-list' } },
+            multiview: { status: 'added', result: { status: 'added', symbol: '3008.TW', tabId: 'stock-screener-filtered', tabLabel: '選股篩選' } },
+            message: '已加入 Shioaji「選股」與 MultiView「選股篩選」',
+        }));
         expect(button(host, '已加入').disabled).toBe(true);
     });
     it('較晚的初始 status 不能覆蓋結果，pending／partial／stale 分開顯示', async () => {

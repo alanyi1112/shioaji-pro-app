@@ -81,7 +81,27 @@ heartbeat 不代表行情可用。
 本階段 Shioaji 只支援 `STK`、`IND`、`WRT`；`FUT`、`OPT` 明確停用。IND
 若來源未提供成交量，成交量與 Volume MA5／MA10／MA20 顯示 unavailable，
 不得用零值、昨量、amount 或 Yahoo volume 冒充即時量。國外商品仍使用原本
-provider；MultiView「我的清單」與 RealTimeStock 自選清單各自獨立。
+provider；一般 MultiView 個人清單與 RealTimeStock 自選清單仍各自獨立，只有收盤後
+選股結果的明確「加入清單」動作會使用下述固定用途同步。
+
+### 收盤後選股結果同步
+
+收盤後選股頁的「加入清單」會各自向 Shioaji「選股」與 MultiView「選股篩選」
+要求冪等寫入。MultiView 沒有該個人頁籤時，worker 以固定 identity 建立啟用中、
+非預設的頁籤；已有唯一同名頁籤時沿用。多個同名頁籤、identity 衝突、catalog
+查無 canonical `.TW`／`.TWO` 普通股或市場後綴矛盾時 fail closed，不猜測目標。
+
+5173 只開放固定同源路徑
+`POST /local-multiview/api/v1/stock-screener-list/items`，並只轉送 `{ symbol }` 到
+loopback 5174 的固定 integration endpoint。client 不能指定 host、URL、path、method
+或額外欄位；cookie、authorization 及 caller headers 不會轉送。兩端沒有共同
+transaction：任一端成功、另一端失敗時保留成功資料並顯示部分成功，重試由冪等
+結果收斂，不做補償刪除。
+
+同步 endpoint 只寫 `user_tabs` 與 `user_instruments`，不呼叫 realtime watchlist、
+行情訂閱、籌碼預熱、provider 回補、DDL 或 runtime lifecycle。已開啟的 MultiView
+只在重新 focus 或 document 恢復 visible 時 single-flight 唯讀刷新個人清單；不輪詢、
+不切換目前頁籤、商品或圖表。
 
 ### 台股整股成交量與跨畫面對照
 
