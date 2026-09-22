@@ -1,7 +1,13 @@
 // src/lib/shioaji.ts
 
 import { accountFor } from './account-store';
-import { apiDelete, apiGet, apiPost, apiPut } from './api';
+import {
+    apiDelete,
+    apiGet,
+    apiPost,
+    apiPostWithTimeout,
+    apiPut,
+} from './api';
 import type {
     ContractBase,
     ContractInfo,
@@ -380,6 +386,7 @@ export function fetchScanner(
 export function subscribeQuote(
     contract: ContractBase,
     quoteType: QuoteTypeName,
+    options: { timeoutMs?: number } = {},
 ) {
     const body = {
         ...contractKey(contract),
@@ -388,7 +395,11 @@ export function subscribeQuote(
         quote_type: quoteType,
         intraday_odd: false,
     };
-    return apiPost<SubscriptionResponse>('/api/v1/stream/subscribe', body).then(
+    return apiPostWithTimeout<SubscriptionResponse>(
+        '/api/v1/stream/subscribe',
+        body,
+        options.timeoutMs ?? 8_000,
+    ).then(
         (response) => {
             if (!response.success) {
                 throw new Error(response.message || '行情訂閱失敗');
@@ -416,11 +427,16 @@ export function unsubscribeQuote(
     });
 }
 
-export function subscribeContractQuotes(contract: ContractBase) {
+export function subscribeContractQuotes(
+    contract: ContractBase,
+    options: { timeoutMs?: number } = {},
+) {
     const quoteTypes: QuoteTypeName[] =
         contract.security_type === 'IND' ? ['Quote'] : ['Tick', 'BidAsk'];
     return Promise.allSettled(
-        quoteTypes.map((quoteType) => subscribeQuote(contract, quoteType)),
+        quoteTypes.map((quoteType) =>
+            subscribeQuote(contract, quoteType, options),
+        ),
     );
 }
 

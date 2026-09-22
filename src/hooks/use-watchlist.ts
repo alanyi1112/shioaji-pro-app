@@ -36,6 +36,7 @@ import {
 } from '../lib/business-session-monitor';
 import type { ContractInfo, SecurityType } from '../lib/types/contract';
 import type { Snapshot } from '../lib/types/market';
+import { onWatchlistInvalidation } from '../lib/watchlist-invalidation';
 
 export interface WatchItem {
     contract: ContractInfo;
@@ -68,6 +69,15 @@ const ACTIVE_KEY = 'sj-pro-active-watchlist';
 
 export function serviceRecoveryDelayMs(failedAttempts: number): number {
     return Math.min(30_000, 5_000 * 2 ** Math.max(0, failedAttempts));
+}
+
+export function watchlistInvalidationReloadsActiveList(
+    invalidatedListName: string,
+    activeList: ServerWatchlist | undefined,
+) {
+    if (!activeList) return false;
+    return activeList.name.normalize('NFKC').trim()
+        === invalidatedListName.normalize('NFKC').trim();
 }
 
 function isSessionUnavailable(error: unknown): boolean {
@@ -160,11 +170,13 @@ export function useWatchlist({
     const [serverLists, setServerLists] = useState<ServerWatchlist[]>([]);
     const [activeListId, setActiveListId] = useState<string>('');
     const subscribed = useRef(new Set<string>());
+    const subscriptionPending = useRef(new Set<string>());
     const initStarted = useRef(false);
     const retryPromise = useRef<Promise<void> | null>(null);
     const recoveryAttempts = useRef(0);
     const recoveryNotificationShown = useRef(false);
     const loadSeq = useRef(0);
+    const loadedListId = useRef('');
     const activeIdRef = useRef('');
     activeIdRef.current = activeListId;
     const serviceIssueRef = useRef(serviceIssue);
@@ -175,9 +187,26 @@ export function useWatchlist({
             registerCodeAlias(contract.target_code, contract.code);
         }
         primeContract(contract);
-        if (!subscribed.current.has(contract.code)) {
-            subscribed.current.add(contract.code);
-            await subscribeContractQuotes(contract);
+        if (
+            subscribed.current.has(contract.code) ||
+            subscriptionPending.current.has(contract.code)
+        ) {
+            return;
+        }
+        subscriptionPending.current.add(contract.code);
+        try {
+            const results = await subscribeContractQuotes(contract);
+            if (
+                results.length > 0 &&
+                results.every((result) => result.status === 'fulfilled')
+            ) {
+                subscribed.current.add(contract.code);
+            }
+        } catch {
+            // A transport-level failure must remain retryable on the next
+            // explicit list reload or business-session recovery.
+        } finally {
+            subscriptionPending.current.delete(contract.code);
         }
     }, []);
 
@@ -234,43 +263,64 @@ export function useWatchlist({
         ) => {
             const seq = ++loadSeq.current;
             setLoading(true);
-            setItems([]);
-            const results = await Promise.allSettled(
-                list.contracts.map((c) =>
-                    resolveContract(c.code, c.security_type),
-                ),
-            );
-            if (loadSeq.current !== seq) return;
-            const contracts = results
-                .filter(
-                    (r): r is PromiseFulfilledResult<ContractInfo> =>
-                        r.status === 'fulfilled',
-                )
-                .map((r) => r.value);
-            const migrated =
-                results.every((result) => result.status === 'fulfilled') &&
-                contracts.some(
-                    (contract, index) =>
-                        contract.code !== list.contracts[index]?.code,
+            if (loadedListId.current !== list.id) {
+                loadedListId.current = '';
+                setItems([]);
+            }
+            try {
+                const results = await Promise.allSettled(
+                    list.contracts.map((c) =>
+                        resolveContract(c.code, c.security_type),
+                    ),
                 );
-            if (options.subscribeQuotes !== false) {
-                await Promise.allSettled(contracts.map(subscribeContract));
-            } else {
-                for (const contract of contracts) {
-                    if (contract.target_code) {
-                        registerCodeAlias(contract.target_code, contract.code);
+                if (loadSeq.current !== seq) return;
+                const contracts = results
+                    .filter(
+                        (r): r is PromiseFulfilledResult<ContractInfo> =>
+                            r.status === 'fulfilled',
+                    )
+                    .map((r) => r.value);
+                const migrated =
+                    results.every((result) => result.status === 'fulfilled') &&
+                    contracts.some(
+                        (contract, index) =>
+                            contract.code !== list.contracts[index]?.code,
+                    );
+
+                setItems(contracts.map((contract) => ({ contract })));
+                loadedListId.current = list.id;
+                attachSnapshots(contracts);
+
+                if (options.subscribeQuotes !== false) {
+                    for (const contract of contracts) {
+                        void subscribeContract(contract);
                     }
-                    primeContract(contract);
+                } else {
+                    for (const contract of contracts) {
+                        if (contract.target_code) {
+                            registerCodeAlias(
+                                contract.target_code,
+                                contract.code,
+                            );
+                        }
+                        primeContract(contract);
+                    }
                 }
+
+                if (migrated) {
+                    void syncWatchlist(list.id, contracts)
+                        .then(() => refreshLists())
+                        .catch(() =>
+                            notify({
+                                kind: 'err',
+                                title: '自選清單同步失敗',
+                                body: 'canonical 商品已載入，但與伺服器同步時發生錯誤',
+                            }),
+                        );
+                }
+            } finally {
+                if (loadSeq.current === seq) setLoading(false);
             }
-            if (loadSeq.current !== seq) return;
-            setItems(contracts.map((c) => ({ contract: c })));
-            attachSnapshots(contracts);
-            if (migrated) {
-                await syncWatchlist(list.id, contracts);
-                await refreshLists();
-            }
-            setLoading(false);
         },
         [subscribeContract, attachSnapshots, refreshLists],
     );
@@ -640,6 +690,25 @@ export function useWatchlist({
             if (timer) clearTimeout(timer);
         };
     }, [serverLists, loadList]);
+
+    useEffect(() => onWatchlistInvalidation((event) => {
+        void refreshLists().then((lists) => {
+            const active = lists.find((list) => list.id === activeIdRef.current);
+            if (
+                hydrateActiveList &&
+                watchlistInvalidationReloadsActiveList(event.listName, active)
+            ) {
+                return loadList(active!, {
+                    subscribeQuotes: subscribeActiveListQuotes,
+                });
+            }
+        }).catch(() => undefined);
+    }), [
+        hydrateActiveList,
+        loadList,
+        refreshLists,
+        subscribeActiveListQuotes,
+    ]);
 
     return {
         items,

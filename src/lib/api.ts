@@ -61,6 +61,40 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     return res.json() as Promise<T>;
 }
 
+export async function apiPostWithTimeout<T>(
+    path: string,
+    body: unknown,
+    timeoutMs: number,
+): Promise<T> {
+    assertRuntimeAllowsRequest(path, 'POST');
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const request = async () => {
+        const res = await doFetch(base() + path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+        if (!res.ok) await throwApiError(res);
+        return res.json() as Promise<T>;
+    };
+    try {
+        return await Promise.race([
+            request(),
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => {
+                    controller.abort();
+                    reject(new Error(`API POST 逾時 (${path})`));
+                }, timeoutMs);
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer!);
+        controller.abort();
+    }
+}
+
 export async function apiPut<T>(path: string, body: unknown): Promise<T> {
     assertRuntimeAllowsRequest(path, 'PUT');
     const res = await doFetch(base() + path, {

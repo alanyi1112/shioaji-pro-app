@@ -1,5 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { apiPostBounded, BoundedApiError } from './api';
+import {
+    apiPostBounded,
+    apiPostWithTimeout,
+    BoundedApiError,
+} from './api';
 vi.mock('./runtime', () => ({ isTauri: false, getApiBase: () => '' }));
 vi.mock('./runtime-mode', () => ({ assertRuntimeAllowsRequest: vi.fn() }));
 afterEach(() => vi.unstubAllGlobals());
@@ -22,4 +26,16 @@ it('preserves HTTP status and Retry-After for persistent caller cooldown', async
     const error = await apiPostBounded('/api/v1/data/ticks', {}, 100, 100).catch(value => value);
     expect(error).toBeInstanceOf(BoundedApiError);
     expect(error).toMatchObject({ status: 429, retryAfterMs: 45_000 });
+});
+it('aborts a stalled bounded POST at its deadline', async () => {
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+        signals.push(init?.signal as AbortSignal);
+        return new Promise<Response>(() => undefined);
+    }));
+
+    await expect(
+        apiPostWithTimeout('/api/v1/stream/subscribe', {}, 20),
+    ).rejects.toThrow('API POST 逾時');
+    expect(signals[0]?.aborted).toBe(true);
 });

@@ -181,6 +181,33 @@ function handleScanner(raw: string) {
 const sources = new Map<string, EventSource>();
 let marketStreamRefs = 0;
 
+/**
+ * Vite 開發環境以 HTTP/1.1 代理本機 API；主行情、合約事件與四條市場脈動
+ * SSE 若共用同一個 loopback origin，會吃滿 Chromium 的每站連線額度，讓
+ * 後續 K 線等 REST 請求永久排隊。將高扇出的市場脈動 SSE 放到等價的另一個
+ * loopback hostname，讓互動式資料請求保有可用連線。
+ *
+ * Tauri 與明確設定 VITE_API_BASE 的環境都有自己的 API base，不走此分流。
+ */
+export function marketPulseStreamBase(
+    apiBase = getApiBase(),
+    pageOrigin =
+        typeof location === 'undefined' ? '' : location.origin,
+    useDevProxy = import.meta.env.DEV,
+): string {
+    if (apiBase || !useDevProxy || !pageOrigin) return apiBase;
+    const url = new URL(pageOrigin);
+    const alternateHost =
+        url.hostname === '127.0.0.1'
+            ? 'localhost'
+            : url.hostname === 'localhost'
+              ? '127.0.0.1'
+              : null;
+    if (!alternateHost) return apiBase;
+    url.hostname = alternateHost;
+    return url.origin;
+}
+
 function ensureSource(
     channel: string,
     eventName: string,
@@ -189,7 +216,7 @@ function ensureSource(
 ) {
     if (sources.has(channel)) return;
     const source = new EventSource(
-        `${getApiBase()}/api/v1/stream/data/${channel}`,
+        `${marketPulseStreamBase()}/api/v1/stream/data/${channel}`,
     );
     source.addEventListener(eventName, (event) =>
         handler((event as MessageEvent).data),

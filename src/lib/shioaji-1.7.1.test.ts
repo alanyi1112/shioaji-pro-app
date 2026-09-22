@@ -7,6 +7,7 @@ import {
     parseIndustryContributionEvent,
     parseScannerMessage,
     scannerSignalKey,
+    marketPulseStreamBase,
 } from './market-pulse';
 import { buildContributionFlow } from './contribution-flow';
 import { scannerSubscriptionBody } from './shioaji';
@@ -30,6 +31,33 @@ describe('Shioaji 1.7.1 subscription payloads', () => {
             security_type: 'STK',
             exchange: 'TSE',
         });
+    });
+});
+
+describe('市場脈動開發環境串流連線預算', () => {
+    it('將 Vite loopback SSE 分流到等價的另一個 hostname', () => {
+        expect(
+            marketPulseStreamBase('', 'http://127.0.0.1:5173', true),
+        ).toBe('http://localhost:5173');
+        expect(
+            marketPulseStreamBase('', 'http://localhost:5173', true),
+        ).toBe('http://127.0.0.1:5173');
+    });
+
+    it('不改寫明確 API base、非 loopback 或非開發環境', () => {
+        expect(
+            marketPulseStreamBase(
+                'http://127.0.0.1:21322',
+                'http://127.0.0.1:5173',
+                true,
+            ),
+        ).toBe('http://127.0.0.1:21322');
+        expect(
+            marketPulseStreamBase('', 'http://192.168.1.20:5173', true),
+        ).toBe('');
+        expect(
+            marketPulseStreamBase('', 'http://127.0.0.1:5173', false),
+        ).toBe('');
     });
 });
 
