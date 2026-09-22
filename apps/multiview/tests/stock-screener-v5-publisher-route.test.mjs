@@ -8,9 +8,13 @@ import { chipDownloadDecision, chipRetryAfter } from '../worker/stock-screener-c
 import { publishScreenerV5Snapshot } from '../worker/stock-screener-v5-repository.ts';
 import { handleStockScreener } from '../worker/stock-screener-route.ts';
 import { parseScreenerV5Query } from '../worker/stock-screener-v5-route.ts';
+import { parseScreenerV6Query } from '../worker/stock-screener-v6-route.ts';
+import { publishScreenerV6Snapshot } from '../worker/stock-screener-v6-repository.ts';
+import { readScreenerV5Snapshot } from '../worker/stock-screener-v5-repository.ts';
+import { publishPreparedScreenerV6 } from '../worker/stock-screener-v6-publisher.ts';
 
 const migrations = await Promise.all(['0027_pale_randall_flagg.sql', '0028_early_sir_ram.sql', '0029_plain_strong_guy.sql',
-  '0031_screener_ohlcv_v4.sql', '0032_screener_chip_v5.sql']
+  '0031_screener_ohlcv_v4.sql', '0032_screener_chip_v5.sql', '0033_screener_institutional_reversal_v6.sql']
   .map((name) => readFile(new URL(`../drizzle/${name}`, import.meta.url), 'utf8')));
 const setup = () => { const db = new SqliteD1(); migrations.forEach((migration) => applyDrizzleSql(db, migration)); return db; };
 const sessions = Array.from({ length: 130 }, (_, index) => new Date(Date.UTC(2026, 3, 26) + index * 86400000).toISOString().slice(0, 10));
@@ -100,6 +104,7 @@ test('chip collector 重跑相同內容為冪等，來源內容變更才新增 r
     assert.equal((await collectScreenerChipSession(db, '2026-09-11', { payloads, refreshVerified: true })).state, 'complete');
     assert.equal((await collectScreenerChipSession(db, '2026-09-11', { payloads })).state, 'complete');
     assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM screener_chip_receipts').first()).n, 4);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM screener_institutional_mapping_verifications WHERE status='verified'").first()).n, 2);
     assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM screener_chip_runs WHERE status='complete'").first()).n, 2);
     const corrected = structuredClone(payloads);
     corrected['TWSE:institutional-flow'].data[0][7] = 901;
@@ -130,5 +135,56 @@ test('v5 GET reads immutable snapshot without database writes', async () => {
     assert.equal(body.rows[0].chipV5.outcomes.closeHigh.verdict, 'pass');
     assert.equal(body.counts.matched + body.counts.notMatched + body.counts.unknown, body.counts.total);
     assert.equal((await db.prepare('SELECT total_changes() AS n').first()).n, before);
+  } finally { db.close(); }
+});
+
+test('v6 query 驗證參與率邊界且 GET 只讀 immutable snapshot', async () => {
+  const db = setup();
+  try {
+    await seedV5(db);
+    const base = await readScreenerV5Snapshot(db);
+    const required = base.metadata.dailySessions.slice(-21);
+    const daily = required.map((sessionDate, index) => ({ sessionDate,
+      foreignNetShares: index >= 17 && index <= 19 ? '-200000' : index === 20 ? '1500000' : '0',
+      investmentTrustNetShares: index >= 17 && index <= 19 ? '-200000' : index === 20 ? '600000' : '0',
+      close: index === 20 ? '20' : '10', volumeShares: index === 20 ? '5000000' : '1000000',
+      institutionalReceiptId: `receipt-${index}`, institutionalMappingVersion: 'official-market-institutional-v2' }));
+    const raw = { dailySessions: required, daily, issuedCommonShares: { ...base.inputs[0].chipV5.issuedCommonShares },
+      dailyThrough: required.at(-1), mappingVersion: 'official-market-institutional-v2' };
+    const input = { ...base.inputs[0], institutionalV6: { ...raw, evidenceHash: await technicalEvidenceHash(raw) } };
+    const coverage = { targetDates: 21, verifiedDates: 21, targetRows: 21, verifiedRows: 21,
+      missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: required.at(-1) };
+    const metadata = { ...base.metadata, version: 6, schemaVersion: 6,
+      formulaVersion: 'after-market-v6-institutional-reversal-1', sourceMappingVersion: 'official-market-institutional-v2',
+      baseSnapshotId: base.id, receiptsHash: 'e'.repeat(64), institutionalCoverage: { TWSE: coverage, TPEx: { ...coverage, targetRows: 0, verifiedRows: 0 } } };
+    const snapshotId = await publishScreenerV6Snapshot(db, metadata, [input], new Date('2026-09-14T00:00:01Z'));
+    await assert.rejects(() => publishScreenerV6Snapshot(db, { ...metadata, receiptsHash: 'f'.repeat(64) },
+      [{ ...input, institutionalV6: { ...input.institutionalV6, evidenceHash: '0'.repeat(64) } }], new Date('2026-09-14T00:00:02Z')),
+    /invalid_evidence_hash/);
+    assert.equal((await db.prepare("SELECT snapshot_id FROM screener_chip_publication_head WHERE name='v6'").first()).snapshot_id, snapshotId);
+    assert.throws(() => parseScreenerV6Query(new URLSearchParams('version=6&volume=false&holder=false&fractal=false&bollReversal=false&ma=false&divergence=false&foreignReversalEnabled=true&trustReversalMinimumParticipationPct=15&trustReversalMaximumParticipationPct=1')), /invalid_query/);
+    const before = (await db.prepare('SELECT total_changes() AS n').first()).n;
+    const query = 'version=6&volume=false&holder=false&fractal=false&bollReversal=false&ma=false&divergence=false&foreignReversalEnabled=true&sort=foreignTodayNetBuy&direction=desc&resultState=pass&limit=50';
+    const response = await handleStockScreener(new Request(`http://127.0.0.1/api/stock-screener/results?${query}`),
+      { DB: db, DEPLOYMENT_TARGET: 'local' }, new Date('2000-01-01T00:00:00Z'));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.version, 6); assert.equal(body.snapshotId, snapshotId); assert.equal(body.rows.length, 1);
+    assert.equal(body.rows[0].institutionalV6.outcomes.foreignReversal.verdict, 'pass');
+    assert.equal(body.rows[0].institutionalV6.outcomes.foreignReversal.evidence.today.sessionDate, required.at(-1));
+    assert.equal((await db.prepare('SELECT total_changes() AS n').first()).n, before);
+  } finally { db.close(); }
+});
+
+test('v6 publisher 不以單一商品或舊 v5 snapshot 代替兩市場 21 日 mapping coverage', async () => {
+  const db = setup();
+  try {
+    await seedV5(db);
+    const result = await publishPreparedScreenerV6(db);
+    assert.deepEqual(result, { state: 'pending', reason: 'institutional_v2_history_pending',
+      coverage: {
+        TWSE: { targetDates: 21, verifiedDates: 0, targetRows: 0, verifiedRows: 0, missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: null },
+        TPEx: { targetDates: 21, verifiedDates: 0, targetRows: 0, verifiedRows: 0, missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: null },
+      }, progress: { target: 42, processed: 0 } });
   } finally { db.close(); }
 });

@@ -9,6 +9,7 @@ import { readScreenerFreshness } from "./stock-screener-session-readiness.ts";
 import { handleStockScreenerV3 } from "./stock-screener-v3-route.ts";
 import { handleStockScreenerV4 } from "./stock-screener-v4-route.ts";
 import { handleStockScreenerV5 } from "./stock-screener-v5-route.ts";
+import { handleStockScreenerV6 } from "./stock-screener-v6-route.ts";
 
 const prefix = "/api/stock-screener";
 const allowedKeys = new Set(["version", "mode", "volume", "volumeThreshold", "volumeTurnover", "volumeTurnoverMinimumWan",
@@ -79,6 +80,7 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
   if (env.DEPLOYMENT_TARGET !== "local" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return response({ reason: "local_only" }, 404);
   if (request.method !== "GET") return response({ reason: "method_not_allowed" }, 405);
   if (![`${prefix}/status`, `${prefix}/results`].includes(url.pathname)) return response({ reason: "route_not_allowed" }, 404);
+  if (url.searchParams.get("version") === "6") return handleStockScreenerV6(url, env, now);
   if (url.searchParams.get("version") === "5") return handleStockScreenerV5(url, env, now);
   if (url.searchParams.get("version") === "4") return handleStockScreenerV4(url, env, now);
   if (url.searchParams.get("version") === "3") return handleStockScreenerV3(url, env, now);

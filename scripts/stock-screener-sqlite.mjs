@@ -4,7 +4,7 @@ import { lstatSync, realpathSync } from 'node:fs';
 
 const TABLES = new Set(['screener_universe', 'screener_daily_volume', 'screener_daily_ohlcv', 'screener_tdcc_weekly',
     'screener_runs', 'screener_snapshots', 'screener_snapshot_rows', 'screener_chip_runs', 'screener_chip_receipts',
-    'screener_chip_daily', 'screener_chip_publication_head']);
+    'screener_chip_daily', 'screener_chip_publication_head', 'screener_institutional_mapping_verifications']);
 class Statement {
     constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
     bind(...args) { this.args = args; return this; }

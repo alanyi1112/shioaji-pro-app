@@ -13,10 +13,12 @@ describe('選股 allowlist 不接觸 broker', () => {
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=3' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=3');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=4' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=4');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=5' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=5');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=6' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=6');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=6&foreignReversalEnabled=true&foreignReversalSellStreakDays=3&foreignReversalTodayNetBuyMinimumLots=1000' })?.url).toContain('foreignReversalEnabled=true');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/v1/contracts' })).toBeNull();
         for (const extra of [
             { method: 'POST' }, { url: '/api/stock-screener/delete' }, { url: '/api/stock-screener/results?url=http://evil' },
-            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=6' },
+            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=7' },
             { url: '/api/stock-screener/results?limit=101' }, { url: '/api/stock-screener/results?limit=1&limit=2' },
             { headers: { host: 'example.com' } }, { headers: { ...req.headers, origin: 'https://evil.example' } },
         ]) expect(validateScreenerGatewayRequest({ ...req, ...extra })?.reason).toBeTruthy();

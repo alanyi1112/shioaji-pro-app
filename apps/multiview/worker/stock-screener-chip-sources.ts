@@ -1,4 +1,5 @@
 import type { ScreenerMarket, UniverseStock } from "../../../src/lib/stock-screener-domain.ts";
+import { SCREENER_INSTITUTIONAL_MAPPING_VERSION } from "../../../src/lib/stock-screener-v6.ts";
 import {
   emptyDaily,
   normalizeTpexInstitutionalLatest, normalizeTpexMarginLatest,
@@ -28,6 +29,7 @@ export function screenerChipSourceUrl(market: ScreenerMarket, dataset: ScreenerC
 
 export interface CanonicalScreenerChipRow {
   symbol: string; market: ScreenerMarket; sessionDate: string;
+  foreignBuyShares: string | null; foreignSellShares: string | null; foreignNetShares: string | null;
   investmentTrustBuyShares: string | null; investmentTrustSellShares: string | null; investmentTrustNetShares: string | null;
   marginYesterdayBalanceLots: string | null; marginTodayBalanceLots: string | null; marginBalanceChangeLots: string | null;
   shortYesterdayBalanceLots: string | null; shortTodayBalanceLots: string | null; shortBalanceChangeLots: string | null;
@@ -46,7 +48,8 @@ const reportDate = (value: unknown) => {
   return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6)}`;
 };
 const empty = (stock: UniverseStock, date: string): CanonicalScreenerChipRow => ({ symbol: stock.symbol, market: stock.market,
-  sessionDate: date, investmentTrustBuyShares: null, investmentTrustSellShares: null, investmentTrustNetShares: null,
+  sessionDate: date, foreignBuyShares: null, foreignSellShares: null, foreignNetShares: null,
+  investmentTrustBuyShares: null, investmentTrustSellShares: null, investmentTrustNetShares: null,
   marginYesterdayBalanceLots: null, marginTodayBalanceLots: null, marginBalanceChangeLots: null,
   shortYesterdayBalanceLots: null, shortTodayBalanceLots: null, shortBalanceChangeLots: null });
 
@@ -79,7 +82,8 @@ function normalizeTpexHistorical(payload: unknown, stock: UniverseStock, dataset
   const row = emptyDaily(stock.symbol, requestedDate);
   if (dataset === "institutional-flow") {
     row.institutionalFlow = {
-      foreignBuyShares: null, foreignSellShares: null, foreignNetShares: null,
+      // TPEx 歷史表第 8–10 欄（zero-based）是「外資及陸資合計」群組；11–13 才是投信。
+      foreignBuyShares: numeric(source[8]), foreignSellShares: numeric(source[9]), foreignNetShares: numeric(source[10]),
       investmentTrustBuyShares: numeric(source[11]), investmentTrustSellShares: numeric(source[12]), investmentTrustNetShares: numeric(source[13]),
       dealerSelfNetShares: null, dealerHedgingNetShares: null, dealerTotalNetShares: null,
       institutionalTotalNetShares: null, sourceTotalNetShares: numeric(source[23]), sourceTotalVerified: null,
@@ -128,9 +132,16 @@ export function parseOfficialChipBatch(payload: unknown, market: ScreenerMarket,
     const row = empty(stock, requestedDate);
     if (dataset === "institutional-flow") {
       if (!candidate.institutionalFlow) { invalid[stock.symbol] = "missing_institutional_flow"; continue; }
+      row.foreignBuyShares = integer(candidate.institutionalFlow.foreignBuyShares);
+      row.foreignSellShares = integer(candidate.institutionalFlow.foreignSellShares);
+      row.foreignNetShares = integer(candidate.institutionalFlow.foreignNetShares);
       row.investmentTrustBuyShares = integer(candidate.institutionalFlow.investmentTrustBuyShares);
       row.investmentTrustSellShares = integer(candidate.institutionalFlow.investmentTrustSellShares);
       row.investmentTrustNetShares = integer(candidate.institutionalFlow.investmentTrustNetShares);
+      if (row.foreignBuyShares === null || row.foreignSellShares === null || row.foreignNetShares === null
+        || BigInt(row.foreignBuyShares) - BigInt(row.foreignSellShares) !== BigInt(row.foreignNetShares)) {
+        invalid[stock.symbol] = "invalid_foreign_totals"; continue;
+      }
       if (row.investmentTrustBuyShares === null || row.investmentTrustSellShares === null || row.investmentTrustNetShares === null
         || BigInt(row.investmentTrustBuyShares) - BigInt(row.investmentTrustSellShares) !== BigInt(row.investmentTrustNetShares)) {
         invalid[stock.symbol] = "invalid_investment_trust_totals"; continue;
@@ -154,7 +165,8 @@ export function parseOfficialChipBatch(payload: unknown, market: ScreenerMarket,
   }
   if (!rows.length) throw new Error("empty_report");
   return { market, dataset, requestedDate, sourceDate: requestedDate, rows, target: eligible.length, missing, invalid,
-    normalizationVersion: SCREENER_CHIP_NORMALIZATION_VERSION };
+    normalizationVersion: SCREENER_CHIP_NORMALIZATION_VERSION,
+    institutionalMappingVersion: dataset === "institutional-flow" ? SCREENER_INSTITUTIONAL_MAPPING_VERSION : null };
 }
 
 export async function chipPayloadHash(payload: unknown) {

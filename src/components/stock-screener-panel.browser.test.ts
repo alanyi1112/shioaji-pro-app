@@ -98,6 +98,7 @@ afterEach(async () => {
     localStorage.removeItem('sj-pro-stock-screener-v3');
     localStorage.removeItem('sj-pro-stock-screener-v4');
     localStorage.removeItem('sj-pro-stock-screener-v5');
+    localStorage.removeItem('sj-pro-stock-screener-v6');
 });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === text)!;
 async function openCondition(host: HTMLElement, group: 'basic' | 'technical' | 'chip', condition: string) {
@@ -403,7 +404,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(host.textContent).toContain('均線糾結 P／D 證據'); expect(host.textContent).toContain('背離 pivot／指標證據');
         expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v4')!).query.criteria.divergence.requireZeroReset).toBe(true);
     });
-    it('長線佈局只更新草稿，提交 v5 後呈現籌碼覆蓋與可展開 evidence', async () => {
+    it('長線佈局只更新草稿，提交 v5 後呈現籌碼覆蓋並保存 v6 偏好', async () => {
         const { host, fetcher } = await mount();
         await act(async () => button(host, '套用「長線佈局」草稿').click());
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用千張大戶比例趨勢"]')!.checked).toBe(true);
@@ -417,7 +418,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(host.textContent).toContain('籌碼覆蓋：TDCC 1/1');
         expect(host.textContent).toContain('千張大戶比例趨勢：符合');
         expect(host.textContent).toContain('千張大戶比例趨勢證據');
-        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v5')!).version).toBe(5);
+        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v6')!).version).toBe(6);
         button(host, '開始篩選').focus(); expect(document.activeElement).toBe(button(host, '開始篩選'));
         const pane = host.querySelector<HTMLElement>('[data-testid="stock-screener-panel"]')!;
         expect(pane.scrollWidth).toBeLessThanOrEqual(pane.clientWidth + 1);
@@ -431,7 +432,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(basic.getAttribute('aria-expanded')).toBe('true');
         expect(basic.textContent).toContain('2 / 2');
         expect(technical.textContent).toContain('0 / 6');
-        expect(chip.textContent).toContain('0 / 6');
+        expect(chip.textContent).toContain('0 / 8');
         expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
         expect(host.querySelector('fieldset[aria-label="成交量 ≥ 前一交易日設定"]')).not.toBeNull();
 
@@ -468,6 +469,35 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         await openCondition(host, 'chip', 'largeHolderTrend');
         await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用千張大戶比例趨勢"]')!.click());
         expect(host.querySelector<HTMLInputElement>('[aria-label="千張大戶最低比例"]')!.value).toBe('12.5');
+    });
+
+    it('法人反轉條件預設收合、參數可調、送出 v6 且全部取消涵蓋兩項', async () => {
+        const { host, fetcher } = await mount();
+        await act(async () => button(host, '全部取消').click());
+        await openCondition(host, 'chip', 'foreignReversal');
+        const foreignEnabled = host.querySelector<HTMLInputElement>('[aria-label="啟用外資連賣後轉買與爆量換手"]')!;
+        expect(foreignEnabled.checked).toBe(false);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="外資今日最低買超張數"]')!.value).toBe('1000');
+        await act(async () => foreignEnabled.click());
+        const foreignLots = host.querySelector<HTMLInputElement>('[aria-label="外資今日最低買超張數"]')!;
+        await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(foreignLots, '1200'); foreignLots.dispatchEvent(new Event('input', { bubbles: true })); });
+        await openCondition(host, 'chip', 'trustReversal');
+        const trustEnabled = host.querySelector<HTMLInputElement>('[aria-label="啟用投信連賣後轉買與爆量換手"]')!;
+        await act(async () => trustEnabled.click());
+        expect(host.textContent).toContain('這是當日流量占比，不是投信持股比例');
+        expect(host.querySelector<HTMLInputElement>('[aria-label="投信最低回補強度百分比"]')!.value).toBe('50');
+        await act(async () => button(host, '開始篩選').click());
+        const request = new URL(String(fetcher.mock.calls.at(-1)?.[0]), location.href);
+        expect(request.searchParams.get('version')).toBe('6');
+        expect(request.searchParams.get('foreignReversalTodayNetBuyMinimumLots')).toBe('1200');
+        expect(request.searchParams.get('trustReversalMinimumParticipationPct')).toBe('1');
+        expect(request.searchParams.get('trustReversalMaximumParticipationPct')).toBe('15');
+        await act(async () => button(host, '全部取消').click());
+        await openCondition(host, 'chip', 'foreignReversal');
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用外資連賣後轉買與爆量換手"]')!.checked).toBe(false);
+        await openCondition(host, 'chip', 'trustReversal');
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用投信連賣後轉買與爆量換手"]')!.checked).toBe(false);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="投信最低回補強度百分比"]')!.value).toBe('50');
     });
 
     it('資料警告常駐，完整證據預設收合且可由鍵盤展開', async () => {

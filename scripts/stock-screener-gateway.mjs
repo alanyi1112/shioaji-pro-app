@@ -9,11 +9,21 @@ const keys = new Set(['version','mode','volume','volumeThreshold','volumeTurnove
     'largeHolderConcentrationEnabled','largeHolderConcentrationWeeks','retailHolderDeclineEnabled','retailHolderDeclineWeeks',
     'trustOwnershipEnabled','trustOwnershipDays','trustOwnershipMinimumPct','priceMarginEnabled','priceMarginDays',
     'shortMarginRatioEnabled','shortMarginRatioMinimumPct','closeHighEnabled','closeHighDays','closeSmaBreakoutEnabled','closeSmaBreakoutPeriod',
+    'foreignReversalEnabled','foreignReversalSellStreakDays','foreignReversalTodayNetBuyMinimumLots','foreignReversalMinimumTurnoverPct',
+    'foreignReversalComparisonDays','foreignReversalTurnoverMultiple','foreignReversalMaPeriod','foreignReversalLiquidityDays','foreignReversalMinimumAverageVolumeLots',
+    'trustReversalEnabled','trustReversalSellStreakDays','trustReversalTodayNetBuyMinimumLots','trustReversalMinimumTurnoverPct',
+    'trustReversalComparisonDays','trustReversalTurnoverMultiple','trustReversalMaPeriod','trustReversalLiquidityDays','trustReversalMinimumAverageVolumeLots',
+    'trustReversalMinimumRecoveryPct','trustReversalMinimumParticipationPct','trustReversalMaximumParticipationPct',
     'sort','direction','resultState','limit','cursor']);
 
-const requestedVersion = (url) => url.searchParams.get('version') === '5' ? 5 : url.searchParams.get('version') === '4' ? 4 : url.searchParams.get('version') === '3' ? 3 : 2;
+const requestedVersion = (url) => url.searchParams.get('version') === '6' ? 6 : url.searchParams.get('version') === '5' ? 5 : url.searchParams.get('version') === '4' ? 4 : url.searchParams.get('version') === '3' ? 3 : 2;
 
-const unavailablePayload = (version) => version === 5
+const unavailablePayload = (version) => version === 6
+    ? { version: 6, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
+        universeRevision: null, formulaVersion: 'after-market-v6-institutional-reversal-1', sourceMappingVersion: 'official-market-institutional-v2', criteriaFingerprint: null,
+        expectedSessionDate: null, effectiveSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
+        technicalAnchors: null, counts: null, byMarket: null, preparation: null, chipCoverage: null, institutionalCoverage: null, chipHealth: null, rows: [], nextCursor: null }
+    : version === 5
     ? { version: 5, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
         universeRevision: null, formulaVersion: 'after-market-v5-chip-price-1', sourceMappingVersion: 'official-market-chip-v1', criteriaFingerprint: null,
         expectedSessionDate: null, effectiveSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
@@ -47,7 +57,7 @@ export function validateScreenerGatewayRequest(req) {
     if (req.headers['sec-fetch-site'] === 'cross-site') return { status: 403, reason: 'same_origin_required' };
     const version = url.searchParams.get('version');
     if (raw.length > 4096 || [...url.searchParams.keys()].some((key) => !keys.has(key) || url.searchParams.getAll(key).length !== 1)
-        || version !== null && version !== '2' && version !== '3' && version !== '4' && version !== '5'
+        || version !== null && version !== '2' && version !== '3' && version !== '4' && version !== '5' && version !== '6'
         || url.pathname.endsWith('/status') && [...url.searchParams.keys()].some((key) => key !== 'version')
         || url.searchParams.has('limit') && (!/^\d{1,3}$/.test(url.searchParams.get('limit')) || Number(url.searchParams.get('limit')) < 1 || Number(url.searchParams.get('limit')) > 100)) return { status: 400, reason: 'invalid_query' };
     return { url: `${TARGET}${url.pathname}${url.search}`, version: requestedVersion(url) };

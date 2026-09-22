@@ -6,15 +6,42 @@ import { parseOfficialChipBatch, screenerChipSourceUrl } from "../worker/stock-s
 const stock = (market) => ({ code: "2330", symbol: `2330.${market === "TWSE" ? "TW" : "TWO"}`, name: "測試",
   market, kind: "ordinary", listingDate: "1994-09-05" });
 
-test("TWSE T86 全市場 parser 驗證 report date 與投信買賣超", () => {
+test("TWSE T86 全市場 parser 驗證 report date、外資組成與投信買賣超", () => {
   const fields = ["證券代號","外陸資買進股數(不含外資自營商)","外陸資賣出股數(不含外資自營商)","外陸資買賣超股數(不含外資自營商)",
     "外資自營商買進股數","外資自營商賣出股數","外資自營商買賣超股數","投信買進股數","投信賣出股數","投信買賣超股數",
     "自營商買賣超股數","自營商買賣超股數(自行買賣)","自營商買賣超股數(避險)","三大法人買賣超股數"];
   const parsed = parseOfficialChipBatch({ stat: "OK", date: "20260911", fields, data: [["2330",10,5,5,0,0,0,900,600,300,0,0,0,305]] },
     "TWSE", "institutional-flow", "2026-09-11", [stock("TWSE")], "2026-09-11T08:00:00Z");
   assert.equal(parsed.rows[0].investmentTrustNetShares, "300");
+  assert.equal(parsed.rows[0].foreignBuyShares, "10");
+  assert.equal(parsed.rows[0].foreignSellShares, "5");
+  assert.equal(parsed.rows[0].foreignNetShares, "5");
+  assert.equal(parsed.institutionalMappingVersion, "official-market-institutional-v2");
   assert.throws(() => parseOfficialChipBatch({ stat: "OK", date: "20260910", fields, data: [["2330",10,5,5,0,0,0,900,600,300,0,0,0,305]] },
     "TWSE", "institutional-flow", "2026-09-11", [stock("TWSE")], "2026-09-11T08:00:00Z"), /report_date_mismatch/);
+});
+
+test("TWSE 外資任一分組淨額不一致時 fail closed", () => {
+  const fields = ["證券代號","外陸資買進股數(不含外資自營商)","外陸資賣出股數(不含外資自營商)","外陸資買賣超股數(不含外資自營商)",
+    "外資自營商買進股數","外資自營商賣出股數","外資自營商買賣超股數","投信買進股數","投信賣出股數","投信買賣超股數",
+    "自營商買賣超股數","自營商買賣超股數(自行買賣)","自營商買賣超股數(避險)","三大法人買賣超股數"];
+  assert.throws(() => parseOfficialChipBatch({ stat: "OK", date: "20260911", fields,
+    data: [["2330",10,5,999,0,0,0,900,600,300,0,0,0,305]] }, "TWSE", "institutional-flow", "2026-09-11",
+  [stock("TWSE")], "2026-09-11T08:00:00Z"), /empty_report/);
+});
+
+test("法人 parser 對表頭漂移、重複商品與非法整數 fail closed", () => {
+  const fields = ["證券代號","外陸資買進股數(不含外資自營商)","外陸資賣出股數(不含外資自營商)","外陸資買賣超股數(不含外資自營商)",
+    "外資自營商買進股數","外資自營商賣出股數","外資自營商買賣超股數","投信買進股數","投信賣出股數","投信買賣超股數",
+    "自營商買賣超股數","自營商買賣超股數(自行買賣)","自營商買賣超股數(避險)","三大法人買賣超股數"];
+  const row = ["2330",10,5,5,0,0,0,900,600,300,0,0,0,305];
+  assert.throws(() => parseOfficialChipBatch({ stat: "OK", date: "20260911", fields: fields.filter((field) => field !== "外資自營商買進股數"), data: [row] },
+    "TWSE", "institutional-flow", "2026-09-11", [stock("TWSE")], "2026-09-11T08:00:00Z"), /empty_report/);
+  assert.throws(() => parseOfficialChipBatch({ stat: "OK", date: "20260911", fields, data: [row, row] },
+    "TWSE", "institutional-flow", "2026-09-11", [stock("TWSE")], "2026-09-11T08:00:00Z"), /duplicate_security/);
+  const decimal = [...row]; decimal[1] = "10.5";
+  assert.throws(() => parseOfficialChipBatch({ stat: "OK", date: "20260911", fields, data: [decimal] },
+    "TWSE", "institutional-flow", "2026-09-11", [stock("TWSE")], "2026-09-11T08:00:00Z"), /empty_report/);
 });
 
 test("TPEx 信用交易 parser 保留張數並拒絕負餘額", () => {
@@ -45,5 +72,16 @@ test("四份去識別化契約 fixture 都能依市場與資料集解析", async
     const payload = JSON.parse(await readFile(new URL(name, directory), 'utf8'));
     const parsed = parseOfficialChipBatch(payload, market, dataset, '2026-09-11', [stock(market)], '2026-09-11T08:00:00Z');
     assert.equal(parsed.rows.length, 1); assert.equal(parsed.rows[0].sessionDate, '2026-09-11');
+    if (dataset === 'institutional-flow') {
+      assert.equal(parsed.rows[0].foreignNetShares, '5');
+      assert.equal(parsed.rows[0].investmentTrustNetShares, '300');
+    }
   }
+});
+
+test("TPEx 歷史法人外資合計淨額不一致時拒絕新 mapping", async () => {
+  const payload = JSON.parse(await readFile(new URL('./fixtures/screener-chip-v5/tpex-institutional.json', import.meta.url), 'utf8'));
+  payload.tables[0].data[0][10] = '999';
+  assert.throws(() => parseOfficialChipBatch(payload, 'TPEx', 'institutional-flow', '2026-09-11', [stock('TPEx')],
+    '2026-09-11T08:00:00Z'), /empty_report/);
 });

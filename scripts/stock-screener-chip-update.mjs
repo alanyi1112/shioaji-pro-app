@@ -1,19 +1,26 @@
 #!/usr/bin/env node
-/** 本機全市場籌碼維護；只寫 screener_chip_* 與 v5 immutable snapshot，不碰 broker、行情或個人清單。 */
+/** 本機全市場籌碼維護；只寫 screener_chip_* 與 v5/v6 immutable snapshot，不碰 broker、行情或個人清單。 */
 import { pathToFileURL } from 'node:url';
 import { ScreenerSqlite } from './stock-screener-sqlite.mjs';
 import { readScreenerV4Snapshot } from '../apps/multiview/worker/stock-screener-v4-repository.ts';
 import { collectScreenerChipSession } from '../apps/multiview/worker/stock-screener-chip-collector.ts';
 import { publishPreparedScreenerV5 } from '../apps/multiview/worker/stock-screener-v5-publisher.ts';
+import { publishPreparedScreenerV6 } from '../apps/multiview/worker/stock-screener-v6-publisher.ts';
+import { SCREENER_INSTITUTIONAL_MAPPING_VERSION } from '../src/lib/stock-screener-v6.ts';
 import { chipDownloadDecision } from '../apps/multiview/worker/stock-screener-chip-policy.ts';
 
 export async function updateScreenerChip(db, { limit = 1, publishOnly = false, fetcher = fetch } = {}) {
   const base = await readScreenerV4Snapshot(db);
   if (!base) return { state: 'pending', reason: 'v4_snapshot_pending' };
   const required = base.metadata.technicalAnchors.sessions.slice(-21);
-  const receipts = (await db.prepare(`SELECT requested_date,market,dataset,status FROM screener_chip_receipts
-    WHERE requested_date>=? AND requested_date<=?`).bind(required[0], required.at(-1)).all()).results ?? [];
-  const verified = new Set(receipts.filter(row => row.status === 'verified').map(row => `${row.requested_date}|${row.market}|${row.dataset}`));
+  const receipts = (await db.prepare(`SELECT r.requested_date,r.market,r.dataset,r.status,
+      MAX(CASE WHEN v.mapping_version=? AND v.status='verified' THEN 1 ELSE 0 END) AS mapping_verified
+    FROM screener_chip_receipts r LEFT JOIN screener_institutional_mapping_verifications v ON v.receipt_id=r.id
+    WHERE r.requested_date>=? AND r.requested_date<=? GROUP BY r.id`)
+    .bind(SCREENER_INSTITUTIONAL_MAPPING_VERSION, required[0], required.at(-1)).all()).results ?? [];
+  const verified = new Set(receipts.filter(row => row.status === 'verified'
+    && (row.dataset !== 'institutional-flow' || Number(row.mapping_verified) === 1))
+    .map(row => `${row.requested_date}|${row.market}|${row.dataset}`));
   const pending = required.filter(date => ['TWSE','TPEx'].some(market => ['institutional-flow','margin-short']
     .some(dataset => !verified.has(`${date}|${market}|${dataset}`))));
   const collected = [];
@@ -40,14 +47,20 @@ export async function updateScreenerChip(db, { limit = 1, publishOnly = false, f
     collected.push(await collectScreenerChipSession(db, date, { fetcher }));
     if (pending.length > 1) await new Promise(resolve => setTimeout(resolve, 500));
   }
-  const afterRows = (await db.prepare(`SELECT requested_date,market,dataset,status FROM screener_chip_receipts
-    WHERE requested_date>=? AND requested_date<=?`).bind(required[0], required.at(-1)).all()).results ?? [];
-  const afterVerified = new Set(afterRows.filter(row => row.status === 'verified').map(row => `${row.requested_date}|${row.market}|${row.dataset}`));
+  const afterRows = (await db.prepare(`SELECT r.requested_date,r.market,r.dataset,r.status,
+      MAX(CASE WHEN v.mapping_version=? AND v.status='verified' THEN 1 ELSE 0 END) AS mapping_verified
+    FROM screener_chip_receipts r LEFT JOIN screener_institutional_mapping_verifications v ON v.receipt_id=r.id
+    WHERE r.requested_date>=? AND r.requested_date<=? GROUP BY r.id`)
+    .bind(SCREENER_INSTITUTIONAL_MAPPING_VERSION, required[0], required.at(-1)).all()).results ?? [];
+  const afterVerified = new Set(afterRows.filter(row => row.status === 'verified'
+    && (row.dataset !== 'institutional-flow' || Number(row.mapping_verified) === 1))
+    .map(row => `${row.requested_date}|${row.market}|${row.dataset}`));
   const remaining = required.filter(date => ['TWSE','TPEx'].some(market => ['institutional-flow','margin-short']
     .some(dataset => !afterVerified.has(`${date}|${market}|${dataset}`)))).length;
-  const publication = await publishPreparedScreenerV5(db);
-  return { state: publication.state, requiredSessions: required.length, remainingSessions: remaining,
-    collected, publication };
+  const v5 = await publishPreparedScreenerV5(db);
+  const v6 = await publishPreparedScreenerV6(db);
+  return { state: v6.state, requiredSessions: required.length, remainingSessions: remaining,
+    collected, publication: { v5, v6 } };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

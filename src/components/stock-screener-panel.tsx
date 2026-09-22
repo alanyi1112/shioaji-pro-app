@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_CRITERIA, effectiveCriteria, validateCriteria, type Criteria, type HolderMode, type ReasonCode, type UniverseStock } from '../lib/stock-screener-domain';
-import { decodeScreenerResponse, screenerSearchV3, screenerSearchV4, screenerSearchV5, type ScreenerQuery, type ScreenerQueryV3,
-    type ScreenerQueryV4, type ScreenerQueryV5, type ScreenerResponseV3, type ScreenerResponseV4, type ScreenerResponseV5,
-    type ScreenerResultRowV4, type ScreenerResultRowV5 } from '../lib/stock-screener-api';
+import { decodeScreenerResponse, screenerSearchV3, screenerSearchV4, screenerSearchV5, screenerSearchV6, type ScreenerQuery, type ScreenerQueryV3,
+    type ScreenerQueryV4, type ScreenerQueryV5, type ScreenerQueryV6, type ScreenerResponseV3, type ScreenerResponseV4, type ScreenerResponseV5,
+    type ScreenerResponseV6, type ScreenerResultRowV4, type ScreenerResultRowV5, type ScreenerResultRowV6 } from '../lib/stock-screener-api';
 import {
     DEFAULT_CRITERIA_V3, isV3Preference,
     type TechnicalUnknownReason,
@@ -13,8 +13,12 @@ import {
 } from '../lib/stock-screener-v4';
 import {
     LONG_TERM_LAYOUT_PRESET, criteriaFingerprintV5, effectiveCriteriaV5, isV5Preference, migrateCriteriaV4ToV5,
-    validateCriteriaV5, type ChipConditionKey, type CriteriaV5, type V5Reason,
+    type ChipConditionKey, type V5Reason,
 } from '../lib/stock-screener-v5';
+import {
+    criteriaFingerprintV6, effectiveCriteriaV6, isV6Preference, migrateCriteriaV5ToV6, validateCriteriaV6,
+    type CriteriaV6, type V6Reason,
+} from '../lib/stock-screener-v6';
 import type { ScreenerWatchlistResult } from '../lib/stock-screener-watchlist';
 import { stockScreenerVolumeComparison } from '../lib/stock-screener-volume-comparison';
 import {
@@ -25,12 +29,13 @@ import {
 import { StockScreenerConditionAccordion } from './stock-screener-condition-accordion';
 import * as styles from './stock-screener-panel.css';
 
-const PREFS = 'sj-pro-stock-screener-v5';
+const PREFS = 'sj-pro-stock-screener-v6';
+const V5_PREFS = 'sj-pro-stock-screener-v5';
 const V4_PREFS = 'sj-pro-stock-screener-v4';
 const V3_PREFS = 'sj-pro-stock-screener-v3';
 const V2_PREFS = 'sj-pro-stock-screener-v2';
 const V1_PREFS = 'sj-pro-stock-screener-v1';
-const INITIAL_QUERY: ScreenerQueryV5 = { criteria: migrateCriteriaV4ToV5(DEFAULT_CRITERIA_V4), sort: 'code', direction: 'asc', resultState: 'pass' };
+const INITIAL_QUERY: ScreenerQueryV6 = { criteria: migrateCriteriaV5ToV6(migrateCriteriaV4ToV5(DEFAULT_CRITERIA_V4)), sort: 'code', direction: 'asc', resultState: 'pass' };
 const reasonLabels: Record<ReasonCode, string> = {
     none: '', period_pending: '比較期尚未備齊', missing_current: '缺本期', missing_previous: '缺前期',
     date_mismatch: '期別不符', incompatible_source: '來源口徑不一致', invalid_volume: '成交量無效',
@@ -60,6 +65,8 @@ const statusReasons: Record<string, string> = {
     v5_preparation_pending: '全市場籌碼歷史與 TDCC 完整週期尚在準備；舊快照不會冒充本期結果。',
     chip_history_pending: '投信與融資融券的 21 個相鄰交易日尚未備齊。',
     tdcc_universe_coverage_pending: 'TDCC 最新週期尚未涵蓋完整選股母體。',
+    v6_preparation_pending: '外資／投信反轉所需的 21 個交易日新 mapping 尚在驗證；v5 結果仍保留可用。',
+    institutional_v2_history_pending: 'TWSE／TPEx 外資與投信欄位的新 mapping 歷史尚未完整驗證。',
 };
 const publicationReasonLabels: Record<string, string> = {
     source_not_published: '官方尚未發布', invalid_report_date: '報表日期不符', invalid_report_schema: '報表欄位不符',
@@ -89,17 +96,24 @@ const v5ReasonLabels: Record<V5Reason, string> = {
     insufficient_history: '有效歷史不足', issued_shares_invalid: '已發行普通股數無效', non_adjacent_sessions: '交易日期不相鄰',
     indicator_warmup: '均線暖機不足', invalid_ratio: '比率無效', invalid_balance: '融資或融券餘額無效', mixed_session_dates: '資料日期不一致',
 };
+const v6ReasonLabels: Record<V6Reason, string> = {
+    none: '', non_adjacent_sessions: '交易日期不相鄰', missing_source_row: '官方來源缺列', insufficient_history: '有效歷史不足',
+    issued_shares_invalid: '已發行普通股數無效', invalid_ratio: '比率無效', invalid_volume: '成交量無效', invalid_close: '收盤價無效',
+    mapping_unverified: '法人欄位 mapping 尚未驗證', mixed_session_dates: '資料日期不一致',
+};
 const chipConditionLabels: Record<ChipConditionKey, string> = {
     largeHolderTrend: '千張大戶比例趨勢', largeHolderConcentration: '千張大戶集中', retailHolderDecline: '10 張以下散戶下降',
     trustOwnership: '投信買超占股本', priceMargin: '價漲融資不增', shortMarginRatio: '券資比', closeHigh: '收盤新高', closeSmaBreakout: '收盤突破 SMA',
 };
 const chipConditionKeys = Object.keys(chipConditionLabels) as ChipConditionKey[];
-const resultStateLabels: Record<ScreenerQueryV5['resultState'], string> = { pass: '符合條件', unknown: '無法判定', fail: '不符合' };
-const sortLabels: Record<ScreenerQueryV5['sort'], string> = {
+const resultStateLabels: Record<ScreenerQueryV6['resultState'], string> = { pass: '符合條件', unknown: '無法判定', fail: '不符合' };
+const sortLabels: Record<ScreenerQueryV6['sort'], string> = {
     code: '股票代碼', volumeMultiple: '成交量倍數', turnover: '成交值', holderChange: '最新持股變化', holderStreak: '反轉前週數',
     confirmationDate: '型態確認日', algorithm: '分型算法', direction: '型態方向', outsideDistance: '通道外距離', maSpread: '最新均線 spread',
     pivotDate: '背離確認日', priceDifference: '背離價差', largeHolderRatio: '千張大戶比例', trustOwnershipPct: '投信買超占股本',
     shortMarginRatio: '券資比', closeHighDays: '新高期間', smaPeriod: '突破均線週期',
+    foreignTodayNetBuy: '外資今日淨買超', trustTodayNetBuy: '投信今日淨買超', trustRecoveryPct: '投信回補強度',
+    trustParticipationPct: '投信成交參與率',
 };
 const validV2Sort = (value: unknown): value is ScreenerQuery['sort'] => ['code', 'volumeMultiple', 'turnover', 'holderChange', 'holderStreak'].includes(String(value));
 function migrateV1Criteria(value: unknown): Criteria | null {
@@ -126,8 +140,8 @@ function toV4(query: ScreenerQueryV3): ScreenerQueryV4 {
 function toV5(query: ScreenerQueryV4): ScreenerQueryV5 {
     return { ...query, criteria: migrateCriteriaV4ToV5(query.criteria) };
 }
-function savePreferences(query: ScreenerQueryV5) {
-    localStorage.setItem(PREFS, JSON.stringify({ version: 5, query: { ...query, cursor: undefined } }));
+function savePreferences(query: ScreenerQueryV6) {
+    localStorage.setItem(PREFS, JSON.stringify({ version: 6, query: { ...query, cursor: undefined } }));
     const criteria: CriteriaV4 = {
         mode: query.criteria.mode, volume: query.criteria.volume, holder: query.criteria.holder,
         fractal: query.criteria.fractal, bollReversal: query.criteria.bollReversal,
@@ -138,29 +152,39 @@ function savePreferences(query: ScreenerQueryV5) {
     localStorage.setItem(V4_PREFS, JSON.stringify({ version: 4, query: { criteria,
         sort: allowed.includes(query.sort) ? query.sort : 'code', direction: query.direction, resultState: query.resultState } }));
 }
-function loadPreferences(): ScreenerQueryV5 {
+function loadPreferences(): ScreenerQueryV6 {
     try {
         const saved = JSON.parse(localStorage.getItem(PREFS) ?? 'null');
-        if (isV5Preference(saved)) {
-            return { criteria: effectiveCriteriaV5(saved.query.criteria), sort: saved.query.sort as ScreenerQueryV5['sort'], direction: saved.query.direction, resultState: saved.query.resultState };
+        if (isV6Preference(saved)) {
+            return { criteria: effectiveCriteriaV6(saved.query.criteria), sort: saved.query.sort, direction: saved.query.direction, resultState: saved.query.resultState };
+        }
+        const v5 = JSON.parse(localStorage.getItem(V5_PREFS) ?? 'null');
+        if (isV5Preference(v5)) {
+            const query: ScreenerQueryV6 = { criteria: migrateCriteriaV5ToV6(effectiveCriteriaV5(v5.query.criteria)),
+                sort: v5.query.sort as ScreenerQueryV6['sort'], direction: v5.query.direction, resultState: v5.query.resultState };
+            try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
+            return query;
         }
         const v4 = JSON.parse(localStorage.getItem(V4_PREFS) ?? 'null');
         if (isV4Preference(v4)) {
-            const query = toV5({ criteria: effectiveCriteriaV4(v4.query.criteria), sort: v4.query.sort, direction: v4.query.direction, resultState: v4.query.resultState });
+            const query = { ...toV5({ criteria: effectiveCriteriaV4(v4.query.criteria), sort: v4.query.sort, direction: v4.query.direction, resultState: v4.query.resultState }),
+                criteria: migrateCriteriaV5ToV6(toV5({ criteria: effectiveCriteriaV4(v4.query.criteria), sort: v4.query.sort, direction: v4.query.direction, resultState: v4.query.resultState }).criteria) } as ScreenerQueryV6;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
         const v3 = JSON.parse(localStorage.getItem(V3_PREFS) ?? 'null');
         if (isV3Preference(v3)) {
-            const query = toV5(toV4({ criteria: effectiveCriteria(v3.query.criteria) as typeof v3.query.criteria,
+            const legacy = toV5(toV4({ criteria: effectiveCriteria(v3.query.criteria) as typeof v3.query.criteria,
                 sort: v3.query.sort, direction: v3.query.direction, resultState: v3.query.resultState }));
+            const query = { ...legacy, criteria: migrateCriteriaV5ToV6(legacy.criteria) } as ScreenerQueryV6;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
         const v2 = JSON.parse(localStorage.getItem(V2_PREFS) ?? 'null');
         if (v2?.version === 2 && validateCriteria(v2.query?.criteria) && validV2Sort(v2.query?.sort)
             && ['asc', 'desc'].includes(v2.query.direction) && ['pass', 'unknown', 'fail'].includes(v2.query.resultState)) {
-            const query = toV5(toV4(toV3({ criteria: v2.query.criteria, sort: v2.query.sort, direction: v2.query.direction, resultState: v2.query.resultState })));
+            const legacy = toV5(toV4(toV3({ criteria: v2.query.criteria, sort: v2.query.sort, direction: v2.query.direction, resultState: v2.query.resultState })));
+            const query = { ...legacy, criteria: migrateCriteriaV5ToV6(legacy.criteria) } as ScreenerQueryV6;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
@@ -168,15 +192,16 @@ function loadPreferences(): ScreenerQueryV5 {
         const migrated = v1?.version === 1 ? migrateV1Criteria(v1.query?.criteria) : null;
         if (migrated && validV2Sort(v1.query?.sort) && ['asc', 'desc'].includes(v1.query.direction)
             && ['pass', 'unknown', 'fail'].includes(v1.query.resultState)) {
-            const query = toV5(toV4(toV3({ criteria: migrated, sort: v1.query.sort, direction: v1.query.direction, resultState: v1.query.resultState })));
+            const legacy = toV5(toV4(toV3({ criteria: migrated, sort: v1.query.sort, direction: v1.query.direction, resultState: v1.query.resultState })));
+            const query = { ...legacy, criteria: migrateCriteriaV5ToV6(legacy.criteria) } as ScreenerQueryV6;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
     } catch { /* Device-local preferences never prevent opening the panel. */ }
     return INITIAL_QUERY;
 }
-const fingerprint = (query: ScreenerQueryV5) => validateCriteriaV5(query.criteria)
-    ? `${criteriaFingerprintV5(query.criteria)}|${query.sort}|${query.direction}|${query.resultState}` : 'invalid';
+const fingerprint = (query: ScreenerQueryV6) => validateCriteriaV6(query.criteria)
+    ? `${criteriaFingerprintV6(query.criteria)}|${query.sort}|${query.direction}|${query.resultState}` : 'invalid';
 const shares = (value: string | null) => value === null ? '—' : `${value.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} 股`;
 
 export interface StockScreenerPanelProps {
@@ -192,13 +217,13 @@ export interface StockScreenerPanelProps {
 type AddState = { status: 'pending' | 'added' | 'already_present' | 'error'; message: string };
 
 export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, chartConnectionMessage, snapshotVolumesByCode }: StockScreenerPanelProps) {
-    const initialDraft = useRef<ScreenerQueryV5 | null>(null);
+    const initialDraft = useRef<ScreenerQueryV6 | null>(null);
     if (initialDraft.current === null) initialDraft.current = loadPreferences();
     const [draft, setDraft] = useState(initialDraft.current);
     const [activeCondition, setActiveCondition] = useState<StockScreenerConditionId>(() => firstEnabledStockScreenerCondition(initialDraft.current!.criteria));
     const [draftActionMessage, setDraftActionMessage] = useState('');
-    const [applied, setApplied] = useState<ScreenerQueryV5 | null>(null);
-    const [response, setResponse] = useState<ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | null>(null);
+    const [applied, setApplied] = useState<ScreenerQueryV6 | null>(null);
+    const [response, setResponse] = useState<ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [storageError, setStorageError] = useState(false);
@@ -212,7 +237,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     const pendingAdds = useRef(new Set<string>());
     const controller = useRef<AbortController | null>(null);
     const effectiveTarget = targets.some((target) => target.id === targetId) ? targetId : targets.length === 1 ? targets[0]!.id : '';
-    const valid = validateCriteriaV5(draft.criteria);
+    const valid = validateCriteriaV6(draft.criteria);
     const dirty = applied !== null && fingerprint(draft) !== fingerprint(applied);
     const enabledConditions = enabledStockScreenerConditions(draft.criteria);
 
@@ -222,7 +247,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         const abort = new AbortController();
         const ticket = ++generation.current;
         const timer = setTimeout(() => abort.abort(), 10000);
-        fetch('/api/stock-screener/status?version=5', { signal: abort.signal, credentials: 'same-origin' })
+        fetch('/api/stock-screener/status?version=6', { signal: abort.signal, credentials: 'same-origin' })
             .then(async (res) => { if (!res.ok) throw new Error(); return decodeScreenerResponse(await res.json()); })
             .then((result) => { if (generation.current === ticket) setResponse(result); })
             .catch(() => { if (generation.current === ticket) setError(abort.signal.aborted ? '本機選股資料服務查詢逾時' : '無法連線本機選股資料服務'); })
@@ -230,13 +255,15 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         return () => { abort.abort(); clearTimeout(timer); };
     }, []);
 
-    async function run(query: ScreenerQueryV5, cursor = '', nextPage = 0) {
-        if (!validateCriteriaV5(query.criteria)) return;
+    async function run(query: ScreenerQueryV6, cursor = '', nextPage = 0) {
+        if (!validateCriteriaV6(query.criteria)) return;
         const requestedQuery = query;
-        query = { ...query, criteria: effectiveCriteriaV5(query.criteria) };
+        query = { ...query, criteria: effectiveCriteriaV6(query.criteria) };
+        const needsV6 = query.criteria.foreignReversal.enabled || query.criteria.trustReversal.enabled;
         const needsV5 = (['largeHolderTrend', 'largeHolderConcentration', 'retailHolderDecline', 'trustOwnership',
             'priceMargin', 'shortMarginRatio', 'closeHigh', 'closeSmaBreakout'] as ChipConditionKey[]).some((key) => query.criteria[key].enabled);
         const needsV4 = query.criteria.ma.enabled || query.criteria.divergence.enabled;
+        if (!needsV6 && ['foreignTodayNetBuy', 'trustTodayNetBuy', 'trustRecoveryPct', 'trustParticipationPct'].includes(query.sort)) query = { ...query, sort: 'code' };
         if (!needsV5 && ['largeHolderRatio', 'trustOwnershipPct', 'shortMarginRatio', 'closeHighDays', 'smaPeriod'].includes(query.sort)) query = { ...query, sort: 'code' };
         if (!needsV5 && !needsV4 && ['maSpread', 'pivotDate', 'priceDifference'].includes(query.sort)) query = { ...query, sort: 'code' };
         if (query.sort !== requestedQuery.sort) setDraft(current => current === requestedQuery ? { ...current, sort: query.sort } : current);
@@ -246,14 +273,16 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         const timer = setTimeout(() => abort.abort(), 12000);
         setBusy(true); setError('');
         try {
-            const search = needsV5 ? screenerSearchV5({ ...query, cursor: cursor || undefined })
+            const search = needsV6 ? screenerSearchV6({ ...query, cursor: cursor || undefined })
+                : needsV5 ? screenerSearchV5({ ...query, cursor: cursor || undefined } as ScreenerQueryV5)
                 : needsV4 ? screenerSearchV4({ ...query, sort: query.sort as ScreenerQueryV4['sort'], cursor: cursor || undefined })
                 : screenerSearchV3({ ...query, criteria: query.criteria, sort: query.sort as ScreenerQueryV3['sort'], cursor: cursor || undefined });
             const res = await fetch(`/api/stock-screener/results?${search}`, { signal: abort.signal, credentials: 'same-origin' });
             const raw = await res.json();
             if (!res.ok) throw new Error(['snapshot_expired','snapshot_version_expired'].includes(raw.reason) ? '快照已更新，請重新開始篩選' : /^[a-z_]{1,64}$/.test(raw.reason ?? '') ? `選股查詢失敗（${raw.reason}）` : '本機資料服務無法使用，請稍後重試');
             const result = decodeScreenerResponse(raw);
-            if (needsV5 && result.version !== 5) throw new Error('v5 全市場籌碼資料尚未備齊');
+            if (needsV6 && result.version !== 6) throw new Error('v6 全市場法人反轉資料尚未備齊');
+            if (!needsV6 && needsV5 && result.version !== 5) throw new Error('v5 全市場籌碼資料尚未備齊');
             if (!needsV5 && needsV4 && result.version !== 4) throw new Error('v4 選股資料尚未備齊');
             if (ticket !== generation.current) return;
             setResponse(result); setApplied(query); setPage(nextPage);
@@ -298,7 +327,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         <details className={styles.note}><summary>範圍與排除商品</summary>排除 ETF、ETN、權證、特別股、TDR、興櫃及海外股票；停牌但未下市櫃的普通股仍列入母體，缺比較資料時標示無法判定。</details>
         <form onSubmit={(event) => { event.preventDefault(); void run(draft); }}>
             <div className={styles.draftToolbar}><div className={styles.controls}><button type='button' onClick={() => {
-                const criteria: CriteriaV5 = { ...LONG_TERM_LAYOUT_PRESET,
+                const criteria: CriteriaV6 = { ...migrateCriteriaV5ToV6(LONG_TERM_LAYOUT_PRESET),
                     largeHolderTrend: { ...LONG_TERM_LAYOUT_PRESET.largeHolderTrend },
                     retailHolderDecline: { ...LONG_TERM_LAYOUT_PRESET.retailHolderDecline },
                     priceMargin: { ...LONG_TERM_LAYOUT_PRESET.priceMargin } };
@@ -322,7 +351,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             <div className={styles.controls}>
                 <select aria-label='條件組合' value={draft.criteria.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, mode: e.target.value as 'all' | 'any' } })}><option value='all'>全部符合（AND）</option><option value='any'>任一符合（OR）</option></select>
                 <select aria-label='結果種類' value={draft.resultState} onChange={(e) => setDraft({ ...draft, resultState: e.target.value as ScreenerQueryV4['resultState'] })}><option value='pass'>符合條件</option><option value='unknown'>無法判定</option><option value='fail'>不符合</option></select>
-                <select aria-label='選股排序' value={draft.sort} onChange={(e) => setDraft({ ...draft, sort: e.target.value as ScreenerQueryV5['sort'] })}><option value='code'>股票代碼</option><option value='volumeMultiple'>成交量倍數</option><option value='turnover'>成交值</option><option value='holderChange'>最新持股變化</option><option value='holderStreak'>反轉前週數</option><option value='confirmationDate'>型態確認日</option><option value='algorithm'>分型算法</option><option value='direction'>型態方向</option><option value='outsideDistance'>通道外距離</option><option value='maSpread'>最新均線 spread</option><option value='pivotDate'>背離確認日</option><option value='priceDifference'>背離價差</option><option value='largeHolderRatio'>千張大戶比例</option><option value='trustOwnershipPct'>投信買超占股本</option><option value='shortMarginRatio'>券資比</option><option value='closeHighDays'>新高期間</option><option value='smaPeriod'>突破均線週期</option></select>
+                <select aria-label='選股排序' value={draft.sort} onChange={(e) => setDraft({ ...draft, sort: e.target.value as ScreenerQueryV6['sort'] })}><option value='code'>股票代碼</option><option value='volumeMultiple'>成交量倍數</option><option value='turnover'>成交值</option><option value='holderChange'>最新持股變化</option><option value='holderStreak'>反轉前週數</option><option value='confirmationDate'>型態確認日</option><option value='algorithm'>分型算法</option><option value='direction'>型態方向</option><option value='outsideDistance'>通道外距離</option><option value='maSpread'>最新均線 spread</option><option value='pivotDate'>背離確認日</option><option value='priceDifference'>背離價差</option><option value='largeHolderRatio'>千張大戶比例</option><option value='trustOwnershipPct'>投信買超占股本</option><option value='shortMarginRatio'>券資比</option><option value='closeHighDays'>新高期間</option><option value='smaPeriod'>突破均線週期</option><option value='foreignTodayNetBuy'>外資今日淨買超</option><option value='trustTodayNetBuy'>投信今日淨買超</option><option value='trustRecoveryPct'>投信回補強度</option><option value='trustParticipationPct'>投信成交參與率</option></select>
                 <select aria-label='排序方向' value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value as 'asc' | 'desc' })}><option value='asc'>由小到大</option><option value='desc'>由大到小</option></select>
             </div>
             </details>
@@ -394,6 +423,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                 const addState = addStates[row.symbol];
                 const technicalV4 = 'technicalV4' in row ? (row as ScreenerResultRowV4).technicalV4 : null;
                 const chipV5 = 'chipV5' in row ? (row as ScreenerResultRowV5).chipV5 : null;
+                const institutionalV6 = 'institutionalV6' in row ? (row as ScreenerResultRowV6).institutionalV6 : null;
                 const snapshotVolume = snapshotVolumesByCode?.[row.code];
                 const volumeComparison = stockScreenerVolumeComparison({
                     officialShares: row.volume.current,
@@ -425,6 +455,14 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                     const outcome = chipV5.outcomes[key];
                     return <span key={key}>{chipConditionLabels[key]}：{outcome.verdict === 'pass' ? '符合' : outcome.verdict === 'fail' ? '不符合' : v5ReasonLabels[outcome.reason]}</span>;
                 })}
+                {institutionalV6 && (['foreignReversal', 'trustReversal'] as const).filter((key) => applied?.criteria[key].enabled).map((key) => {
+                    const outcome = institutionalV6.outcomes[key];
+                    const label = key === 'foreignReversal' ? '外資連賣後轉買＋爆量換手' : '投信連賣後轉買＋爆量換手';
+                    return <span key={key}>{label}：{outcome.verdict === 'pass' ? '符合' : outcome.verdict === 'fail' ? '不符合' : v6ReasonLabels[outcome.reason]}
+                        {' · '}D0 {outcome.evidence.today.sessionDate} {shares(outcome.evidence.today.netShares)}
+                        {key === 'trustReversal' && outcome.evidence.metrics.recoveryPct !== null ? ` · 回補 ${outcome.evidence.metrics.recoveryPct.toFixed(2)}%` : ''}
+                        {key === 'trustReversal' && outcome.evidence.metrics.participationPct !== null ? ` · 成交參與 ${outcome.evidence.metrics.participationPct.toFixed(2)}%` : ''}</span>;
+                })}
                 <span className={styles.note}>{row.sources.join('、')}</span>
                 </button>
                 <button type='button' className={styles.addButton}
@@ -448,6 +486,13 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                     <span>零軸重置：{technicalV4.divergence.evidence.zeroResetRequired ? technicalV4.divergence.evidence.zeroResetMet ? '符合' : '不符合' : '未要求'} · evidence {technicalV4.evidenceHash.slice(0, 12)}</span></details>}
                 {chipV5 && chipConditionKeys.filter((key) => applied?.criteria[key].enabled && chipV5.outcomes[key].evidence).map((key) =>
                     <details key={key}><summary>{chipConditionLabels[key]}證據</summary><pre>{JSON.stringify(chipV5.outcomes[key].evidence, null, 2)}</pre></details>)}
+                {institutionalV6 && (['foreignReversal', 'trustReversal'] as const).filter((key) => applied?.criteria[key].enabled).map((key) =>
+                    <details key={key}><summary>{key === 'foreignReversal' ? '外資反轉' : '投信反轉'}日期與公式證據</summary>
+                        <span>D0：{institutionalV6.outcomes[key].evidence.today.sessionDate}</span>
+                        <span>前期賣超：{institutionalV6.outcomes[key].evidence.priorNetRows.map((point) => `${point.sessionDate} ${shares(point.netShares)}`).join('；')}</span>
+                        <span>價量基準：{institutionalV6.outcomes[key].evidence.comparisonDates.join('、')}</span>
+                        <pre>{JSON.stringify(institutionalV6.outcomes[key].evidence, null, 2)}</pre>
+                    </details>)}
             </div>;})}
             {applied && !busy && !error && ['ready','partial'].includes(response?.state ?? '') && !rows.length && <p>此結果種類沒有商品。{response?.state === 'partial' ? '仍有欄位缺漏，請查看資料不足說明。' : ''}</p>}
         </div>

@@ -40,6 +40,7 @@ import { QuoteBoard } from './components/quote-board';
 import { ScannerPanel } from './components/scanner-panel';
 import { StockScreenerPanel, type StockScreenerPanelProps } from './components/stock-screener-panel';
 import { createScreenerChartSelection } from './lib/screener-chart-selection';
+import { addStockToScreenerWatchlist } from './lib/stock-screener-watchlist';
 import { SmartOrderPanel } from './components/smart-order-panel';
 import { TickTape } from './components/tick-tape';
 import { TrayPanel } from './components/tray-panel';
@@ -1050,6 +1051,7 @@ function TradingApp() {
             if (id) setDailyChartIds((old) => new Set([...old, id]));
             return id;
         },
+        onAddToWatchlist: addStockToScreenerWatchlist,
     };
 
     return (

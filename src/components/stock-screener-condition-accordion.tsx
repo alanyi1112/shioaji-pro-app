@@ -1,4 +1,4 @@
-import type { CriteriaV5 } from '../lib/stock-screener-v5';
+import type { CriteriaV6, ForeignReversalCriteria, TrustReversalCriteria } from '../lib/stock-screener-v6';
 import type { HolderMode } from '../lib/stock-screener-domain';
 import type { BollReversalMode, FractalAlgorithm, FractalDirection } from '../lib/stock-screener-technical-patterns';
 import type { DivergenceDirection, DivergenceSource, MaMode } from '../lib/stock-screener-v4';
@@ -25,18 +25,20 @@ const enableLabels: Record<StockScreenerConditionId, string> = {
     shortMarginRatio: '啟用券資比',
     closeHigh: '啟用收盤價新高',
     closeSmaBreakout: '啟用收盤價突破均線',
+    foreignReversal: '啟用外資連賣後轉買與爆量換手',
+    trustReversal: '啟用投信連賣後轉買與爆量換手',
 };
 
 interface Props {
-    criteria: CriteriaV5;
+    criteria: CriteriaV6;
     activeCondition: StockScreenerConditionId;
     onActiveConditionChange: (condition: StockScreenerConditionId) => void;
-    onChange: (criteria: CriteriaV5) => void;
+    onChange: (criteria: CriteriaV6) => void;
 }
 
 export function StockScreenerConditionAccordion({ criteria, activeCondition, onActiveConditionChange, onChange }: Props) {
     const activeGroup = stockScreenerConditionGroup(activeCondition);
-    const update = <K extends keyof CriteriaV5>(key: K, value: CriteriaV5[K]) => onChange({ ...criteria, [key]: value });
+    const update = <K extends keyof CriteriaV6>(key: K, value: CriteriaV6[K]) => onChange({ ...criteria, [key]: value });
     const chooseGroup = (group: typeof STOCK_SCREENER_CONDITION_GROUPS[number]['id']) => {
         const conditions = STOCK_SCREENER_CONDITIONS.filter((condition) => condition.group === group);
         onActiveConditionChange(conditions.find(({ id }) => isStockScreenerConditionEnabled(criteria, id))?.id ?? conditions[0]!.id);
@@ -44,6 +46,38 @@ export function StockScreenerConditionAccordion({ criteria, activeCondition, onA
     const enable = (id: StockScreenerConditionId, enabled: boolean) => {
         onChange(setStockScreenerConditionEnabled(criteria, id, enabled));
         if (enabled) onActiveConditionChange(id);
+    };
+    const reversalEditor = (key: 'foreignReversal' | 'trustReversal') => {
+        const value = criteria[key];
+        const set = (next: ForeignReversalCriteria | TrustReversalCriteria) => update(key, next as CriteriaV6[typeof key]);
+        return <>
+            <label>前期連賣 <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}前期連續賣超日數`} type='number' min='1' max='10' step='1'
+                value={value.sellStreakDays} onChange={(event) => set({ ...value, sellStreakDays: Number(event.target.value) })} /> 日</label>
+            <label>今日淨買超 &gt; <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}今日最低買超張數`} type='number' min='1' max='99999999' step='1'
+                value={value.todayNetBuyMinimumLots} onChange={(event) => set({ ...value, todayNetBuyMinimumLots: event.target.value })} /> 張</label>
+            {key === 'trustReversal' && <>
+                <label>回補強度 ≥ <input aria-label='投信最低回補強度百分比' type='number' min='0' max='10000' step='0.01'
+                    value={criteria.trustReversal.minimumRecoveryPct} onChange={(event) => update('trustReversal', { ...criteria.trustReversal, minimumRecoveryPct: event.target.value })} /> %</label>
+                <label>成交參與率 &gt; <input aria-label='投信最低成交參與率百分比' type='number' min='0' max='100' step='0.01'
+                    value={criteria.trustReversal.minimumParticipationPct} onChange={(event) => update('trustReversal', { ...criteria.trustReversal, minimumParticipationPct: event.target.value })} /> %</label>
+                <label>成交參與率 &lt; <input aria-label='投信最高成交參與率百分比' type='number' min='0' max='100' step='0.01'
+                    value={criteria.trustReversal.maximumParticipationPct} onChange={(event) => update('trustReversal', { ...criteria.trustReversal, maximumParticipationPct: event.target.value })} /> %</label>
+                <span className={styles.note}>成交參與率＝今日投信淨買超 ÷ 今日成交量；這是當日流量占比，不是投信持股比例。</span>
+            </>}
+            <label>今日週轉率 &gt; <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}最低週轉率百分比`} type='number' min='0.01' max='1000' step='0.01'
+                value={value.minimumTurnoverPct} onChange={(event) => set({ ...value, minimumTurnoverPct: event.target.value })} /> %</label>
+            <label>前 <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}比較交易日數`} type='number' min='2' max='20' step='1'
+                value={value.comparisonDays} onChange={(event) => set({ ...value, comparisonDays: Number(event.target.value) })} /> 日平均的
+                <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}週轉率倍數`} type='number' min='0.01' max='100' step='0.01'
+                    value={value.turnoverMultiple} onChange={(event) => set({ ...value, turnoverMultiple: event.target.value })} /> 倍</label>
+            <label>收盤高於 MA <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}均線期間`} type='number' min='2' max='60' step='1'
+                value={value.maPeriod} onChange={(event) => set({ ...value, maPeriod: Number(event.target.value) })} /> 日</label>
+            <label>前 <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}流動性交易日數`} type='number' min='5' max='60' step='1'
+                value={value.liquidityDays} onChange={(event) => set({ ...value, liquidityDays: Number(event.target.value) })} /> 日均量 ≥
+                <input aria-label={`${key === 'foreignReversal' ? '外資' : '投信'}最低平均成交量張數`} type='number' min='0' max='99999999' step='1'
+                    value={value.minimumAverageVolumeLots} onChange={(event) => set({ ...value, minimumAverageVolumeLots: event.target.value })} /> 張</label>
+            <span className={styles.note}>週轉率與成交量基準都排除今日；MA 包含今日。各子條件固定 AND。</span>
+        </>;
     };
 
     const editor = (id: StockScreenerConditionId) => {
@@ -156,6 +190,8 @@ export function StockScreenerConditionAccordion({ criteria, activeCondition, onA
                 onChange={(event) => update('closeSmaBreakout', { ...criteria.closeSmaBreakout, period: Number(event.target.value) as 5 | 10 | 20 | 60 })}>
                 <option value='5'>SMA5</option><option value='10'>SMA10</option><option value='20'>SMA20</option><option value='60'>SMA60</option>
             </select></label>;
+            case 'foreignReversal': return reversalEditor('foreignReversal');
+            case 'trustReversal': return reversalEditor('trustReversal');
         }
     };
 

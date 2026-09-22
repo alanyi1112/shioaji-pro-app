@@ -434,7 +434,7 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
                     fetcher,
                 });
             } catch (error) {
-                chipSnapshotV5 = { state: 'pending', reason: /no such (?:table|column).*screener_chip/i.test(String(error))
+                chipSnapshotV5 = { state: 'pending', reason: /no such (?:table|column).*screener_(?:chip|institutional)/i.test(String(error))
                     ? 'schema_pending' : safeError(error) };
             }
         }

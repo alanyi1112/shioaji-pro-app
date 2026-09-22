@@ -1,4 +1,4 @@
-import type { CriteriaV5 } from './stock-screener-v5';
+import type { CriteriaV6 } from './stock-screener-v6';
 
 export const STOCK_SCREENER_CONDITION_GROUPS = [
     { id: 'basic', label: '基本條件' },
@@ -23,7 +23,9 @@ export const STOCK_SCREENER_CONDITIONS = [
     { id: 'trustOwnership', group: 'chip', label: '投信累計買超占已發行普通股數' },
     { id: 'priceMargin', group: 'chip', label: '股價上漲且融資餘額下降或持平' },
     { id: 'shortMarginRatio', group: 'chip', label: '券資比達門檻' },
-] as const satisfies readonly { id: Exclude<keyof CriteriaV5, 'mode'>; group: StockScreenerConditionGroupId; label: string }[];
+    { id: 'foreignReversal', group: 'chip', label: '外資連賣後轉買＋爆量換手' },
+    { id: 'trustReversal', group: 'chip', label: '投信連賣後轉買＋爆量換手' },
+] as const satisfies readonly { id: Exclude<keyof CriteriaV6, 'mode'>; group: StockScreenerConditionGroupId; label: string }[];
 
 export type StockScreenerConditionId = typeof STOCK_SCREENER_CONDITIONS[number]['id'];
 
@@ -46,11 +48,11 @@ const divergenceSources = {
 } as const;
 const divergenceDirections = { bullish: '底背離', bearish: '頂背離', any: '任一方向' } as const;
 
-export function isStockScreenerConditionEnabled(criteria: CriteriaV5, id: StockScreenerConditionId): boolean {
+export function isStockScreenerConditionEnabled(criteria: CriteriaV6, id: StockScreenerConditionId): boolean {
     return criteria[id].enabled;
 }
 
-export function stockScreenerConditionSummary(criteria: CriteriaV5, id: StockScreenerConditionId): string {
+export function stockScreenerConditionSummary(criteria: CriteriaV6, id: StockScreenerConditionId): string {
     switch (id) {
         case 'volume': return `${criteria.volume.threshold} 倍${criteria.volume.turnover.enabled ? ` · 成交值 ${criteria.volume.turnover.minimumWan} 萬` : ''}`;
         case 'holder': return `${holderModes[criteria.holder.mode]}${criteria.holder.mode === 'weekly-increase' ? '' : ` ${criteria.holder.streakWeeks} 週`} · ${criteria.holder.threshold} 百分點${criteria.holder.turnover.enabled ? ` · 成交值 ${criteria.holder.turnover.minimumWan} 萬` : ''}`;
@@ -66,10 +68,12 @@ export function stockScreenerConditionSummary(criteria: CriteriaV5, id: StockScr
         case 'trustOwnership': return `${criteria.trustOwnership.days} 日 · ${criteria.trustOwnership.minimumPct}%`;
         case 'priceMargin': return `比較 ${criteria.priceMargin.days} 日前`;
         case 'shortMarginRatio': return `至少 ${criteria.shortMarginRatio.minimumPct}%`;
+        case 'foreignReversal': return `前 ${criteria.foreignReversal.sellStreakDays} 日連賣 · 今日 > ${criteria.foreignReversal.todayNetBuyMinimumLots} 張 · 週轉 > ${criteria.foreignReversal.turnoverMultiple}×`;
+        case 'trustReversal': return `前 ${criteria.trustReversal.sellStreakDays} 日連賣 · 今日 > ${criteria.trustReversal.todayNetBuyMinimumLots} 張 · 回補 ≥ ${criteria.trustReversal.minimumRecoveryPct}%`;
     }
 }
 
-export function firstEnabledStockScreenerCondition(criteria: CriteriaV5): StockScreenerConditionId {
+export function firstEnabledStockScreenerCondition(criteria: CriteriaV6): StockScreenerConditionId {
     return STOCK_SCREENER_CONDITIONS.find(({ id }) => isStockScreenerConditionEnabled(criteria, id))?.id ?? 'volume';
 }
 
@@ -77,15 +81,15 @@ export function stockScreenerConditionGroup(id: StockScreenerConditionId): Stock
     return STOCK_SCREENER_CONDITIONS.find((condition) => condition.id === id)!.group;
 }
 
-export function enabledStockScreenerConditions(criteria: CriteriaV5) {
+export function enabledStockScreenerConditions(criteria: CriteriaV6) {
     return STOCK_SCREENER_CONDITIONS.filter(({ id }) => isStockScreenerConditionEnabled(criteria, id));
 }
 
-export function setStockScreenerConditionEnabled(criteria: CriteriaV5, id: StockScreenerConditionId, enabled: boolean): CriteriaV5 {
-    return { ...criteria, [id]: { ...criteria[id], enabled } } as CriteriaV5;
+export function setStockScreenerConditionEnabled(criteria: CriteriaV6, id: StockScreenerConditionId, enabled: boolean): CriteriaV6 {
+    return { ...criteria, [id]: { ...criteria[id], enabled } } as CriteriaV6;
 }
 
-export function disableAllStockScreenerConditions(criteria: CriteriaV5): CriteriaV5 {
+export function disableAllStockScreenerConditions(criteria: CriteriaV6): CriteriaV6 {
     return {
         ...criteria,
         volume: { ...criteria.volume, enabled: false, turnover: { ...criteria.volume.turnover } },
@@ -102,5 +106,7 @@ export function disableAllStockScreenerConditions(criteria: CriteriaV5): Criteri
         trustOwnership: { ...criteria.trustOwnership, enabled: false },
         priceMargin: { ...criteria.priceMargin, enabled: false },
         shortMarginRatio: { ...criteria.shortMarginRatio, enabled: false },
+        foreignReversal: { ...criteria.foreignReversal, enabled: false },
+        trustReversal: { ...criteria.trustReversal, enabled: false },
     };
 }
