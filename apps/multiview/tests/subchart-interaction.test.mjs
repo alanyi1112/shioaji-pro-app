@@ -18,19 +18,101 @@ const {
     groupForPane,
     groupSelectionState,
     chipReadoutLayoutSignature,
+    candleDateMappingSignature,
+    countDrawableSeriesPoints,
     movePaneInOrder,
     normalizeChipPaneMode,
     normalizeGroupOrder,
     normalizePaneOrder,
+    normalizePaneSeriesSelection,
     paneDragScrollVelocity,
     paneIdsForGroupOrder,
     readoutEnvelopeCandidates,
     readoutSegmentText,
+    selectedSeriesMaterialPointCount,
     toggleGroupSelection,
     warningColorForText,
     warningMessages,
   },
 } = window.QuoteChartChipPanes;
+
+test("所有可設定籌碼副圖都會修復空選取並保留合法自訂 series", () => {
+  const defaults = {
+    "foreign-flow-holding": ["net", "holdingRatio"],
+    "investment-trust-flow": ["net"],
+    "dealer-flow": ["self"],
+    margin: ["balance", "change"],
+    short: ["balance", "change"],
+    "short-margin-ratio": ["ratio"],
+    "estimated-margin-maintenance": ["maintenance"],
+    "big-holder": ["ratio", "change"],
+    "retail-holder": ["ratio", "change"],
+    "tdcc-holder-count": ["holders"],
+  };
+  for (const [paneId, expected] of Object.entries(defaults)) {
+    assert.deepEqual([...normalizePaneSeriesSelection(paneId, [])], expected, `${paneId} 不得保留空選取`);
+    assert.deepEqual([...normalizePaneSeriesSelection(paneId, ["unknown"])], expected, `${paneId} 未知 ID 應回復預設`);
+  }
+  assert.deepEqual([...normalizePaneSeriesSelection("foreign-flow-holding", ["sell", "sell", "unknown"])], ["sell"]);
+  assert.deepEqual([...normalizePaneSeriesSelection("not-configurable", [])], []);
+});
+
+test("candle 日期映射只在日期或 chart time 改變時觸發本機重畫", () => {
+  const baseline = [
+    { time: { year: 2026, month: 9, day: 21 }, close: 300 },
+    { time: { year: 2026, month: 9, day: 22 }, close: 317 },
+  ];
+  assert.equal(candleDateMappingSignature(baseline), candleDateMappingSignature(baseline.map((row) => ({ ...row, close: row.close + 1 }))));
+  assert.notEqual(candleDateMappingSignature(baseline), candleDateMappingSignature([...baseline, { time: { year: 2026, month: 9, day: 23 }, close: 318 }]));
+  assert.equal(countDrawableSeriesPoints([{ time: "2026-09-21", value: 0 }, { time: "2026-09-22" }, { time: "2026-09-23", value: null }]), 1);
+});
+
+test("法人、融資券與借券只把真實非 null 欄位計為 material points", () => {
+  const rows = [
+    {
+      sessionDate: "2026-09-21",
+      institutionalFlow: { foreignNetShares: 1000, investmentTrustNetShares: 2000, dealerSelfNetShares: 3000, institutionalTotalNetShares: 6000 },
+      marginShort: { marginTodayBalanceLots: 10, marginBalanceChangeLots: 1, shortTodayBalanceLots: 2, shortBalanceChangeLots: null, estimatedMaintenancePercent: 166 },
+      securitiesLending: { transactionShares: 500, balanceShares: null, shortSaleBalanceShares: null },
+    },
+    {
+      sessionDate: "2026-09-22",
+      institutionalFlow: { foreignNetShares: 1500, investmentTrustNetShares: null, dealerSelfNetShares: -500, institutionalTotalNetShares: 1000 },
+      marginShort: { marginTodayBalanceLots: 12, marginBalanceChangeLots: 2, shortTodayBalanceLots: 3, shortBalanceChangeLots: 1, estimatedMaintenancePercent: null },
+      securitiesLending: { transactionShares: 700, balanceShares: null, shortSaleBalanceShares: null },
+    },
+  ];
+  const payload = { rows };
+  const definition = (id) => window.QuoteChartChipPanes.CHIP_PANE_REGISTRY.find((item) => item.id === id);
+  assert.equal(selectedSeriesMaterialPointCount(definition("foreign-flow-holding"), payload, new Set(["net", "holdingRatio"])), 2);
+  assert.equal(selectedSeriesMaterialPointCount(definition("investment-trust-flow"), payload, new Set(["net"])), 1);
+  assert.equal(selectedSeriesMaterialPointCount(definition("dealer-flow"), payload, new Set(["self"])), 2);
+  assert.equal(selectedSeriesMaterialPointCount(definition("institutional-total-flow"), payload, new Set()), 2);
+  assert.equal(selectedSeriesMaterialPointCount(definition("margin"), payload, new Set(["balance", "change"])), 4);
+  assert.equal(selectedSeriesMaterialPointCount(definition("short"), payload, new Set(["balance", "change"])), 3);
+  assert.equal(selectedSeriesMaterialPointCount(definition("securities-lending"), payload, new Set()), 2);
+  assert.equal(selectedSeriesMaterialPointCount(definition("estimated-margin-maintenance"), payload, new Set(["maintenance"])), 1);
+});
+
+test("互動與匯出 readiness 都以有效選取及實際可繪點 fail closed", () => {
+  const changeHandler = chipSource.slice(
+    chipSource.indexOf('for (const input of seriesInputs) input.addEventListener("change"'),
+    chipSource.indexOf("function missingReadout", chipSource.indexOf('for (const input of seriesInputs) input.addEventListener("change"')),
+  );
+  assert.match(changeHandler, /normalizePaneSeriesSelection/);
+  assert.match(changeHandler, /for \(const item of seriesInputs\) item\.checked = selectedSet\.has\(item\.value\)/);
+  assert.doesNotMatch(changeHandler, /definition\.id === "dealer-flow"/);
+
+  const readinessBlock = chipSource.slice(
+    chipSource.indexOf("      exportReadiness() {"),
+    chipSource.indexOf("      setCandles(candles) {", chipSource.indexOf("      exportReadiness() {")),
+  );
+  assert.match(readinessBlock, /selectedMaterialExpected = lastMaterialExpected && lastSelectedMaterialPointCount > 0/);
+  assert.match(readinessBlock, /lastDrawablePointCount > 0/);
+  assert.match(readinessBlock, /selectedMaterialPointCount: lastSelectedMaterialPointCount/);
+  assert.match(readinessBlock, /drawablePointCount: lastDrawablePointCount/);
+  assert.doesNotMatch(readinessBlock, /selectedSeriesCount === 0/);
+});
 
 test("籌碼讀值包絡會保留不同資料結構並合併各欄最長內容", () => {
   const completeShort = {
@@ -257,7 +339,9 @@ test("大戶散戶縱軸與同日新價位都會維持 autoscale", () => {
     controllerSetCandlesStart,
     chipSource.indexOf("\n      isMounted()", controllerSetCandlesStart),
   );
-  assert.match(controllerSetCandlesBlock, /lastCandles = nextCandles;\s*stabilizeHolderPriceScales\(\);\s*if \(previousRange\.start === nextRange\.start && previousRange\.end === nextRange\.end\) return/);
+  assert.match(controllerSetCandlesBlock, /const previousMappingSignature = candleDateMappingSignature\(lastCandles\);\s*const nextMappingSignature = candleDateMappingSignature\(nextCandles\);\s*lastCandles = nextCandles;/);
+  assert.match(controllerSetCandlesBlock, /previousMappingSignature !== nextMappingSignature[\s\S]*render\(lastPayload, lastCandles, lastMaterialSignature\)/);
+  assert.match(controllerSetCandlesBlock, /stabilizeHolderPriceScales\(\);\s*if \(previousRange\.start === nextRange\.start && previousRange\.end === nextRange\.end\) return/);
 
   const stabilizeBlock = chipSource.slice(
     chipSource.indexOf("    function stabilizeHolderPriceScales()"),

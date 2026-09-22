@@ -254,6 +254,15 @@
       ],
     },
   };
+
+  function normalizePaneSeriesSelection(paneId, selectedIds) {
+    const config = PANE_SERIES_OPTIONS[paneId];
+    if (!config) return [];
+    const validIds = new Set(config.items.map((item) => item.id));
+    const normalized = [...new Set((Array.isArray(selectedIds) ? selectedIds : config.defaults).filter((id) => validIds.has(id)))];
+    return normalized.length ? normalized : [...config.defaults];
+  }
+
   const PANE_DETAIL_ITEMS = {
     "foreign-flow-holding": [
       { id: "net", label: "買賣超", color: "#f472b6", unit: "shares", get: (row) => row?.institutionalFlow?.foreignNetShares },
@@ -1052,6 +1061,10 @@
     return new Map((candles || []).map((row) => [dateForChartTime(row.time), row.time]).filter(([date]) => date));
   }
 
+  function candleDateMappingSignature(candles) {
+    return JSON.stringify([...candleTimeByDate(candles).entries()]);
+  }
+
   function selectionStorageKey(tabId, symbol) {
     return `quoteChart.chipPanes.v1:${String(tabId || "default")}:${String(symbol || "").toUpperCase()}`;
   }
@@ -1159,9 +1172,8 @@
           && LEGACY_HOLDER_DEFAULT_SERIES.every((id) => validStoredIds.includes(id));
         const storedSelection = legacyHolderDefault
           ? validStoredIds.filter((id) => id !== "holders")
-          : validStoredIds || config.defaults;
-        const selectedIds = paneId === "dealer-flow" && storedSelection.length === 0 ? config.defaults : storedSelection;
-        return [paneId, [...new Set(selectedIds)]];
+          : validStoredIds;
+        return [paneId, normalizePaneSeriesSelection(paneId, storedSelection)];
       }));
       const modeAActivePaneId = migratePaneId(stored?.modeAActivePaneId);
       const modeBSelectedPaneIds = migrateModeBSelectedPaneIds(stored);
@@ -1481,6 +1493,100 @@
         ? `${({ 15: "1,000,001 股以上", 14: "800,001 股以上", 13: "600,001 股以上", 12: "400,001 股以上" })[Number(threshold || 15)] || selected[0].range}（依集保持股級距）`
         : `${({ 3: "10,000 股以下", 4: "15,000 股以下", 5: "20,000 股以下" })[Number(threshold || 3)] || selected.at(-1).range}（依集保持股級距）`,
     };
+  }
+
+  function countFiniteSeriesValues(rows, getters) {
+    return (getters || []).reduce((total, getter) => total + (rows || []).reduce(
+      (count, row) => count + (safeNumber(getter(row)) === null ? 0 : 1),
+      0,
+    ), 0);
+  }
+
+  function selectedSeriesMaterialPointCount(definition, payload, selectedIds, threshold) {
+    const daily = payload?.rows || [];
+    const selected = selectedIds instanceof Set ? selectedIds : new Set(selectedIds || []);
+    if (definition.kind === "foreign-combined") {
+      const getters = {
+        net: (row) => row.institutionalFlow?.foreignNetShares,
+        buy: (row) => row.institutionalFlow?.foreignBuyShares,
+        sell: (row) => row.institutionalFlow?.foreignSellShares,
+        holdingRatio: (row) => row.foreignHolding?.heldRatioPercent,
+        holdingShares: (row) => row.foreignHolding?.heldShares,
+      };
+      return countFiniteSeriesValues(daily, [...selected].flatMap((id) => getters[id] ? [getters[id]] : []));
+    }
+    if (definition.kind === "flow") {
+      const fields = definition.id === "investment-trust-flow"
+        ? { net: "investmentTrustNetShares", buy: "investmentTrustBuyShares", sell: "investmentTrustSellShares" }
+        : definition.id === "dealer-flow"
+          ? { self: "dealerSelfNetShares", hedging: "dealerHedgingNetShares", net: "dealerTotalNetShares" }
+          : { net: definition.field };
+      const ids = PANE_SERIES_OPTIONS[definition.id] ? [...selected] : ["net"];
+      return countFiniteSeriesValues(daily, ids.flatMap((id) => fields[id]
+        ? [(row) => row.institutionalFlow?.[fields[id]]]
+        : []));
+    }
+    if (definition.kind === "estimated-margin-maintenance") {
+      return selected.has("maintenance")
+        ? countFiniteSeriesValues(daily, [(row) => row.marginShort?.estimatedMaintenancePercent])
+        : 0;
+    }
+    if (definition.kind === "short-margin-ratio") {
+      const computed = shortMarginRatioRows(daily);
+      return countFiniteSeriesValues(computed, [
+        ...(selected.has("ratio") ? [(row) => row.ratio] : []),
+        ...(selected.has("change") ? [(row) => row.change] : []),
+      ]);
+    }
+    if (definition.kind === "margin" || definition.kind === "short") {
+      const prefix = definition.kind === "margin" ? "margin" : "short";
+      const fields = {
+        balance: `${prefix}TodayBalanceLots`,
+        change: `${prefix}BalanceChangeLots`,
+        buy: `${prefix}BuyLots`,
+        sell: `${prefix}SellLots`,
+        repayment: `${prefix}CashRepaymentLots`,
+        utilization: `${prefix}UtilizationPercent`,
+      };
+      return countFiniteSeriesValues(daily, [...selected].flatMap((id) => fields[id]
+        ? [(row) => row.marginShort?.[fields[id]]]
+        : []));
+    }
+    if (definition.kind === "lending") {
+      return countFiniteSeriesValues(daily, [
+        (row) => row.securitiesLending?.transactionShares,
+        (row) => row.securitiesLending?.balanceShares,
+        (row) => row.securitiesLending?.shortSaleBalanceShares,
+      ]);
+    }
+    const distributionRows = payload?.distributionRows || [];
+    if (definition.kind === "holder-total") {
+      return countFiniteSeriesValues(distributionRows, [(row) => row?.holderMetrics?.totalHolders ?? row?.total?.holders]);
+    }
+    if (definition.kind === "holder") {
+      let previousRatio = null;
+      const aggregates = distributionRows.flatMap((row) => {
+        const aggregate = holderAggregate(row, definition.id, threshold);
+        if (!aggregate) return [];
+        const direction = row?.holderMetrics?.historyGap || previousRatio === null
+          ? null
+          : aggregate.ratioPercent - previousRatio;
+        previousRatio = aggregate.ratioPercent;
+        return [{ aggregate, direction }];
+      });
+      return countFiniteSeriesValues(aggregates, [
+        ...(selected.has("ratio") ? [(item) => item.aggregate.ratioPercent] : []),
+        ...(selected.has("change") ? [(item) => item.direction] : []),
+        ...(selected.has("holders") ? [(item) => item.aggregate.holders] : []),
+      ]);
+    }
+    return 0;
+  }
+
+  function countDrawableSeriesPoints(data) {
+    return (data || []).reduce((count, item) => count + (
+      item?.time !== null && item?.time !== undefined && safeNumber(item?.value) !== null ? 1 : 0
+    ), 0);
   }
 
   function chartInteractionOptions(mode = "A") {
@@ -1887,6 +1993,8 @@
     let isIntersecting = hasIntersectionState;
     let lastAvailabilityStatus = "unavailable";
     let lastMaterialExpected = false;
+    let lastSelectedMaterialPointCount = 0;
+    let lastDrawablePointCount = 0;
     let destroyed = false;
     let readoutReservationFrame = 0;
     let readoutReservationSignature = "";
@@ -1964,12 +2072,14 @@
       chart = undefined;
       anchor = undefined;
       series = [];
+      lastDrawablePointCount = 0;
       renderGate.reset();
       delete surface.dataset.chartMounted;
       surface.replaceChildren();
     }
 
     function clearSeries() {
+      lastDrawablePointCount = 0;
       if (!chart) { series = []; return; }
       for (const item of series) { try { chart.removeSeries(item); } catch {} }
       series = [];
@@ -1979,6 +2089,7 @@
       const item = chart.addSeries(global.LightweightCharts.HistogramSeries, { priceFormat, priceLineVisible: false, lastValueVisible: false, base: 0, ...extra });
       item.setData(data);
       series.push(item);
+      lastDrawablePointCount += countDrawableSeriesPoints(data);
       return item;
     }
 
@@ -1995,6 +2106,7 @@
       });
       item.setData(data);
       series.push(item);
+      lastDrawablePointCount += countDrawableSeriesPoints(data);
       return item;
     }
 
@@ -2004,7 +2116,7 @@
 
     function selectedSeriesIds() {
       const stored = options.getSeriesSelection?.(definition.id);
-      return new Set(Array.isArray(stored) ? stored : seriesConfig?.defaults || []);
+      return new Set(seriesConfig ? normalizePaneSeriesSelection(definition.id, stored) : []);
     }
 
     function syncSeriesControls() {
@@ -2013,11 +2125,12 @@
     }
 
     for (const input of seriesInputs) input.addEventListener("change", () => {
-      const selected = seriesInputs.filter((item) => item.checked).map((item) => item.value);
-      if (definition.id === "dealer-flow" && selected.length === 0) {
-        input.checked = true;
-        return;
-      }
+      const selected = normalizePaneSeriesSelection(
+        definition.id,
+        seriesInputs.filter((item) => item.checked).map((item) => item.value),
+      );
+      const selectedSet = new Set(selected);
+      for (const item of seriesInputs) item.checked = selectedSet.has(item.value);
       options.onSeriesSelectionChange?.(definition.id, selected);
       render(lastPayload, lastCandles);
     });
@@ -2475,6 +2588,12 @@
       const materialRows = isHolderDefinition(definition) ? payload?.distributionRows || [] : daily;
       lastAvailabilityStatus = availability?.status || "unavailable";
       lastMaterialExpected = materialRows.length > 0 && availability?.status !== "unavailable" && capability?.supported !== false;
+      lastSelectedMaterialPointCount = selectedSeriesMaterialPointCount(
+        definition,
+        payload,
+        selectedSeriesIds(),
+        element.querySelector(".chip-threshold-select")?.value,
+      );
       status.textContent = availabilityLabel(availability, capability, isHolderDefinition(definition) ? payload?.backfill : null, isHolderDefinition(definition) ? payload?.dispatch : null, isHolderDefinition(definition) ? payload?.shareholderDistribution : null);
       if (isHolderDefinition(definition) && status.textContent === "歷史已更新") status.textContent = "";
       if (definition.kind === "estimated-margin-maintenance"
@@ -2492,7 +2611,7 @@
         : `${backfillState.label}：${definition.label}缺少資料`);
       backfillSeparator.hidden = !backfillState.visible;
 
-      const renderSignature = `${definition.id}|${lastMaterialSignature}|${reservationControlKey()}`;
+      const renderSignature = `${definition.id}|${lastMaterialSignature}|${reservationControlKey()}|${candleDateMappingSignature(lastCandles)}`;
       if (!renderGate.shouldRender(renderSignature)) return false;
       clearSeries();
       chart.applyOptions({ rightPriceScale: { visible: true, borderVisible: true, ticksVisible: true } });
@@ -2805,9 +2924,11 @@
       exportReadiness() {
         const canvases = [...surface.querySelectorAll("canvas")];
         const canvasReady = canvases.length > 0 && canvases.every((canvas) => Number(canvas.width) > 0 && Number(canvas.height) > 0);
-        const selectedSeriesCount = selectedSeriesIds().size;
+        const selectedSeriesCount = seriesConfig ? selectedSeriesIds().size : 1;
         const renderedSeriesCount = series.length;
-        const seriesReady = !lastMaterialExpected || selectedSeriesCount === 0 || renderedSeriesCount > 0;
+        const selectedMaterialExpected = lastMaterialExpected && lastSelectedMaterialPointCount > 0;
+        const seriesReady = !selectedMaterialExpected
+          || (selectedSeriesCount > 0 && renderedSeriesCount > 0 && lastDrawablePointCount > 0);
         return {
           paneId: definition.id,
           contextIdentity: options.getExportIdentity?.() || "",
@@ -2816,8 +2937,11 @@
           canvasReady,
           availability: lastAvailabilityStatus,
           materialExpected: lastMaterialExpected,
+          selectedMaterialExpected,
+          selectedMaterialPointCount: lastSelectedMaterialPointCount,
           selectedSeriesCount,
           renderedSeriesCount,
+          drawablePointCount: lastDrawablePointCount,
           ready: Boolean(chart) && canvasReady && seriesReady,
         };
       },
@@ -2825,7 +2949,12 @@
         const nextCandles = Array.isArray(candles) ? candles : [];
         const previousRange = rangeForCandles(lastCandles);
         const nextRange = rangeForCandles(nextCandles);
+        const previousMappingSignature = candleDateMappingSignature(lastCandles);
+        const nextMappingSignature = candleDateMappingSignature(nextCandles);
         lastCandles = nextCandles;
+        if (previousMappingSignature !== nextMappingSignature && lastPayload !== undefined) {
+          if (render(lastPayload, lastCandles, lastMaterialSignature)) return;
+        }
         stabilizeHolderPriceScales();
         if (previousRange.start === nextRange.start && previousRange.end === nextRange.end) return;
         if (anchor) anchor.setData(lastCandles.map((row) => ({ time: row.time, value: 1 })));
@@ -3605,8 +3734,9 @@
     }
 
     function updateSeriesSelection(paneId, seriesIds) {
-      if (paneId === "dealer-flow" && (!Array.isArray(seriesIds) || seriesIds.length === 0)) return;
-      selection.seriesByPane = { ...selection.seriesByPane, [paneId]: [...seriesIds] };
+      const normalized = normalizePaneSeriesSelection(paneId, seriesIds);
+      if (!normalized.length) return;
+      selection.seriesByPane = { ...selection.seriesByPane, [paneId]: normalized };
       persist();
     }
 
@@ -3928,6 +4058,8 @@
       paneChartInteractionOptions,
       chipRequestKey,
       candleTimeByDate,
+      candleDateMappingSignature,
+      countDrawableSeriesPoints,
       dateForChartTime,
       chipPayloadMaterialSignature,
       chipReadoutContentSignature,
@@ -3951,6 +4083,7 @@
       normalizeChipPaneMode,
       normalizeGroupOrder,
       normalizePaneOrder,
+      normalizePaneSeriesSelection,
       paneDragScrollVelocity,
       paneIdsForGroupOrder,
       readSelection,
@@ -3959,6 +4092,7 @@
       readoutEnvelopeCandidates,
       readoutSegmentText,
       seriesColorForReadout,
+      selectedSeriesMaterialPointCount,
       shouldShowWarningNotice,
       shortMarginRatioPercent,
       shortMarginRatioRows,
