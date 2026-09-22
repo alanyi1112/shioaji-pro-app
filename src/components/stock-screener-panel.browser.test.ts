@@ -1,7 +1,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { StockScreenerPanel } from './stock-screener-panel';
 import type { ScreenerResponseV3, ScreenerResponseV4, ScreenerResponseV5 } from '../lib/stock-screener-api';
 import { DEFAULT_CRITERIA as DEFAULT_V2 } from '../lib/stock-screener-domain';
@@ -100,6 +100,12 @@ afterEach(async () => {
     localStorage.removeItem('sj-pro-stock-screener-v5');
 });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === text)!;
+async function openCondition(host: HTMLElement, group: 'basic' | 'technical' | 'chip', condition: string) {
+    const groupButton = host.querySelector<HTMLButtonElement>(`button[aria-controls="screener-condition-group-${group}"]`)!;
+    if (groupButton.getAttribute('aria-expanded') !== 'true') await act(async () => groupButton.click());
+    const conditionButton = host.querySelector<HTMLButtonElement>(`[data-condition-id="${condition}"] button[aria-controls="screener-condition-${condition}"]`)!;
+    if (conditionButton.getAttribute('aria-expanded') !== 'true') await act(async () => conditionButton.click());
+}
 async function mount(
     targets = [{ id: 'chart-a', label: '圖表 A' }],
     initialStatus?: Promise<Response>,
@@ -114,16 +120,21 @@ async function mount(
     const onAddToWatchlist = vi.fn(async () => ({ status: 'added' as const, listId: 'screener-list' }));
     const fetcher = vi.fn(async (url: string) => url.includes('/status?') && initialStatus ? initialStatus
         : Response.json(url.includes('version=5') ? readyV5 : url.includes('version=4') ? readyV4 : ready)); vi.stubGlobal('fetch', fetcher);
-    await act(async () => root?.render(createElement(StockScreenerPanel, { targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, snapshotVolumesByCode })));
+    await act(async () => {
+        root?.render(createElement(StockScreenerPanel, { targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, snapshotVolumesByCode }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     return { host, onPick, onOpenChart, onTargetChange, onAddToWatchlist, fetcher };
 }
 describe('收盤後選股面板（fixture 驗收）', () => {
     it('兩項預設、手動篩選、原值、指定圖表與窄版內部捲動', async () => {
         const { host, onPick, fetcher } = await mount();
         expect(host.querySelector<HTMLInputElement>('[aria-label="成交量倍數"]')!.value).toBe('3');
+        await openCondition(host, 'basic', 'holder');
         expect(host.querySelector<HTMLInputElement>('[aria-label="大戶週增百分點"]')!.value).toBe('0.2');
-        expect([...host.querySelectorAll<HTMLInputElement>('input[type=checkbox]:not([aria-label])')].every((input) => input.checked)).toBe(true);
-        expect([...host.querySelectorAll<HTMLInputElement>('input[type=checkbox][aria-label]')].every((input) => !input.checked)).toBe(true);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用成交量條件"]')!.checked).toBe(true);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用千張大戶條件"]')!.checked).toBe(true);
+        expect(host.querySelector('[aria-label="已選條件數"]')?.textContent).toBe('已選 2 項');
         expect(host.textContent).not.toContain('3008 測試商品');
         await act(async () => button(host, '開始篩選').click());
         expect(fetcher).toHaveBeenLastCalledWith(expect.stringContaining('volumeThreshold=3'), expect.objectContaining({ credentials: 'same-origin' }));
@@ -137,7 +148,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(pane.scrollHeight).toBeGreaterThan(pane.clientHeight);
         expect(pane.scrollWidth).toBeLessThanOrEqual(pane.clientWidth + 1);
         button(host, '開始篩選').focus(); expect(document.activeElement).toBe(button(host, '開始篩選'));
-        await act(async () => host.querySelector<HTMLInputElement>('input[type=checkbox]')!.click());
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用成交量條件"]')!.click());
         expect(host.textContent).toContain('條件尚未套用');
         expect(host.textContent).toContain('已套用：成交量 ≥ 3 倍 且 單週增加 ≥ 0.2 百分點');
         expect(host.textContent).toContain('可判定 1 檔');
@@ -159,7 +170,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(target.value).toBe('');
         await act(async () => { target.value = 'b'; target.dispatchEvent(new Event('change', { bubbles: true })); });
         expect(onTargetChange).toHaveBeenCalledOnce();
-        for (const checkbox of host.querySelectorAll<HTMLInputElement>('input[type=checkbox]:not([aria-label])')) await act(async () => checkbox.click());
+        await act(async () => button(host, '全部取消').click());
         expect(button(host, '開始篩選').disabled).toBe(true);
         expect(host.querySelector('[role=alert]')?.textContent).toContain('至少啟用一項條件');
     });
@@ -167,14 +178,17 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         localStorage.setItem('sj-pro-stock-screener-v1', JSON.stringify({ version: 1, query: { criteria: { mode: 'all', volume: { enabled: true, threshold: '4' }, holder: { enabled: true, threshold: '0.3' } }, sort: 'code', direction: 'asc', resultState: 'pass' } }));
         const { host, fetcher } = await mount();
         expect(host.querySelector<HTMLInputElement>('[aria-label="成交量倍數"]')!.value).toBe('4');
+        await openCondition(host, 'basic', 'holder');
         expect(host.querySelector<HTMLInputElement>('[aria-label="大戶週增百分點"]')!.value).toBe('0.3');
         expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v4')!).version).toBe(4);
         const mode = host.querySelector<HTMLSelectElement>('[aria-label="大戶持股模式"]')!;
         await act(async () => { mode.value = 'decrease-to-increase'; mode.dispatchEvent(new Event('change', { bubbles: true })); });
         const weeks = host.querySelector<HTMLInputElement>('[aria-label="反轉前連續週數"]')!;
         await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(weeks, '4'); weeks.dispatchEvent(new Event('input', { bubbles: true })); });
-        for (const label of ['成交量條件啟用最低成交值', '大戶條件啟用最低成交值'])
-            await act(async () => host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`)!.click());
+        await openCondition(host, 'basic', 'volume');
+        await act(async () => host.querySelector<HTMLInputElement>('input[aria-label="成交量條件啟用最低成交值"]')!.click());
+        await openCondition(host, 'basic', 'holder');
+        await act(async () => host.querySelector<HTMLInputElement>('input[aria-label="大戶條件啟用最低成交值"]')!.click());
         await act(async () => button(host, '開始篩選').click());
         const request = String(fetcher.mock.calls.at(-1)?.[0]);
         expect(request).toContain('version=3'); expect(request).toContain('holderMode=decrease-to-increase');
@@ -209,6 +223,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
                 bollReversal: { enabled: false, mode: 'any' } },
         } }));
         const { host, fetcher } = await mount();
+        await openCondition(host, 'basic', 'volume');
         const child = host.querySelector<HTMLInputElement>('[aria-label="成交量條件啟用最低成交值"]')!;
         expect(child.disabled).toBe(true);
         expect(child.checked).toBe(false);
@@ -218,6 +233,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
     it('v2 偏好只遷移一次且技術條件預設關閉；啟用後顯示可稽核證據', async () => {
         localStorage.setItem('sj-pro-stock-screener-v2', JSON.stringify({ version: 2, query: { criteria: DEFAULT_V2, sort: 'holderChange', direction: 'desc', resultState: 'pass' } }));
         const { host, fetcher, onPick } = await mount();
+        await openCondition(host, 'technical', 'fractal');
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用 K 棒分型"]')!.checked).toBe(false);
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用布林通道反轉 K"]')!.checked).toBe(false);
         expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v4')!).query.sort).toBe('holderChange');
@@ -371,6 +387,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
     });
     it('均線與背離條件送出 v4，保存偏好並呈現 P／D、pivot 與 hash 證據', async () => {
         const { host, fetcher } = await mount();
+        await openCondition(host, 'technical', 'ma');
         await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用均線糾結與交叉"]')!.click());
         const mode = host.querySelector<HTMLSelectElement>('[aria-label="均線型態"]')!;
         await act(async () => { mode.value = 'golden-cross'; mode.dispatchEvent(new Event('change', { bubbles: true })); });
@@ -404,6 +421,77 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         button(host, '開始篩選').focus(); expect(document.activeElement).toBe(button(host, '開始篩選'));
         const pane = host.querySelector<HTMLElement>('[data-testid="stock-screener-panel"]')!;
         expect(pane.scrollWidth).toBeLessThanOrEqual(pane.clientWidth + 1);
+    });
+
+    it('以三群組與單一 editor 收合條件，展開不啟用且啟用時自動展開', async () => {
+        const { host } = await mount();
+        const basic = host.querySelector<HTMLButtonElement>('button[aria-controls="screener-condition-group-basic"]')!;
+        const technical = host.querySelector<HTMLButtonElement>('button[aria-controls="screener-condition-group-technical"]')!;
+        const chip = host.querySelector<HTMLButtonElement>('button[aria-controls="screener-condition-group-chip"]')!;
+        expect(basic.getAttribute('aria-expanded')).toBe('true');
+        expect(basic.textContent).toContain('2 / 2');
+        expect(technical.textContent).toContain('0 / 6');
+        expect(chip.textContent).toContain('0 / 6');
+        expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
+        expect(host.querySelector('fieldset[aria-label="成交量 ≥ 前一交易日設定"]')).not.toBeNull();
+
+        await openCondition(host, 'technical', 'fractal');
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用 K 棒分型"]')!.checked).toBe(false);
+        expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
+        expect(host.querySelector('fieldset[aria-label="K 棒分型設定"]')).not.toBeNull();
+
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用均線糾結與交叉"]')!.click());
+        expect(host.querySelector('fieldset[aria-label="均線糾結與交叉設定"]')).not.toBeNull();
+        expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用均線糾結與交叉"]')!.checked).toBe(true);
+        expect(technical.textContent).toContain('1 / 6');
+    });
+
+    it('全部取消只改草稿，保留參數、已套用結果與查詢次數', async () => {
+        const { host, fetcher } = await mount();
+        await act(async () => button(host, '套用「長線佈局」草稿').click());
+        const ratio = host.querySelector<HTMLInputElement>('[aria-label="千張大戶最低比例"]')!;
+        await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(ratio, '12.5'); ratio.dispatchEvent(new Event('input', { bubbles: true })); });
+        await act(async () => button(host, '開始篩選').click());
+        const resultRequestsBefore = fetcher.mock.calls.filter(([url]) => String(url).includes('/results?')).length;
+        expect(host.textContent).toContain('3008 測試商品');
+
+        await act(async () => button(host, '全部取消').click());
+        expect(host.querySelector('[aria-label="已選條件數"]')?.textContent).toBe('已選 0 項');
+        expect(button(host, '全部取消').disabled).toBe(true);
+        expect(button(host, '開始篩選').disabled).toBe(true);
+        expect(host.textContent).toContain('已取消 3 個草稿條件；目前結果尚未變更');
+        expect(host.textContent).toContain('條件尚未套用');
+        expect(host.textContent).toContain('3008 測試商品');
+        expect(fetcher.mock.calls.filter(([url]) => String(url).includes('/results?'))).toHaveLength(resultRequestsBefore);
+
+        await openCondition(host, 'chip', 'largeHolderTrend');
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用千張大戶比例趨勢"]')!.click());
+        expect(host.querySelector<HTMLInputElement>('[aria-label="千張大戶最低比例"]')!.value).toBe('12.5');
+    });
+
+    it('資料警告常駐，完整證據預設收合且可由鍵盤展開', async () => {
+        const pending = { ...ready, state: 'pending' as const, reason: 'awaiting_tpex', expectedSessionDate: '2026-08-31', effectiveSessionDate: '2026-08-28',
+            sessionReadiness: { version: 1 as const, expectedSessionDate: '2026-08-31', effectiveSessionDate: '2026-08-28', phase: 'awaiting-publication' as const,
+                attempts: 1, nextAttemptAt: '2026-08-31T06:20:00.000Z', updatedAt: '2026-08-31T06:00:00.000Z', markets: {
+                    TWSE: { status: 'complete' as const, reportDate: '2026-08-31', hash: 'a'.repeat(64), total: 1000, invalid: 0, reason: null, checkedAt: '2026-08-31T06:00:00.000Z' },
+                    TPEx: { status: 'pending' as const, reportDate: '2026-08-28', hash: null, total: null, invalid: null, reason: 'source_not_published', checkedAt: '2026-08-31T06:00:00.000Z' },
+                } } };
+        const { host } = await mount(undefined, Promise.resolve(Response.json(pending)));
+        await expect.element(page.getByText('資料日期尚未同步：有效 2026-08-28 · 預期 2026-08-31')).toBeVisible();
+        await expect.element(page.getByText(/TPEx：等待發布/)).toBeVisible();
+        const details = host.querySelector<HTMLDetailsElement>('details[class*="evidenceDetails"]')!;
+        expect(details.open).toBe(false);
+        const summary = details.querySelector<HTMLElement>('summary')!;
+        summary.focus();
+        await userEvent.keyboard('{Enter}');
+        expect(details.open).toBe(true);
+        await expect.element(page.getByText('成交量比較：2026-08-27 → 2026-08-28')).toBeVisible();
+
+        const pane = host.querySelector<HTMLElement>('[data-testid="stock-screener-panel"]')!;
+        pane.parentElement!.style.height = '600px';
+        expect(pane.scrollWidth).toBeLessThanOrEqual(pane.clientWidth + 1);
+        expect(button(host, '開始篩選').getBoundingClientRect().top - pane.getBoundingClientRect().top).toBeLessThan(900);
     });
 
     it('停用 v5 條件後將籌碼排序還原為 v3 可用排序', async () => {

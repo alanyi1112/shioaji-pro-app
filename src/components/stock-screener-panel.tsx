@@ -5,7 +5,7 @@ import { decodeScreenerResponse, screenerSearchV3, screenerSearchV4, screenerSea
     type ScreenerResultRowV4, type ScreenerResultRowV5 } from '../lib/stock-screener-api';
 import {
     DEFAULT_CRITERIA_V3, isV3Preference,
-    type BollReversalMode, type FractalAlgorithm, type FractalDirection, type TechnicalUnknownReason,
+    type TechnicalUnknownReason,
 } from '../lib/stock-screener-technical-patterns';
 import {
     criteriaFingerprintV4, DEFAULT_CRITERIA_V4, effectiveCriteriaV4, isV4Preference, validateCriteriaV4,
@@ -17,6 +17,12 @@ import {
 } from '../lib/stock-screener-v5';
 import type { ScreenerWatchlistResult } from '../lib/stock-screener-watchlist';
 import { stockScreenerVolumeComparison } from '../lib/stock-screener-volume-comparison';
+import {
+    disableAllStockScreenerConditions, enabledStockScreenerConditions,
+    firstEnabledStockScreenerCondition, stockScreenerConditionSummary,
+    type StockScreenerConditionId,
+} from '../lib/stock-screener-condition-ui';
+import { StockScreenerConditionAccordion } from './stock-screener-condition-accordion';
 import * as styles from './stock-screener-panel.css';
 
 const PREFS = 'sj-pro-stock-screener-v5';
@@ -88,6 +94,13 @@ const chipConditionLabels: Record<ChipConditionKey, string> = {
     trustOwnership: '投信買超占股本', priceMargin: '價漲融資不增', shortMarginRatio: '券資比', closeHigh: '收盤新高', closeSmaBreakout: '收盤突破 SMA',
 };
 const chipConditionKeys = Object.keys(chipConditionLabels) as ChipConditionKey[];
+const resultStateLabels: Record<ScreenerQueryV5['resultState'], string> = { pass: '符合條件', unknown: '無法判定', fail: '不符合' };
+const sortLabels: Record<ScreenerQueryV5['sort'], string> = {
+    code: '股票代碼', volumeMultiple: '成交量倍數', turnover: '成交值', holderChange: '最新持股變化', holderStreak: '反轉前週數',
+    confirmationDate: '型態確認日', algorithm: '分型算法', direction: '型態方向', outsideDistance: '通道外距離', maSpread: '最新均線 spread',
+    pivotDate: '背離確認日', priceDifference: '背離價差', largeHolderRatio: '千張大戶比例', trustOwnershipPct: '投信買超占股本',
+    shortMarginRatio: '券資比', closeHighDays: '新高期間', smaPeriod: '突破均線週期',
+};
 const validV2Sort = (value: unknown): value is ScreenerQuery['sort'] => ['code', 'volumeMultiple', 'turnover', 'holderChange', 'holderStreak'].includes(String(value));
 function migrateV1Criteria(value: unknown): Criteria | null {
     if (!value || typeof value !== 'object') return null;
@@ -179,7 +192,11 @@ export interface StockScreenerPanelProps {
 type AddState = { status: 'pending' | 'added' | 'already_present' | 'error'; message: string };
 
 export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, chartConnectionMessage, snapshotVolumesByCode }: StockScreenerPanelProps) {
-    const [draft, setDraft] = useState(loadPreferences);
+    const initialDraft = useRef<ScreenerQueryV5 | null>(null);
+    if (initialDraft.current === null) initialDraft.current = loadPreferences();
+    const [draft, setDraft] = useState(initialDraft.current);
+    const [activeCondition, setActiveCondition] = useState<StockScreenerConditionId>(() => firstEnabledStockScreenerCondition(initialDraft.current!.criteria));
+    const [draftActionMessage, setDraftActionMessage] = useState('');
     const [applied, setApplied] = useState<ScreenerQueryV5 | null>(null);
     const [response, setResponse] = useState<ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | null>(null);
     const [busy, setBusy] = useState(false);
@@ -197,6 +214,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     const effectiveTarget = targets.some((target) => target.id === targetId) ? targetId : targets.length === 1 ? targets[0]!.id : '';
     const valid = validateCriteriaV5(draft.criteria);
     const dirty = applied !== null && fingerprint(draft) !== fingerprint(applied);
+    const enabledConditions = enabledStockScreenerConditions(draft.criteria);
 
     useEffect(() => () => { generation.current++; pickingGeneration.current++; controller.current?.abort(); }, []);
     useEffect(() => {
@@ -279,146 +297,53 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         <p className={styles.note}>收盤後選股 · 全部上市／上櫃普通股（不限定自選清單）</p>
         <details className={styles.note}><summary>範圍與排除商品</summary>排除 ETF、ETN、權證、特別股、TDR、興櫃及海外股票；停牌但未下市櫃的普通股仍列入母體，缺比較資料時標示無法判定。</details>
         <form onSubmit={(event) => { event.preventDefault(); void run(draft); }}>
-            <div className={styles.controls}><button type='button' onClick={() => setDraft({ ...draft,
-                criteria: { ...LONG_TERM_LAYOUT_PRESET,
+            <div className={styles.draftToolbar}><div className={styles.controls}><button type='button' onClick={() => {
+                const criteria: CriteriaV5 = { ...LONG_TERM_LAYOUT_PRESET,
                     largeHolderTrend: { ...LONG_TERM_LAYOUT_PRESET.largeHolderTrend },
                     retailHolderDecline: { ...LONG_TERM_LAYOUT_PRESET.retailHolderDecline },
-                    priceMargin: { ...LONG_TERM_LAYOUT_PRESET.priceMargin } } })}>套用「長線佈局」草稿</button>
-                <span className={styles.note}>只更新尚未提交的條件；按「開始篩選」後才查詢。</span></div>
-            <div className={styles.condition}>
-                <label><input type='checkbox' checked={draft.criteria.volume.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, volume: { ...draft.criteria.volume, enabled: e.target.checked } } })} /> 成交量 ≥ 前一交易日</label>
-                <input aria-label='成交量倍數' type='number' min='0.01' max='1000' step='0.01' value={draft.criteria.volume.threshold} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, volume: { ...draft.criteria.volume, threshold: e.target.value } } })} /> 倍
-                <label><input type='checkbox' aria-label='成交量條件啟用最低成交值' disabled={!draft.criteria.volume.enabled} checked={draft.criteria.volume.enabled && draft.criteria.volume.turnover.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, volume: { ...draft.criteria.volume, turnover: { ...draft.criteria.volume.turnover, enabled: e.target.checked } } } })} /> 最低成交值</label>
-                <input aria-label='成交量條件最低成交值（萬）' type='number' min='0.01' max='10000000' step='0.01' disabled={!draft.criteria.volume.enabled || !draft.criteria.volume.turnover.enabled} value={draft.criteria.volume.turnover.minimumWan} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, volume: { ...draft.criteria.volume, turnover: { ...draft.criteria.volume.turnover, minimumWan: e.target.value } } } })} /> 萬
+                    priceMargin: { ...LONG_TERM_LAYOUT_PRESET.priceMargin } };
+                setDraft({ ...draft, criteria }); setActiveCondition(firstEnabledStockScreenerCondition(criteria)); setDraftActionMessage('已套用「長線佈局」草稿；按「開始篩選」後才查詢。');
+            }}>套用「長線佈局」草稿</button>
+                <button type='button' disabled={!enabledConditions.length} onClick={() => {
+                    const cancelled = enabledConditions.length;
+                    setDraft((current) => ({ ...current, criteria: disableAllStockScreenerConditions(current.criteria) }));
+                    setActiveCondition('volume');
+                    setDraftActionMessage(`已取消 ${cancelled} 個草稿條件；目前結果尚未變更。`);
+                }}>全部取消</button>
+                <strong aria-label='已選條件數'>已選 {enabledConditions.length} 項</strong></div>
+                {!!enabledConditions.length && <div className={styles.selectedConditions} aria-label='已選條件摘要'>{enabledConditions.map((condition) =>
+                    <span key={condition.id}>{condition.label} · {stockScreenerConditionSummary(draft.criteria, condition.id)}</span>)}</div>}
             </div>
-            <div className={styles.condition}>
-                <label><input type='checkbox' checked={draft.criteria.holder.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, holder: { ...draft.criteria.holder, enabled: e.target.checked } } })} /> 千張大戶</label>
-                <select aria-label='大戶持股模式' value={draft.criteria.holder.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, holder: { ...draft.criteria.holder, mode: e.target.value as HolderMode } } })}>
-                    <option value='weekly-increase'>單週增加</option><option value='decrease-to-increase'>持股比例由減轉增</option><option value='increase-to-decrease'>持股比例由增轉減</option>
-                </select>
-                {draft.criteria.holder.mode !== 'weekly-increase' && <><input aria-label='反轉前連續週數' type='number' min='1' max='4' step='1' value={draft.criteria.holder.streakWeeks} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, holder: { ...draft.criteria.holder, streakWeeks: Number(e.target.value) } } })} /> 週後反轉</>}
-                <span>{draft.criteria.holder.mode === 'increase-to-decrease' ? '週減 ≥' : '週增 ≥'}</span>
-                <input aria-label='大戶週增百分點' type='number' min='0.01' max='100' step='0.01' value={draft.criteria.holder.threshold} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, holder: { ...draft.criteria.holder, threshold: e.target.value } } })} /> 百分點
-                <label><input type='checkbox' aria-label='大戶條件啟用最低成交值' disabled={!draft.criteria.holder.enabled} checked={draft.criteria.holder.enabled && draft.criteria.holder.turnover.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, holder: { ...draft.criteria.holder, turnover: { ...draft.criteria.holder.turnover, enabled: e.target.checked } } } })} /> 最低成交值</label>
-                <input aria-label='大戶條件最低成交值（萬）' type='number' min='0.01' max='10000000' step='0.01' disabled={!draft.criteria.holder.enabled || !draft.criteria.holder.turnover.enabled} value={draft.criteria.holder.turnover.minimumWan} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, holder: { ...draft.criteria.holder, turnover: { ...draft.criteria.holder.turnover, minimumWan: e.target.value } } } })} /> 萬
-            </div>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用 K 棒分型' type='checkbox' checked={draft.criteria.fractal.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, fractal: { ...draft.criteria.fractal, enabled: e.target.checked } } })} /> K 棒分型</label></legend>
-                <label>算法 <select aria-label='分型算法' disabled={!draft.criteria.fractal.enabled} value={draft.criteria.fractal.algorithm} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, fractal: { ...draft.criteria.fractal, algorithm: e.target.value as FractalAlgorithm } } })}>
-                    <option value='raw-three'>原始三 K</option><option value='chan-containment'>纏論包含處理</option><option value='any'>任一算法</option>
-                </select></label>
-                <label>方向 <select aria-label='分型方向' disabled={!draft.criteria.fractal.enabled} value={draft.criteria.fractal.direction} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, fractal: { ...draft.criteria.fractal, direction: e.target.value as FractalDirection } } })}>
-                    <option value='bottom'>底分型</option><option value='top'>頂分型</option><option value='any'>任一方向</option>
-                </select></label>
-                <span className={styles.note}>中心 K 棒需等右側完整交易日確認；確認日不是中心日。</span>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用布林通道反轉 K' type='checkbox' checked={draft.criteria.bollReversal.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, bollReversal: { ...draft.criteria.bollReversal, enabled: e.target.checked } } })} /> 布林通道反轉 K</label></legend>
-                <label>型態 <select aria-label='布林反轉型態' disabled={!draft.criteria.bollReversal.enabled} value={draft.criteria.bollReversal.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, bollReversal: { ...draft.criteria.bollReversal, mode: e.target.value as BollReversalMode } } })}>
-                    <option value='lower-bullish'>下軌陽 K＋下影</option><option value='upper-bearish'>上軌陰 K＋上影</option><option value='any'>任一型態</option>
-                </select></label>
-                <span className={styles.note}>固定 BOLL(20,2)：前一交易日收盤仍在通道內，最新日首次嚴格穿越。</span>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用均線糾結與交叉' type='checkbox' checked={draft.criteria.ma.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, ma: { ...draft.criteria.ma, enabled: e.target.checked } } })} /> 均線糾結與交叉</label></legend>
-                <label>型態 <select aria-label='均線型態' disabled={!draft.criteria.ma.enabled} value={draft.criteria.ma.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, ma: { ...draft.criteria.ma, mode: e.target.value as MaMode } } })}>
-                    <option value='bullish-preparation'>多頭準備突破</option><option value='golden-cross'>黃金交叉</option>
-                    <option value='bearish-preparation'>空頭準備跌破</option><option value='death-cross'>死亡交叉</option>
-                    <option value='any-bullish'>任一多頭訊號</option><option value='any-bearish'>任一空頭訊號</option>
-                </select></label>
-                <label>連續 <input aria-label='均線糾結交易日數' type='number' min='2' max='10' step='1' disabled={!draft.criteria.ma.enabled}
-                    value={draft.criteria.ma.compressionDays} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, ma: { ...draft.criteria.ma, compressionDays: Number(e.target.value) } } })} /> 個交易日</label>
-                <label>最大 spread <input aria-label='均線糾結最大寬度百分比' type='number' min='0.1' max='5' step='0.01' disabled={!draft.criteria.ma.enabled}
-                    value={draft.criteria.ma.maxSpreadPct} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, ma: { ...draft.criteria.ma, maxSpreadPct: e.target.value } } })} /> %</label>
-                <span className={styles.note}>SMA5／10／20 使用官方未還原收盤價；交叉模式的糾結窗結束於前一交易日 P。</span>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用價與指標背離' type='checkbox' checked={draft.criteria.divergence.enabled} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, divergence: { ...draft.criteria.divergence, enabled: e.target.checked } } })} /> 價與指標背離</label></legend>
-                <label>指標 <select aria-label='背離指標來源' disabled={!draft.criteria.divergence.enabled} value={draft.criteria.divergence.source} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, divergence: { ...draft.criteria.divergence, source: e.target.value as DivergenceSource } } })}>
-                    <option value='obv'>OBV</option><option value='rsi5'>RSI5</option><option value='rsi10'>RSI10</option>
-                    <option value='kd-k'>KD-K(9,3,3)</option><option value='macd-line'>MACD line</option><option value='macd-histogram'>MACD 能量柱</option>
-                </select></label>
-                <label>方向 <select aria-label='背離方向' disabled={!draft.criteria.divergence.enabled} value={draft.criteria.divergence.direction} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, divergence: { ...draft.criteria.divergence, direction: e.target.value as DivergenceDirection } } })}>
-                    <option value='bullish'>底背離</option><option value='bearish'>頂背離</option><option value='any'>任一方向</option>
-                </select></label>
-                <label><input aria-label='MACD 能量柱要求中間穿越零軸' type='checkbox'
-                    disabled={!draft.criteria.divergence.enabled || draft.criteria.divergence.source !== 'macd-histogram'}
-                    checked={draft.criteria.divergence.enabled && draft.criteria.divergence.source === 'macd-histogram' && draft.criteria.divergence.requireZeroReset}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, divergence: { ...draft.criteria.divergence, requireZeroReset: e.target.checked } } })} /> 兩 pivot 之間需穿越零軸</label>
-                <span className={styles.note}>只判定一般型背離；price pivot 左右各 2 根確認、間距 5–30 個交易日，最新 pivot 距 D 最多 3 日且價差至少 1%。</span>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用千張大戶比例趨勢' type='checkbox' checked={draft.criteria.largeHolderTrend.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderTrend: { ...draft.criteria.largeHolderTrend, enabled: e.target.checked } } })} /> 千張大戶比例區間且連續上升</label></legend>
-                <label>比例 <input aria-label='千張大戶最低比例' type='number' min='0' max='100' step='0.01' disabled={!draft.criteria.largeHolderTrend.enabled}
-                    value={draft.criteria.largeHolderTrend.minimumRatioPct} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderTrend: { ...draft.criteria.largeHolderTrend, minimumRatioPct: e.target.value } } })} />–
-                    <input aria-label='千張大戶最高比例' type='number' min='0' max='100' step='0.01' disabled={!draft.criteria.largeHolderTrend.enabled}
-                    value={draft.criteria.largeHolderTrend.maximumRatioPct} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderTrend: { ...draft.criteria.largeHolderTrend, maximumRatioPct: e.target.value } } })} /> %</label>
-                <label>連續 <input aria-label='千張大戶上升週數' type='number' min='1' max='12' step='1' disabled={!draft.criteria.largeHolderTrend.enabled}
-                    value={draft.criteria.largeHolderTrend.weeks} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderTrend: { ...draft.criteria.largeHolderTrend, weeks: Number(e.target.value) } } })} /> 週</label>
-                <label>每週增幅 &gt; <input aria-label='千張大戶最低週增百分點' type='number' min='0' max='100' step='0.01' disabled={!draft.criteria.largeHolderTrend.enabled}
-                    value={draft.criteria.largeHolderTrend.minimumIncreasePp} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderTrend: { ...draft.criteria.largeHolderTrend, minimumIncreasePp: e.target.value } } })} /> 百分點</label>
-                <span className={styles.note}>固定使用 TDCC 第 15 級（1,000,001 股以上）。</span>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用大戶人數減少且持股增加' type='checkbox' checked={draft.criteria.largeHolderConcentration.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderConcentration: { ...draft.criteria.largeHolderConcentration, enabled: e.target.checked } } })} /> 千張大戶人數下降且持股股數增加</label></legend>
-                <label>連續 <input aria-label='大戶集中週數' type='number' min='1' max='12' step='1' disabled={!draft.criteria.largeHolderConcentration.enabled}
-                    value={draft.criteria.largeHolderConcentration.weeks} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, largeHolderConcentration: { ...draft.criteria.largeHolderConcentration, weeks: Number(e.target.value) } } })} /> 週</label>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用十張以下散戶比例下降' type='checkbox' checked={draft.criteria.retailHolderDecline.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, retailHolderDecline: { ...draft.criteria.retailHolderDecline, enabled: e.target.checked } } })} /> 10 張以下散戶持股比例下降</label></legend>
-                <label>連續 <input aria-label='散戶比例下降週數' type='number' min='1' max='12' step='1' disabled={!draft.criteria.retailHolderDecline.enabled}
-                    value={draft.criteria.retailHolderDecline.weeks} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, retailHolderDecline: { ...draft.criteria.retailHolderDecline, weeks: Number(e.target.value) } } })} /> 週</label>
-                <span className={styles.note}>固定加總 TDCC 第 1–3 級。</span>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用投信買超占股本' type='checkbox' checked={draft.criteria.trustOwnership.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, trustOwnership: { ...draft.criteria.trustOwnership, enabled: e.target.checked } } })} /> 投信累計買超占已發行普通股數</label></legend>
-                <label>近 <input aria-label='投信買超交易日數' type='number' min='5' max='10' step='1' disabled={!draft.criteria.trustOwnership.enabled}
-                    value={draft.criteria.trustOwnership.days} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, trustOwnership: { ...draft.criteria.trustOwnership, days: Number(e.target.value) } } })} /> 日</label>
-                <label>至少 <input aria-label='投信買超占股本最低百分比' type='number' min='0' max='1000' step='0.01' disabled={!draft.criteria.trustOwnership.enabled}
-                    value={draft.criteria.trustOwnership.minimumPct} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, trustOwnership: { ...draft.criteria.trustOwnership, minimumPct: e.target.value } } })} /> %</label>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用價漲融資不增' type='checkbox' checked={draft.criteria.priceMargin.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, priceMargin: { ...draft.criteria.priceMargin, enabled: e.target.checked } } })} /> 股價上漲且融資餘額下降或持平</label></legend>
-                <label>比較 <input aria-label='價漲融資比較交易日數' type='number' min='1' max='20' step='1' disabled={!draft.criteria.priceMargin.enabled}
-                    value={draft.criteria.priceMargin.days} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, priceMargin: { ...draft.criteria.priceMargin, days: Number(e.target.value) } } })} /> 個交易日前</label>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用券資比' type='checkbox' checked={draft.criteria.shortMarginRatio.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, shortMarginRatio: { ...draft.criteria.shortMarginRatio, enabled: e.target.checked } } })} /> 券資比達門檻</label></legend>
-                <label>至少 <input aria-label='券資比最低百分比' type='number' min='0.01' max='1000' step='0.01' disabled={!draft.criteria.shortMarginRatio.enabled}
-                    value={draft.criteria.shortMarginRatio.minimumPct} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, shortMarginRatio: { ...draft.criteria.shortMarginRatio, minimumPct: e.target.value } } })} /> %</label>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用收盤價新高' type='checkbox' checked={draft.criteria.closeHigh.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, closeHigh: { ...draft.criteria.closeHigh, enabled: e.target.checked } } })} /> 收盤價創近期新高</label></legend>
-                <label>近 <input aria-label='收盤價新高交易日數' type='number' min='2' max='120' step='1' disabled={!draft.criteria.closeHigh.enabled}
-                    value={draft.criteria.closeHigh.days} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, closeHigh: { ...draft.criteria.closeHigh, days: Number(e.target.value) } } })} /> 日</label>
-            </fieldset>
-            <fieldset className={styles.conditionCard}>
-                <legend><label><input aria-label='啟用收盤價突破均線' type='checkbox' checked={draft.criteria.closeSmaBreakout.enabled}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, closeSmaBreakout: { ...draft.criteria.closeSmaBreakout, enabled: e.target.checked } } })} /> 收盤價向上突破 SMA</label></legend>
-                <label>週期 <select aria-label='收盤價突破均線週期' disabled={!draft.criteria.closeSmaBreakout.enabled} value={draft.criteria.closeSmaBreakout.period}
-                    onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, closeSmaBreakout: { ...draft.criteria.closeSmaBreakout, period: Number(e.target.value) as 5 | 10 | 20 | 60 } } })}>
-                    <option value='5'>SMA5</option><option value='10'>SMA10</option><option value='20'>SMA20</option><option value='60'>SMA60</option>
-                </select></label>
-            </fieldset>
+            {draftActionMessage && <p role='status' className={styles.note}>{draftActionMessage}</p>}
+            <StockScreenerConditionAccordion criteria={draft.criteria} activeCondition={activeCondition}
+                onActiveConditionChange={setActiveCondition} onChange={(criteria) => { setDraft((current) => ({ ...current, criteria })); setDraftActionMessage(''); }} />
+            <details className={styles.settingsDetails}>
+                <summary>結果設定 · {draft.criteria.mode === 'all' ? 'AND' : 'OR'} · {resultStateLabels[draft.resultState]} · {sortLabels[draft.sort]} · {draft.direction === 'asc' ? '由小到大' : '由大到小'}</summary>
             <div className={styles.controls}>
                 <select aria-label='條件組合' value={draft.criteria.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, mode: e.target.value as 'all' | 'any' } })}><option value='all'>全部符合（AND）</option><option value='any'>任一符合（OR）</option></select>
                 <select aria-label='結果種類' value={draft.resultState} onChange={(e) => setDraft({ ...draft, resultState: e.target.value as ScreenerQueryV4['resultState'] })}><option value='pass'>符合條件</option><option value='unknown'>無法判定</option><option value='fail'>不符合</option></select>
                 <select aria-label='選股排序' value={draft.sort} onChange={(e) => setDraft({ ...draft, sort: e.target.value as ScreenerQueryV5['sort'] })}><option value='code'>股票代碼</option><option value='volumeMultiple'>成交量倍數</option><option value='turnover'>成交值</option><option value='holderChange'>最新持股變化</option><option value='holderStreak'>反轉前週數</option><option value='confirmationDate'>型態確認日</option><option value='algorithm'>分型算法</option><option value='direction'>型態方向</option><option value='outsideDistance'>通道外距離</option><option value='maSpread'>最新均線 spread</option><option value='pivotDate'>背離確認日</option><option value='priceDifference'>背離價差</option><option value='largeHolderRatio'>千張大戶比例</option><option value='trustOwnershipPct'>投信買超占股本</option><option value='shortMarginRatio'>券資比</option><option value='closeHighDays'>新高期間</option><option value='smaPeriod'>突破均線週期</option></select>
                 <select aria-label='排序方向' value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value as 'asc' | 'desc' })}><option value='asc'>由小到大</option><option value='desc'>由大到小</option></select>
-                <button type='submit' disabled={!valid || busy}>{busy ? '篩選中…' : '開始篩選'}</button>
             </div>
+            </details>
+            <div className={styles.submitRow}><button type='submit' disabled={!valid || busy}>{busy ? '篩選中…' : '開始篩選'}</button></div>
             {!valid && <p role='alert'>至少啟用一項條件且參數必須合法；籌碼比例最多兩位小數，連續週數 1–12，投信 5–10 日，價量／融資 1–20 日，新高 2–120 日。</p>}
             {dirty && <p role='status'>條件尚未套用；下方仍是上次篩選結果。</p>}
         </form>
         <div className={styles.status} role='status' aria-live='polite'>
-            {error || (response ? states[response.state] : '尚未查詢資料')}
+            <strong>{error || (response ? states[response.state] : '尚未查詢資料')}</strong>
+            {applied && <div>已套用 {enabledStockScreenerConditions(applied.criteria).length} 項 · {applied.criteria.mode === 'all' ? '全部符合（AND）' : '任一符合（OR）'}</div>}
+            {response && statusReasons[response.reason] && <div>{statusReasons[response.reason]}</div>}
+            {response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current)
+                && <div className={styles.criticalStatus}>資料日期尚未同步：有效 {response.effectiveSessionDate ?? response.anchors.daily?.current ?? '未提供'} · 預期 {response.expectedSessionDate}</div>}
+            {response?.sessionReadiness && response.sessionReadiness.phase !== 'complete' && (['TWSE', 'TPEx'] as const).map((market) => {
+                const publication = response.sessionReadiness!.markets[market];
+                const label = publication.status === 'complete' ? '已完成' : publication.status === 'pending' ? '等待發布'
+                    : publication.status === 'rate-limited' ? '冷卻中' : publication.status === 'blocked' ? '來源阻擋' : '驗證失敗';
+                return <div key={market}>{market}：{label}{publication.reason ? `（${publicationReasonLabels[publication.reason] ?? '來源驗證未通過'}）` : ''}；最後合法日期 {publication.reportDate ?? response.effectiveSessionDate ?? '無'}</div>;
+            })}
+            {(applied || response) && <details className={styles.evidenceDetails}>
+            <summary>資料範圍與完整性{response?.effectiveSessionDate || response?.anchors.daily?.current ? ` · 有效 ${response.effectiveSessionDate ?? response.anchors.daily?.current}` : ''}{response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current) ? ` · 預期 ${response.expectedSessionDate}` : ''}</summary>
             {applied && <div>已套用：{[
                 applied.criteria.volume.enabled ? `成交量 ≥ ${applied.criteria.volume.threshold} 倍${applied.criteria.volume.turnover.enabled ? `且成交值 ≥ ${applied.criteria.volume.turnover.minimumWan} 萬` : ''}` : '',
                 applied.criteria.holder.enabled ? `${holderModeLabels[applied.criteria.holder.mode]}${applied.criteria.holder.mode === 'weekly-increase' ? '' : `（前 ${applied.criteria.holder.streakWeeks} 週）`} ≥ ${applied.criteria.holder.threshold} 百分點${applied.criteria.holder.turnover.enabled ? `且成交值 ≥ ${applied.criteria.holder.turnover.minimumWan} 萬` : ''}` : '',
@@ -435,18 +360,11 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                 applied.criteria.closeHigh.enabled ? `收盤創 ${applied.criteria.closeHigh.days} 日新高` : '',
                 applied.criteria.closeSmaBreakout.enabled ? `收盤突破 SMA${applied.criteria.closeSmaBreakout.period}` : '',
             ].filter(Boolean).join(applied.criteria.mode === 'all' ? ' 且 ' : ' 或 ')}</div>}
-            {response && statusReasons[response.reason] && <div>{statusReasons[response.reason]}</div>}
             {response?.preparation && <div>{response.preparation.version === 4 ? 'OHLCV 130 日準備' : 'OHLC 60 日準備'}：{response.preparation.processed}/{response.preparation.target} · 剩餘 {response.preparation.remaining} · 失敗 {response.preparation.failed} · 逾期 {response.preparation.overdue}</div>}
             {response?.anchors.daily && <div>成交量比較：{response.anchors.daily.previous} → {response.anchors.daily.current}</div>}
             {(response?.effectiveSessionDate || response?.anchors.daily?.current) && <div>有效資料日：{response.effectiveSessionDate ?? response.anchors.daily?.current}</div>}
             {response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current)
                 && <div>預期資料日：{response.expectedSessionDate}</div>}
-            {response?.sessionReadiness && response.sessionReadiness.phase !== 'complete' && (['TWSE', 'TPEx'] as const).map((market) => {
-                const publication = response.sessionReadiness!.markets[market];
-                const label = publication.status === 'complete' ? '已完成' : publication.status === 'pending' ? '等待發布'
-                    : publication.status === 'rate-limited' ? '冷卻中' : publication.status === 'blocked' ? '來源阻擋' : '驗證失敗';
-                return <div key={market}>{market}：{label}{publication.reason ? `（${publicationReasonLabels[publication.reason] ?? '來源驗證未通過'}）` : ''}；最後合法日期 {publication.reportDate ?? response.effectiveSessionDate ?? '無'}</div>;
-            })}
             {response?.anchors.weekly && <div>持股：{response.anchors.weekly.previous} → {response.anchors.weekly.current}</div>}
             {!!response?.anchors.weeklyPeriods?.length && <div>TDCC 歷史窗：{response.anchors.weeklyPeriods.join('、')}</div>}
             {response?.technicalAnchors && <div>技術型態：{response.technicalAnchors.sessions[0]} → {response.technicalAnchors.through}（{response.technicalAnchors.sessions.length} 個交易日）</div>}
@@ -460,9 +378,10 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                 <div>欄位缺漏（可重疊）：日量 {counts.missingByCondition['volume-multiple']} · 持股 {counts.missingByCondition['large-holder-weekly-pp']} · 分型 {counts.missingByCondition.fractal} · 布林 {counts.missingByCondition['boll-reversal']}{'ma' in counts.missingByCondition && 'divergence' in counts.missingByCondition ? ` · 均線 ${counts.missingByCondition.ma} · 背離 ${counts.missingByCondition.divergence}` : ''}{response?.version === 5 ? ` · 千張趨勢 ${response.counts?.missingByCondition.largeHolderTrend} · 大戶集中 ${response.counts?.missingByCondition.largeHolderConcentration} · 散戶 ${response.counts?.missingByCondition.retailHolderDecline} · 投信 ${response.counts?.missingByCondition.trustOwnership} · 價融 ${response.counts?.missingByCondition.priceMargin} · 券資比 ${response.counts?.missingByCondition.shortMarginRatio} · 新高 ${response.counts?.missingByCondition.closeHigh} · 突破 SMA ${response.counts?.missingByCondition.closeSmaBreakout}` : ''}</div>
                 {response?.byMarket && <div>上市 {response.byMarket.TWSE.total} · 上櫃 {response.byMarket.TPEx.total}</div>}
             </>}
+            </details>}
             {storageError && <div>瀏覽器無法保存偏好；本次結果不受影響。</div>}
         </div>
-        <div className={styles.controls}>
+        <div className={styles.resultToolbar} aria-label='結果圖表工具列'>
             <label>目標 K 線圖 <select aria-label='目標 K 線圖' value={effectiveTarget} onChange={(e) => { pickingGeneration.current++; onTargetChange(); setTargetId(e.target.value); setSelectionMessage(''); }}>
                 <option value=''>請選擇圖表</option>{targets.map((target) => <option key={target.id} value={target.id}>{target.label}</option>)}
             </select></label>
@@ -537,7 +456,9 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             <span>第 {page + 1} 頁</span>
             <button type='button' disabled={!response?.nextCursor || busy || dirty} onClick={() => void run(applied, response?.nextCursor ?? '', page + 1)}>下一頁</button>
         </div>}
-        <p className={styles.note}>千張大戶為 TDCC 第 15 級（1,000,001 股以上），10 張以下散戶為第 1–3 級合計；投信條件使用官方 signed 買賣超與同一 universe revision 的已發行普通股數，券資比使用同日融券餘額除以融資餘額。技術條件只使用官方未還原日 OHLCV。點選商品內容只更換指定圖表；只有明確按下「加入清單」才會加入「選股」清單，不變更下單商品。</p>
-        <p className={styles.note}>來源：<a href='https://openapi.twse.com.tw/' target='_blank' rel='noopener noreferrer'>臺灣證券交易所</a>、<a href='https://www.tpex.org.tw/openapi/' target='_blank' rel='noopener noreferrer'>證券櫃檯買賣中心</a>、<a href='https://data.gov.tw/en/datasets/11452' target='_blank' rel='noopener noreferrer'>臺灣集中保管結算所</a>。僅供資料篩選。</p>
+        <details className={styles.methodDetails}><summary>計算口徑與資料來源</summary>
+            <p className={styles.note}>千張大戶為 TDCC 第 15 級（1,000,001 股以上），10 張以下散戶為第 1–3 級合計；投信條件使用官方 signed 買賣超與同一 universe revision 的已發行普通股數，券資比使用同日融券餘額除以融資餘額。技術條件只使用官方未還原日 OHLCV。點選商品內容只更換指定圖表；只有明確按下「加入清單」才會加入「選股」清單，不變更下單商品。</p>
+            <p className={styles.note}>來源：<a href='https://openapi.twse.com.tw/' target='_blank' rel='noopener noreferrer'>臺灣證券交易所</a>、<a href='https://www.tpex.org.tw/openapi/' target='_blank' rel='noopener noreferrer'>證券櫃檯買賣中心</a>、<a href='https://data.gov.tw/en/datasets/11452' target='_blank' rel='noopener noreferrer'>臺灣集中保管結算所</a>。僅供資料篩選。</p>
+        </details>
     </div>;
 }
