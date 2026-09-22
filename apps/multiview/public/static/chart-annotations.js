@@ -3,9 +3,9 @@
 
   const STORAGE_PREFIX = "quoteChart.annotations.v1";
   const RETRACEMENT_LEVELS = [-0.62, -0.27, 0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1];
-  const EXTENSION_LEVELS = [0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2];
+  const EXTENSION_LEVELS = [0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2];
   const LEGACY_LEVEL_COLORS = ["#fb7185", "#fb923c", "#facc15", "#84cc16", "#2dd4bf", "#22d3ee", "#818cf8"];
-  const ADDED_LEVEL_COLORS = new Map([[-0.62, "#a78bfa"], [-0.27, "#e879f9"], [0.705, "#f472b6"]]);
+  const ADDED_LEVEL_COLORS = new Map([[-0.62, "#a78bfa"], [-0.27, "#e879f9"], [0.5, "#60a5fa"], [0.705, "#f472b6"]]);
   const LEGACY_LEVELS_BY_KIND = {
     retracement: [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1],
     extension: [0.618, 0.786, 1, 1.272, 1.414, 1.618, 2],
@@ -37,7 +37,7 @@
   }
 
   function fibonacciLevelColor(kind, level) {
-    if ((kind === "retracement" || Number(level) === 0.705) && ADDED_LEVEL_COLORS.has(Number(level))) return ADDED_LEVEL_COLORS.get(Number(level));
+    if (((kind === "retracement" && Number(level) !== 0.5) || (kind === "extension" && [0.5, 0.705].includes(Number(level)))) && ADDED_LEVEL_COLORS.has(Number(level))) return ADDED_LEVEL_COLORS.get(Number(level));
     const index = LEGACY_LEVELS_BY_KIND[kind]?.indexOf(Number(level)) ?? -1;
     return LEGACY_LEVEL_COLORS[index] || "#cbd5e1";
   }

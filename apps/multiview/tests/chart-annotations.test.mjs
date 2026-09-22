@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 const source = await readFile(new URL("../public/static/chart-annotations.js", import.meta.url), "utf8");
+const rootFibonacciSource = await readFile(new URL("../../../src/lib/fibonacci-annotations.ts", import.meta.url), "utf8");
 const indexHtml = await readFile(new URL("../public/static/index.html", import.meta.url), "utf8");
 const appScript = await readFile(new URL("../public/static/app.js", import.meta.url), "utf8");
 const styles = await readFile(new URL("../public/static/styles.css", import.meta.url), "utf8");
@@ -39,8 +40,9 @@ test("費波那契回撤與拓展每條水準同時算出百分比及對應價�
     { ratioText: "1", percentage: "100%", price: 100 },
   ]);
   const extension = api.fibonacciLevels("extension", [{ time: 1, price: 100 }, { time: 2, price: 200 }, { time: 3, price: 150 }]);
-  assert.equal(extension.length, 8);
+  assert.equal(extension.length, 9);
   assert.deepEqual(JSON.parse(JSON.stringify(extension.map(({ ratio, ratioText, price }) => ({ ratio, ratioText, price: Number(price.toFixed(4)) })) )), [
+    { ratio: 0.5, ratioText: "0.5", price: 200 },
     { ratio: 0.618, ratioText: "0.618", price: 211.8 },
     { ratio: 0.705, ratioText: "0.705", price: 220.5 },
     { ratio: 0.786, ratioText: "0.786", price: 228.6 },
@@ -49,6 +51,27 @@ test("費波那契回撤與拓展每條水準同時算出百分比及對應價�
     { ratio: 1.414, ratioText: "1.414", price: 291.4 },
     { ratio: 1.618, ratioText: "1.618", price: 311.8 },
     { ratio: 2, ratioText: "2", price: 350 },
+  ]);
+});
+
+test("root 與 MultiView 拓展 fixture 維持九水準及 0.5 固定色一致", () => {
+  const { api } = runtime();
+  const expected = [0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2];
+  assert.deepEqual(JSON.parse(JSON.stringify(api.EXTENSION_LEVELS)), expected);
+  assert.match(rootFibonacciSource, /export const EXTENSION_LEVELS = \[\s*0\.5, 0\.618, 0\.705, 0\.786, 1, 1\.272, 1\.414, 1\.618, 2,/s);
+  assert.match(rootFibonacciSource, /\[0\.5, '#60a5fa'\]/);
+  assert.equal(api.fibonacciLevelColor("extension", 0.5), "#60a5fa");
+  const levels = api.fibonacciLevels("extension", [{ time: 1, price: 100 }, { time: 2, price: 200 }, { time: 3, price: 150 }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(levels.map(({ ratio, ratioText, percentage, price }) => ({ ratio, ratioText, percentage, price: Number(price.toFixed(6)) })))), [
+    { ratio: 0.5, ratioText: "0.5", percentage: "50%", price: 200 },
+    { ratio: 0.618, ratioText: "0.618", percentage: "61.8%", price: 211.8 },
+    { ratio: 0.705, ratioText: "0.705", percentage: "70.5%", price: 220.5 },
+    { ratio: 0.786, ratioText: "0.786", percentage: "78.6%", price: 228.6 },
+    { ratio: 1, ratioText: "1", percentage: "100%", price: 250 },
+    { ratio: 1.272, ratioText: "1.272", percentage: "127.2%", price: 277.2 },
+    { ratio: 1.414, ratioText: "1.414", percentage: "141.4%", price: 291.4 },
+    { ratio: 1.618, ratioText: "1.618", percentage: "161.8%", price: 311.8 },
+    { ratio: 2, ratioText: "2", percentage: "200%", price: 350 },
   ]);
 });
 
@@ -237,6 +260,8 @@ test("新增費波那契比率有穩定 ratio key 與固定色", () => {
   assert.equal(api.fibonacciLevelColor("retracement", -0.27), "#e879f9");
   assert.equal(api.fibonacciLevelColor("extension", -0.27), "#cbd5e1");
   assert.equal(api.fibonacciLevelColor("retracement", 0.705), "#f472b6");
+  assert.equal(api.fibonacciLevelColor("retracement", 0.5), "#84cc16");
+  assert.equal(api.fibonacciLevelColor("extension", 0.5), "#60a5fa");
   assert.equal(api.fibonacciLevelColor("extension", 0.705), "#f472b6");
   assert.equal(api.fibonacciLevelColor("retracement", 0.618), "#2dd4bf");
   assert.equal(api.fibonacciLevelColor("extension", 0.618), "#fb7185");

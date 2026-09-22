@@ -1,9 +1,11 @@
 import type { Candle } from './types/market';
 
 export const FIBONACCI_FORMULA_VERSION =
-    'multichart-ecae7ca-fibonacci-v2' as const;
-const LEGACY_FIBONACCI_FORMULA_VERSION =
-    'multichart-ecae7ca-fibonacci-v1' as const;
+    'multichart-ecae7ca-fibonacci-v3' as const;
+const LEGACY_FIBONACCI_FORMULA_VERSIONS = new Set([
+    'multichart-ecae7ca-fibonacci-v1',
+    'multichart-ecae7ca-fibonacci-v2',
+]);
 export const FIBONACCI_STORAGE_VERSION = 1 as const;
 export const FIBONACCI_STORAGE_PREFIX = 'realtimestock.fibonacci.v1';
 
@@ -22,6 +24,7 @@ export const FIBONACCI_PENDING_GUIDE_COLOR = '#38bdf8';
 const FIBONACCI_ADDED_LEVEL_COLORS = new Map<number, string>([
     [-0.62, '#a78bfa'],
     [-0.27, '#e879f9'],
+    [0.5, '#60a5fa'],
     [0.705, '#f472b6'],
 ]);
 
@@ -53,7 +56,7 @@ export const RETRACEMENT_LEVELS = [
     -0.62, -0.27, 0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1,
 ] as const;
 export const EXTENSION_LEVELS = [
-    0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2,
+    0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2,
 ] as const;
 
 export type FibonacciKind = 'retracement' | 'extension';
@@ -186,7 +189,8 @@ export function fibonacciLevelColor(
     ratio: number,
 ): string {
     const addedColor =
-        kind === 'retracement' || ratio === 0.705
+        (kind === 'retracement' && ratio !== 0.5) ||
+        (kind === 'extension' && (ratio === 0.5 || ratio === 0.705))
             ? FIBONACCI_ADDED_LEVEL_COLORS.get(ratio)
             : undefined;
     return (
@@ -639,7 +643,9 @@ export function createFibonacciController(options: {
             };
             const supportedFormula =
                 parsed.formulaVersion === FIBONACCI_FORMULA_VERSION ||
-                parsed.formulaVersion === LEGACY_FIBONACCI_FORMULA_VERSION;
+                LEGACY_FIBONACCI_FORMULA_VERSIONS.has(
+                    String(parsed.formulaVersion),
+                );
             if (
                 parsed.version !== FIBONACCI_STORAGE_VERSION ||
                 !supportedFormula
@@ -651,7 +657,11 @@ export function createFibonacciController(options: {
             completed = normalized;
             nextOrder =
                 Math.max(0, ...completed.map((drawing) => drawing.order)) + 1;
-            if (parsed.formulaVersion === LEGACY_FIBONACCI_FORMULA_VERSION) {
+            if (
+                LEGACY_FIBONACCI_FORMULA_VERSIONS.has(
+                    String(parsed.formulaVersion),
+                )
+            ) {
                 save();
             } else {
                 remember();

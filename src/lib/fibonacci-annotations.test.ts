@@ -40,13 +40,13 @@ function memoryStorage(initial: Record<string, string> = {}): {
 describe('MultiChart Fibonacci 公式基準', () => {
     it('鎖定來源版本、比率與六位小數 fixture', () => {
         expect(FIBONACCI_FORMULA_VERSION).toBe(
-            'multichart-ecae7ca-fibonacci-v2',
+            'multichart-ecae7ca-fibonacci-v3',
         );
         expect(RETRACEMENT_LEVELS).toEqual([
             -0.62, -0.27, 0, 0.236, 0.382, 0.5, 0.618, 0.705, 0.786, 1,
         ]);
         expect(EXTENSION_LEVELS).toEqual([
-            0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2,
+            0.5, 0.618, 0.705, 0.786, 1, 1.272, 1.414, 1.618, 2,
         ]);
         expect(
             fibonacciLevels('retracement', [
@@ -75,7 +75,7 @@ describe('MultiChart Fibonacci 公式基準', () => {
                 { time: 2, price: 200 },
                 { time: 3, price: 150 },
             ]).map((level) => Number(level.price.toFixed(6))),
-        ).toEqual([211.8, 220.5, 228.6, 250, 277.2, 291.4, 311.8, 350]);
+        ).toEqual([200, 211.8, 220.5, 228.6, 250, 277.2, 291.4, 311.8, 350]);
     });
 
     it('支援下跌、平盤並拒絕非法輸入', () => {
@@ -111,6 +111,8 @@ describe('MultiChart Fibonacci 公式基準', () => {
         expect(fibonacciLevelColor('retracement', -0.27)).toBe('#e879f9');
         expect(fibonacciLevelColor('extension', -0.27)).toBe('#cbd5e1');
         expect(fibonacciLevelColor('retracement', 0.705)).toBe('#f472b6');
+        expect(fibonacciLevelColor('retracement', 0.5)).toBe('#84cc16');
+        expect(fibonacciLevelColor('extension', 0.5)).toBe('#60a5fa');
         expect(fibonacciLevelColor('extension', 0.705)).toBe('#f472b6');
         expect(fibonacciLevelColor('retracement', 0.618)).toBe('#2dd4bf');
         expect(fibonacciLevelColor('extension', 0.618)).toBe('#fb7185');
@@ -376,20 +378,24 @@ describe('Fibonacci controller 與 storage', () => {
         expect(reloaded.restore().completed[0]?.kind).toBe('retracement');
     });
 
-    it('v1 anchors 會保留並依種類遷移為 v2 水準', () => {
+    it.each([
+        'multichart-ecae7ca-fibonacci-v1',
+        'multichart-ecae7ca-fibonacci-v2',
+    ])('%s anchors 會保留並依種類遷移為 v3 水準', (formulaVersion) => {
         const key = fibonacciStorageKey(identity);
         const { storage, values } = memoryStorage({
             [key]: JSON.stringify({
                 version: FIBONACCI_STORAGE_VERSION,
-                formulaVersion: 'multichart-ecae7ca-fibonacci-v1',
+                formulaVersion,
                 completed: [
                     {
-                        kind: 'retracement',
+                        kind: 'extension',
                         anchors: [
                             { time: 1, price: 100 },
                             { time: 2, price: 200 },
+                            { time: 3, price: 150 },
                         ],
-                        order: 1,
+                        order: 7,
                     },
                 ],
             }),
@@ -398,7 +404,18 @@ describe('Fibonacci controller 與 storage', () => {
             getIdentity: () => identity,
             storage,
         });
-        expect(controller.restore().completed[0]?.levels).toHaveLength(10);
+        const restored = controller.restore().completed[0];
+        expect(restored).toMatchObject({
+            kind: 'extension',
+            order: 7,
+            anchors: [
+                { time: 1, price: 100 },
+                { time: 2, price: 200 },
+                { time: 3, price: 150 },
+            ],
+        });
+        expect(restored?.levels).toHaveLength(9);
+        expect(restored?.levels[0]?.price).toBe(200);
         expect(JSON.parse(values.get(key)!).formulaVersion).toBe(
             FIBONACCI_FORMULA_VERSION,
         );

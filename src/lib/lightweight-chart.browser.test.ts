@@ -232,6 +232,18 @@ describe('lightweight-charts browser harness', () => {
             );
             expect(localStorage.length).toBe(chartCount);
             expect(models.every((model) => model.lines.length >= 7)).toBe(true);
+            runtimes.forEach((runtime, index) => {
+                if (index % 2 === 0) return;
+                const snapshot = runtime.controller.getSnapshot();
+                expect(snapshot.completed[0]?.levels).toHaveLength(9);
+                expect(snapshot.completed[0]?.levels[0]).toMatchObject({
+                    ratio: 0.5,
+                });
+                expect(
+                    models[index]?.lines.filter((line) => line.kind === 'level'),
+                ).toHaveLength(9);
+                expect(models[index]?.bands).toHaveLength(8);
+            });
 
             for (let tick = 0; tick < 20; tick += 1) {
                 runtimes.forEach((runtime) => {

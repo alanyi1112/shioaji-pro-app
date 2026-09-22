@@ -64,7 +64,7 @@ describe('Fibonacci overlay model', () => {
         );
         expect(
             extensionLines.filter((line) => line.kind === 'level'),
-        ).toHaveLength(8);
+        ).toHaveLength(9);
         expect(
             extensionLines
                 .filter((line) => line.kind === 'level')
@@ -129,8 +129,8 @@ describe('Fibonacci overlay model', () => {
         instance.addPoint({ time: 30, price: 150 });
         const bounds = completedExtensionAutoscaleBounds(instance.getSnapshot());
         expect(bounds.lower).toEqual([
-            { time: 20, value: 211.8 },
-            { time: 30, value: 211.8 },
+            { time: 20, value: 200 },
+            { time: 30, value: 200 },
         ]);
         expect(bounds.upper).toEqual([
             { time: 20, value: 350 },
@@ -138,7 +138,7 @@ describe('Fibonacci overlay model', () => {
         ]);
     });
 
-    it('第一張為拓展時顯示八條彩色線與七個色帶', () => {
+    it('第一張為拓展時顯示九條彩色線與八個色帶', () => {
         const instance = controller();
         instance.arm('extension');
         instance.addPoint({ time: 10, price: 100 });
@@ -149,9 +149,19 @@ describe('Fibonacci overlay model', () => {
             renderOptions,
         );
         expect(model.lines.filter((line) => line.kind === 'level')).toHaveLength(
-            8,
+            9,
         );
-        expect(model.bands).toHaveLength(7);
+        expect(model.bands).toHaveLength(8);
+        expect(
+            model.lines.find(
+                (line) =>
+                    line.key === 'completed-extension-1-level-0' &&
+                    line.kind === 'level',
+            ),
+        ).toMatchObject({ color: '#60a5fa' });
+        expect(model.labels.some((label) => label.text === '0.5 (200.00)')).toBe(
+            true,
+        );
         expect(model.labels.some((label) => label.text.startsWith('-0.'))).toBe(
             false,
         );

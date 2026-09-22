@@ -21,11 +21,11 @@ describe('FibonacciOverlay', () => {
             <FibonacciOverlay
                 snapshot={controller.getSnapshot()}
                 width={500}
-                height={300}
+                height={400}
                 rightEdge={440}
                 coordinates={{
                     timeToCoordinate: (time) => time * 10,
-                    priceToCoordinate: (price) => 300 - price,
+                    priceToCoordinate: (price) => 400 - price,
                 }}
                 formatPrice={(price) => price.toFixed(2)}
             />,
@@ -55,11 +55,11 @@ describe('FibonacciOverlay', () => {
             <FibonacciOverlay
                 snapshot={controller.getSnapshot()}
                 width={500}
-                height={300}
+                height={400}
                 rightEdge={440}
                 coordinates={{
                     timeToCoordinate: (time) => time * 10,
-                    priceToCoordinate: (price) => 300 - price,
+                    priceToCoordinate: (price) => 400 - price,
                 }}
                 formatPrice={(price) => price.toFixed(2)}
             />,
@@ -67,5 +67,7 @@ describe('FibonacciOverlay', () => {
         expect(html).toContain('data-fibonacci-anchor="preview"');
         expect(html).toContain('待選 C｜150.00');
         expect(html).toContain('data-fibonacci-price-guide="true"');
+        expect(html.match(/data-fibonacci-band="true"/g)).toHaveLength(8);
+        expect(html).toContain('0.5 (200.00)');
     });
 });
