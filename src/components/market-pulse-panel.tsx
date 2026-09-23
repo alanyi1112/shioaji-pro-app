@@ -104,6 +104,7 @@ const DEFAULT_SECTION_WEIGHTS: PulseSectionWeights = {
     flow: 40,
 };
 const MIN_SECTION_WEIGHT = 12;
+export const DEFAULT_AUTO_FOLLOW_SIGNALS = false;
 const SECTION_LABELS: Record<PulseSection, string> = {
     stocks: '成分股貢獻',
     industries: '產業貢獻分布',
@@ -500,7 +501,11 @@ export function MarketPulsePanel({
     const [expandedSignalGroups, setExpandedSignalGroups] = useState<
         SignalFilterGroup[]
     >(['market', 'move']);
-    const [autoFollowSignals, setAutoFollowSignals] = useState(true);
+    // Signal bursts must never steal a user's manually selected symbol unless
+    // they have explicitly opted in to automatic following for this panel.
+    const [autoFollowSignals, setAutoFollowSignals] = useState(
+        DEFAULT_AUTO_FOLLOW_SIGNALS,
+    );
     const latestSignalRef = useRef<string | null | undefined>(undefined);
     const [error, setError] = useState('');
     const [indexPending, setIndexPending] = useState(false);
@@ -1337,7 +1342,7 @@ export function MarketPulsePanel({
                             className={
                                 styles.control[autoFollowSignals ? 'on' : 'off']
                             }
-                            title='新訊號抵達時連動未鎖定的行情面板'
+                            title='手動開啟後，新訊號才會連動未鎖定的行情面板'
                             aria-pressed={autoFollowSignals}
                             onClick={() =>
                                 setAutoFollowSignals((enabled) => !enabled)
