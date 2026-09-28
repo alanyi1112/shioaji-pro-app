@@ -1,6 +1,9 @@
 import {
   canonicalPeRiverSymbol,
   normalizeOfficialDate,
+  pairOfficialValuationRows,
+  parseTwseHistoricalClose,
+  parseTwseHistoricalPe,
   peRiverEligibility,
   type PeRiverExchange,
   type PeRiverValuationRow,
@@ -13,6 +16,7 @@ export const TPEX_CLOSE_DAILY_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mai
 export const PE_RIVER_OGDL_URL = "https://data.gov.tw/license";
 export const FINMIND_SAFE_HOURLY_BUDGET = 240;
 export const PE_RIVER_MAX_HISTORY_TARGETS = 8;
+export const PE_RIVER_MAX_OFFICIAL_MONTHS_PER_TARGET = 6;
 export const PE_RIVER_PROVISIONAL_MAX_SESSIONS = 3;
 export const PE_RIVER_PROVISIONAL_MAX_RANGE_DAYS = 14;
 export const PE_RIVER_PROVISIONAL_NOT_BEFORE_HOUR = 18;
@@ -131,6 +135,7 @@ export function reconcileProvisionalPeRiverRow(provisional: PeRiverValuationRow,
 async function boundedJson(response: Response, maxBytes: number) {
   if (!response.ok) {
     if ([402, 429].includes(response.status)) throw new Error("rate_limit_waiting");
+    if ([307, 403].includes(response.status)) throw new Error("provider_unavailable");
     if (response.status >= 500) throw new Error("provider_unavailable");
     throw new Error("invalid_response");
   }
@@ -214,6 +219,60 @@ export async function fetchFinMindPeHistory(input: {
   };
   const [pePayload, pricePayload] = await Promise.all([request("TaiwanStockPER"), request("TaiwanStockPrice")]);
   return { rows: joinFinMindPeHistory({ symbol: canonical.symbol, pePayload, pricePayload }), requestsUsed: 2 };
+}
+
+export async function fetchOfficialPeHistoryMonth(input: {
+  symbol: string;
+  month: string;
+  fetchImpl?: FetchLike;
+  timeoutMs?: number;
+}) {
+  const canonical = canonicalPeRiverSymbol(input.symbol);
+  if (!canonical || canonical.exchange !== "TWSE" || !/^20\d{2}-\d{2}$/.test(input.month)) throw new Error("not_eligible");
+  const fetchImpl = input.fetchImpl || fetch;
+  const compactMonth = `${input.month.replace("-", "")}01`;
+  const request = async (pathname: "BWIBBU" | "STOCK_DAY") => {
+    const url = new URL(`https://www.twse.com.tw/rwd/zh/afterTrading/${pathname}`);
+    url.searchParams.set("date", compactMonth);
+    url.searchParams.set("stockNo", canonical.stockCode);
+    url.searchParams.set("response", "json");
+    return boundedJson(await fetchImpl(url, { headers: { accept: "application/json", "user-agent": "MultiChartOnCodexSite/1.0 (+official-open-data)" }, signal: AbortSignal.timeout(Math.min(30000, Math.max(1000, input.timeoutMs || 20000))) }), 2_000_000);
+  };
+  const pePayload = await request("BWIBBU");
+  const payloadStatus = (payload: unknown) => payload && typeof payload === "object" && !Array.isArray(payload) ? String((payload as UnknownRecord).stat || "") : "";
+  if (payloadStatus(pePayload) !== "OK") throw new Error("official_not_published");
+  const peRows = parseTwseHistoricalPe(pePayload, canonical.symbol);
+  if (!peRows.length || peRows.some((row) => !row.sessionDate.startsWith(input.month))) throw new Error("schema_mismatch");
+  if (peRows.every((row) => row.officialPeRatio === null)) return {
+    symbol: canonical.symbol,
+    month: input.month,
+    status: "official_gap" as const,
+    rows: [],
+    peSessions: peRows.length,
+    closeSessions: 0,
+    requestsUsed: 1,
+  };
+  const closePayload = await request("STOCK_DAY");
+  if (payloadStatus(closePayload) !== "OK") throw new Error("official_not_published");
+  const closeRows = parseTwseHistoricalClose(closePayload, canonical.symbol);
+  if (!closeRows.length) throw new Error("schema_mismatch");
+  if ([...peRows, ...closeRows].some((row) => !row.sessionDate.startsWith(input.month))) throw new Error("schema_mismatch");
+  const rows = pairOfficialValuationRows({ symbol: canonical.symbol, peRows, closeRows }).map((row) => ({
+    ...row,
+    provider: "twse" as const,
+    originalSource: "臺灣證券交易所",
+    validationStatus: "official_verified" as const,
+    officialOverlapDate: row.sessionDate,
+  }));
+  return {
+    symbol: canonical.symbol,
+    month: input.month,
+    status: rows.length ? "available" as const : "official_gap" as const,
+    rows,
+    peSessions: peRows.length,
+    closeSessions: closeRows.length,
+    requestsUsed: 2,
+  };
 }
 
 function officialRowBase(exchange: PeRiverExchange, stockCode: string, sessionDate: string, close: number, pe: number, fiscal: unknown): PeRiverValuationRow {
@@ -342,13 +401,13 @@ export function resetPeRiverDataCachesForTest() {
   officialCache.clear();
 }
 
-export async function fetchOfficialPeDailySnapshotBundle(exchange: PeRiverExchange, fetchImpl: FetchLike = fetch) {
+export async function fetchOfficialPeDailySnapshotBundle(exchange: PeRiverExchange, fetchImpl: FetchLike = fetch): Promise<OfficialSnapshotBundle> {
   const cached = officialCache.get(exchange);
   if (cached && cached.expiresAt > Date.now() && cached.bundle.rows.length + cached.bundle.gaps.length) return cached.bundle;
   if (cached?.promise) return cached.promise;
   const promise = (async () => {
     const get = async (url: string, maxBytes: number) => boundedJson(await fetchImpl(url, { headers: { accept: "application/json", "user-agent": "MultiChartOnCodexSite/1.0 (+official-open-data)" }, signal: AbortSignal.timeout(20000) }), maxBytes);
-    const bundle = exchange === "TWSE"
+    const bundle: OfficialSnapshotBundle = exchange === "TWSE"
       ? parseTwseDailySnapshotBundle(await get(TWSE_PE_DAILY_URL, 3_000_000))
       : parseTpexDailySnapshotBundle(await get(TPEX_PE_DAILY_URL, 3_000_000), await get(TPEX_CLOSE_DAILY_URL, 8_000_000));
     if (!bundle.rows.length && !bundle.gaps.length) {
@@ -387,7 +446,8 @@ export function verifyProviderOverlap(historyRows: PeRiverValuationRow[], offici
     : { status: "source_mismatch" as const, overlapDate: history.sessionDate, peDifference, closeDifference };
 }
 
-const trust = (row: PeRiverValuationRow) => ({ official_gap: 5, official_verified: 4, finmind_overlap_verified: 3, finmind_provisional_latest: 2, finmind_pending_verification: 1 }[row.validationStatus] || 0);
+const trustRanks: Partial<Record<NonNullable<PeRiverValuationRow["validationStatus"]>, number>> = { official_gap: 5, official_verified: 4, finmind_overlap_verified: 3, finmind_provisional_latest: 2, finmind_pending_verification: 1 };
+const trust = (row: PeRiverValuationRow) => row.validationStatus ? trustRanks[row.validationStatus] || 0 : 0;
 
 export function mergePreferredPeRows(existing: PeRiverValuationRow[], incoming: PeRiverValuationRow[]) {
   const merged = new Map(existing.map((row) => [`${row.exchange}:${row.symbol}:${row.sessionDate}`, row]));

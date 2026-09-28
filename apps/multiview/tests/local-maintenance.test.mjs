@@ -29,3 +29,16 @@ test("合法 maintenance 在沒有 D1 時明確 fail closed", async () => {
   assert.equal(response.status, 503);
   assert.equal((await response.json()).reasonCode, "d1_unavailable");
 });
+
+test("continuity 僅在受保護 local deployment 呼叫，回傳逐批結果", async () => {
+  let calls = 0;
+  const make = (host = '127.0.0.1') => new Request(endpoint.replace('127.0.0.1', host), { method: 'POST', headers: { 'x-multiview-local-authorization': `Bearer ${secret}` }, body: JSON.stringify({ action: 'continuity' }) });
+  const callbacks = { ...actions, async continuity() { calls++; return { done: false, processed: 1 }; } };
+  for (const target of ['cloudflare', undefined]) {
+    assert.equal((await handleLocalMaintenance(make(), { DB: {}, LOCAL_PIPELINE_SECRET: secret, DEPLOYMENT_TARGET: target }, context, callbacks)).status, 403);
+  }
+  assert.equal(calls, 0);
+  const response = await handleLocalMaintenance(make(), { DB: {}, LOCAL_PIPELINE_SECRET: secret, DEPLOYMENT_TARGET: 'local' }, context, callbacks);
+  assert.deepEqual((await response.json()).result, { done: false, processed: 1 });
+  assert.equal(calls, 1);
+});

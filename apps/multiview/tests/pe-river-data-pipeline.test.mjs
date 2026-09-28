@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildProvisionalPeRiverCandidates,
   discoverPeRiverTargets,
+  fetchOfficialPeHistoryMonth,
   joinFinMindPeHistory,
   latestFirstPlan,
   mergePreferredPeRows,
@@ -24,7 +25,7 @@ import {
   refreshPeRiverOfficialLatest,
   startPeRiverContinuousRun,
 } from "../worker/pe-river-continuous-backfill.ts";
-import { ingestNormalizedPeRiverMonth, ingestProvisionalPeRiverRows, readPeRiverRows } from "../worker/taiwan-stock-pe-river.ts";
+import { ingestNormalizedPeRiverMonth, ingestProvisionalPeRiverRows, readPeRiverRows, upsertPeRiverRows } from "../worker/taiwan-stock-pe-river.ts";
 import { ensurePeRiverPipelineColumns } from "../worker/pe-river-schema.ts";
 import { SqliteD1, applyDrizzleSql } from "./helpers/sqlite-d1.mjs";
 
@@ -125,6 +126,31 @@ test("FinMind PER 與收盤依 sessionDate join，亂序、缺值與負 P/E 保�
   assert.equal(rows[0].referenceEps, 2410 / 32.4);
   assert.equal(rows[0].validationStatus, "finmind_pending_verification");
   assert.equal(joinFinMindPeHistory({ symbol: "2330.TW", pePayload: finmind.invalid.per, pricePayload: finmind.invalid.price }).length, 0);
+});
+
+test("TWSE 官方月報回補只配對同月同日本益比與收盤，空白月回 official_gap", async () => {
+  const fetchImpl = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/BWIBBU")) return Response.json({ stat: "OK", fields: ["日期", "本益比", "財報年/季"], data: [["115年09月01日", "18.50", "115/2"], ["115年09月02日", "-", "115/2"]] });
+    if (url.pathname.endsWith("/STOCK_DAY")) return Response.json({ stat: "OK", fields: ["日期", "收盤價"], data: [["115/09/01", "37.00"], ["115/09/02", "38.00"]] });
+    throw new Error(`unexpected ${url}`);
+  };
+  const available = await fetchOfficialPeHistoryMonth({ symbol: "3055.TW", month: "2026-09", fetchImpl });
+  assert.equal(available.status, "available");
+  assert.equal(available.requestsUsed, 2);
+  assert.deepEqual(available.rows.map((row) => [row.sessionDate, row.officialPeRatio, row.officialClose, row.validationStatus]), [["2026-09-01", 18.5, 37, "official_verified"]]);
+
+  const gap = await fetchOfficialPeHistoryMonth({ symbol: "3149.TW", month: "2026-09", fetchImpl: async (input) => {
+    const url = new URL(String(input));
+    return url.pathname.endsWith("/BWIBBU")
+      ? Response.json({ stat: "OK", fields: ["日期", "本益比", "財報年/季"], data: [["115/09/01", "-", "115/2"]] })
+      : Response.json({ stat: "OK", fields: ["日期", "收盤價"], data: [["115/09/01", "38.00"]] });
+  } });
+  assert.equal(gap.status, "official_gap");
+  assert.equal(gap.rows.length, 0);
+  assert.equal(gap.requestsUsed, 1);
+  await assert.rejects(fetchOfficialPeHistoryMonth({ symbol: "3055.TW", month: "2026-09", fetchImpl: async () => new Response("temporary", { status: 307 }) }), /provider_unavailable/);
+  await assert.rejects(fetchOfficialPeHistoryMonth({ symbol: "3055.TW", month: "2026-09", fetchImpl: async () => Response.json({ stat: "OK", fields: ["日期", "本益比"], data: [["115/08/29", "10"]] }) }), /schema_mismatch/);
 });
 
 test("TWSE、TPEx 官方最新快照解析收盤、本益比、民國日期與財報年季", () => {
@@ -347,6 +373,50 @@ test("history runner 只在 lease 過期後重新認領中斷的 running target"
   } finally { db.close(); }
 });
 
+test("明確官方回復模式只重新認領列出的 TWSE blocked job 並保留 attempt", async () => {
+  const db = await pipelineDb();
+  try {
+    db.exec("INSERT INTO user_instruments (user_id,symbol,enabled) VALUES ('u','3055.TW',1),('u','3715.TW',1),('u','8069.TWO',1)");
+    const seeded = await startPeRiverContinuousRun({ db, runId: "official-seed", trigger: "workflow_dispatch", now: new Date("2026-09-28T02:00:00Z") });
+    assert.equal(seeded.history.some((target) => target.symbol === "3055.TW"), true);
+    db.exec("UPDATE taiwan_stock_pe_backfill_job SET status='blocked',reason_code='provider_unavailable',lease_owner=NULL,lease_expires_at=NULL WHERE symbol IN ('3055.TW','3715.TW','8069.TWO')");
+    db.exec("UPDATE taiwan_stock_pe_backfill_month SET status='blocked',error_code='provider_unavailable',lease_owner=NULL,lease_expires_at=NULL WHERE symbol IN ('3055.TW','3715.TW','8069.TWO')");
+    const previousAttempt = await db.prepare("SELECT attempt FROM taiwan_stock_pe_backfill_job WHERE symbol='3055.TW'").first();
+    const recovered = await startPeRiverContinuousRun({ db, runId: "official-recover", trigger: "workflow_dispatch", officialSymbols: ["3055.TW"], now: new Date("2026-09-28T02:01:00Z") });
+    assert.deepEqual(recovered.officialSymbols, ["3055.TW"]);
+    assert.deepEqual(recovered.history.map((target) => target.symbol), ["3055.TW"]);
+    assert.equal(recovered.history[0].attempt, Number(previousAttempt.attempt) + 1);
+    assert.equal((await db.prepare("SELECT status FROM taiwan_stock_pe_backfill_job WHERE symbol='3715.TW'").first()).status, "blocked");
+    assert.equal((await db.prepare("SELECT status FROM taiwan_stock_pe_backfill_job WHERE symbol='8069.TWO'").first()).status, "blocked");
+    await assert.rejects(startPeRiverContinuousRun({ db, runId: "official-invalid", trigger: "workflow_dispatch", officialSymbols: ["8069.TWO"], now: new Date("2026-09-28T02:02:00Z") }), /invalid_payload/);
+  } finally { db.close(); }
+});
+
+test("門檻調整後以既有232筆／350日資料重算狀態，不重抓完成月份", async () => {
+  const db = await pipelineDb();
+  try {
+    db.exec("INSERT INTO user_instruments (user_id,symbol,enabled) VALUES ('u','3055.TW',1),('u','3149.TW',1)");
+    await startPeRiverContinuousRun({ db, runId: "threshold-seed", trigger: "workflow_dispatch", now: new Date("2026-09-28T02:00:00Z") });
+    const rows = Array.from({ length: 232 }, (_, index) => {
+      const sessionDate = new Date(Date.UTC(2023, 2, 28 + Math.round(index * 350 / 231))).toISOString().slice(0, 10);
+      return { exchange: "TWSE", symbol: "3055.TW", sessionDate, officialClose: 100, officialPeRatio: 10, referenceEps: 10, fiscalYear: null, fiscalQuarter: null, source: "twse", provider: "twse", validationStatus: "official_verified", sourceDate: sessionDate, fetchedAt: "2026-09-28T02:00:00Z" };
+    });
+    await upsertPeRiverRows(db, rows);
+    db.exec("UPDATE taiwan_stock_pe_backfill_job SET status='partial',reason_code='insufficient_history',completed_months=total_months,lease_owner=NULL,lease_expires_at=NULL WHERE symbol IN ('3055.TW','3149.TW')");
+    db.exec("UPDATE taiwan_stock_pe_backfill_month SET status='complete',row_count=0,lease_owner=NULL,lease_expires_at=NULL,completed_at='2026-09-28T02:00:00Z' WHERE symbol IN ('3055.TW','3149.TW')");
+    db.exec("INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,status,reason_code) VALUES ('TWSE','3055.TW','partial','insufficient_history'),('TWSE','3149.TW','partial','insufficient_history')");
+
+    const rerun = await startPeRiverContinuousRun({ db, runId: "threshold-reconcile", trigger: "workflow_dispatch", officialSymbols: ["3055.TW", "3149.TW"], now: new Date("2026-09-28T02:01:00Z") });
+    assert.deepEqual(rerun.history, []);
+    const job3055 = await db.prepare("SELECT status,reason_code FROM taiwan_stock_pe_backfill_job WHERE symbol='3055.TW'").first();
+    const state3055 = await db.prepare("SELECT status,reason_code FROM taiwan_stock_pe_fetch_state WHERE symbol='3055.TW'").first();
+    const job3149 = await db.prepare("SELECT status,reason_code FROM taiwan_stock_pe_backfill_job WHERE symbol='3149.TW'").first();
+    assert.equal(job3055.status, "complete"); assert.equal(job3055.reason_code, "available");
+    assert.equal(state3055.status, "available"); assert.equal(state3055.reason_code, "available");
+    assert.equal(job3149.status, "partial"); assert.equal(job3149.reason_code, "insufficient_history");
+  } finally { db.close(); }
+});
+
 test("無 panel 流量時 schedule 仍先 latest、claim history、保存 heartbeat 與 checkpoint", async () => {
   const db = await pipelineDb();
   try {
@@ -376,15 +446,20 @@ test("無 panel 流量時 schedule 仍先 latest、claim history、保存 heartb
     assert.equal(latest.accepted, 2);
     assert.equal(latest.promoted, 1);
     assert.equal((await db.prepare("SELECT validation_status FROM taiwan_stock_pe_valuation_daily WHERE symbol='2330.TW' AND session_date='2026-07-21'").first()).validation_status, "official_verified");
-    const historyRows = Array.from({ length: 252 }, (_, index) => ({ sessionDate: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10), officialClose: 200, officialPeRatio: 20, source: "finmind", validationStatus: "finmind_overlap_verified", officialOverlapDate: "2026-07-21" }));
+    const historyRows = Array.from({ length: 220 }, (_, index) => ({ sessionDate: new Date(Date.UTC(2025, 0, 1 + index * 2)).toISOString().slice(0, 10), officialClose: 200, officialPeRatio: 20, source: "finmind", validationStatus: "finmind_overlap_verified", officialOverlapDate: "2026-07-21" }));
     for (const [month, rows] of Map.groupBy(historyRows, (row) => row.sessionDate.slice(0, 7))) await ingestNormalizedPeRiverMonth({ db, symbol: "2330.TW", month, rows });
     const checkpointRow = await db.prepare("SELECT dataset_status_json FROM taiwan_stock_pe_backfill_month WHERE symbol='2330.TW' AND status='complete' LIMIT 1").first();
     const checkpoint = JSON.parse(checkpointRow.dataset_status_json);
     assert.equal(checkpoint.PER.status, "complete");
     assert.equal(checkpoint.price.status, "complete");
     assert.equal(checkpoint.normalized.cursor, checkpoint.normalized.rowCount);
+    db.exec("INSERT INTO taiwan_stock_pe_backfill_month (job_id,exchange,symbol,target_month,status,row_count,dataset_status_json,ingest_cursor) VALUES ('pe-river:2330.TW','TWSE','2330.TW','2021-06','complete',0,'{}',0)");
     const completed = await completePeRiverHistoryTarget({ db, runId: "pe-run-1", jobId: "pe-river:2330.TW", symbol: "2330.TW", validationStatus: "finmind_overlap_verified", overlapDate: "2026-07-21" });
     assert.equal(completed.status, "available");
+    const jobProgress = await db.prepare("SELECT completed_months,total_months FROM taiwan_stock_pe_backfill_job WHERE job_id='pe-river:2330.TW'").first();
+    const inRangeComplete = await db.prepare("SELECT COUNT(*) AS count FROM taiwan_stock_pe_backfill_month WHERE job_id='pe-river:2330.TW' AND status='complete' AND target_month BETWEEN '2021-07' AND '2026-07'").first();
+    assert.equal(jobProgress.completed_months, inRangeComplete.count);
+    assert.ok(jobProgress.completed_months <= jobProgress.total_months);
     const health = await readPeRiverContinuousHealth(db);
     assert.equal(health.scheduler.lastLatestRunAt, "2026-07-22T11:32:00.000Z");
     assert.equal(health.latest.twseSourceDate, "2026-07-21");
@@ -420,5 +495,38 @@ test("history completion 使用嚴格 binding 並以 D1 batch 原子落地", asy
     assert.equal(completedJob.lease_owner, null);
     assert.equal((await db.prepare("SELECT latest_source_date FROM taiwan_stock_pe_fetch_state WHERE symbol=?").bind("2330.TW").first()).latest_source_date, "2026-07-21");
     assert.equal((await readPeRiverContinuousHealth(db)).scheduler.lastHistoryRunAt, "2026-07-22T16:06:00.000Z");
+  } finally { db.close(); }
+});
+
+test("重複 discovery 保留等待順序與 blocked 狀態，舊 ETF 工作不再領取", async () => {
+  const db = await pipelineDb();
+  const { queuePeRiverBackfill, peRiverEligibility } = await import('../worker/taiwan-stock-pe-river.ts');
+  try {
+    for (const symbol of ['00981A.TW', '00982A.TW', '00991A.TW']) assert.equal(peRiverEligibility({ symbol }).supported, false);
+    db.exec("INSERT INTO user_instruments (user_id,symbol,enabled) VALUES ('u','2330.TW',1),('u','8069.TWO',1),('u','00981A.TW',1)");
+    for (const symbol of ['2330.TW', '8069.TWO', '00981A.TW']) await queuePeRiverBackfill(db, { symbol, targetStart: '2021-07-22', targetEnd: '2026-07-22' });
+    db.exec("UPDATE taiwan_stock_pe_backfill_job SET updated_at='2020-01-01',status='blocked',reason_code='source_mismatch' WHERE symbol='2330.TW'");
+    await queuePeRiverBackfill(db, { symbol: '2330.TW', targetStart: '2021-07-23', targetEnd: '2026-07-23' });
+    const preserved = await db.prepare("SELECT status,updated_at,reason_code FROM taiwan_stock_pe_backfill_job WHERE symbol='2330.TW'").first();
+    assert.deepEqual({ ...preserved }, { status: 'blocked', updated_at: '2020-01-01', reason_code: 'source_mismatch' });
+    const run = await startPeRiverContinuousRun({ db, runId: 'fairness-test', trigger: 'schedule', now: new Date('2026-07-22T11:30:00Z') });
+    assert.deepEqual(run.history.map(item => item.symbol), ['8069.TWO']);
+    assert.equal((await db.prepare("SELECT status FROM taiwan_stock_pe_backfill_job WHERE symbol='00981A.TW'").first()).status, 'not_eligible');
+    assert.equal((await readPeRiverContinuousHealth(db)).history.target, 2);
+  } finally { db.close(); }
+});
+
+test("已成功掃描的低代碼商品不會再次排在從未完成的商品前面", async () => {
+  const db = await pipelineDb();
+  const { queuePeRiverBackfill } = await import('../worker/taiwan-stock-pe-river.ts');
+  try {
+    for (let n = 2300; n < 2310; n++) {
+      const symbol = `${n}.TW`;
+      await db.prepare("INSERT INTO user_instruments (user_id,symbol,enabled) VALUES ('u',?,1)").bind(symbol).run();
+      await queuePeRiverBackfill(db, { symbol, targetStart: '2021-07-22', targetEnd: '2026-07-22' });
+    }
+    db.exec("UPDATE taiwan_stock_pe_backfill_job SET last_success_at='2026-07-21T11:00:00Z' WHERE symbol<'2308.TW'");
+    const run = await startPeRiverContinuousRun({ db, runId: 'fairness-many', trigger: 'schedule', now: new Date('2026-07-22T11:30:00Z') });
+    assert.deepEqual(run.history.slice(0, 2).map(item => item.symbol), ['2308.TW','2309.TW']);
   } finally { db.close(); }
 });

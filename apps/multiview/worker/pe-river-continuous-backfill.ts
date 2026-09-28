@@ -15,15 +15,17 @@ import {
 } from "./pe-river-data-pipeline.ts";
 import {
   PE_RIVER_LOOKBACK_YEARS,
-  PE_RIVER_MINIMUM_SAMPLES,
   ingestProvisionalPeRiverRows,
   peRiverCoverageState,
+  peRiverEligibility,
+  peRiverHistoryReadiness,
   peRiverUpsertStatement,
   peRiverRetryAfter,
   queuePeRiverBackfill,
   readPeRiverRows,
   safePeRiverBackfillError,
   type PeRiverExchange,
+  type PeRiverValuationRow,
 } from "./taiwan-stock-pe-river.ts";
 
 const RUN_ID = /^[a-zA-Z0-9:_-]{3,160}$/;
@@ -55,7 +57,7 @@ async function promotePendingPeRiverHistory(input: { db: D1Database; symbol: str
   const verifiedRows = (await readPeRiverRows(input.db, input.symbol)).filter((row) => !["finmind_pending_verification", "source_mismatch"].includes(String(row.validationStatus || "official_verified")));
   const coverageStart = verifiedRows[0]?.sessionDate || null;
   const coverageEnd = verifiedRows.at(-1)?.sessionDate || null;
-  const available = verifiedRows.length >= 252;
+  const available = peRiverHistoryReadiness(verifiedRows).sufficient;
   await input.db.prepare(`UPDATE taiwan_stock_pe_fetch_state SET coverage_start=?,coverage_end=?,source_date=?,provider_verified_at=?,lane='latest',status=?,reason_code=?,last_success_at=?,last_attempt_at=?,updated_at=CURRENT_TIMESTAMP WHERE exchange=? AND symbol=?`).bind(coverageStart, coverageEnd, coverageEnd, nowText, available ? "available" : "partial", "finmind_overlap_verified", nowText, nowText, input.officialRow.exchange, input.symbol).run();
   await input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status=?,reason_code=?,provider_verified_at=?,last_success_at=?,updated_at=CURRENT_TIMESTAMP WHERE exchange=? AND symbol=? AND status<>'running'`).bind(available ? "complete" : "partial", available ? "available" : "insufficient_history", nowText, nowText, input.officialRow.exchange, input.symbol).run();
   return { promoted, validationStatus: verification.status, overlapDate: verification.overlapDate };
@@ -70,7 +72,7 @@ async function reconcileOfficialPeRiverLatest(input: { db: D1Database; officialR
   const nowText = input.now.toISOString();
   const mismatch = reconciliation?.status === "source_mismatch";
   const provisionalStatus = mismatch ? "source_mismatch" : coverage.provisional.length ? "pending" : null;
-  const status = coverage.validSamples >= PE_RIVER_MINIMUM_SAMPLES ? "available" : "partial";
+  const status = coverage.sufficient ? "available" : "partial";
   const reasonCode = mismatch ? "source_mismatch" : coverage.provisional.length ? "official_not_published" : status === "available" ? "available" : "insufficient_history";
   await input.db.batch([
     peRiverUpsertStatement(input.db, input.officialRow),
@@ -85,7 +87,7 @@ async function applyOfficialPeRiverGap(input: { db: D1Database; gap: OfficialPeG
   const nowText = input.now.toISOString();
   const combined = existing.filter((row) => row.sessionDate !== input.gap.sessionDate);
   const coverage = peRiverCoverageState(combined);
-  const status = coverage.validSamples >= PE_RIVER_MINIMUM_SAMPLES ? "available" : "partial";
+  const status = coverage.sufficient ? "available" : "partial";
   const statements = [];
   if (provisional) statements.push(peRiverUpsertStatement(input.db, { ...provisional, source: input.gap.source, provider: input.gap.source, validationStatus: "official_gap", officialOverlapDate: input.gap.sessionDate, provisionalCreatedAt: null, sourceDate: input.gap.sessionDate, fetchedAt: nowText }));
   statements.push(input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,coverage_start,coverage_end,source_date,latest_source_date,verified_end,display_end,official_source_date,provisional_dates_json,provisional_status,lane,status,reason_code,last_success_at,last_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,'[]',NULL,'latest',?,'official_gap',?,?) ON CONFLICT(exchange,symbol) DO UPDATE SET coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,latest_source_date=CASE WHEN taiwan_stock_pe_fetch_state.latest_source_date IS NULL OR excluded.latest_source_date>taiwan_stock_pe_fetch_state.latest_source_date THEN excluded.latest_source_date ELSE taiwan_stock_pe_fetch_state.latest_source_date END,verified_end=excluded.verified_end,display_end=excluded.display_end,official_source_date=CASE WHEN taiwan_stock_pe_fetch_state.official_source_date IS NULL OR excluded.official_source_date>taiwan_stock_pe_fetch_state.official_source_date THEN excluded.official_source_date ELSE taiwan_stock_pe_fetch_state.official_source_date END,provisional_dates_json='[]',provisional_status=NULL,lane='latest',status=excluded.status,reason_code='official_gap',last_success_at=excluded.last_success_at,last_attempt_at=excluded.last_attempt_at,updated_at=CURRENT_TIMESTAMP`).bind(input.gap.exchange, input.gap.symbol, coverage.coverageStart, coverage.verifiedEnd, coverage.verifiedEnd, input.gap.sessionDate, coverage.verifiedEnd, coverage.displayEnd, input.gap.sessionDate, status, nowText, nowText));
@@ -117,7 +119,7 @@ export async function refreshPeRiverOfficialLatest(input: { db: D1Database; runI
       attempts[exchange] = { attemptedAt: nowText, status: reasonCode === "official_not_published" ? "pending" : "failed", reasonCode, sourceDate: null, diagnostic: peRiverProviderAttemptDiagnostic(error) };
     }
   }
-  const accepted = [];
+  const accepted: PeRiverValuationRow[] = [];
   let promoted = 0;
   for (const target of targets) {
     const row = snapshots.get(target.exchange)?.find((value) => value.symbol === target.symbol);
@@ -185,17 +187,44 @@ export async function startPeRiverContinuousRun(input: {
   db: D1Database;
   runId: string;
   trigger: "schedule" | "workflow_dispatch";
+  officialSymbols?: string[];
   now?: Date;
 }) {
   if (!RUN_ID.test(input.runId) || !["schedule", "workflow_dispatch"].includes(input.trigger)) throw new Error("invalid_payload");
   const now = input.now || new Date();
   const nowText = now.toISOString();
   const targets = await discoverPeRiverTargets(input.db);
+  const targetBySymbol = new Map(targets.map((target) => [target.symbol, target]));
+  const officialSymbols = [...new Set(input.officialSymbols || [])];
+  if (officialSymbols.length > PE_RIVER_MAX_HISTORY_TARGETS || officialSymbols.some((symbol) => targetBySymbol.get(symbol)?.exchange !== "TWSE")) throw new Error("invalid_payload");
+  const officialRecovery = new Set(officialSymbols);
+  const existingJobs = await input.db.prepare(`SELECT j.symbol,c.quote_type,c.group_name,c.market FROM taiwan_stock_pe_backfill_job j LEFT JOIN instrument_catalog c ON c.symbol=j.symbol AND c.active=1`).all<{ symbol: string; quote_type?: string; group_name?: string; market?: string }>();
+  for (const job of existingJobs.results) {
+    if (peRiverEligibility({ symbol: job.symbol, quoteType: job.quote_type, groupName: job.group_name, market: job.market }).supported) continue;
+    // Keep historical evidence, but retire inapplicable work without stealing a live lease.
+    await input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status='not_eligible',reason_code='not_eligible',updated_at=CURRENT_TIMESTAMP WHERE symbol=? AND (lease_expires_at IS NULL OR lease_expires_at<=?)`).bind(job.symbol, nowText).run();
+    await input.db.prepare(`UPDATE taiwan_stock_pe_fetch_state SET status='not_eligible',reason_code='not_eligible',updated_at=CURRENT_TIMESTAMP WHERE symbol=? AND EXISTS (SELECT 1 FROM taiwan_stock_pe_backfill_job WHERE symbol=? AND status='not_eligible')`).bind(job.symbol, job.symbol).run();
+  }
   const range = targetRange(now);
-  for (const target of targets) await queuePeRiverBackfill(input.db, { symbol: target.symbol, targetStart: range.start, targetEnd: range.end });
+  for (const target of targets) {
+    await queuePeRiverBackfill(input.db, { symbol: target.symbol, targetStart: range.start, targetEnd: range.end });
+    const readiness = peRiverHistoryReadiness(await readPeRiverRows(input.db, target.symbol));
+    if (readiness.sufficient) {
+      await input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status='complete',reason_code='available',retry_after=NULL,updated_at=CURRENT_TIMESTAMP WHERE symbol=? AND status NOT IN ('running','not_eligible') AND completed_months>=total_months AND (lease_expires_at IS NULL OR lease_expires_at<=?)`).bind(target.symbol, nowText).run();
+      await input.db.prepare(`UPDATE taiwan_stock_pe_fetch_state SET coverage_start=?,coverage_end=?,source_date=?,verified_end=?,display_end=CASE WHEN display_end IS NULL OR display_end<? THEN ? ELSE display_end END,status='available',reason_code='available',last_success_at=?,updated_at=CURRENT_TIMESTAMP WHERE symbol=?`).bind(readiness.coverageStart, readiness.verifiedEnd, readiness.verifiedEnd, readiness.verifiedEnd, readiness.verifiedEnd, readiness.verifiedEnd, nowText, target.symbol).run();
+    }
+    if (officialRecovery.has(target.symbol)) {
+      await input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET completed_months=(SELECT COUNT(*) FROM taiwan_stock_pe_backfill_month m WHERE m.job_id=taiwan_stock_pe_backfill_job.job_id AND m.status='complete' AND m.target_month BETWEEN substr(taiwan_stock_pe_backfill_job.target_start,1,7) AND substr(taiwan_stock_pe_backfill_job.target_end,1,7)),updated_at=CURRENT_TIMESTAMP WHERE symbol=? AND exchange='TWSE'`).bind(target.symbol).run();
+      await input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status='queued',reason_code='running',updated_at=CURRENT_TIMESTAMP
+        WHERE symbol=? AND exchange='TWSE' AND status IN ('partial','blocked')
+          AND EXISTS (SELECT 1 FROM taiwan_stock_pe_backfill_month m WHERE m.job_id=taiwan_stock_pe_backfill_job.job_id AND m.status<>'complete')
+          AND (lease_expires_at IS NULL OR lease_expires_at<=?)`).bind(target.symbol, nowText).run();
+    }
+  }
   await input.db.prepare(`INSERT INTO taiwan_stock_pe_control (control_key,scheduler_heartbeat_at,budget_limit) VALUES ('global',?,?) ON CONFLICT(control_key) DO UPDATE SET scheduler_heartbeat_at=excluded.scheduler_heartbeat_at,budget_limit=excluded.budget_limit,updated_at=CURRENT_TIMESTAMP`).bind(nowText, FINMIND_SAFE_HOURLY_BUDGET).run();
 
-  const candidates = await input.db.prepare(`SELECT job_id,exchange,symbol,target_start,target_end,attempt,retry_after FROM taiwan_stock_pe_backfill_job WHERE status IN ('queued','retry_waiting','running') AND (retry_after IS NULL OR retry_after<=?) AND (lease_expires_at IS NULL OR lease_expires_at<=?) ORDER BY updated_at,symbol LIMIT ?`).bind(nowText, nowText, PE_RIVER_MAX_HISTORY_TARGETS).all<{ job_id: string; exchange: string; symbol: string; target_start: string; target_end: string; attempt: number; retry_after: string | null }>();
+  const historySymbols = officialRecovery.size ? officialSymbols : targets.map((target) => target.symbol);
+  const candidates = await input.db.prepare(`SELECT job_id,exchange,symbol,target_start,target_end,attempt,retry_after FROM taiwan_stock_pe_backfill_job WHERE status IN ('queued','retry_waiting','running') AND symbol IN (SELECT value FROM json_each(?)) AND (retry_after IS NULL OR retry_after<=?) AND (lease_expires_at IS NULL OR lease_expires_at<=?) ORDER BY COALESCE(last_success_at,''),updated_at,symbol LIMIT ?`).bind(JSON.stringify(historySymbols), nowText, nowText, PE_RIVER_MAX_HISTORY_TARGETS).all<{ job_id: string; exchange: string; symbol: string; target_start: string; target_end: string; attempt: number; retry_after: string | null }>();
   const budget = candidates.results.length ? await reserveFinMindBudget(input.db, candidates.results.length * 2, now) : { reserved: true, used: 0, limit: FINMIND_SAFE_HOURLY_BUDGET, windowStart: null, windowEnd: null, reasonCode: null };
   const history = [];
   if (budget.reserved) {
@@ -219,6 +248,7 @@ export async function startPeRiverContinuousRun(input: {
     latest: targets.map((target) => ({ ...target, lane: "latest" as const })),
     history,
     historyLimit: PE_RIVER_MAX_HISTORY_TARGETS,
+    officialSymbols,
     budget,
     heartbeatAt: nowText,
   };
@@ -241,12 +271,12 @@ export async function completePeRiverHistoryTarget(input: { db: D1Database; runI
   const verified = rows.filter((row) => ["official_verified", "finmind_overlap_verified"].includes(String(row.validationStatus || "official_verified")));
   const coverageStart = verified[0]?.sessionDate || null;
   const coverageEnd = verified.at(-1)?.sessionDate || null;
-  const status = verified.length >= 252 ? "available" : "insufficient_history";
+  const status = peRiverHistoryReadiness(verified).sufficient ? "available" : "insufficient_history";
   const providerVerifiedAt = input.validationStatus === "finmind_overlap_verified" ? nowText : null;
   const results = await input.db.batch([
     input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,coverage_start,coverage_end,source_date,latest_source_date,provider_verified_at,lane,status,reason_code,last_success_at,last_attempt_at) SELECT exchange,symbol,?,?,?,?,?,'history',?,?,?,? FROM taiwan_stock_pe_backfill_job WHERE job_id=? AND lease_owner=? ON CONFLICT(exchange,symbol) DO UPDATE SET coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,latest_source_date=CASE WHEN taiwan_stock_pe_fetch_state.latest_source_date IS NULL OR (excluded.latest_source_date IS NOT NULL AND excluded.latest_source_date>taiwan_stock_pe_fetch_state.latest_source_date) THEN excluded.latest_source_date ELSE taiwan_stock_pe_fetch_state.latest_source_date END,provider_verified_at=COALESCE(excluded.provider_verified_at,taiwan_stock_pe_fetch_state.provider_verified_at),lane='history',status=excluded.status,reason_code=excluded.reason_code,last_success_at=excluded.last_success_at,last_attempt_at=excluded.last_attempt_at,updated_at=CURRENT_TIMESTAMP`).bind(coverageStart, coverageEnd, coverageEnd, input.overlapDate || null, providerVerifiedAt, status, input.validationStatus, nowText, nowText, input.jobId, input.runId),
     input.db.prepare(`UPDATE taiwan_stock_pe_control SET scheduler_heartbeat_at=?,last_history_run_at=?,updated_at=CURRENT_TIMESTAMP WHERE control_key='global' AND EXISTS (SELECT 1 FROM taiwan_stock_pe_backfill_job WHERE job_id=? AND lease_owner=?)`).bind(nowText, nowText, input.jobId, input.runId),
-    input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status=?,reason_code=?,completed_months=(SELECT COUNT(*) FROM taiwan_stock_pe_backfill_month WHERE job_id=? AND status='complete'),provider_verified_at=?,lease_owner=NULL,lease_expires_at=NULL,retry_after=NULL,last_success_at=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND lease_owner=?`).bind(status === "available" ? "complete" : "partial", status, input.jobId, providerVerifiedAt, nowText, input.jobId, input.runId),
+    input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status=?,reason_code=?,completed_months=(SELECT COUNT(*) FROM taiwan_stock_pe_backfill_month m WHERE m.job_id=taiwan_stock_pe_backfill_job.job_id AND m.status='complete' AND m.target_month BETWEEN substr(taiwan_stock_pe_backfill_job.target_start,1,7) AND substr(taiwan_stock_pe_backfill_job.target_end,1,7)),provider_verified_at=?,lease_owner=NULL,lease_expires_at=NULL,retry_after=NULL,last_success_at=?,updated_at=CURRENT_TIMESTAMP WHERE job_id=? AND lease_owner=?`).bind(status === "available" ? "complete" : "partial", status, providerVerifiedAt, nowText, input.jobId, input.runId),
   ]);
   if (Number(results[2]?.meta?.changes || 0) < 1) throw new Error("lease_conflict");
   return { status, validSamples: verified.length, coverageStart, coverageEnd, overlapDate: input.overlapDate || null };
@@ -265,7 +295,7 @@ export async function failPeRiverHistoryTarget(input: { db: D1Database; runId: s
 
 export async function readPeRiverContinuousHealth(db: D1Database) {
   const control = await db.prepare(`SELECT * FROM taiwan_stock_pe_control WHERE control_key='global'`).first<Record<string, unknown>>();
-  const history = await db.prepare(`SELECT COUNT(*) AS target,SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) AS ready,SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS insufficient,SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS missing,SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END) AS blocked,SUM(CASE WHEN status='retry_waiting' THEN 1 ELSE 0 END) AS retry_waiting FROM taiwan_stock_pe_backfill_job`).first<Record<string, number | null>>();
+  const history = await db.prepare(`SELECT COUNT(*) AS target,SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) AS ready,SUM(CASE WHEN status='partial' THEN 1 ELSE 0 END) AS insufficient,SUM(CASE WHEN status='queued' THEN 1 ELSE 0 END) AS missing,SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END) AS blocked,SUM(CASE WHEN status='retry_waiting' THEN 1 ELSE 0 END) AS retry_waiting FROM taiwan_stock_pe_backfill_job WHERE status<>'not_eligible'`).first<Record<string, number | null>>();
   const latest = await db.prepare(`SELECT SUM(CASE WHEN reason_code='available' AND provisional_status IS NULL THEN 1 ELSE 0 END) AS fresh,SUM(CASE WHEN reason_code='official_not_published' OR provisional_status='pending' THEN 1 ELSE 0 END) AS pending,SUM(CASE WHEN reason_code IN ('retry_waiting','rate_limit_waiting') THEN 1 ELSE 0 END) AS retry,SUM(CASE WHEN reason_code='source_mismatch' OR provisional_quarantined=1 THEN 1 ELSE 0 END) AS mismatch,SUM(CASE WHEN provisional_status='provisional_capped' THEN 1 ELSE 0 END) AS provisional_capped,MAX(latest_source_date) AS source_date,MAX(verified_end) AS verified_end,MAX(display_end) AS display_end,MAX(official_source_date) AS official_source_date FROM taiwan_stock_pe_fetch_state`).first<Record<string, number | string | null>>();
   const diagnostic = (value: unknown) => {
     try { return value ? JSON.parse(String(value)) : null; }

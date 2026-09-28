@@ -157,6 +157,34 @@ test("TDCC refresh 暫時只回一期時，最終 D1 已保留多期便不再顯
   assert.ok(result.body.warnings.every(message => !message.includes("目前僅有一期集保週資料")));
 });
 
+test("TDCC 已有多期 verified D1 rows 時互動 GET 不等待 provider refresh", async () => {
+  const db = new ChipFakeD1();
+  const latest = parseTdccSnapshot(tdccFixture, new Set(["2330.TW"]))[0];
+  const previous = parseTdccSnapshot(tdccFixture.map(row => ({ ...row, "\uFEFF資料日期": "20260702" })), new Set(["2330.TW"]))[0];
+  for (const row of [previous, latest]) db.distribution.set(`${row.symbol}|${row.dataDate}`, {
+    symbol: row.symbol,
+    data_date: row.dataDate,
+    levels_json: JSON.stringify(row.levels),
+    adjustment_json: JSON.stringify(row.adjustment),
+    total_json: JSON.stringify(row.total),
+    provider: row.provenance.provider,
+    frequency: row.provenance.frequency,
+    source_fetched_at: row.provenance.fetchedAt,
+  });
+  let providerCalls = 0;
+  const result = await taiwanStockChipPayload({
+    url: new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-07-01&end=2026-07-10&datasets=shareholder-distribution"),
+    env: { DB: db },
+    eligibility: eligible,
+    fetchImpl: async () => { providerCalls += 1; throw new Error("interactive GET must remain database-only"); },
+    now: "2026-07-10T12:00:00+08:00",
+  });
+  assert.equal(providerCalls, 0);
+  assert.equal(result.body.cache.mode, "d1_hit");
+  assert.deepEqual(result.body.distributionRows.map((row) => row.dataDate), ["2026-07-02", "2026-07-09"]);
+  assert.deepEqual(result.body.availability["shareholder-distribution"], { status: "available", reason: "available", rowCount: 2 });
+});
+
 test("TDCC coverage 安全回傳官方計畫、完整缺週數、bounded dates 與 handoff evidence", async () => {
   const db = new ChipFakeD1();
   const missingDates = Array.from({ length: 13 }, (_, index) => `2026-${String(6 - Math.floor(index / 4)).padStart(2, "0")}-${String(27 - (index % 4) * 7).padStart(2, "0")}`).sort();
@@ -236,7 +264,13 @@ test("ETF 各 dataset 獨立回應，來源空陣列只將該族群標示 not_pu
     TaiwanStockSecuritiesLending: [],
   };
   const fetchImpl = async (input) => {
-    const dataset = new URL(String(input)).searchParams.get("dataset");
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/lending/t13sa710")) return Response.json({
+      stat: "OK",
+      fields: ["成交日期", "證券代號名稱", "交易方式", "成交數量(交易單位)", "成交費率", "成交日收盤價", "約定還券日期", "約定借券天數", "費率異動"],
+      data: [],
+    });
+    const dataset = url.searchParams.get("dataset");
     return Response.json({ status: 200, data: byDataset[dataset] });
   };
   const url = new URL("http://local/api/taiwan-stock-chip?symbol=00919.TW&start=2026-07-01&end=2026-07-03&datasets=institutional-flow,foreign-holding,margin-short,securities-lending");
@@ -278,6 +312,34 @@ test("部分資料 warning 使用中文說明外資持股與借券成交的內�
   assert.match(holdingWarning, /持有股數.+已發行股數比例.+晚間 21:00.+自動補入/);
   assert.match(lendingWarning, /借入證券.+不等於借券賣出或放空.+15:00.+無成交可能不會新增一筆 0/);
   assert.equal(result.body.warnings.some((warning) => /securities-lending|foreign-holding|partial_data/.test(warning)), false);
+});
+
+test("借券官方全市場確認無成交時保留舊成交、不補零且 freshness 期間不重抓", async () => {
+  const db = new ChipFakeD1();
+  let providerCalls = 0;
+  const fields = ["成交日期", "證券代號名稱", "交易方式", "成交數量(交易單位)", "成交費率", "成交日收盤價", "約定還券日期", "約定借券天數", "費率異動"];
+  const fetchImpl = async (input) => {
+    providerCalls += 1;
+    const url = new URL(String(input));
+    if (url.hostname === "api.finmindtrade.com") return Response.json({ status: 200, data: [{ date: "2026-09-23", stock_id: "2330", volume: 50 }] });
+    if (url.pathname.endsWith("/lending/t13sa710")) return Response.json({ stat: "OK", fields, data: [["115年09月24日", "2454 聯發科", "議借", "20", "0.1", "1,500", "116年03月24日", 181, ""]] });
+    throw new Error(`unexpected ${url}`);
+  };
+  const url = new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-09-01&end=2026-09-24&datasets=securities-lending");
+  const first = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: eligible, fetchImpl, now: "2026-09-24T16:00:00+08:00" });
+  assert.equal(providerCalls, 2);
+  assert.equal(first.body.rows.length, 1);
+  assert.equal(first.body.rows[0].sessionDate, "2026-09-23");
+  assert.equal(first.body.rows[0].securitiesLending.transactionShares, 50);
+  assert.deepEqual(first.body.availability["securities-lending"], { status: "available", reason: "official_no_activity", rowCount: 1 });
+  assert.equal(db.daily.has("2330.TW|2026-09-24"), false);
+  assert.equal(db.states.get("2330.TW|securities-lending").coverage_end, "2026-09-23");
+  assert.equal(db.states.get("2330.TW|securities-lending").source_date, "2026-09-24");
+  assert.match(first.body.warnings.join("\n"), /官方成交明細已核對 2026-09-24 當日無成交.+不補 0/);
+
+  const second = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: eligible, fetchImpl: async () => { throw new Error("fresh official absence must use D1 state"); }, now: "2026-09-24T17:00:00+08:00" });
+  assert.equal(second.body.availability["securities-lending"].reason, "official_no_activity");
+  assert.equal(second.body.rows.length, 1);
 });
 
 test("相同 symbol dataset range 的併發請求共用 FinMind single-flight", async () => {

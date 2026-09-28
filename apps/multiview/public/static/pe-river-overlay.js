@@ -56,7 +56,7 @@
     if (payload.provisional?.status === "source_mismatch") return `本益比河流圖：來源核對不一致，已改用官方資料並停用暫代`;
     if (payload.status === "available" && payload.provisional?.dates?.length) return `本益比河流圖：${payload.coverage.validSamples} 筆（官方至 ${payload.coverage.verifiedEnd}；FinMind 暫代至 ${payload.coverage.displayEnd}，等待交易所確認）`;
     if (payload.status === "available") return `本益比河流圖：${payload.coverage.validSamples} 筆（${payload.coverage.start}～${payload.coverage.end}）`;
-    if (payload.status === "insufficient_history") return `本益比河流圖：有效資料 ${payload.coverage?.validSamples || 0} 筆，至少需要 252 筆`;
+    if (payload.status === "insufficient_history") return `本益比河流圖：有效資料 ${payload.coverage?.validSamples || 0} 筆，至少需要 ${payload.coverage?.minimumSamples || 220} 筆且涵蓋 ${payload.coverage?.minimumSpanDays || 300} 日`;
     if (payload.status === "unsupported_interval") return "本益比河流圖僅支援日 K";
     if (payload.status === "not_eligible") return "此商品不適用本益比河流圖";
     if (payload.backfill?.reasonCode === "rate_limit_waiting") return "本益比河流圖：免費額度暫滿，背景回補稍後續跑";

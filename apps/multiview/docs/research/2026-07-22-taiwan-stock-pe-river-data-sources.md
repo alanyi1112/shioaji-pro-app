@@ -32,7 +32,7 @@ TWSE 在本次查核時落後 FinMind 一個交易日，而 TPEx 已發布當日
 - 官方 OpenAPI 到齊後，核對相同 market／symbol／date 的 P/E 與 close；兩項 absolute difference 都不超過 `0.01` 才記為來源相符。reference EPS 是核對後重算的衍生值，不是第三個獨立比對欄位。
 - 若超過 `0.01`，可見 row 仍立即改用權威官方值，但 fetch state 記錄 `source_mismatch` 並 quarantine 該商品後續 FinMind 暫代；不得用 FinMind 覆蓋官方或自動放寬誤差。
 - provisional latest feature gate 預設關閉，只能由 Sites runtime 的 `PE_RIVER_PROVISIONAL_LATEST_ENABLED=true` 啟用；前端不能改寫。若存取模式不再是 private／custom 非商業，既有 `license_review_required` gate 仍優先阻擋。
-- TWSE／TPEx 一般指定日期查詢頁面不在允許來源清單。即使網頁已出現較新資料，production workflow 也不得自動呼叫、解析或爬取；本變更不新增 Data E-Shop、MOPS 重建 EPS 或其他第三方 fallback。
+- production workflow 維持既有來源清單；本機私人非商業回補若指定 TWSE 普通股仍未達最低樣本，允許只對未完成月份呼叫官方 `BWIBBU` 與 `STOCK_DAY` JSON。正值依同日收盤配對後保存為 `official_verified`，整月本益比皆空白則保存空的 `official_gap` checkpoint；同一月份完成後不再抓取，也不將普通股永久排除。
 
 ## 免費額度、再利用與 fail-closed 邊界
 
@@ -41,7 +41,7 @@ TWSE 在本次查核時落後 FinMind 一個交易日，而 TPEx 已發布當日
 - HTTP 402 代表額度用盡；402／429／retryable 5xx／timeout 只保存 allowlist reason code 與 next retry，不 busy loop、不重抓已完成 dataset／month checkpoint。
 - 本站 API 只服務河流圖的衍生倍率、河流 points、coverage 與 pointed-date readout，不提供通用 FinMind 五年 raw dump、下載端點、轉售或鏡像服務。
 - 政府資料開放授權條款第 1 版允許免授權金製作衍生物，但顯名是必要條件；UI 與 API 必須標示臺灣證券交易所或證券櫃檯買賣中心，另標示「歷史資料介接：FinMind」。
-- FinMind SPA 使用條款或方案內容若無法在部署前重新驗證、資料集改為非 Free、匿名額度降低，或存取模式不再是 private／custom 非商業，管線一律 fail closed，不改抓交易所一般歷史頁面或不明第三方。
+- FinMind SPA 使用條款或方案內容若無法在部署前重新驗證、資料集改為非 Free、匿名額度降低，或存取模式不再是 private／custom 非商業，管線一律 fail closed；本機官方月報 fallback 仍須符合私人非商業、有界月份、正式 JSON 欄位驗證與逐月 checkpoint，其他不明第三方不得接手。
 
 ## 實測端點與欄位
 

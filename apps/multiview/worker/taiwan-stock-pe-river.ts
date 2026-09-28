@@ -1,7 +1,8 @@
 import { runD1Batch } from "./d1-batch.ts";
 
 export const PE_RIVER_PERCENTILES = [0.05, 0.2, 0.35, 0.5, 0.65, 0.8, 0.95] as const;
-export const PE_RIVER_MINIMUM_SAMPLES = 252;
+export const PE_RIVER_MINIMUM_SAMPLES = 220;
+export const PE_RIVER_MINIMUM_SPAN_DAYS = 300;
 export const PE_RIVER_LOOKBACK_YEARS = 5;
 
 export type PeRiverExchange = "TWSE" | "TPEx";
@@ -68,13 +69,13 @@ export function peRiverEligibility(input: { symbol: unknown; interval?: unknown;
   if (String(input.interval || "1d") !== "1d") return { supported: false, reason: "unsupported_interval" as const, canonical };
   const metadata = `${String(input.quoteType || "")} ${String(input.groupName || "")} ${String(input.market || "")}`.toLowerCase();
   const excluded = /(etf|etn|exchange traded|指數|指標|存託|tdr|特別股|preferred|受益|權證|warrant|債券|bond|基金|fund)/.test(metadata)
-    || /^(00\d{2,4}|01\d{2,4})\.(TW|TWO)$/.test(canonical.symbol);
+    || /^(00[0-9A-Z]{2,6}|01[0-9A-Z]{2,6})\.(TW|TWO)$/.test(canonical.symbol);
   if (excluded) return { supported: false, reason: "not_eligible" as const, canonical };
   return { supported: true, reason: "supported" as const, canonical };
 }
 
 export function normalizeOfficialDate(value: unknown): string | null {
-  const text = String(value ?? "").trim().replaceAll(".", "/").replaceAll("-", "/");
+  const text = String(value ?? "").trim().replace(/[年月]/g, "/").replace(/日$/, "").replaceAll(".", "/").replaceAll("-", "/");
   const compact = text.replaceAll("/", "");
   if (/^\d{7}$/.test(compact)) {
     const year = Number(compact.slice(0, 3)) + 1911;
@@ -110,7 +111,7 @@ function rowsByFields(payload: unknown, requiredField: string) {
 
 function fiscalParts(value: unknown) {
   const text = String(value ?? "").trim();
-  const match = text.match(/(\d{2,4})\s*[年/\-]?\s*[第]?\s*([1-4])\s*[季Q]?/i);
+  const match = text.match(/^(\d{2,4})\s*(?:[年/\-]|Q)\s*第?\s*([1-4])\s*季?$/i);
   if (!match) return { fiscalYear: text || null, fiscalQuarter: null };
   const rawYear = Number(match[1]);
   return { fiscalYear: String(rawYear < 1911 ? rawYear + 1911 : rawYear), fiscalQuarter: match[2] };
@@ -154,7 +155,7 @@ export function parseTpexHistoricalClose(payload: unknown, symbol: string): Offi
   const canonical = canonicalPeRiverSymbol(symbol);
   if (!canonical || canonical.exchange !== "TPEx") return [];
   return rowsByFields(payload, "收盤").flatMap((row) => {
-    const sessionDate = normalizeOfficialDate(row["日期"] ?? row["資料日期"]);
+    const sessionDate = normalizeOfficialDate(row["日期"] ?? row["日 期"] ?? row["資料日期"]);
     const stockCode = String(row["代號"] ?? row["證券代號"] ?? canonical.stockCode).trim();
     return sessionDate && stockCode === canonical.stockCode
       ? [{ exchange: "TPEx", stockCode, sessionDate, officialClose: finitePositive(row["收盤"]), source: "tpex" as const }]
@@ -191,13 +192,38 @@ function fiveYearsBefore(date: string) {
   return parsed.toISOString().slice(0, 10);
 }
 
-export function buildPeRiver(rows: PeRiverValuationRow[]) {
+function calendarSpanDays(start: string | null, end: string | null) {
+  if (!start || !end) return 0;
+  const milliseconds = Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`);
+  return Number.isFinite(milliseconds) && milliseconds >= 0 ? Math.floor(milliseconds / 86_400_000) : 0;
+}
+
+export function peRiverHistoryReadiness(rows: PeRiverValuationRow[]) {
   const verified = rows.filter((row) => row.officialPeRatio > 0 && row.referenceEps > 0 && ["official_verified", "finmind_overlap_verified"].includes(String(row.validationStatus || "official_verified"))).sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
   const verifiedEnd = verified.at(-1)?.sessionDate ?? null;
   const windowStart = verifiedEnd ? fiveYearsBefore(verifiedEnd) : null;
   const sample = windowStart ? verified.filter((row) => row.sessionDate >= windowStart) : [];
+  const coverageStart = sample[0]?.sessionDate ?? null;
+  const coverageSpanDays = calendarSpanDays(coverageStart, verifiedEnd);
+  return {
+    verified,
+    sample,
+    verifiedEnd,
+    windowStart,
+    coverageStart,
+    coverageSpanDays,
+    validSamples: sample.length,
+    minimumSamples: PE_RIVER_MINIMUM_SAMPLES,
+    minimumSpanDays: PE_RIVER_MINIMUM_SPAN_DAYS,
+    sufficient: sample.length >= PE_RIVER_MINIMUM_SAMPLES && coverageSpanDays >= PE_RIVER_MINIMUM_SPAN_DAYS,
+  };
+}
+
+export function buildPeRiver(rows: PeRiverValuationRow[]) {
+  const readiness = peRiverHistoryReadiness(rows);
+  const { verifiedEnd, sample } = readiness;
   const multipliers = Object.fromEntries(PE_RIVER_PERCENTILES.map((percentile) => [`p${Math.round(percentile * 100)}`, interpolatedPercentile(sample.map((row) => row.officialPeRatio), percentile)]));
-  const enough = sample.length >= PE_RIVER_MINIMUM_SAMPLES;
+  const enough = readiness.sufficient;
   const provisional = verifiedEnd ? rows.filter((row) => row.validationStatus === "finmind_provisional_latest" && row.sessionDate > verifiedEnd && row.officialPeRatio > 0 && row.referenceEps > 0).sort((a, b) => a.sessionDate.localeCompare(b.sessionDate)).slice(0, 3) : [];
   const displayRows = enough ? [...sample, ...provisional] : [];
   const points = displayRows.map((row) => ({
@@ -219,7 +245,7 @@ export function buildPeRiver(rows: PeRiverValuationRow[]) {
   const displayEnd = provisional.at(-1)?.sessionDate || verifiedEnd;
   return {
     status: enough ? "available" as const : "insufficient_history" as const,
-    coverage: { start: sample[0]?.sessionDate ?? null, end: verifiedEnd, actualStart: verified[0]?.sessionDate ?? null, actualEnd: verifiedEnd, verifiedEnd, displayEnd, provisionalDates: provisional.map((row) => row.sessionDate), validSamples: sample.length, lookbackYears: PE_RIVER_LOOKBACK_YEARS, minimumSamples: PE_RIVER_MINIMUM_SAMPLES },
+    coverage: { start: readiness.coverageStart, end: verifiedEnd, actualStart: readiness.verified[0]?.sessionDate ?? null, actualEnd: verifiedEnd, verifiedEnd, displayEnd, provisionalDates: provisional.map((row) => row.sessionDate), validSamples: sample.length, coverageSpanDays: readiness.coverageSpanDays, lookbackYears: PE_RIVER_LOOKBACK_YEARS, minimumSamples: PE_RIVER_MINIMUM_SAMPLES, minimumSpanDays: PE_RIVER_MINIMUM_SPAN_DAYS },
     multipliers: enough ? multipliers : null,
     points,
     provisional: { status: provisional.length ? "pending" as const : "none" as const, dates: provisional.map((row) => row.sessionDate), provider: provisional.length ? "finmind" as const : null, verifiedEnd, displayEnd },
@@ -252,7 +278,8 @@ export async function upsertPeRiverRows(db: D1Database, rows: PeRiverValuationRo
 }
 
 export function peRiverCoverageState(rows: PeRiverValuationRow[]) {
-  const verified = rows.filter((row) => ["official_verified", "finmind_overlap_verified"].includes(String(row.validationStatus || "official_verified")) && row.officialPeRatio > 0 && row.referenceEps > 0).sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
+  const readiness = peRiverHistoryReadiness(rows);
+  const verified = readiness.sample;
   const provisional = rows.filter((row) => row.validationStatus === "finmind_provisional_latest" && row.officialPeRatio > 0 && row.referenceEps > 0).sort((a, b) => a.sessionDate.localeCompare(b.sessionDate)).slice(0, 3);
   const verifiedEnd = verified.at(-1)?.sessionDate || null;
   const visibleProvisional = verifiedEnd ? provisional.filter((row) => row.sessionDate > verifiedEnd) : [];
@@ -263,6 +290,8 @@ export function peRiverCoverageState(rows: PeRiverValuationRow[]) {
     verifiedEnd,
     displayEnd: visibleProvisional.at(-1)?.sessionDate || verifiedEnd,
     validSamples: verified.length,
+    coverageSpanDays: readiness.coverageSpanDays,
+    sufficient: readiness.sufficient,
   };
 }
 
@@ -279,7 +308,7 @@ export async function ingestProvisionalPeRiverRows(input: { db: D1Database; symb
   const acceptedDates = new Set(accepted.map((row) => row.sessionDate));
   const combined = [...existing.filter((row) => !acceptedDates.has(row.sessionDate)), ...accepted].sort((a, b) => a.sessionDate.localeCompare(b.sessionDate));
   const coverage = peRiverCoverageState(combined);
-  const fetchStatus = coverage.validSamples >= PE_RIVER_MINIMUM_SAMPLES ? "available" : "partial";
+  const fetchStatus = coverage.sufficient ? "available" : "partial";
   const statements = [
     ...accepted.map((row) => peRiverUpsertStatement(input.db, row)),
     input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,coverage_start,coverage_end,source_date,verified_end,display_end,official_source_date,provisional_dates_json,provisional_status,lane,status,reason_code,last_success_at,last_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?, 'latest',?,?,?,?) ON CONFLICT(exchange,symbol) DO UPDATE SET coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,verified_end=excluded.verified_end,display_end=excluded.display_end,official_source_date=excluded.official_source_date,provisional_dates_json=excluded.provisional_dates_json,provisional_status=excluded.provisional_status,lane='latest',status=excluded.status,reason_code=excluded.reason_code,last_success_at=excluded.last_success_at,last_attempt_at=excluded.last_attempt_at,updated_at=CURRENT_TIMESTAMP`).bind(canonical.exchange, canonical.symbol, coverage.coverageStart, coverage.verifiedEnd, coverage.verifiedEnd, coverage.verifiedEnd, coverage.displayEnd, input.officialSourceDate, JSON.stringify(coverage.provisional.map((row) => row.sessionDate)), input.status, fetchStatus, input.status === "provisional_capped" ? "provisional_capped" : "official_not_published", nowText, nowText),
@@ -331,6 +360,10 @@ export async function queuePeRiverBackfill(db: D1Database, input: { symbol: stri
   if (!canonical) throw new Error("invalid_payload");
   const missing = await missingPeRiverMonths(db, canonical.symbol, input.targetStart, input.targetEnd);
   const jobId = `pe-river:${canonical.symbol}`;
+  const existing = await db.prepare("SELECT target_start,target_end,status FROM taiwan_stock_pe_backfill_job WHERE job_id=?").bind(jobId).first<{ target_start: string; target_end: string; status: string }>();
+  // Re-discovery must not reset FIFO ordering, leases, failure fences or cooldowns.
+  if (existing && (existing.target_start === input.targetStart && existing.target_end === input.targetEnd
+    || ["running", "blocked", "retry_waiting"].includes(existing.status))) return { jobId, missingMonths: missing };
   const desiredStatus = missing.length ? "queued" : "complete";
   const desiredReason = missing.length ? "running" : "available";
   await db.prepare(`INSERT INTO taiwan_stock_pe_backfill_job (job_id,exchange,symbol,target_start,target_end,status,reason_code,total_months,completed_months) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(exchange,symbol) DO UPDATE SET target_start=excluded.target_start,target_end=excluded.target_end,status=CASE WHEN taiwan_stock_pe_backfill_job.status='running' THEN 'running' ELSE excluded.status END,reason_code=CASE WHEN taiwan_stock_pe_backfill_job.status='running' THEN taiwan_stock_pe_backfill_job.reason_code ELSE excluded.reason_code END,total_months=excluded.total_months,completed_months=CASE WHEN excluded.status='complete' THEN excluded.total_months ELSE taiwan_stock_pe_backfill_job.completed_months END,updated_at=CURRENT_TIMESTAMP`).bind(jobId, canonical.exchange, canonical.symbol, input.targetStart, input.targetEnd, desiredStatus, desiredReason, monthSequence(input.targetStart, input.targetEnd).length, missing.length ? 0 : monthSequence(input.targetStart, input.targetEnd).length).run();
@@ -363,7 +396,7 @@ export async function failPeRiverBackfillMonth(db: D1Database, input: { exchange
 
 export async function peRiverHealth(db?: D1Database) {
   if (!db) return { configured: false, target: 0, ready: 0, pending: 0, blocked: 0, retryWaiting: 0, latestCoverageEnd: null, latestDisplayEnd: null, provisionalPending: 0, provisionalCapped: 0, provisionalMismatch: 0 };
-  const counts = await db.prepare(`SELECT COUNT(*) AS target, SUM(CASE WHEN status='available' THEN 1 ELSE 0 END) AS ready, SUM(CASE WHEN status IN ('queued','running','partial') THEN 1 ELSE 0 END) AS pending, SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END) AS blocked, SUM(CASE WHEN status='retry_waiting' THEN 1 ELSE 0 END) AS retry_waiting FROM taiwan_stock_pe_fetch_state`).first<Record<string, number | null>>();
+  const counts = await db.prepare(`SELECT COUNT(*) AS target, SUM(CASE WHEN status='available' THEN 1 ELSE 0 END) AS ready, SUM(CASE WHEN status IN ('queued','running','partial') THEN 1 ELSE 0 END) AS pending, SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END) AS blocked, SUM(CASE WHEN status='retry_waiting' THEN 1 ELSE 0 END) AS retry_waiting FROM taiwan_stock_pe_fetch_state WHERE status<>'not_eligible'`).first<Record<string, number | null>>();
   const latest = await db.prepare(`SELECT MAX(verified_end) AS verified_end,MAX(display_end) AS display_end,SUM(CASE WHEN provisional_status='pending' THEN 1 ELSE 0 END) AS provisional_pending,SUM(CASE WHEN provisional_status='provisional_capped' THEN 1 ELSE 0 END) AS provisional_capped,SUM(CASE WHEN provisional_quarantined=1 THEN 1 ELSE 0 END) AS provisional_mismatch FROM taiwan_stock_pe_fetch_state`).first<{ verified_end?: string | null; display_end?: string | null; provisional_pending?: number | null; provisional_capped?: number | null; provisional_mismatch?: number | null }>();
   return { configured: true, target: Number(counts?.target || 0), ready: Number(counts?.ready || 0), pending: Number(counts?.pending || 0), blocked: Number(counts?.blocked || 0), retryWaiting: Number(counts?.retry_waiting || 0), latestCoverageEnd: latest?.verified_end || null, latestDisplayEnd: latest?.display_end || null, provisionalPending: Number(latest?.provisional_pending || 0), provisionalCapped: Number(latest?.provisional_capped || 0), provisionalMismatch: Number(latest?.provisional_mismatch || 0) };
 }
@@ -386,7 +419,7 @@ export async function buildPeRiverResponse(input: { db?: D1Database; symbol: str
   const stateRow = await input.db.prepare(`SELECT official_source_date,provisional_status,provisional_quarantined,mismatch_date,mismatch_pe_difference,mismatch_close_difference FROM taiwan_stock_pe_fetch_state WHERE exchange=? AND symbol=?`).bind(canonical.exchange, canonical.symbol).first<{ official_source_date?: string | null; provisional_status?: string | null; provisional_quarantined?: number | null; mismatch_date?: string | null; mismatch_pe_difference?: number | null; mismatch_close_difference?: number | null }>();
   const status = river.status === "available" ? "available" : String(jobRow?.status || "queued");
   const reasonCode = river.status === "available" ? "available" : String(jobRow?.reason_code || "running");
-  await input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,requested_start,requested_end,coverage_start,coverage_end,source_date,latest_source_date,verified_end,display_end,provisional_dates_json,lane,status,reason_code,last_success_at,last_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CASE WHEN ?='available' THEN CURRENT_TIMESTAMP ELSE NULL END,CURRENT_TIMESTAMP) ON CONFLICT(exchange,symbol) DO UPDATE SET requested_start=excluded.requested_start,requested_end=excluded.requested_end,coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,latest_source_date=COALESCE(excluded.latest_source_date,taiwan_stock_pe_fetch_state.latest_source_date),verified_end=excluded.verified_end,display_end=excluded.display_end,provisional_dates_json=excluded.provisional_dates_json,lane=excluded.lane,status=excluded.status,reason_code=CASE WHEN taiwan_stock_pe_fetch_state.provisional_quarantined=1 THEN 'source_mismatch' ELSE excluded.reason_code END,last_success_at=COALESCE(excluded.last_success_at,taiwan_stock_pe_fetch_state.last_success_at),last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).bind(canonical.exchange, canonical.symbol, targetStart, targetEnd, river.coverage.actualStart, river.coverage.actualEnd, river.coverage.actualEnd, river.coverage.actualEnd, river.coverage.verifiedEnd, river.coverage.displayEnd, JSON.stringify(river.coverage.provisionalDates), river.status === "available" ? "latest" : "history", river.status === "available" ? "available" : status, reasonCode, river.status === "available" ? "available" : status).run();
+  await input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,requested_start,requested_end,coverage_start,coverage_end,source_date,latest_source_date,verified_end,display_end,provisional_dates_json,lane,status,reason_code,last_success_at,last_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CASE WHEN ?='available' THEN CURRENT_TIMESTAMP ELSE NULL END,CURRENT_TIMESTAMP) ON CONFLICT(exchange,symbol) DO UPDATE SET requested_start=excluded.requested_start,requested_end=excluded.requested_end,coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,latest_source_date=CASE WHEN excluded.latest_source_date IS NULL OR taiwan_stock_pe_fetch_state.latest_source_date>excluded.latest_source_date THEN taiwan_stock_pe_fetch_state.latest_source_date ELSE excluded.latest_source_date END,verified_end=excluded.verified_end,display_end=excluded.display_end,provisional_dates_json=excluded.provisional_dates_json,lane=excluded.lane,status=excluded.status,reason_code=CASE WHEN taiwan_stock_pe_fetch_state.provisional_quarantined=1 THEN 'source_mismatch' ELSE excluded.reason_code END,last_success_at=COALESCE(excluded.last_success_at,taiwan_stock_pe_fetch_state.last_success_at),last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).bind(canonical.exchange, canonical.symbol, targetStart, targetEnd, river.coverage.actualStart, river.coverage.actualEnd, river.coverage.actualEnd, river.coverage.actualEnd, river.coverage.verifiedEnd, river.coverage.displayEnd, JSON.stringify(river.coverage.provisionalDates), river.status === "available" ? "latest" : "history", river.status === "available" ? "available" : status, reasonCode, river.status === "available" ? "available" : status).run();
   const originalProvider = canonical.exchange === "TWSE" ? "臺灣證券交易所" : "證券櫃檯買賣中心";
   return {
     symbol: canonical.symbol,
@@ -452,9 +485,9 @@ export async function ingestNormalizedPeRiverMonth(input: { db: D1Database; symb
   const coverageStart = savedCoverage.coverageStart;
   const coverageEnd = savedCoverage.verifiedEnd;
   const displayEnd = savedCoverage.displayEnd;
-  const fetchStatus = verified.length >= PE_RIVER_MINIMUM_SAMPLES ? "available" : "partial";
-  await input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,coverage_start,coverage_end,source_date,latest_source_date,provider_verified_at,lane,status,reason_code,last_success_at,last_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(exchange,symbol) DO UPDATE SET coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,latest_source_date=COALESCE(excluded.latest_source_date,taiwan_stock_pe_fetch_state.latest_source_date),provider_verified_at=COALESCE(excluded.provider_verified_at,taiwan_stock_pe_fetch_state.provider_verified_at),lane=excluded.lane,status=excluded.status,reason_code=excluded.reason_code,last_success_at=CURRENT_TIMESTAMP,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).bind(canonical.exchange, canonical.symbol, coverageStart, coverageEnd, coverageEnd, officialLatest, promoted > 0 || normalized.some((row) => row.validationStatus === "finmind_overlap_verified") ? fetchedAt : null, officialLatest ? "latest" : "history", fetchStatus, officialLatest ? "available" : normalized.some((row) => row.validationStatus === "finmind_overlap_verified") ? "finmind_overlap_verified" : "historical_seed").run();
-  await input.db.prepare(`UPDATE taiwan_stock_pe_fetch_state SET verified_end=?,display_end=?,official_source_date=COALESCE(?,official_source_date),provisional_dates_json=?,provisional_status=?,updated_at=CURRENT_TIMESTAMP WHERE exchange=? AND symbol=?`).bind(coverageEnd, displayEnd, officialLatest, JSON.stringify(provisional.map((row) => row.sessionDate)), provisional.length ? "pending" : null, canonical.exchange, canonical.symbol).run();
+  const fetchStatus = peRiverHistoryReadiness(verified).sufficient ? "available" : "partial";
+  await input.db.prepare(`INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,coverage_start,coverage_end,source_date,latest_source_date,provider_verified_at,lane,status,reason_code,last_success_at,last_attempt_at) VALUES (?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) ON CONFLICT(exchange,symbol) DO UPDATE SET coverage_start=excluded.coverage_start,coverage_end=excluded.coverage_end,source_date=excluded.source_date,latest_source_date=CASE WHEN excluded.latest_source_date IS NULL OR taiwan_stock_pe_fetch_state.latest_source_date>excluded.latest_source_date THEN taiwan_stock_pe_fetch_state.latest_source_date ELSE excluded.latest_source_date END,provider_verified_at=COALESCE(excluded.provider_verified_at,taiwan_stock_pe_fetch_state.provider_verified_at),lane=excluded.lane,status=excluded.status,reason_code=excluded.reason_code,last_success_at=CURRENT_TIMESTAMP,last_attempt_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).bind(canonical.exchange, canonical.symbol, coverageStart, coverageEnd, coverageEnd, officialLatest, promoted > 0 || normalized.some((row) => row.validationStatus === "finmind_overlap_verified") ? fetchedAt : null, officialLatest ? "latest" : "history", fetchStatus, officialLatest ? "available" : normalized.some((row) => row.validationStatus === "finmind_overlap_verified") ? "finmind_overlap_verified" : "historical_seed").run();
+  await input.db.prepare(`UPDATE taiwan_stock_pe_fetch_state SET verified_end=?,display_end=?,official_source_date=CASE WHEN ? IS NULL THEN official_source_date ELSE MAX(COALESCE(official_source_date,''),?) END,provisional_dates_json=?,provisional_status=?,updated_at=CURRENT_TIMESTAMP WHERE exchange=? AND symbol=?`).bind(coverageEnd, displayEnd, officialLatest, officialLatest, JSON.stringify(provisional.map((row) => row.sessionDate)), provisional.length ? "pending" : null, canonical.exchange, canonical.symbol).run();
   const jobId = `pe-river:${canonical.symbol}`;
   const checkpoint = JSON.stringify({
     PER: { status: "complete", rowCount: normalized.length, cursor: normalized.length, completedAt: fetchedAt },
@@ -462,5 +495,15 @@ export async function ingestNormalizedPeRiverMonth(input: { db: D1Database; symb
     normalized: { status: "complete", rowCount: normalized.length, cursor: normalized.length, completedAt: fetchedAt },
   });
   await input.db.prepare(`INSERT INTO taiwan_stock_pe_backfill_month (job_id,exchange,symbol,target_month,status,row_count,dataset_status_json,ingest_cursor,completed_at) VALUES (?,?,?,?,'complete',?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(exchange,symbol,target_month) DO UPDATE SET status='complete',row_count=excluded.row_count,dataset_status_json=excluded.dataset_status_json,ingest_cursor=excluded.ingest_cursor,error_code=NULL,retry_after=NULL,lease_owner=NULL,lease_expires_at=NULL,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP`).bind(jobId, canonical.exchange, canonical.symbol, input.month, normalized.length, checkpoint, normalized.length).run();
+  // Historical verification must reconcile the idle job as well as display coverage.
+  // Active owners retain their lease and finish through the normal runner path.
+  if (verified.length && normalized.some((row) => ["official_verified", "finmind_overlap_verified"].includes(String(row.validationStatus)))) {
+    await input.db.prepare(`UPDATE taiwan_stock_pe_backfill_job SET status=?,reason_code=?,
+      completed_months=(SELECT COUNT(*) FROM taiwan_stock_pe_backfill_month m WHERE m.job_id=taiwan_stock_pe_backfill_job.job_id AND m.status='complete' AND m.target_month BETWEEN substr(taiwan_stock_pe_backfill_job.target_start,1,7) AND substr(taiwan_stock_pe_backfill_job.target_end,1,7)),
+      provider_verified_at=?,last_success_at=?,retry_after=NULL,updated_at=CURRENT_TIMESTAMP
+      WHERE job_id=? AND status NOT IN ('running','not_eligible')
+        AND (lease_expires_at IS NULL OR lease_expires_at<=?)`)
+      .bind(fetchStatus === "available" ? "complete" : "partial", fetchStatus === "available" ? "available" : "insufficient_history", fetchedAt, fetchedAt, jobId, fetchedAt).run();
+  }
   return { accepted: normalized.length, promoted, coverageStart: normalized[0]?.sessionDate || null, coverageEnd: normalized.at(-1)?.sessionDate || null };
 }

@@ -14,7 +14,7 @@
 | 法人買賣超 | FinMind `TaiwanStockInstitutionalInvestorsBuySell`；TPEx `/tpex_3insti_daily_trading` | FinMind 可依個股日期範圍查詢；TPEx OpenAPI 為最新快照 | 歷史使用 FinMind；TPEx 最新資料以官方欄名解析及核對 |
 | 外資持股 | FinMind `TaiwanStockShareholding`；TPEx `/tpex_3insti_qfii` | FinMind 可依個股日期範圍查詢；TPEx OpenAPI 為最新排行快照 | 歷史使用 FinMind；不推算投信／自營商持股 |
 | 融資融券 | FinMind `TaiwanStockMarginPurchaseShortSale`；TWSE `/exchangeReport/MI_MARGN`；TPEx `/tpex_mainboard_margin_balance` | FinMind 為歷史日資料；交易所 OpenAPI 為最新快照 | 內部統一成 lot 欄位並保存原始單位 |
-| 借券 | FinMind `TaiwanStockSecuritiesLending`；TWSE `/SBL/TWT96U`；TPEx `/tpex_margin_sbl` | FinMind 明確提供借券成交明細；TWSE OpenAPI 為可借券賣出量；TPEx OpenAPI另含借券／借券賣出餘額 | 只呈現來源實際提供欄位；第一版上市歷史餘額可為 `null` |
+| 借券 | FinMind `TaiwanStockSecuritiesLending`；TWSE 借券成交全市場查詢 `t13sa710`；TWSE `/SBL/TWT96U`；TPEx `/tpex_margin_sbl` | FinMind 與 `t13sa710` 提供借券成交；其餘官方 OpenAPI 是可借券賣出量或借券／借券賣出餘額 | 日資料落後時以 `t13sa710` 全市場檔補尾；商品缺列記為 `official_no_activity`，保留最近真實成交、不補零 |
 | 股權分散 | TDCC `/v1/opendata/1-5` | 每週全市場最新快照；TDCC 個股查詢頁說明歷史保存一年 | 每週抓一次全市場快照並存 D1；不爬個股查詢頁回補 |
 
 ## 欄位與單位注意事項
@@ -22,6 +22,7 @@
 - FinMind 法人資料以 `buy`、`sell` 股數及 `name` 類別回傳；`Dealer_self` 與 `Dealer_Hedging` 分開保存，自營商合計只在兩者皆有效時相加。
 - FinMind 融資融券欄位及 TWSE／TPEx 官方融資融券快照以交易單位（張）表達；D1/API 使用 `Lots` 命名，避免誤當股數。
 - FinMind 借券 `volume` 依 API 欄位保存為成交股數 `transactionShares`，顯示層才除以 1,000 轉為張；不以融券欄位替代。
+- TWSE `t13sa710` 必須先驗證整份全市場回應的欄位與日期，再彙總相同證券代號的成交數量；只有全市場檔有效且商品完全缺列時，才可保存 `official_no_activity`。空的全市場回應仍視為 `not_published`。
 - TDCC 分級 1 至 15 才能參與門檻加總；16 為差異數調整、17 為合計，只供驗證。
 - TDCC 預設散戶為分級 1 至 3（1 至 10,000 股），預設大戶為分級 15（1,000,001 股以上）。
 - `0` 只代表來源明確發布零值；缺欄位、未發布與不適用使用 `null`。

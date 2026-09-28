@@ -1,3 +1,5 @@
+import { prepareRequestPrincipal } from "./request-principal";
+import { markWatchlistChipWarmAttempt } from "./watchlist-chip-prewarming";
 import { acquireCandleHistory, candleHistoryIdentity, clearCandleHistoryRuntimeState, mergeCandleHistory, persistCandleHistoryContinuity, readCandleHistory, readCandleHistoryState, upsertCandleHistory, type HistoryCandle } from "./candle-history";
 import { runD1Batch } from "./d1-batch.ts";
 import { candlePayloadFromRows, fetchCandles, providerForCandleSymbol } from "./market-data";
@@ -322,7 +324,7 @@ async function peRiverContinuousBackfill(request: Request, env: Env) {
   }
   catch { return json({ ok: false, reasonCode: "invalid_payload" }, 400); }
   try {
-    if (body.action === "start") return json({ ok: true, ...(await startPeRiverContinuousRun({ db: env.DB, runId: String(body.runId || ""), trigger: body.trigger === "schedule" ? "schedule" : "workflow_dispatch" })) });
+    if (body.action === "start") return json({ ok: true, ...(await startPeRiverContinuousRun({ db: env.DB, runId: String(body.runId || ""), trigger: body.trigger === "schedule" ? "schedule" : "workflow_dispatch", officialSymbols: Array.isArray(body.officialSymbols) ? body.officialSymbols.map(String) : [] })) });
     if (body.action === "latest-refresh") return json({ ok: true, ...(await refreshPeRiverOfficialLatest({ db: env.DB, runId: String(body.runId || ""), provisionalEnabled: String(env.PE_RIVER_PROVISIONAL_LATEST_ENABLED || "false").toLowerCase() === "true" })) });
     if (body.action === "latest-complete") return json({ ok: true, ...(await completePeRiverLatestLane({ db: env.DB, runId: String(body.runId || ""), twseSourceDate: typeof body.twseSourceDate === "string" ? body.twseSourceDate : null, tpexSourceDate: typeof body.tpexSourceDate === "string" ? body.tpexSourceDate : null })) });
     if (body.action === "history-complete") return json({ ok: true, ...(await completePeRiverHistoryTarget({ db: env.DB, runId: String(body.runId || ""), jobId: String(body.jobId || ""), symbol: String(body.symbol || ""), validationStatus: String(body.validationStatus || ""), overlapDate: typeof body.overlapDate === "string" ? body.overlapDate : null })) });
@@ -1406,6 +1408,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       const processed: string[] = [];
       let reason: string | null = null;
       for (const target of targets.targets) {
+        await markWatchlistChipWarmAttempt(env.DB, target);
         processed.push(target.symbol);
         try {
           const eligibility = await taiwanChipEligibility(request, env, target.symbol);
@@ -2622,9 +2625,8 @@ async function streamResponse(request: Request, env: Env) {
   return new Response(stream, { headers: { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" } });
 }
 
-async function taiwanChipEligibility(request: Request, env: Env, symbol: string) {
+async function taiwanChipEligibility(request: Request, env: Env, symbol: string): Promise<import("./taiwan-stock-chip-service").TaiwanChipEligibility & { needsTdccRegistration: boolean }> {
   const canonical = normalizeSymbol(symbol);
-  const base = parseSetup(await setupText(request, env)).map(localCatalogEntry);
   const catalog = await readInstrumentCatalog(env.DB);
   const uid = identifiedUserId(request);
   const schedulerAuthorized = authorizedTdccContinuous(request, env);
@@ -2646,6 +2648,7 @@ async function taiwanChipEligibility(request: Request, env: Env, symbol: string)
     enabled: true,
     defaultOrder: savedRow.sort_order == null ? null : Number(savedRow.sort_order),
   }) : null;
+  const base = schedulerAuthorized && savedEntry ? [] : parseSetup(await setupText(request, env)).map(localCatalogEntry);
   const merged = new Map([...base, ...catalog, ...(savedEntry ? [savedEntry] : [])].map((item) => [item.symbol, item]));
   const eligibleEntries = [...merged.values()].filter(isEligibleTaiwanEquity);
   const entry = merged.get(canonical);
@@ -2981,10 +2984,10 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
     now: requestNow,
   });
   const continuity = history.cache.continuity;
-  const coverageEnd = Number(history.cache.coverageEnd);
+  const coverageEnd = history.rows.at(-1)?.time;
   return {
     status: continuity?.status || "unknown" as "complete" | "partial" | "unknown",
-    coverageEnd: Number.isFinite(coverageEnd)
+    coverageEnd: coverageEnd !== undefined && Number.isFinite(coverageEnd)
       ? sessionDateForCandle({ time: coverageEnd, open: 1, high: 1, low: 1, close: 1, volume: 0, sourceTimeZone: "Asia/Taipei" })
       : null,
     missingSessionCount: continuity?.missingSessionCount || 0,
@@ -2992,6 +2995,32 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
     checkedAt: continuity?.checkedAt || null,
     reasonCode: continuity?.reasonCode || history.cache.reason || null,
   };
+}
+
+// Called only after local-maintenance has authenticated its loopback request.
+export async function runLocalCandleContinuity(request: Request, env: Env) {
+  if (env.DEPLOYMENT_TARGET !== "local" || !env.LOCAL_PIPELINE_SECRET || !env.DB) throw new Error("local_only");
+  const now = new Date();
+  const expectedSession = stableTaiwanDailyCoverageEnd(now);
+  if (!expectedSession) return { done: false, processed: 0, reasonCode: "reference_not_published" };
+  const runId = `local-daily-continuity-${expectedSession}`;
+  // Reuse the audited state machine without installing or exposing another secret.
+  const auditEnv = { ...env, CANDLE_CONTINUITY_AUDIT_SECRET: env.LOCAL_PIPELINE_SECRET };
+  const invoke = async (action: string) => {
+    const auditRequest = new Request(request.url, {
+      method: "POST", headers: { authorization: `Bearer ${env.LOCAL_PIPELINE_SECRET}`, "content-type": "application/json" },
+      body: JSON.stringify({ action, runId, expectedSession, trigger: "local" }),
+    });
+    await prepareRequestPrincipal(auditRequest, auditEnv);
+    const response = await candleContinuityAuditResponse(auditRequest, auditEnv);
+    const result = jsonObject(await response.json());
+    if (!response.ok) throw new Error(String(result.reasonCode || "provider_unavailable"));
+    return result;
+  };
+  const started = await invoke("orchestrator-start");
+  if (started.done) return { ...started, processed: 0 };
+  const tick = await invoke("orchestrator-tick");
+  return { ...tick, processed: Array.isArray(tick.items) ? tick.items.length : 0 };
 }
 
 async function candleContinuityAcceptanceFromD1(env: Env, symbol: string, requestNow: Date) {
@@ -3028,8 +3057,10 @@ async function candleContinuityAcceptanceFromD1(env: Env, symbol: string, reques
 }
 
 async function candleContinuityAuditResponse(request: Request, env: Env) {
-  if (!env.DB || !env.CANDLE_CONTINUITY_AUDIT_SECRET) return json({ ok: false, reasonCode: "not_configured" }, 503);
-  if (internalAuthorization(request) !== `Bearer ${env.CANDLE_CONTINUITY_AUDIT_SECRET}`) return json({ ok: false, reasonCode: "unauthorized" }, 401);
+  const local = env.DEPLOYMENT_TARGET === "local" && ["127.0.0.1", "localhost", "[::1]"].includes(new URL(request.url).hostname);
+  const auditSecret = local ? env.LOCAL_PIPELINE_SECRET : env.CANDLE_CONTINUITY_AUDIT_SECRET;
+  if (!env.DB || !auditSecret) return json({ ok: false, reasonCode: "not_configured" }, 503);
+  if (internalAuthorization(request) !== `Bearer ${auditSecret}`) return json({ ok: false, reasonCode: "unauthorized" }, 401);
   let body: JsonObject = {};
   try { body = jsonObject(await request.json()); }
   catch { return json({ ok: false, reasonCode: "invalid_payload" }, 400); }
@@ -3222,7 +3253,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
     const deploymentTarget = deploymentTargetForRequest(request);
     const continuityTarget = deploymentTarget === "cloudflare" ? "cloudflare" : deploymentTarget === "local" ? "local" : "sites";
     const chipHealth = await taiwanStockChipHealth(env);
-    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB), continuityAudit: { configured: Boolean(env.DB && env.CANDLE_CONTINUITY_AUDIT_SECRET), batchLimit: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.batchLimit, concurrency: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.concurrency, automation: await readCandleContinuityAutomationHealth(env.DB, continuityTarget) }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: env.DB ? { ...chipHealth, archive: await tdccArchiveStatus(env.DB) } : chipHealth, taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
+    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB), continuityAudit: { configured: Boolean(env.DB && (env.CANDLE_CONTINUITY_AUDIT_SECRET || env.DEPLOYMENT_TARGET === "local" && env.LOCAL_PIPELINE_SECRET)), batchLimit: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.batchLimit, concurrency: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.concurrency, automation: await readCandleContinuityAutomationHealth(env.DB, continuityTarget) }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: env.DB ? { ...chipHealth, archive: await tdccArchiveStatus(env.DB) } : chipHealth, taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
   }
   if (path === "/api/internal/candle-continuity-audit" && request.method === "POST") return candleContinuityAuditResponse(request, env);
   if (path === "/api/internal/taiwan-stock-pe-river" && request.method === "POST") return ingestPeRiverMonth(request, env);

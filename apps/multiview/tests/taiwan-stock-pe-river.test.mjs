@@ -56,6 +56,9 @@ test("TWSE parser 依欄位名稱配對同日官方收盤與本益比", () => {
   const reordered = { fields: [...twse.pe.fields].reverse(), data: twse.pe.data.map((row) => [...row].reverse()) };
   assert.equal(parseTwseHistoricalPe(reordered, "2330.TW").length, 2);
   assert.deepEqual(parseTwseHistoricalPe({ fields: ["日期", "預估本益比"], data: [["115/01/02", "10"]] }, "2330.TW"), []);
+  const actualDate = parseTwseHistoricalPe({ fields: ["日期", "本益比", "財報年/季"], data: [["114年11月12日", "21.60", "114/2"]] }, "1101.TW");
+  assert.equal(actualDate[0].sessionDate, "2025-11-12");
+  assert.equal(actualDate[0].fiscalYear, "2025");
 });
 
 test("TPEx parser 支援 tables schema 且官方 P/E 空白保留 gap", () => {
@@ -77,36 +80,52 @@ test("不同市場、代號或日期不得混算，零負與非有限值不產�
   assert.equal(parseTwseHistoricalPe({ fields: ["日期", "本益比", "財報年/季"], data: [["115/01/02", "-3", "114/3"], ["115/01/03", "Infinity", "114/3"]] }, "2330.TW").every((row) => row.officialPeRatio === null), true);
 });
 
-test("百分位使用 rank=(n-1)*p 線性插值且同 response 固定七個 multiplier", () => {
+test("TPEx 真實歷史月報的日 期欄位與114Q4不丟列或誤判年分", () => {
+  const pe = { tables: [{ fields: ["日期", "本益比", "財報年/季"], data: [["115/05/04", "5237.50", "114Q4"], ["115/05/14", "N/A", "115Q1"]] }] };
+  const close = { tables: [{ fields: ["日 期", "收盤"], data: [["115/05/04", "838.00"], ["115/05/14", "800.00"]] }] };
+  const paired = pairOfficialValuationRows({ symbol: "3363.TWO", peRows: parseTpexHistoricalPe(pe, "3363.TWO"), closeRows: parseTpexHistoricalClose(close, "3363.TWO") });
+  assert.equal(paired.length, 1);
+  assert.equal(paired[0].sessionDate, "2026-05-04");
+  assert.equal(paired[0].fiscalYear, "2025");
+  assert.equal(paired[0].fiscalQuarter, "4");
+  assert.equal(paired[0].officialClose, 838);
+});
+
+test("百分位使用 rank=(n-1)*p 線性插值，220筆且橫跨300日才可用", () => {
   assert.equal(interpolatedPercentile([1, 2, 3, 4], 0.5), 2.5);
   assert.equal(interpolatedPercentile([10, 20, 30, 40, 50], 0.3), 22);
-  const rows = Array.from({ length: 252 }, (_, index) => {
-    const date = new Date(Date.UTC(2025, 0, 1 + index));
+  const rows = Array.from({ length: 220 }, (_, index) => {
+    const date = new Date(Date.UTC(2025, 0, 1 + index * 2));
     const officialPeRatio = 10 + index / 20;
     return { exchange: "TWSE", symbol: "2330.TW", sessionDate: date.toISOString().slice(0, 10), officialClose: officialPeRatio * 10, officialPeRatio, referenceEps: 10, fiscalYear: "2024", fiscalQuarter: "3", source: "twse", sourceDate: date.toISOString().slice(0, 10), fetchedAt: "2026-07-22T00:00:00Z" };
   });
   const river = buildPeRiver(rows);
   assert.equal(river.status, "available");
-  assert.equal(river.coverage.validSamples, 252);
+  assert.equal(river.coverage.validSamples, 220);
+  assert.equal(river.coverage.minimumSamples, 220);
+  assert.equal(river.coverage.minimumSpanDays, 300);
+  assert.ok(river.coverage.coverageSpanDays >= 300);
   assert.deepEqual(Object.keys(river.multipliers), ["p5", "p20", "p35", "p50", "p65", "p80", "p95"]);
   assert.equal(river.points[0].prices.p50, rows[0].referenceEps * river.multipliers.p50);
-  assert.equal(buildPeRiver(rows.slice(0, 251)).status, "insufficient_history");
+  assert.equal(buildPeRiver(rows.slice(0, 219)).status, "insufficient_history");
+  const compressed = rows.map((row, index) => ({ ...row, sessionDate: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10) }));
+  assert.equal(buildPeRiver(compressed).status, "insufficient_history");
 });
 
-test("provisional 最新尾端只延伸價格座標，不改變 verified percentile 與 252 筆門檻", () => {
-  const verified = Array.from({ length: 252 }, (_, index) => {
-    const date = new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);
+test("provisional 最新尾端只延伸價格座標，不改變 verified percentile 與 220筆／300日門檻", () => {
+  const verified = Array.from({ length: 220 }, (_, index) => {
+    const date = new Date(Date.UTC(2025, 0, 1 + index * 2)).toISOString().slice(0, 10);
     return { exchange: "TWSE", symbol: "2330.TW", sessionDate: date, officialClose: 200 + index, officialPeRatio: 10 + index / 100, referenceEps: (200 + index) / (10 + index / 100), fiscalYear: null, fiscalQuarter: null, source: "finmind", provider: "finmind", validationStatus: "finmind_overlap_verified", sourceDate: date, fetchedAt: "2026-07-22T00:00:00Z" };
   });
   const baseline = buildPeRiver(verified);
   const provisional = { ...verified.at(-1), sessionDate: "2026-07-22", officialClose: 2400, officialPeRatio: 999, referenceEps: 2400 / 999, validationStatus: "finmind_provisional_latest", officialOverlapDate: null };
   const river = buildPeRiver([...verified, provisional]);
   assert.deepEqual(river.multipliers, baseline.multipliers);
-  assert.equal(river.coverage.validSamples, 252);
+  assert.equal(river.coverage.validSamples, 220);
   assert.equal(river.coverage.verifiedEnd, verified.at(-1).sessionDate);
   assert.equal(river.coverage.displayEnd, "2026-07-22");
   assert.equal(river.points.at(-1).validationStatus, "finmind_provisional_latest");
-  assert.equal(buildPeRiver([...verified.slice(0, 251), provisional]).status, "insufficient_history");
+  assert.equal(buildPeRiver([...verified.slice(0, 219), provisional]).status, "insufficient_history");
 });
 
 test("additive migration、唯一鍵與 repository upsert 保留 actual coverage", async () => {
@@ -131,6 +150,51 @@ test("normalized private ingest 驗證月份、唯一日期、正數與最大筆
     assert.equal(result.accepted, 1);
     await assert.rejects(ingestNormalizedPeRiverMonth({ db, symbol: "6488.TWO", month: "2026-01", rows: [{ sessionDate: "2026-02-02", officialClose: 405.5, officialPeRatio: 19.42 }] }), /invalid_payload/);
     await assert.rejects(ingestNormalizedPeRiverMonth({ db, symbol: "6488.TWO", month: "2026-01", rows: [{ sessionDate: "2026-01-02", officialClose: 0, officialPeRatio: 19.42 }] }), /invalid_payload/);
+  } finally { db.close(); }
+});
+
+test("歷史官方重疊同步閒置工作，保留新日期、220筆／300日門檻與嘗試紀錄", async () => {
+  for (const count of [219, 232]) {
+    const db = new SqliteD1();
+    try {
+      await applyPeRiverMigrations(db);
+      await queuePeRiverBackfill(db, { symbol: "2330.TW", targetStart: "2025-01-01", targetEnd: "2026-09-17" });
+      const pending = Array.from({ length: count }, (_, index) => ({
+        exchange: "TWSE", symbol: "2330.TW", sessionDate: new Date(Date.UTC(2025, 0, 1 + Math.round(index * 350 / (count - 1)))).toISOString().slice(0, 10),
+        officialClose: 100, officialPeRatio: 10, referenceEps: 10, fiscalYear: null, fiscalQuarter: null, source: "finmind", provider: "finmind",
+        validationStatus: "finmind_pending_verification", sourceDate: "2025-01-01", fetchedAt: "2026-09-17T00:00:00Z",
+      }));
+      await upsertPeRiverRows(db, pending);
+      db.exec("UPDATE taiwan_stock_pe_backfill_job SET status='blocked',reason_code='provider_unavailable',attempt=5");
+      db.exec("INSERT INTO taiwan_stock_pe_fetch_state (exchange,symbol,status,reason_code,latest_source_date,official_source_date) VALUES ('TWSE','2330.TW','partial','official_not_published','2026-09-17','2026-09-17')");
+      const result = await ingestNormalizedPeRiverMonth({ db, symbol: "2330.TW", month: "2025-01", rows: [{ sessionDate: "2025-01-01", officialClose: 100, officialPeRatio: 10 }] });
+      assert.equal(result.promoted, count);
+      const job = db.database.prepare("SELECT status,reason_code,attempt,completed_months FROM taiwan_stock_pe_backfill_job").get();
+      assert.equal(job.status, count >= 220 ? "complete" : "partial");
+      assert.equal(job.reason_code, count >= 220 ? "available" : "insufficient_history");
+      assert.equal(job.attempt, 5); assert.equal(job.completed_months, 1);
+      const state = db.database.prepare("SELECT latest_source_date,official_source_date FROM taiwan_stock_pe_fetch_state").get();
+      assert.equal(state.latest_source_date, "2026-09-17"); assert.equal(state.official_source_date, "2026-09-17");
+      assert.equal(buildPeRiver(await readPeRiverRows(db, "2330.TW")).coverage.validSamples, count);
+    } finally { db.close(); }
+  }
+});
+
+test("歷史匯入不接管執行中 lease，不提升不同值歷史", async () => {
+  const db = new SqliteD1();
+  try {
+    await applyPeRiverMigrations(db);
+    await queuePeRiverBackfill(db, { symbol: "2330.TW", targetStart: "2025-01-01", targetEnd: "2025-02-28" });
+    db.exec("UPDATE taiwan_stock_pe_backfill_job SET status='running',lease_owner='active-owner',lease_expires_at='2099-01-01T00:00:00Z'");
+    const base = { exchange: "TWSE", symbol: "2330.TW", officialClose: 100, officialPeRatio: 10, referenceEps: 10, fiscalYear: null, fiscalQuarter: null, source: "finmind", provider: "finmind", validationStatus: "finmind_pending_verification", sourceDate: "2025-01-01", fetchedAt: "2026-09-17T00:00:00Z" };
+    await upsertPeRiverRows(db, [{ ...base, sessionDate: "2025-01-02" }, { ...base, sessionDate: "2025-01-03" }]);
+    const result = await ingestNormalizedPeRiverMonth({ db, symbol: "2330.TW", month: "2025-01", rows: [{ sessionDate: "2025-01-02", officialClose: 150, officialPeRatio: 10 }] });
+    assert.equal(result.promoted, 0);
+    const job = db.database.prepare("SELECT status,lease_owner FROM taiwan_stock_pe_backfill_job").get();
+    assert.equal(job.status, "running"); assert.equal(job.lease_owner, "active-owner");
+    const rows = await readPeRiverRows(db, "2330.TW");
+    assert.equal(rows.find(row => row.sessionDate === "2025-01-03").validationStatus, "finmind_pending_verification");
+    assert.equal(buildPeRiver(rows).status, "insufficient_history");
   } finally { db.close(); }
 });
 
@@ -191,7 +255,7 @@ test("本機 Worker API smoke 涵蓋 .TW、.TWO、ETF、partial 與 available", 
     assert.equal(weekly.status, "unsupported_interval");
 
     const rows = Array.from({ length: 252 }, (_, index) => {
-      const date = new Date(Date.UTC(2025, 0, 1 + index));
+      const date = new Date(Date.UTC(2025, 0, 1 + index * 2));
       const officialPeRatio = 12 + index / 50;
       return { exchange: "TWSE", symbol: "2330.TW", sessionDate: date.toISOString().slice(0, 10), officialClose: officialPeRatio * 10, officialPeRatio, referenceEps: 10, fiscalYear: "2024", fiscalQuarter: "3", source: "twse", sourceDate: date.toISOString().slice(0, 10), fetchedAt: "2026-07-22T00:00:00Z" };
     });
@@ -256,4 +320,13 @@ test("frontend contract 預設不請求、latest-wins、SVG 標籤、右鍵詳�
   assert.equal(placedLabels.every((entry, index) => index === 0 || entry.centerY - placedLabels[index - 1].centerY >= 18), true);
   assert.equal(placedLabels.every((entry) => entry.centerY >= 10 && entry.centerY <= 190), true);
   assert.match(window.QuoteChartPeRiver.__test.safeStatusText({ status: "available", coverage: { validSamples: 252, verifiedEnd: "2026-07-21", displayEnd: "2026-07-22" }, provisional: { dates: ["2026-07-22"] } }), /FinMind 暫代至 2026-07-22/);
+  assert.match(window.QuoteChartPeRiver.__test.safeStatusText({ status: "insufficient_history", coverage: { validSamples: 219, minimumSamples: 220, minimumSpanDays: 300 } }), /至少需要 220 筆且涵蓋 300 日/);
+});
+
+test('不具 PE 性質商品依 metadata 與 ETF 代碼排除，普通股未公布不永久排除', () => {
+  for (const quoteType of ['ETF', 'ETN', 'BOND', 'FUND', 'WARRANT', 'PREFERRED']) {
+    assert.equal(peRiverEligibility({ symbol: '9999.TW', quoteType }).supported, false, quoteType);
+  }
+  for (const symbol of ['00981A.TW', '00982A.TW', '00991A.TW', '00679B.TW']) assert.equal(peRiverEligibility({ symbol }).supported, false);
+  assert.equal(peRiverEligibility({ symbol: '2330.TW', quoteType: 'EQUITY' }).supported, true);
 });

@@ -1,0 +1,623 @@
+{
+  "capturedAt": "2026-09-16T15:57:40.044380+00:00",
+  "environment": "local",
+  "expectedSession": "2026-09-16",
+  "daily": {
+    "global": {
+      "d1": "available",
+      "schema": "current"
+    },
+    "counts": {
+      "enabledSymbols": 53,
+      "complete": 27,
+      "partial": 0,
+      "unknown": 26,
+      "notAudited": 0,
+      "latestSessionCoverage": 53
+    },
+    "expectedCompletedSession": "2026-09-16",
+    "items": [
+      {
+        "symbol": "0050.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T09:20:31.732Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "0056.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:42.624Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "006208.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:42.925Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00878.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T13:47:29.503Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00918.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T13:47:29.314Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00919.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T13:47:29.433Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00929.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T13:47:29.549Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "009816.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:51.408Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "009819.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:51.434Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00981A.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:49.981Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00982A.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:49.982Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "00991A.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:33.354Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "1303.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:33.900Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2301.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:35.778Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2308.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:43.103Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2317.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:43.445Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2327.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:43.766Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2330.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T09:20:28.279Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2344.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:43.875Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2382.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:55:44.064Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2395.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:45.332Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2408.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:46.227Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2409.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:46.585Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2412.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:46.971Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2449.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:55.038Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2454.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:47.272Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2603.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:47.626Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2615.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:47.992Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2801.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:48.444Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2834.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:48.781Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2881.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:49.182Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2882.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:49.512Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "2891.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:49.892Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3008.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:50.280Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3026.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:50.629Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3037.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:55.123Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3055.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:51.013Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3081.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:51.403Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3149.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:51.952Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3163.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:52.330Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3189.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:52.705Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3231.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T09:20:31.732Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3363.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:53.013Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3441.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:53.415Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3481.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:53.898Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3680.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:54.214Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "3711.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:54.595Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "4768.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:54.889Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "4958.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:55.340Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "6505.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:55.634Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "8027.TWO",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:56.039Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "8046.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "complete",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T11:24:55.883Z",
+        "reasonCode": null,
+        "latestSessionCovered": true
+      },
+      {
+        "symbol": "8103.TW",
+        "coverageEnd": "2026-09-16",
+        "continuityStatus": "unknown",
+        "missingSessionCount": 0,
+        "verifiedThrough": "2026-09-16",
+        "lastChecked": "2026-09-16T15:50:56.498Z",
+        "reasonCode": "invalid_response",
+        "latestSessionCovered": true
+      }
+    ]
+  },
+  "chip": {
+    "configured": true,
+    "status": "warming",
+    "scheduler": "sites-worker-orchestrator",
+    "lastHeartbeatAt": "2026-09-16T15:55:28.181Z",
+    "window": {
+      "start": "2025-09-16",
+      "end": "2026-09-16"
+    },
+    "targetSymbols": 53,
+    "readySymbols": 33,
+    "pendingSymbols": 20,
+    "retryWaitingSymbols": 20,
+    "lastSuccessAt": "2026-09-16T15:55:28.151Z",
+    "lastErrorCode": "source_not_published"
+  },
+  "pe": {
+    "target": 44,
+    "ready": 39,
+    "insufficient": 5,
+    "missing": 0,
+    "running": 0,
+    "blocked": 0,
+    "retryWaiting": 0
+  },
+  "recentDailyCoverage": [
+    {
+      "day": "2026-09-07",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-08",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-09",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-10",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-11",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-14",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-15",
+      "symbols": 53
+    },
+    {
+      "day": "2026-09-16",
+      "symbols": 53
+    }
+  ],
+  "chipRows": {
+    "institutional_flow_json": 53,
+    "foreign_holding_json": 53,
+    "margin_short_json": 53,
+    "securities_lending_json": 33
+  },
+  "sourceLimits": [
+    "official month requests included HTTP 403; full historical continuity remains unverified",
+    "securities lending has no returned current-session rows for 20 enabled symbols"
+  ],
+  "runtimeSynchronized": true,
+  "servicesRestarted": false
+}

@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Wrangler-generated runtime declarations, not hand-written application code.
+    "worker-configuration.d.ts",
     // Vendored MIT browser renderer; lint the integration wrapper instead.
     "public/static/html2canvas.min.js",
   ]),

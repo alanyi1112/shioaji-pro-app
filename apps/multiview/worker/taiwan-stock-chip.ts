@@ -10,6 +10,7 @@ export type ChipDataset = typeof CHIP_DATASETS[number];
 export type ChipFrequency = "daily" | "weekly";
 export type ChipReasonCode =
   | "available"
+  | "official_no_activity"
   | "partial_data"
   | "stale_cache"
   | "not_published"
@@ -538,6 +539,48 @@ export function normalizeSecuritiesLendingRows(payload: unknown, symbol: string,
     row.provenance["securities-lending"] = { provider: "finmind", dataset: "securities-lending", frequency: "daily", sourceDate: sessionDate, fetchedAt: sourceNow(fetchedAt) };
     return row;
   });
+}
+
+export type OfficialSecuritiesLendingResult = {
+  status: "available" | "official_no_activity" | "not_published";
+  rows: ChipDailyRow[];
+  verifiedThrough: string | null;
+};
+
+const officialLendingDate = (value: unknown) => {
+  const text = String(value ?? "").trim();
+  const match = text.match(/^(\d{2,3})年(\d{2})月(\d{2})日$/);
+  if (!match) return rocDate(value);
+  return isoDate(`${Number(match[1]) + 1911}${match[2]}${match[3]}`);
+};
+
+export function normalizeTwseSecuritiesLendingReport(payload: unknown, symbol: string, expectedDate: string, fetchedAt?: string): OfficialSecuritiesLendingResult {
+  const canonical = canonicalSymbol(symbol);
+  const code = stockCode(canonical);
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("invalid_response");
+  const report = payload as UnknownRecord;
+  const expectedFields = ["成交日期", "證券代號名稱", "交易方式", "成交數量(交易單位)", "成交費率", "成交日收盤價", "約定還券日期", "約定借券天數", "費率異動"];
+  const fields = Array.isArray(report.fields) ? report.fields.map((value) => String(value ?? "").trim()) : [];
+  const data = Array.isArray(report.data) ? report.data : [];
+  if (String(report.stat || "") !== "OK" || JSON.stringify(fields) !== JSON.stringify(expectedFields)) throw new Error("invalid_response");
+  if (!data.length) return { status: "not_published", rows: [], verifiedThrough: null };
+  let transactionShares = 0;
+  let matched = false;
+  for (const raw of data) {
+    if (!Array.isArray(raw) || raw.length !== expectedFields.length) throw new Error("invalid_response");
+    const sessionDate = officialLendingDate(raw[0]);
+    const rowCode = String(raw[1] ?? "").trim().match(/^([0-9A-Z]{4,8})(?:\s|$)/)?.[1] || null;
+    const volume = finite(raw[3]);
+    if (sessionDate !== expectedDate || !rowCode || volume === null || volume < 0) throw new Error("invalid_response");
+    if (rowCode !== code) continue;
+    transactionShares += volume;
+    matched = true;
+  }
+  if (!matched) return { status: "official_no_activity", rows: [], verifiedThrough: expectedDate };
+  const row = emptyDaily(canonical, expectedDate);
+  row.securitiesLending = { transactionShares, balanceShares: null, shortSaleBalanceShares: null };
+  row.provenance["securities-lending"] = { provider: "twse", dataset: "securities-lending", frequency: "daily", sourceDate: expectedDate, sourceDateVerified: true, fetchedAt: sourceNow(fetchedAt) };
+  return { status: "available", rows: [row], verifiedThrough: expectedDate };
 }
 
 function normalizedKeys(raw: UnknownRecord) {

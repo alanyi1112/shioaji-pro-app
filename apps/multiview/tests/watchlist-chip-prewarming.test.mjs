@@ -157,3 +157,23 @@ test("近期嘗試的 pending symbol 會冷卻，其他到期 symbol 仍可被�
   assert.equal(result.deferredSymbols, 1);
   assert.equal(result.targets[0].symbol, "2317.TW");
 });
+
+test("資格檢查前持久化嘗試使失敗商品冷卻，並保留最後可信資料", async () => {
+  const { SqliteD1 } = await import('./helpers/sqlite-d1.mjs');
+  const { markWatchlistChipWarmAttempt } = await import('../worker/watchlist-chip-prewarming.ts');
+  const database = new SqliteD1();
+  try {
+    database.exec(`CREATE TABLE tdcc_continuous_symbols(symbol TEXT PRIMARY KEY,active INTEGER);
+      CREATE TABLE user_instruments(symbol TEXT,enabled INTEGER);
+      CREATE TABLE taiwan_stock_chip_fetch_state(symbol TEXT,dataset TEXT,coverage_start TEXT,coverage_end TEXT,source_date TEXT,status TEXT,reason_code TEXT,last_success_at TEXT,last_attempt_at TEXT,retry_after TEXT,PRIMARY KEY(symbol,dataset));
+      INSERT INTO tdcc_continuous_symbols VALUES ('2330.TW',1);
+      INSERT INTO user_instruments VALUES ('3037.TW',1),('9999.TW',0);
+      INSERT INTO taiwan_stock_chip_fetch_state VALUES ('2330.TW','institutional-flow','2025-01-01','2026-01-01','2026-01-01','available','available','2026-01-01',NULL,NULL);`);
+    const now = new Date('2026-09-16T15:00:00Z');
+    await markWatchlistChipWarmAttempt(database, { symbol: '2330.TW', datasets: [...WATCHLIST_CHIP_PREWARM_CONTRACT.datasets] }, now);
+    const next = await discoverWatchlistChipWarmTargets({ db: database, now, limit: 1, attemptCooldownMs: 14400000 });
+    assert.equal(next.targets[0].symbol, '3037.TW');
+    const retained = await database.prepare("SELECT status,coverage_end,source_date FROM taiwan_stock_chip_fetch_state WHERE symbol='2330.TW' AND dataset='institutional-flow'").first();
+    assert.deepEqual({ ...retained }, { status: 'available', coverage_end: '2026-01-01', source_date: '2026-01-01' });
+  } finally { database.close(); }
+});

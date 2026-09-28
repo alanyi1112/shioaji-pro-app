@@ -2,10 +2,13 @@
 
 import {
   PE_RIVER_MAX_HISTORY_TARGETS,
+  PE_RIVER_MAX_OFFICIAL_MONTHS_PER_TARGET,
   fetchFinMindPeHistory,
+  fetchOfficialPeHistoryMonth,
   fetchOfficialPeDailySnapshot,
   verifyProviderOverlap,
 } from "../worker/pe-river-data-pipeline.ts";
+import { peRiverHistoryReadiness } from "../worker/taiwan-stock-pe-river.ts";
 
 const DEFAULT_SITE_URL = "https://quote-chart-multiview.alanyi1112.chatgpt.site";
 const PROTECTED_POST_TIMEOUT_MS = 90_000;
@@ -22,6 +25,7 @@ export function parsePeRiverRunnerArgs(argv) {
     siteUrl: String(values.get("site-url") || DEFAULT_SITE_URL).replace(/\/$/, ""),
     trigger: values.get("trigger") === "schedule" ? "schedule" : "workflow_dispatch",
     runId: values.get("run-id") || `pe-river-${process.env.GITHUB_RUN_ID || Date.now()}-${process.env.GITHUB_RUN_ATTEMPT || 1}`,
+    officialSymbols: String(values.get("official-symbols") || "").split(",").map((value) => value.trim().toUpperCase()).filter(Boolean),
   };
 }
 
@@ -99,7 +103,7 @@ export async function runPeRiverContinuous(options, dependencies = {}) {
   const ingestUrl = `${options.siteUrl}/api/internal/taiwan-stock-pe-river`;
   const controlHeaders = dependencies.controlHeaders || protectedHeaders("PE_RIVER_BACKFILL_SECRET", options.siteUrl);
   const ingestHeaders = dependencies.ingestHeaders || protectedHeaders("PE_RIVER_INGEST_SECRET", options.siteUrl);
-  const start = await postJson(controlUrl, controlHeaders, { action: "start", runId: options.runId, trigger: options.trigger }, fetchImpl);
+  const start = await postJson(controlUrl, controlHeaders, { action: "start", runId: options.runId, trigger: options.trigger, officialSymbols: options.officialSymbols || [] }, fetchImpl);
   if (start.order?.join(",") !== "latest,history" || (start.history || []).length > PE_RIVER_MAX_HISTORY_TARGETS) throw new Error("invalid_payload");
 
   const latest = await postJson(controlUrl, controlHeaders, { action: "latest-refresh", runId: options.runId }, fetchImpl);
@@ -125,20 +129,42 @@ export async function runPeRiverContinuous(options, dependencies = {}) {
 
   let historyCompleted = 0;
   let historyFailed = 0;
+  let officialHistoryMonths = 0;
+  let officialHistoryRows = 0;
   for (const target of start.history || []) {
     try {
       const fetchHistory = dependencies.fetchHistory || fetchFinMindPeHistory;
-      const history = await fetchHistory({ symbol: target.symbol, startDate: target.startDate, endDate: target.endDate, fetchImpl });
+      let history = null;
+      let historyError = null;
+      try {
+        history = await fetchHistory({ symbol: target.symbol, startDate: target.startDate, endDate: target.endDate, fetchImpl });
+      } catch (error) {
+        historyError = error;
+      }
       const official = (snapshots.get(target.exchange) || []).filter((row) => row.symbol === target.symbol);
-      const verification = verifyProviderOverlap(history.rows, official);
+      const verification = verifyProviderOverlap(history?.rows || [], official);
       if (verification.status === "source_mismatch") throw new Error("source_mismatch");
-      const verifiedRows = history.rows.map((row) => ({ ...row, validationStatus: verification.status === "finmind_overlap_verified" ? "finmind_overlap_verified" : "finmind_pending_verification", officialOverlapDate: verification.overlapDate || null }));
+      const verifiedRows = (history?.rows || []).map((row) => ({ ...row, validationStatus: verification.status === "finmind_overlap_verified" ? "finmind_overlap_verified" : "finmind_pending_verification", officialOverlapDate: verification.overlapDate || null }));
       const pendingMonths = new Set(Array.isArray(target.months) ? target.months : []);
       for (const [month, rows] of groupByMonth(verifiedRows)) {
         if (pendingMonths.size && !pendingMonths.has(month)) continue;
         await postJson(ingestUrl, ingestHeaders, { symbol: target.symbol, month, rows: rows.map(ingestRow) }, fetchImpl);
       }
       for (const officialRow of official) await postJson(ingestUrl, ingestHeaders, { symbol: target.symbol, month: officialRow.sessionDate.slice(0, 7), rows: [ingestRow(officialRow)] }, fetchImpl);
+
+      const officialMonthLoader = dependencies.fetchOfficialHistoryMonth || fetchOfficialPeHistoryMonth;
+      const months = target.exchange === "TWSE" && !peRiverHistoryReadiness(verifiedRows).sufficient
+        ? [...pendingMonths].sort().slice(0, PE_RIVER_MAX_OFFICIAL_MONTHS_PER_TARGET)
+        : [];
+      for (const [index, month] of months.entries()) {
+        if (index > 0) await (dependencies.wait || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))))(2000);
+        const result = await officialMonthLoader({ symbol: target.symbol, month, fetchImpl });
+        await postJson(ingestUrl, ingestHeaders, { symbol: target.symbol, month, rows: result.rows.map(ingestRow) }, fetchImpl);
+        officialHistoryMonths += 1;
+        officialHistoryRows += result.rows.length;
+        process.stdout.write(`${JSON.stringify({ event: "history-official-month", symbol: target.symbol, month, status: result.status, rows: result.rows.length })}\n`);
+      }
+      if (!history && !months.length) throw historyError || new Error("provider_unavailable");
       await postJson(controlUrl, controlHeaders, { action: "history-complete", runId: options.runId, jobId: target.jobId, symbol: target.symbol, validationStatus: verification.status, overlapDate: verification.overlapDate }, fetchImpl);
       historyCompleted += 1;
       process.stdout.write(`${JSON.stringify({ event: "history-complete", symbol: target.symbol, rows: verifiedRows.length, validationStatus: verification.status })}\n`);
@@ -150,7 +176,7 @@ export async function runPeRiverContinuous(options, dependencies = {}) {
       if (reasonCode === "rate_limit_waiting") break;
     }
   }
-  return { runId: options.runId, latestAccepted, provisionalAccepted, fallbackAccepted, historyClaimed: (start.history || []).length, historyCompleted, historyFailed, budget: start.budget };
+  return { runId: options.runId, latestAccepted, provisionalAccepted, fallbackAccepted, historyClaimed: (start.history || []).length, historyCompleted, historyFailed, officialHistoryMonths, officialHistoryRows, budget: start.budget };
 }
 
 export async function runPeRiverTargets(targets, dependencies = {}) {

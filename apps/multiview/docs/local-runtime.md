@@ -212,3 +212,12 @@ price、quantity、order type、order action、CA 或 token 都會整體拒絕�
 依 Apache-2.0 使用並保留 TradingView attribution；第三方清單見
 `THIRD_PARTY_NOTICES.md` 與 `licenses/Apache-2.0.txt`。任何後續匯入都必須先
 通過 `pnpm verify:multiview-governance`。
+
+2026-09-17 核對 macOS `launchd.plist(5)`：Weekday 的 0／7 為週日，1–5 為週一至週五，6 為週六。已修正原本誤用 1 起算週日造成的日期偏移；實際安裝排程須一併重新載入，不能只修改 repo。
+指定仍缺歷史本益比的 TWSE 普通股，可透過受保護、有界的官方月份回補模式接續 blocked／partial job；它保留原 attempt 與月份 checkpoint，只重新認領列出的商品：
+
+```bash
+pnpm local-runtime multiview-pe-official 3055.TW,3149.TW
+```
+
+每個商品每輪最多查六個尚未完成月份；正值保存為 `official_verified`，整月本益比空白保存為 `official_gap`，完成月份不重抓。

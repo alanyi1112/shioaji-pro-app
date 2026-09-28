@@ -1,7 +1,7 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { handleAppRequest, markDeployTimeMigrations, runChipBackfillScheduled, type Env } from "./app";
+import { handleAppRequest, markDeployTimeMigrations, runLocalCandleContinuity, runChipBackfillScheduled, type Env } from "./app";
 import { authorizeCloudflarePrincipal } from "./access-control";
 import { prepareRequestPrincipal } from "./request-principal";
 import { cleanupExpiredCandleCache } from "./cache-maintenance";
@@ -48,6 +48,9 @@ const worker = {
     const localMaintenanceResponse = await handleLocalMaintenance(request, env, ctx, {
       async screener(currentEnv, scope) {
         return collectScreenerData((currentEnv as Env).DB!, scope);
+      },
+      async continuity(currentEnv) {
+        return runLocalCandleContinuity(request, currentEnv as Env);
       },
       async daily(currentEnv, scheduledTime) {
         const typedEnv = currentEnv as Env;

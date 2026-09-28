@@ -8,6 +8,7 @@ import {
   normalizeInstitutionalRows,
   normalizeMarginShortRows,
   normalizeSecuritiesLendingRows,
+  normalizeTwseSecuritiesLendingReport,
   normalizeTpexForeignHoldingLatest,
   normalizeTpexInstitutionalLatest,
   normalizeTpexMarginLatest,
@@ -67,6 +68,7 @@ const dailyDatasets = ["institutional-flow", "foreign-holding", "margin-short", 
 const allDatasets = [...dailyDatasets, "shareholder-distribution"] as const;
 const TDCC_MARKET_STATE_SYMBOL = "__MARKET__:tdcc-1-5-v3";
 const singleFlights = new Map<string, Promise<unknown>>();
+const officialLendingMarketCaches = new WeakMap<typeof fetch, Map<string, { expiresAt: number; payload: unknown }>>();
 
 const datasetNames: Record<(typeof allDatasets)[number], string> = {
   "institutional-flow": "三大法人買賣超",
@@ -96,6 +98,10 @@ function incompleteDailyWarning(dataset: string, actualEnd: string, requestedEnd
     return `借券成交（當日投資人實際借入證券的成交股數，不等於借券賣出或放空）：最近有成交的日期為 ${actualEnd}；若當日有成交，來源通常於交易日 15:00 更新，若無成交可能不會新增一筆 0，網站仍會在背景更新或再次開啟圖表時重新檢查（實際時間以來源發布為準）`;
   }
   return `${datasetName(dataset)}：最新資料為 ${actualEnd}，尚未更新至 ${requestedEnd}；網站會在背景更新或再次開啟圖表時重新檢查（實際時間以來源發布為準）`;
+}
+
+function officialNoActivityWarning(dataset: string, requestedEnd: string) {
+  return `${datasetName(dataset)}：官方成交明細已核對 ${requestedEnd} 當日無成交；保留最近一次真實成交，不補 0`;
 }
 
 export async function prewarmTaiwanStockChipSymbol(input: {
@@ -485,16 +491,18 @@ async function saveState(db: D1Database | undefined, input: { symbol: string; da
 }
 
 export function stateCovers(state: ChipFetchStateRow | null | undefined, start: string, end: string, dataset: ChipDataset, now = Date.now()) {
-  if (!state || state.status !== "available" || !state.coverage_start || !state.coverage_end) return false;
+  if (!state || state.status !== "available") return false;
+  const officialNoActivity = dataset === "securities-lending" && state.reason_code === "official_no_activity" && Boolean(state.source_date && state.source_date >= end);
+  if (!officialNoActivity && (!state.coverage_start || !state.coverage_end)) return false;
   if (dataset === "shareholder-distribution") {
     if (!state.source_date) return false;
     const minimumDate = expectedTdccSnapshotMinimumDate(now);
     if (end >= minimumDate && state.source_date < minimumDate) return false;
   } else {
-    if (state.coverage_start > start || !state.source_date) return false;
-    const fullyCovered = state.coverage_end >= end && state.source_date >= end;
+    if ((!officialNoActivity && state.coverage_start! > start) || !state.source_date) return false;
+    const fullyCovered = officialNoActivity || (state.coverage_end! >= end && state.source_date >= end);
     const retryAfter = Date.parse(String(state.retry_after || ""));
-    const sourcePending = state.reason_code === "partial_data" && state.coverage_end >= start && state.source_date < end && Number.isFinite(retryAfter) && retryAfter > now;
+    const sourcePending = state.reason_code === "partial_data" && state.coverage_end! >= start && state.source_date < end && Number.isFinite(retryAfter) && retryAfter > now;
     if (!fullyCovered && !sourcePending) return false;
     if (sourcePending) return true;
   }
@@ -529,7 +537,6 @@ function reasonFrom(error: unknown): ChipReasonCode {
 }
 
 async function fetchOfficialLatest(dataset: typeof dailyDatasets[number], eligibility: TaiwanChipEligibility, end: string, fetchImpl: typeof fetch) {
-  if (dataset === "securities-lending") return [];
   const requestJson = async (url: string) => {
     const response = await fetchWithTimeout(fetchImpl, url, { headers: { accept: "application/json" } });
     if (!response.ok) throw new Error("provider_unavailable");
@@ -540,16 +547,27 @@ async function fetchOfficialLatest(dataset: typeof dailyDatasets[number], eligib
     if (!Array.isArray(payload)) throw new Error("invalid_response");
     return payload;
   };
+  if (dataset === "securities-lending") {
+    let cache = officialLendingMarketCaches.get(fetchImpl);
+    if (!cache) { cache = new Map(); officialLendingMarketCaches.set(fetchImpl, cache); }
+    let payload = cache.get(end)?.expiresAt && cache.get(end)!.expiresAt > Date.now() ? cache.get(end)!.payload : null;
+    if (!payload) {
+      payload = await singleFlight(`twse:lending:${end}`, () => requestJson(`https://www.twse.com.tw/rwd/zh/lending/t13sa710?startDate=${end.replaceAll("-", "")}&endDate=${end.replaceAll("-", "")}&tradeType=&stockNo=&response=json`));
+      cache.set(end, { expiresAt: Date.now() + 30 * 60000, payload });
+    }
+    return normalizeTwseSecuritiesLendingReport(payload, eligibility.symbol, end);
+  }
+  let rows: ChipDailyRow[] = [];
   if (eligibility.exchange === "TPEx") {
-    if (dataset === "institutional-flow") return normalizeTpexInstitutionalLatest(await requestArray("https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"), eligibility.symbol);
-    if (dataset === "foreign-holding") return normalizeTpexForeignHoldingLatest(await requestArray("https://www.tpex.org.tw/openapi/v1/tpex_3insti_qfii"), eligibility.symbol);
-    if (dataset === "margin-short") return normalizeTpexMarginLatest(await requestArray("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"), eligibility.symbol);
+    if (dataset === "institutional-flow") rows = normalizeTpexInstitutionalLatest(await requestArray("https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"), eligibility.symbol);
+    if (dataset === "foreign-holding") rows = normalizeTpexForeignHoldingLatest(await requestArray("https://www.tpex.org.tw/openapi/v1/tpex_3insti_qfii"), eligibility.symbol);
+    if (dataset === "margin-short") rows = normalizeTpexMarginLatest(await requestArray("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"), eligibility.symbol);
   }
-  if (eligibility.exchange === "TWSE" && dataset === "institutional-flow") return normalizeTwseInstitutionalLatest(await requestJson(`https://www.twse.com.tw/rwd/zh/fund/T86?date=${end.replaceAll("-", "")}&selectType=ALL&response=json`), eligibility.symbol);
+  if (eligibility.exchange === "TWSE" && dataset === "institutional-flow") rows = normalizeTwseInstitutionalLatest(await requestJson(`https://www.twse.com.tw/rwd/zh/fund/T86?date=${end.replaceAll("-", "")}&selectType=ALL&response=json`), eligibility.symbol);
   if (eligibility.exchange === "TWSE" && dataset === "margin-short") {
-    return normalizeTwseMarginReport(await requestJson(`https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${end.replaceAll("-", "")}&selectType=ALL&response=json`), eligibility.symbol);
+    rows = normalizeTwseMarginReport(await requestJson(`https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${end.replaceAll("-", "")}&selectType=ALL&response=json`), eligibility.symbol);
   }
-  return [];
+  return { status: rows.length ? "available" as const : "not_published" as const, rows, verifiedThrough: rows.at(-1)?.sessionDate || null };
 }
 
 function requestedDatasets(url: URL) {
@@ -623,17 +641,22 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
     const distributionOutsideRequestedRange = dataset === "shareholder-distribution" && states[index]?.source_date && states[index].source_date > datasetEnd;
     const cachedDatasetDates = dataset === "shareholder-distribution" ? distribution.map((row) => row.dataDate) : cachedDailyBefore.filter((row) => Boolean(row.provenance[dataset as keyof typeof row.provenance])).map((row) => row.sessionDate);
     const sourcePending = dataset !== "shareholder-distribution" && states[index]?.reason_code === "partial_data" && states[index]?.source_date && states[index]!.source_date! < datasetEnd;
+    const officialNoActivity = dataset === "securities-lending" && states[index]?.reason_code === "official_no_activity" && Boolean(states[index]?.source_date && states[index]!.source_date! >= datasetEnd);
     const cachedDatasetCovers = dataset === "shareholder-distribution"
       ? distribution.length > 0 || Boolean(distributionOutsideRequestedRange)
-      : Boolean(sourcePending || (cachedDatasetDates.at(-1) && cachedDatasetDates.at(-1)! >= datasetEnd));
-    if (cachedStateCovers && cachedDatasetCovers) {
+      : Boolean(officialNoActivity || sourcePending || (cachedDatasetDates.at(-1) && cachedDatasetDates.at(-1)! >= datasetEnd));
+    const databaseOnlyDistributionHit = dataset === "shareholder-distribution" && distribution.length > 1;
+    if (databaseOnlyDistributionHit || (cachedStateCovers && cachedDatasetCovers)) {
       refreshOutcomes[dataset] = "cache";
       const count = cachedDatasetDates.length;
       availability[dataset] = dataset === "shareholder-distribution"
         ? { status: count > 1 ? "available" : count ? "partial" : "unavailable", reason: count > 1 ? "available" : "history_not_archived", rowCount: count }
+        : officialNoActivity
+          ? { status: "available", reason: "official_no_activity", rowCount: count }
         : sourcePending
           ? { status: count ? "partial" : "unavailable", reason: "partial_data", rowCount: count }
           : { status: count ? "available" : "unavailable", reason: count ? "available" : "not_published", rowCount: count };
+      if (officialNoActivity) warnings.push(officialNoActivityWarning(dataset, datasetEnd));
       if (sourcePending) warnings.push(incompleteDailyWarning(dataset, states[index]!.source_date!, datasetEnd));
       return;
     }
@@ -671,30 +694,34 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       } else {
         const primaryRows = await singleFlight(`${symbol}|${dataset}|${start}|${datasetEnd}`, () => adapterFor(dataset, env, fetchImpl).fetch({ symbol, start, end: datasetEnd }));
         const primaryEnd = primaryRows.at(-1)?.sessionDate || null;
-        let officialRows: ChipDailyRow[] = [];
+        let officialResult: Awaited<ReturnType<typeof fetchOfficialLatest>> = { status: "not_published", rows: [], verifiedThrough: null };
         if (primaryEnd && primaryEnd < datasetEnd) {
           try {
-            officialRows = await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl);
+            officialResult = await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl);
           } catch {
             // 官方補尾失敗不應丟棄主要來源已驗證日期的歷史 rows。
           }
         }
+        const officialRows = officialResult.rows;
+        const officialNoActivity = officialResult.status === "official_no_activity" && officialResult.verifiedThrough === datasetEnd;
         const rows = sanitizeChipDailyRows(mergeChipRows(primaryRows, officialRows), datasetEnd);
         if (rows.length) {
           refreshOutcomes[dataset] = "accepted";
           const actualStart = rows[0].sessionDate;
           const actualEnd = rows.at(-1)!.sessionDate;
-          const complete = actualEnd >= datasetEnd;
-          const reason = complete ? "available" : "partial_data";
+          const complete = actualEnd >= datasetEnd || officialNoActivity;
+          const reason = officialNoActivity ? "official_no_activity" : complete ? "available" : "partial_data";
           const retryAfter = complete ? null : new Date(Date.now() + 30 * 60000).toISOString();
           freshDailySets.push(rows);
           await upsertDaily(env.DB, eligibility.exchange, rows);
-          await saveState(env.DB, { symbol: stateSymbol, dataset, start: actualStart, end: actualEnd, sourceDate: actualEnd, reason, success: true, retryAfter });
+          await saveState(env.DB, { symbol: stateSymbol, dataset, start: actualStart, end: actualEnd, sourceDate: officialNoActivity ? datasetEnd : actualEnd, reason, success: true, retryAfter });
           availability[dataset] = { status: complete ? "available" : "partial", reason, rowCount: rows.length };
-          if (officialRows.length) warnings.push(`${datasetName(dataset)}：主要歷史來源尚未更新，已改用官方最新資料`);
+          if (officialNoActivity) warnings.push(officialNoActivityWarning(dataset, datasetEnd));
+          else if (officialRows.length) warnings.push(`${datasetName(dataset)}：主要歷史來源尚未更新，已改用官方最新資料`);
           else if (!complete) warnings.push(incompleteDailyWarning(dataset, actualEnd, datasetEnd));
         } else {
-          const officialRows = sanitizeChipDailyRows(await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl), datasetEnd);
+          officialResult = await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl);
+          const officialRows = sanitizeChipDailyRows(officialResult.rows, datasetEnd);
           if (officialRows.length) {
             refreshOutcomes[dataset] = "accepted";
             const actualEnd = officialRows.at(-1)!.sessionDate;
@@ -705,6 +732,14 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
             await saveState(env.DB, { symbol: stateSymbol, dataset, start: officialRows[0].sessionDate, end: actualEnd, sourceDate: actualEnd, reason, success: true, retryAfter: complete ? null : new Date(Date.now() + 30 * 60000).toISOString() });
             availability[dataset] = { status: complete ? "available" : "partial", reason, rowCount: officialRows.length };
             warnings.push(`${datasetName(dataset)}：主要歷史來源沒有目標範圍紀錄，已改用官方最新資料`);
+            fetchedAny = true;
+            return;
+          }
+          if (officialResult.status === "official_no_activity" && officialResult.verifiedThrough === datasetEnd) {
+            await saveState(env.DB, { symbol: stateSymbol, dataset, start: null, end: null, sourceDate: datasetEnd, reason: "official_no_activity", success: true, retryAfter: null });
+            availability[dataset] = { status: "available", reason: "official_no_activity", rowCount: 0 };
+            refreshOutcomes[dataset] = "accepted";
+            warnings.push(officialNoActivityWarning(dataset, datasetEnd));
             fetchedAny = true;
             return;
           }
@@ -719,7 +754,8 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       refreshOutcomes[dataset] = "failed";
       if (dataset !== "shareholder-distribution") {
         try {
-          const officialRows = sanitizeChipDailyRows(await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl), datasetEnd);
+          const officialResult = await fetchOfficialLatest(dataset, eligibility, datasetEnd, fetchImpl);
+          const officialRows = sanitizeChipDailyRows(officialResult.rows, datasetEnd);
           if (officialRows.length) {
             refreshOutcomes[dataset] = "accepted";
             const actualEnd = officialRows.at(-1)!.sessionDate;
@@ -730,6 +766,14 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
             await saveState(env.DB, { symbol: stateSymbol, dataset, start: officialRows[0].sessionDate, end: actualEnd, sourceDate: actualEnd, reason, success: true, retryAfter: complete ? null : new Date(Date.now() + 30 * 60000).toISOString() });
             availability[dataset] = { status: complete ? "available" : "partial", reason, rowCount: officialRows.length };
             warnings.push(`${datasetName(dataset)}：主要歷史來源暫時不可用，已改用官方最新資料`);
+            fetchedAny = true;
+            return;
+          }
+          if (officialResult.status === "official_no_activity" && officialResult.verifiedThrough === datasetEnd) {
+            await saveState(env.DB, { symbol: stateSymbol, dataset, start: null, end: null, sourceDate: datasetEnd, reason: "official_no_activity", success: true, retryAfter: null });
+            availability[dataset] = { status: "available", reason: "official_no_activity", rowCount: 0 };
+            refreshOutcomes[dataset] = "accepted";
+            warnings.push(officialNoActivityWarning(dataset, datasetEnd));
             fetchedAny = true;
             return;
           }

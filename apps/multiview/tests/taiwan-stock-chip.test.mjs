@@ -12,6 +12,7 @@ import {
   normalizeInstitutionalRows,
   normalizeMarginShortRows,
   normalizeSecuritiesLendingRows,
+  normalizeTwseSecuritiesLendingReport,
   normalizeTpexForeignHoldingLatest,
   normalizeTpexInstitutionalLatest,
   normalizeTpexMarginLatest,
@@ -20,6 +21,25 @@ import {
   parseTdccSnapshot,
 } from "../worker/taiwan-stock-chip.ts";
 import { holdingFixture, institutionalFixture, lendingFixture, marginFixture, tdccEtfFixture, tdccFixture } from "./fixtures/taiwan-stock-chip.mjs";
+
+test("TWSE 借券成交全市場回應可彙總正控制並辨識官方無成交", () => {
+  const payload = {
+    stat: "OK",
+    fields: ["成交日期", "證券代號名稱", "交易方式", "成交數量(交易單位)", "成交費率", "成交日收盤價", "約定還券日期", "約定借券天數", "費率異動"],
+    data: [
+      ["115年09月24日", "2330 台積電", "議借", "1,100", "0.38", "2,475.00", "116年03月24日", 181, ""],
+      ["115年09月24日", "2330 台積電", "競價", "135", "0.44", "2,475.00", "116年03月24日", 181, ""],
+    ],
+  };
+  const positive = normalizeTwseSecuritiesLendingReport(payload, "2330.TW", "2026-09-24", "2026-09-24T08:00:00Z");
+  assert.equal(positive.status, "available");
+  assert.equal(positive.rows[0].securitiesLending.transactionShares, 1235);
+  assert.equal(positive.rows[0].provenance["securities-lending"].sourceDateVerified, true);
+  const absent = normalizeTwseSecuritiesLendingReport(payload, "3055.TW", "2026-09-24");
+  assert.deepEqual(absent, { status: "official_no_activity", rows: [], verifiedThrough: "2026-09-24" });
+  assert.throws(() => normalizeTwseSecuritiesLendingReport({ ...payload, data: [["115年09月23日", ...payload.data[0].slice(1)]] }, "3055.TW", "2026-09-24"), /invalid_response/);
+  assert.deepEqual(normalizeTwseSecuritiesLendingReport({ ...payload, data: [] }, "3055.TW", "2026-09-24"), { status: "not_published", rows: [], verifiedThrough: null });
+});
 
 test("法人資料只用相容分項組成合計，且保留明確零值", () => {
   const rows = normalizeInstitutionalRows(institutionalFixture, "2330.TW", "2026-07-15T00:00:00Z");

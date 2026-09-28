@@ -256,7 +256,7 @@ export async function fetchTaiwanOfficialMonth(symbol: string, month: string, op
   if (memory && memory.expiresAt > epoch) return memory.value;
   const existing = officialMonthInflight.get(key);
   if (existing) return existing;
-  const promise = (async () => {
+  const promise = (async (): Promise<TaiwanOfficialMonthResult> => {
     if (options.db) {
       try {
         const cached = await options.db.prepare("SELECT payload FROM candle_cache WHERE cache_key=? AND expires_at>?").bind(key, epoch).first<{ payload?: string }>();

@@ -2,6 +2,7 @@ type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
 type LocalMaintenanceEnv = { DB?: unknown; LOCAL_PIPELINE_SECRET?: string; DEPLOYMENT_TARGET?: string };
 type LocalMaintenanceActions = {
   daily(env: LocalMaintenanceEnv, scheduledTime: number): Promise<void>;
+  continuity?(env: LocalMaintenanceEnv): Promise<unknown>;
   screener?(env: LocalMaintenanceEnv, scope: "screener-daily" | "screener-weekly"): Promise<unknown>;
 };
 
@@ -33,7 +34,7 @@ export async function handleLocalMaintenance(
   }
   if (!body || typeof body !== "object" || Array.isArray(body)
     || Object.keys(body).some((key) => !["action", "scheduledTime"].includes(key))
-    || !["daily", "screener-daily", "screener-weekly"].includes(String(body.action))) {
+    || !["daily", "continuity", "screener-daily", "screener-weekly"].includes(String(body.action))) {
     return reply({ ok: false, reasonCode: "invalid_payload" }, 400);
   }
   const scheduledTime = Number(body.scheduledTime || Date.now());
@@ -41,6 +42,12 @@ export async function handleLocalMaintenance(
     return reply({ ok: false, reasonCode: "invalid_scheduled_time" }, 400);
   }
   if (!env.DB) return reply({ ok: false, reasonCode: "d1_unavailable" }, 503);
+  if (body.action === "continuity") {
+    if (env.DEPLOYMENT_TARGET !== "local" || !actions.continuity) return reply({ ok: false, reasonCode: "local_only" }, 403);
+    const work = actions.continuity(env);
+    context.waitUntil(work);
+    return reply({ ok: true, action: "continuity", result: await work });
+  }
   if (body.action === "screener-daily" || body.action === "screener-weekly") {
     if (env.DEPLOYMENT_TARGET !== "local" || !actions.screener) return reply({ ok: false, reasonCode: "local_only" }, 403);
     const work = actions.screener(env, body.action);

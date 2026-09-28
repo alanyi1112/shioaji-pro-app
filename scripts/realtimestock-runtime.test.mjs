@@ -448,8 +448,8 @@ ensure_private_app_support_root`,
     expect(watcherBlock).toContain("<key>RunAtLoad</key><true/>");
     expect(watcherBlock).toContain("<key>StartInterval</key><integer>300</integer>");
     expect(watcherBlock).not.toContain("<key>KeepAlive</key>");
-    expect(weeklyBlock).toContain("<key>Weekday</key><integer>7</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer>");
-    expect(weeklyBlock).toContain("<key>Weekday</key><integer>1</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer>");
+    expect(weeklyBlock).toContain("<key>Weekday</key><integer>6</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer>");
+    expect(weeklyBlock).toContain("<key>Weekday</key><integer>0</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer>");
     expect(watcherService).toContain("queue-probe");
     expect(watcherService).toContain('Authorization: Bearer ${pipeline_secret}');
     expect(watcherService).not.toContain("X-MultiView-Local-Authorization");
@@ -506,6 +506,7 @@ ensure_private_app_support_root`,
     const watchdogService = source.match(/watchdog_environment\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
     const multiviewService = source.match(/service_multiview\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
     const dailyService = source.match(/service_multiview_daily_pipeline\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
+    const officialPeService = source.match(/service_multiview_pe_official_pipeline\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
     const tdccService = source.match(/service_multiview_tdcc_pipeline\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
     const tdccWatcherService = source.match(/service_multiview_tdcc_watcher\(\) \{([\s\S]*?)\n\}/)?.[1] || "";
 
@@ -515,6 +516,9 @@ ensure_private_app_support_root`,
     expect(watchdogService).toContain('"${APP_NODE_BIN}" "${WATCHDOG_SCRIPT}"');
     expect(multiviewService).toContain('"${APP_NODE_BIN}" "${MULTIVIEW_CLI}"');
     expect(dailyService).toContain('"${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs');
+    expect(officialPeService).toContain('"${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs');
+    expect(officialPeService).toContain('--official-symbols="${symbols}"');
+    expect(officialPeService).not.toContain("production");
     expect(tdccService).toContain('"${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs');
     expect(tdccWatcherService).toContain('"${APP_NODE_BIN}" scripts/tdcc-history-backfill.mjs');
     expect(sidecarService).toContain('persisted_node="${NODE_BIN}"');

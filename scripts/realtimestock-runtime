@@ -129,6 +129,8 @@ usage() {
     print '  production-readonly   暫時切至正式行情唯讀；失敗會回復 simulation'
     print '  restart               只重啟 MultiView；不重設 5173 或 8080'
     print '  multiview-daily       手動執行本機日資料與 PE bounded pipeline'
+    print '  multiview-pe-official <symbols>'
+    print '                         對指定 TWSE 普通股執行有界官方 PE 月份回補'
     print '  multiview-tdcc        手動執行本機 TDCC latest／continuous bounded pipeline'
     print '  status                顯示不含秘密值的服務與行情狀態'
     print '  node-sqlite-probe     以persisted Node執行原生Apple Silicon arm64離線capability probe'
@@ -848,11 +850,11 @@ EOF
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>${HOME}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string></dict>
 <key>RunAtLoad</key><true/>
 <key>StartCalendarInterval</key><array>
+<dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
 <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
 <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
 <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
 <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
-<dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>45</integer></dict>
 </array>
 <key>StandardOutPath</key><string>${MULTIVIEW_STATE_DIR}/logs/daily-pipeline.log</string>
 <key>StandardErrorPath</key><string>${MULTIVIEW_STATE_DIR}/logs/daily-pipeline.log</string>
@@ -869,8 +871,8 @@ EOF
 <key>EnvironmentVariables</key><dict><key>HOME</key><string>${HOME}</string><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string><key>REALTIME_STOCK_REPO_DIR</key><string>${REPO_DIR}</string></dict>
 <key>RunAtLoad</key><true/>
 <key>StartCalendarInterval</key><array>
-<dict><key>Weekday</key><integer>7</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
-<dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+<dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
+<dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>22</integer><key>Minute</key><integer>30</integer></dict>
 </array>
 <key>StandardOutPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-pipeline.log</string>
 <key>StandardErrorPath</key><string>${MULTIVIEW_STATE_DIR}/logs/tdcc-pipeline.log</string>
@@ -1875,16 +1877,22 @@ runtime_status() {
     state_status="$(MULTIVIEW_STATE_DIR="${MULTIVIEW_STATE_DIR}" "${MULTIVIEW_STATE_SCRIPT}" status 2>/dev/null || true)"
     print "multiview_d1_integrity=$(print -r -- "${state_status}" | awk -F= '$1 == "integrity" {print $2}')"
     print "multiview_d1_coverage=$(print -r -- "${state_status}" | awk -F= '$1 == "schema_coverage" {print $2}')"
-    print "multiview_after_hours_source=$(print -r -- "${state_status}" | awk -F= '$1 == "after_hours_source" {print $2}')"
-    local after_hours_all='completed'
+    print "multiview_seed_source=$(print -r -- "${state_status}" | awk -F= '$1 == "after_hours_source" {print $2}')"
     local after_hours_group after_hours_value
     for after_hours_group in market chip tdcc pe; do
         after_hours_value="$(print -r -- "${state_status}" | awk -F= -v key="after_hours_${after_hours_group}" '$1 == key {print $2}')"
         [[ -n "${after_hours_value}" ]] || after_hours_value='unknown'
-        print "multiview_after_hours_${after_hours_group}=${after_hours_value}"
-        [[ "${after_hours_value}" == 'completed' ]] || after_hours_all='incomplete'
+        print "multiview_seed_${after_hours_group}=${after_hours_value}"
     done
-    print "multiview_after_hours=${after_hours_all}"
+    if [[ -f "${REPO_DIR}/scripts/multiview-live-status.mjs" ]]; then
+        print -r -- "${multiview_health:-}" | "${NODE_BIN}" "${REPO_DIR}/scripts/multiview-live-status.mjs" || {
+            print 'multiview_after_hours=unknown'
+            print 'multiview_after_hours_reason=summary_failed'
+        }
+    else
+        print 'multiview_after_hours=unknown'
+        print 'multiview_after_hours_reason=summary_unavailable'
+    fi
 }
 
 install_runtime() {
@@ -2102,6 +2110,9 @@ service_multiview_daily_pipeline() {
     pipeline_secret="$(read_multiview_pipeline_secret)"
     wait_multiview
     scheduled_time="$(($(date +%s) * 1000))"
+    env LOCAL_PIPELINE_SECRET="${pipeline_secret}" "${APP_NODE_BIN}" --use-system-ca \
+        "${REPO_DIR}/apps/multiview/scripts/local-candle-continuity.mjs" \
+        || print -u2 '日 K 稽核未完成；保留逐商品狀態並繼續其他盤後工作'
     curl -fsS --max-time 180 -X POST http://127.0.0.1:5174/api/internal/local-maintenance \
         -H 'Content-Type: application/json' \
         -H "X-MultiView-Local-Authorization: Bearer ${pipeline_secret}" \
@@ -2111,6 +2122,22 @@ service_multiview_daily_pipeline() {
         "${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs \
         --site-url=http://127.0.0.1:5174 --trigger=schedule --run-id="local-pe-$(date +%Y%m%d-%H)"
     service_multiview_screener_pipeline
+}
+
+service_multiview_pe_official_pipeline() {
+    local pipeline_secret symbols
+    symbols="${1:-}"
+    if [[ -z "${symbols}" ]]; then
+        print -u2 '必須指定逗號分隔的 TWSE 普通股 symbol'
+        return 2
+    fi
+    pipeline_secret="$(read_multiview_pipeline_secret)"
+    wait_multiview
+    cd "${REPO_DIR}/apps/multiview"
+    env PE_RIVER_BACKFILL_SECRET="${pipeline_secret}" PE_RIVER_INGEST_SECRET="${pipeline_secret}" \
+        "${APP_NODE_BIN}" scripts/pe-river-continuous-backfill.mjs \
+        --site-url=http://127.0.0.1:5174 --trigger=workflow_dispatch \
+        --run-id="local-pe-official-$(date +%Y%m%d-%H%M%S)" --official-symbols="${symbols}"
 }
 
 service_multiview_tdcc_pipeline() {
@@ -2186,6 +2213,7 @@ case "${command_name}" in
     production-readonly) run_with_exclusive_mode_execution_lease production-readonly ;;
     restart) restart_multiview ;;
     multiview-daily) service_multiview_daily_pipeline ;;
+    multiview-pe-official) service_multiview_pe_official_pipeline "${2:-}" ;;
     multiview-tdcc) service_multiview_tdcc_pipeline ;;
     multiview-tdcc-watcher) service_multiview_tdcc_watcher ;;
     status) runtime_status ;;

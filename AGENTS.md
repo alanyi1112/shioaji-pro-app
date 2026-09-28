@@ -40,7 +40,13 @@
 - `openspec/changes/`：進行中的 OpenSpec change。
 - `openspec/specs/`：已同步的正式規格。
 
-## 安全規則
+## 維護排程壓縮後接續
+
+- 執行 automation-2 或其補跑時，先讀 `docs/maintenance-heartbeat-runbook.md`，並持久化 `.codex/maintenance-runs/active.json`。
+- 若上下文壓縮後有 running 維護紀錄且沒有新的使用者取消／改派指令，先讀該紀錄，繼續尚未巡訪的組別；不得把歷史「收工」當成當次新指令。新的明確使用者指令仍優先。
+- 排程結束前必須檢查三組 checkpoint；未巡訪、受阻與完成須分開回報，不能只憑 ACTIVE 或 turn completed 宣稱成功。
+
+## 機密與交易安全
 
 - 禁止將帳號、密碼、API key、token、金鑰等機密資料寫入 repo、Obsidian 或交給 Gemini / 其他 AI Agent。
 - 如需記錄秘密值存在，使用 `[REDACTED_SECRET]`。

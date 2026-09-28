@@ -68,7 +68,7 @@ function isFresh(state: WarmState | undefined, window: { start: string; end: str
 
 async function readTargetsAndStates(db: D1Database) {
   const [targetRows, stateRows] = await Promise.all([
-    db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active = 1 ORDER BY symbol").all<WarmTargetRow>(),
+    db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active = 1 UNION SELECT UPPER(symbol) AS symbol FROM user_instruments WHERE enabled = 1 AND (UPPER(symbol) LIKE '%.TW' OR UPPER(symbol) LIKE '%.TWO') ORDER BY symbol").all<WarmTargetRow>(),
     db.prepare("SELECT symbol,dataset,coverage_start,coverage_end,source_date,status,reason_code,last_success_at,last_attempt_at,retry_after FROM taiwan_stock_chip_fetch_state WHERE dataset IN ('institutional-flow','foreign-holding','margin-short','securities-lending')").all<WarmState>(),
   ]);
   const symbols = [...new Set((targetRows.results || []).map((row) => String(row.symbol || "").trim().toUpperCase()).filter((symbol) => /^[0-9A-Z]{4,8}\.(TW|TWO)$/.test(symbol)))];
@@ -177,3 +177,12 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
 }
 
 export const WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS = CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.attemptCooldownMs;
+
+// Persist the attempt before eligibility/provider work so failures cannot monopolize discovery.
+export async function markWatchlistChipWarmAttempt(db: D1Database, target: WatchlistChipWarmTarget, now = new Date()) {
+  for (const dataset of target.datasets) {
+    await db.prepare(`INSERT INTO taiwan_stock_chip_fetch_state (symbol,dataset,status,reason_code,last_attempt_at)
+      VALUES (?,?,'pending','provider_unavailable',?) ON CONFLICT(symbol,dataset) DO UPDATE SET last_attempt_at=excluded.last_attempt_at`)
+      .bind(target.symbol, dataset, now.toISOString()).run();
+  }
+}

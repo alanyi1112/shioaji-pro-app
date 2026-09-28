@@ -17,7 +17,7 @@
         "test:multiview": "npm --prefix apps/multiview run test",
         "test:browser": "vitest run --config vitest.browser.config.ts",
         "lint:multiview": "npm --prefix apps/multiview run lint",
-        "typecheck:multiview": "npm --prefix apps/multiview exec tsc -- --noEmit",
+        "typecheck:multiview": "tsc --noEmit --project apps/multiview/tsconfig.json",
         "verify:multiview-governance": "node scripts/verify-multiview-governance.mjs",
         "test:smart-order-contract-fixture": "vitest run scripts/smart-order-contract-probe.test.mjs",
         "probe:smart-order-node-sqlite": "scripts/realtimestock-runtime node-sqlite-probe",

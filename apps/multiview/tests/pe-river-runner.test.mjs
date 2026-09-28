@@ -12,7 +12,8 @@ function json(payload, status = 200) {
 
 test("runner 參數固定匿名來源，不要求 FinMind token", () => {
   const options = parsePeRiverRunnerArgs(["--trigger=schedule", "--run-id=test-run", "--site-url=https://site.example/"]);
-  assert.deepEqual(options, { trigger: "schedule", runId: "test-run", siteUrl: "https://site.example" });
+  assert.deepEqual(options, { trigger: "schedule", runId: "test-run", siteUrl: "https://site.example", officialSymbols: [] });
+  assert.deepEqual(parsePeRiverRunnerArgs(["--official-symbols=3055.tw,3149.TW"]).officialSymbols, ["3055.TW", "3149.TW"]);
   assert.equal(safePeRiverRunnerError(new Error("HTTP 429")), "rate_limit_waiting");
 });
 
@@ -44,6 +45,52 @@ test("runner 永遠先 latest 後 history，按月 bounded ingest 且只輸出�
   assert.equal(calls.filter((call) => call.url.includes("api.finmindtrade.com")).length, 2);
   assert.equal(calls.filter((call) => call.url.endsWith("/api/internal/taiwan-stock-pe-river")).every((call) => call.body.rows.length <= 31), true);
   assert.equal(JSON.stringify(calls).includes("FINMIND_API_TOKEN"), false);
+});
+
+test("FinMind 歷史失敗時仍以官方月報保存正值與 official_gap checkpoint", async () => {
+  const ingests = [];
+  const actions = [];
+  const fetchImpl = async (input, init = {}) => {
+    const url = new URL(String(input));
+    const body = init.body ? JSON.parse(init.body) : null;
+    if (url.pathname.endsWith("pe-river-continuous-backfill") && body.action === "start") return json({
+      ok: true,
+      order: ["latest", "history"],
+      latest: [{ symbol: "3149.TW", exchange: "TWSE" }],
+      history: [{ jobId: "pe-river:3149.TW", symbol: "3149.TW", exchange: "TWSE", startDate: "2026-01-01", endDate: "2026-02-28", months: ["2026-01", "2026-02"], attempt: 1 }],
+      budget: { used: 2, limit: 240 },
+    });
+    if (url.pathname.endsWith("pe-river-continuous-backfill") && body.action === "latest-refresh") return json({ ok: true, accepted: 0, provisionalAccepted: 0, rows: [], failures: { TWSE: "official_not_published", TPEx: "official_not_published" } });
+    if (url.pathname.endsWith("taiwan-stock-pe-river")) {
+      ingests.push(body);
+      return json({ ok: true, accepted: body.rows.length });
+    }
+    if (url.pathname.endsWith("pe-river-continuous-backfill")) {
+      actions.push(body.action);
+      return json({ ok: true });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const fetchOfficialHistoryMonth = async ({ symbol, month }) => month === "2026-01"
+    ? { symbol, month, status: "available", rows: [{ symbol, exchange: "TWSE", sessionDate: "2026-01-05", officialClose: 50, officialPeRatio: 10, source: "twse", provider: "twse", validationStatus: "official_verified", officialOverlapDate: "2026-01-05", sourceDate: "2026-01-05" }] }
+    : { symbol, month, status: "official_gap", rows: [] };
+  const summary = await runPeRiverContinuous(
+    { siteUrl: "https://site.example", trigger: "schedule", runId: "official-fallback" },
+    {
+      fetchImpl,
+      controlHeaders: {},
+      ingestHeaders: {},
+      fetchHistory: async () => { throw new Error("provider_unavailable"); },
+      fetchOfficialHistoryMonth,
+      wait: async () => {},
+    },
+  );
+  assert.equal(summary.historyCompleted, 1);
+  assert.equal(summary.historyFailed, 0);
+  assert.equal(summary.officialHistoryMonths, 2);
+  assert.equal(summary.officialHistoryRows, 1);
+  assert.deepEqual(ingests.map((item) => [item.month, item.rows.length]), [["2026-01", 1], ["2026-02", 0]]);
+  assert.deepEqual(actions, ["history-complete"]);
 });
 
 test("workflow contract 有兩個盤後窗口、singleton、最小權限與 8 target 上限", async () => {
@@ -84,7 +131,7 @@ test("相同歷史來源只下載一次，再依序 ingest 兩個獨立 target",
   const summary = await runPeRiverTargets([
     { targetId: "sites", siteUrl: "https://sites.example", trigger: "schedule", runId: "sites-run", controlHeaders: { authorization: "Bearer sites-control" }, ingestHeaders: { authorization: "Bearer sites-ingest" } },
     { targetId: "cloudflare", siteUrl: "https://cloudflare.example", trigger: "schedule", runId: "cloudflare-run", controlHeaders: { authorization: "Bearer cf-control" }, ingestHeaders: { authorization: "Bearer cf-ingest" } },
-  ], { fetchImpl, fetchHistory });
+  ], { fetchImpl, fetchHistory, fetchOfficialHistoryMonth: async ({ symbol, month }) => ({ symbol, month, status: "official_gap", rows: [] }) });
   assert.equal(sourceDownloads, 1);
   assert.equal(summary.sourceDownloads, 1);
   assert.equal(summary.completedTargets, 2);
