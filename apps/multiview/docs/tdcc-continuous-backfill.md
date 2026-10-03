@@ -2,10 +2,10 @@
 
 ## 執行契約
 
-- 本機週六 22:30 執行主要同步、週日 22:30 執行有限隔日重試；另有 `RunAtLoad` 且每 300 秒檢查一次的 queue watcher，讓新增商品最晚五分鐘內交給既有 runner。
+- 本機週五 19:00／22:00、週六 06:00／08:00／09:00／10:00／12:00 只檢查最新週資料；登入／載入該工作時也立即檢查一次，補上電腦晚開機時錯過的時槽。週六 22:30 執行主要同步、週日 22:30 執行有限隔日重試。早期檢查沒有新週次即 noop，不執行歷史補建或個股 prewarm。另有 `RunAtLoad` 且每 300 秒檢查一次的 queue watcher，讓新增商品最晚五分鐘內交給既有 runner。
 - Sites 保留站與 Cloudflare 正式站各自使用受保護 workflow／scheduled dispatch；兩個 deployment 的 D1、run 與 handoff 證據不可互相代替。TDCC 股權分散表本身是週資料，不是每日資料。
 - queue watcher 先呼叫受保護 `queue-probe`；沒有 runnable target 時成功 no-op，不建立 run、TDCC 歷史 session 或來源 request。存在工作時才取得 host single-flight 並以 `--history-only` 啟動 runner；D1 lease 仍是最終 owner 權威。
-- 每次工作先保存最新 OpenAPI 快照，再從 D1 動態 claim 新增或缺週的台股普通股／ETF。
+- 最新週資料先以官方 CSV 與 OpenAPI JSON 的實際資料日期、欄位、筆數與目標商品 17 級距擇新；CSV 較新可先採用，JSON 作交叉檢查與備援，同日內容衝突停止寫入並保留舊資料。完整 pipeline 再從 D1 動態 claim 新增或缺週的台股普通股／ETF。
 - 單次最多 claim 4 檔、每檔最多處理 12 個缺週、請求至少間隔 1 秒，總執行時間不超過 20 分鐘。
 - CAPTCHA、來源封鎖、候選證券不一致或頁面結構漂移會停止該檔並標示 `blocked`；不得規避來源保護機制。
 - 停用 workflow 只會停止後續工作，不會刪除 D1 已保存資料。
@@ -15,7 +15,7 @@
 - [TDCC 集保戶股權分散表](https://www.tdcc.com.tw/portal/zh/smWeb/qryStock) 明確標示資料按每週最後一個營業日編製、歷史保存一年，並建議多檔需求使用開放資料專區下載。
 - 官方頁面未提供允許資料中心背景自動操作可見歷史表單的明確文字，因此程式預設 **不啟用** Playwright 歷史 lane；必須由維運者完成使用規範確認後，才可設定 `TDCC_HISTORY_AUTOMATION_ENABLED=true`。
 - 即使啟用，也只允許網站已加入的動態目標、單一併發、最低一秒間隔與有限批次；不得繞過 CAPTCHA、WAF、rate limit 或其他來源限制。
-- 最新 OpenAPI lane 與歷史表單 lane 分離；歷史 lane fail closed 時仍可每日保存未來新週快照。
+- 最新官方開放資料 lane 與歷史表單 lane 分離；歷史 lane fail closed 時仍可保存新週快照。官方沒有承諾固定上架時刻，排程只是有限次探測，不得把週五或週六某時當成發布 SLA。HTTP 200 必須再核對資料日期。
 
 ## 必要設定
 

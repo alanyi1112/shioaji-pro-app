@@ -6,6 +6,7 @@ import {
   completeTdccContinuousWeek,
   failTdccContinuousWork,
   planTdccContinuousDates,
+  projectTdccContinuousEvidence,
   probeTdccContinuousQueue,
   queueTdccContinuousSymbolBackfill,
   readTdccContinuousHealth,
@@ -87,6 +88,33 @@ test("target discovery 去重普通股與 ETF，首次 catalog 只建 baseline�
   const newListing = await db.prepare("SELECT source,status,active FROM tdcc_continuous_symbols WHERE symbol='00982A.TW'").first();
   assert.deepEqual({ ...newListing }, { source: "official-new-listing", status: "queued", active: 1 });
   assert.equal((await db.prepare("SELECT active FROM tdcc_continuous_symbols WHERE symbol='1101.TW'").first()).active, 0);
+});
+
+test("新週發布後 61 期 ledger 只以最近 60 期投影，不使整批 target 失活", async (t) => {
+  const dates = Array.from({ length: 61 }, (_, index) => new Date(Date.UTC(2025, 0, 3 + index * 7)).toISOString().slice(0, 10));
+  const projection = projectTdccContinuousEvidence({ officialDates: dates, savedRows: dates.map((data_date) => ({ data_date })), itemRows: dates.map((data_date) => ({ data_date, status: "completed" })), latestDataDate: dates.at(-1) });
+  assert.equal(projection.expectedWeeks, 60);
+  assert.equal(projection.targetStart, dates[1]);
+  assert.equal(projection.officialPlanThrough, dates.at(-1));
+  assert.equal(projection.status, "completed");
+  const db = continuousDb();
+  t.after(() => db.close());
+  await insertSymbol(db, { symbol: "2330.TW", source: "user", firstSeenAt: "2026-10-01T00:00:00Z" });
+  await insertSymbol(db, { symbol: "9999.TW", source: "user", firstSeenAt: "2026-10-01T00:00:00Z" });
+  const prepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    const statement = prepare(sql);
+    if (!sql.includes("INSERT INTO tdcc_continuous_symbols") || !sql.includes("ON CONFLICT")) return statement;
+    const bind = statement.bind.bind(statement);
+    statement.bind = (...args) => {
+      if (args[0] === "9999.TW") throw new Error("test_target_failure");
+      return bind(...args);
+    };
+    return statement;
+  };
+  await assert.rejects(syncTdccContinuousTargets({ db, targets: [{ symbol: "2330.TW", source: "user" }, { symbol: "9999.TW", source: "user" }], now: "2026-10-03T01:00:00Z" }), /test_target_failure/);
+  assert.equal((await prepare("SELECT active FROM tdcc_continuous_symbols WHERE symbol='2330.TW'").first()).active, 1);
+  assert.equal((await prepare("SELECT active FROM tdcc_continuous_symbols WHERE symbol='9999.TW'").first()).active, 1);
 });
 
 test("claim 原子隔離 owner、優先新上市與 oldest-first，過期 lease 可續跑", async (t) => {

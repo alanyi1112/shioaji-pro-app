@@ -4,9 +4,11 @@ export const TDCC_CONTINUOUS_CONTRACT = Object.freeze({
   provider: "tdcc",
   dataset: "shareholder-distribution",
   latestOpenDataUrl: "https://openapi.tdcc.com.tw/v1/opendata/1-5",
+  latestCsvUrl: "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5",
   historyPortalUrl: "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock",
   scheduler: "sites-worker-orchestrator",
   scheduleUtc: "30 14 * * 6,0",
+  localEarlyScheduleTaipei: "週五 19:00／22:00；週六 06:00／08:00／09:00／10:00／12:00",
   checkFrequency: "weekly-with-next-day-retry",
   dataFrequency: "weekly",
   minimumDelayMs: 1000,
@@ -30,6 +32,7 @@ export const TDCC_CONTINUOUS_SAFE_ERRORS = [
   "invalid_response",
   "provider_unavailable",
   "rate_limited",
+  "source_conflict",
   "scheduler_stale",
   "tick_limit_exceeded",
   "timeout",
@@ -322,8 +325,8 @@ export function projectTdccContinuousEvidence(input: {
   existingStatus?: unknown;
   minimumHistoryWeeks?: unknown;
 }) {
-  const officialDates = [...new Set((input.officialDates || []).map(String))].filter(realDate).sort();
-  if (!officialDates.length || officialDates.length > 60) throw new Error("invalid_response");
+  const officialDates = [...new Set((input.officialDates || []).map(String))].filter(realDate).sort().slice(-60);
+  if (!officialDates.length) throw new Error("invalid_response");
   const savedRows = Array.isArray(input.savedRows) ? input.savedRows : [];
   const itemRows = Array.isArray(input.itemRows) ? input.itemRows : [];
   const savedAll = new Set(savedRows.map((row) => String(row.data_date || "")).filter(realDate));
@@ -438,11 +441,16 @@ export async function syncTdccContinuousTargets(input: {
     await runD1Batch(input.db, discovered);
   }
 
-  await input.db.prepare("UPDATE tdcc_continuous_symbols SET active=0,updated_at=CURRENT_TIMESTAMP WHERE source IN ('setup','user')").run();
+  const prior = await input.db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active=1 AND source IN ('setup','user')").all<{ symbol: string }>();
+  if (!targets.length && prior.results.length) throw new Error("invalid_response");
   for (const target of targets) {
     await saveTdccContinuousTarget({ db: input.db, target, catalogRevision: revision, now });
   }
-  await input.db.prepare("UPDATE tdcc_continuous_symbols SET status='inactive',lease_owner=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE active=0 AND source IN ('setup','user')").run();
+  const targetSymbols = new Set(targets.map((target) => target.symbol));
+  for (const row of prior.results) {
+    if (targetSymbols.has(row.symbol)) continue;
+    await input.db.prepare("UPDATE tdcc_continuous_symbols SET active=0,status='inactive',lease_owner=NULL,lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP WHERE symbol=? AND source IN ('setup','user')").bind(row.symbol).run();
+  }
   return readTdccContinuousHealth(input.db, new Date(now));
 }
 

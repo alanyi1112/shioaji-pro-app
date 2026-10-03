@@ -137,6 +137,7 @@ pnpm local-runtime status
 - `business_watchdog_consecutive_failures`、`business_watchdog_restart_count`、`business_watchdog_last_reason`、`business_watchdog_next_eligible_at`：固定 allowlist 診斷欄位，不含 response body、商品清單、帳戶或秘密。
 - `multiview_listener`：5174 是否存在。
 - `multiview_tdcc_pipeline_job`：週六 22:30 主同步與週日 22:30 隔日重試的 TDCC LaunchAgent 是否載入。
+- `multiview_tdcc_early_job`：週五 19:00／22:00 與週六 06:00／08:00／09:00／10:00／12:00 的最新週資料檢查是否載入；登入／載入時也立即檢查一次，以補晚開機。只核對 TDCC 官方 CSV／OpenAPI，沒有新週次就 noop，不執行歷史補建。若只需更新此工作而保留共用服務，使用 `pnpm local-runtime install-multiview-tdcc-early`；可用 `pnpm local-runtime multiview-tdcc-latest` 手動執行一次。
 - `multiview_tdcc_watcher_job`：登入即執行且每 300 秒 queue-only 檢查的 TDCC watcher 是否載入；無 runnable target 時不得連線 TDCC 歷史來源。
 - `multiview_after_hours_market／chip／tdcc／pe`：最近一次安全 seed report 的資料族群結果。
 

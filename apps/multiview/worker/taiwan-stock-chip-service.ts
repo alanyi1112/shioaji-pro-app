@@ -31,6 +31,7 @@ import { WATCHLIST_CHIP_PREWARM_CONTRACT, watchlistChipWarmWindow } from "./watc
 import { calculateEstimatedMarginMetrics, ESTIMATED_MARGIN_FORMULA_VERSION } from "./estimated-margin-metrics.ts";
 import { runD1Batch } from "./d1-batch.ts";
 import { tdccArchiveStatus, tdccDistributionMaterialHash, tdccStoredDistributionMaterialHash } from "./tdcc-archive-bootstrap.ts";
+import { fetchTdccLatestOfficial, TDCC_LATEST_SOURCES } from "./tdcc-latest-source.ts";
 
 type ChipEnv = { DB?: D1Database; FINMIND_API_TOKEN?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string };
 export type TaiwanChipEligibility = { eligible: boolean; symbol: string; exchange: "TWSE" | "TPEx" | ""; quoteType?: string; eligibleSymbols: ReadonlySet<string> };
@@ -324,7 +325,7 @@ async function readDistributionProvenanceSummary(db: D1Database | undefined, sym
       COUNT(DISTINCT CASE WHEN validation_status='source-mismatch' THEN data_date END) AS conflict_weeks
     FROM tdcc_distribution_row_provenance WHERE symbol=? AND data_date>=? AND data_date<=?`)
     .bind(symbol, start, end).first<{ archive_weeks?: number; official_weeks?: number; conflict_weeks?: number }>();
-  const transports = await db.prepare(`SELECT DISTINCT transport FROM tdcc_distribution_row_provenance
+  const transports = await db.prepare(`SELECT DISTINCT CASE WHEN source_url='https://opendata.tdcc.com.tw/getOD.ashx?id=1-5' THEN 'official-csv' ELSE transport END AS transport FROM tdcc_distribution_row_provenance
     WHERE symbol=? AND data_date>=? AND data_date<=? ORDER BY transport`).bind(symbol, start, end).all<{ transport: string }>();
   return {
     archiveImportedWeeks: Number(row?.archive_weeks || 0),
@@ -404,7 +405,7 @@ async function upsertDaily(db: D1Database | undefined, exchange: string, rows: C
   return { attempted: rows.length, written: acceptedRows.length, unchanged: rows.length - acceptedRows.length };
 }
 
-async function upsertDistribution(db: D1Database | undefined, rows: DistributionRow[], transport: "official-openapi" | "official-history") {
+async function upsertDistribution(db: D1Database | undefined, rows: DistributionRow[], transport: "official-openapi" | "official-csv" | "official-history") {
   if (!db || !rows.length) return;
   const archiveMaterial = new Map<string, string>();
   for (const dataDate of [...new Set(rows.map(row => row.dataDate))]) {
@@ -425,7 +426,8 @@ async function upsertDistribution(db: D1Database | undefined, rows: Distribution
     const materialHash = await tdccDistributionMaterialHash(row);
     const existingArchiveHash = archiveMaterial.get(`${row.symbol}|${row.dataDate}`);
     const canonicalMatch = !existingArchiveHash || existingArchiveHash === materialHash;
-    const sourceUrl = transport === "official-history" ? "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock" : "https://openapi.tdcc.com.tw/v1/opendata/1-5";
+    const sourceUrl = transport === "official-history" ? "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock" : transport === "official-csv" ? TDCC_LATEST_SOURCES.csv : TDCC_LATEST_SOURCES.openapi;
+    const storedTransport = transport === "official-csv" ? "official-openapi" : transport;
     statements.push(db.prepare(`INSERT INTO taiwan_stock_shareholder_distribution (symbol,data_date,levels_json,adjustment_json,total_json,provider,frequency,source_fetched_at)
       VALUES (?,?,?,?,?,?,?,?)
       ON CONFLICT(symbol,data_date) DO UPDATE SET levels_json=excluded.levels_json,adjustment_json=excluded.adjustment_json,total_json=excluded.total_json,provider=excluded.provider,frequency=excluded.frequency,source_fetched_at=excluded.source_fetched_at,updated_at=CURRENT_TIMESTAMP
@@ -441,7 +443,7 @@ async function upsertDistribution(db: D1Database | undefined, rows: Distribution
         material_hash=CASE WHEN ?=1 THEN excluded.material_hash ELSE tdcc_distribution_row_provenance.material_hash END,
         official_confirmed_at=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE tdcc_distribution_row_provenance.official_confirmed_at END,
         updated_at=CURRENT_TIMESTAMP`)
-      .bind(row.symbol, row.dataDate, transport, sourceUrl, materialHash, canonicalMatch ? 1 : 0, canonicalMatch ? 1 : 0, canonicalMatch ? 1 : 0));
+      .bind(row.symbol, row.dataDate, storedTransport, sourceUrl, materialHash, canonicalMatch ? 1 : 0, canonicalMatch ? 1 : 0, canonicalMatch ? 1 : 0));
     statements.push(db.prepare(`UPDATE tdcc_continuous_items SET status='queued',error_code='source_mismatch',completed_at=NULL,updated_at=CURRENT_TIMESTAMP
       WHERE symbol=? AND data_date=? AND EXISTS (SELECT 1 FROM tdcc_distribution_row_provenance p WHERE p.symbol=? AND p.data_date=? AND p.validation_status='source-mismatch')`)
       .bind(row.symbol, row.dataDate, row.symbol, row.dataDate));
@@ -449,7 +451,7 @@ async function upsertDistribution(db: D1Database | undefined, rows: Distribution
   await runD1Batch(db, statements);
 }
 
-async function persistTdccDistributionRows(env: ChipEnv, rows: DistributionRow[], transport: "official-openapi" | "official-history" = "official-openapi") {
+async function persistTdccDistributionRows(env: ChipEnv, rows: DistributionRow[], transport: "official-openapi" | "official-csv" | "official-history" = "official-openapi") {
   if (!env.DB) throw new Error("d1_unavailable");
   if (!rows.length) throw new Error("invalid_response");
   await upsertDistribution(env.DB, rows, transport);
@@ -471,7 +473,7 @@ export async function ingestTdccDistributionSnapshot(input: {
   payload: unknown;
   eligibleSymbols: ReadonlySet<string>;
   fetchedAt?: string;
-  transport?: "official-openapi" | "official-history";
+  transport?: "official-openapi" | "official-csv" | "official-history";
 }) {
   const rows = parseTdccSnapshot(input.payload, input.eligibleSymbols, input.fetchedAt);
   return persistTdccDistributionRows(input.env, rows, input.transport);
@@ -670,14 +672,16 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
     }
     try {
       if (dataset === "shareholder-distribution") {
-        const snapshot = await singleFlight("tdcc:market-snapshot", async () => {
-          const response = await fetchWithTimeout(fetchImpl, "https://openapi.tdcc.com.tw/v1/opendata/1-5", { headers: { accept: "application/json" } });
-          if (response.status === 429) throw new Error("rate_limited");
-          if (!response.ok) throw new Error("provider_unavailable");
-          return parseTdccSnapshot(await response.json(), eligibility.eligibleSymbols);
-        });
-        if (env.DB && snapshot.length) await persistTdccDistributionRows(env, snapshot);
-        distribution = snapshot.filter((row) => row.symbol === symbol && row.dataDate >= start && row.dataDate <= datasetEnd);
+        const latest = await singleFlight(`tdcc:market-snapshot:${[...eligibility.eligibleSymbols].sort().join(",")}`, () => fetchTdccLatestOfficial({ eligibleSymbols: eligibility.eligibleSymbols, fetchImpl }));
+        const snapshot = latest.rows;
+        const cachedLatest = distribution.reduce((date, row) => row.dataDate > date ? row.dataDate : date, "");
+        if (latest.dataDate > cachedLatest && snapshot.length) {
+          if (env.DB) await persistTdccDistributionRows(env, snapshot, latest.source === "csv" ? "official-csv" : "official-openapi");
+          const byDate = new Map(distribution.map((row) => [row.dataDate, row]));
+          for (const row of snapshot) if (row.symbol === symbol) byDate.set(row.dataDate, row);
+          distribution = [...byDate.values()].sort((a, b) => a.dataDate.localeCompare(b.dataDate));
+        }
+        distribution = distribution.filter((row) => row.symbol === symbol && row.dataDate >= start && row.dataDate <= datasetEnd);
         availability[dataset] = {
           status: distribution.length > 1 ? "available" : distribution.length ? "partial" : "unavailable",
           reason: distribution.length > 1 ? "available" : "history_not_archived",

@@ -40,6 +40,7 @@ import {
 } from "./instrument-catalog";
 import { isEligibleTaiwanEquity, isEligibleWatchlistTaiwanEquity } from "./taiwan-stock-chip";
 import { handleTaiwanStockChipRequest, ingestTdccDistributionSnapshot, prewarmTaiwanStockChipSymbol } from "./taiwan-stock-chip-service";
+import { fetchTdccLatestOfficial } from "./tdcc-latest-source";
 import {
   completeTdccBackfillWeek,
   failTdccBackfillWeek,
@@ -1266,32 +1267,8 @@ function authorizedTdccContinuous(request: Request, env: Env) {
     && internalAuthorization(request) === `Bearer ${env.TDCC_CONTINUOUS_BACKFILL_SECRET}`;
 }
 
-let tdccLatestSnapshotInflight: Promise<unknown[]> | null = null;
-
-async function fetchTdccLatestSnapshot() {
-  if (tdccLatestSnapshotInflight) return tdccLatestSnapshotInflight;
-  tdccLatestSnapshotInflight = (async () => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), TDCC_CONTINUOUS_CONTRACT.requestTimeoutMs);
-    try {
-      const response = await fetch(TDCC_CONTINUOUS_CONTRACT.latestOpenDataUrl, { signal: controller.signal, headers: { accept: "application/json" } });
-      if (response.status === 429) throw new Error("rate_limited");
-      if (!response.ok) throw new Error("provider_unavailable");
-      const payload = await response.json();
-      if (!Array.isArray(payload) || payload.length < 1000 || payload.length > 250000) throw new Error("invalid_response");
-      return payload;
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") throw new Error("timeout");
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-    }
-  })();
-  try {
-    return await tdccLatestSnapshotInflight;
-  } finally {
-    tdccLatestSnapshotInflight = null;
-  }
+async function fetchTdccLatestSnapshot(symbols: ReadonlySet<string>) {
+  return fetchTdccLatestOfficial({ eligibleSymbols: symbols, timeoutMs: TDCC_CONTINUOUS_CONTRACT.requestTimeoutMs });
 }
 
 function chipBackfillWorkflowResult(orchestrator: unknown, done: boolean) {
@@ -1372,8 +1349,8 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
         await startTdccContinuousRun({ db: env.DB, runId, trigger: trigger === "workflow_dispatch" ? "workflow_dispatch" : "schedule" });
         const symbols = await activeTdccContinuousSymbols(env.DB);
         if (!symbols.length) throw new Error("invalid_response");
-        const payload = await fetchTdccLatestSnapshot();
-        const result = await ingestTdccDistributionSnapshot({ env, payload, eligibleSymbols: new Set(symbols), fetchedAt: new Date().toISOString() });
+        const latest = await fetchTdccLatestSnapshot(new Set(symbols));
+        const result = await ingestTdccDistributionSnapshot({ env, payload: latest.payload, eligibleSymbols: new Set(symbols), fetchedAt: new Date().toISOString(), transport: latest.source === "csv" ? "official-csv" : "official-openapi" });
         if (result.dataDates.length !== 1) throw new Error("invalid_response");
         const saved = await env.DB.prepare("SELECT d.symbol FROM taiwan_stock_shareholder_distribution d INNER JOIN tdcc_continuous_symbols s ON s.symbol=d.symbol AND s.active=1 WHERE d.data_date=? ORDER BY d.symbol").bind(result.dataDates[0]).all<SymbolRow>();
         await recordTdccLatestSnapshot({ db: env.DB, runId, dataDate: result.dataDates[0], symbols: (saved.results || []).map((row) => row.symbol) });
@@ -1461,12 +1438,17 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       await refreshTdccContinuousTargets(request, env);
       const symbols = await activeTdccContinuousSymbols(env.DB);
       if (!symbols.length) throw new Error("invalid_response");
-      const payload = await fetchTdccLatestSnapshot();
-      const result = await ingestTdccDistributionSnapshot({ env, payload, eligibleSymbols: new Set(symbols), fetchedAt: new Date().toISOString() });
+      const latest = await fetchTdccLatestSnapshot(new Set(symbols));
+      const current = await env.DB.prepare("SELECT MAX(d.data_date) AS latest FROM taiwan_stock_shareholder_distribution d INNER JOIN tdcc_continuous_symbols s ON s.symbol=d.symbol AND s.active=1").first<{ latest: string | null }>();
+      const sameDate = await env.DB.prepare("SELECT COUNT(*) AS count FROM taiwan_stock_shareholder_distribution d INNER JOIN tdcc_continuous_symbols s ON s.symbol=d.symbol AND s.active=1 WHERE d.data_date=?").bind(latest.dataDate).first<{ count: number }>();
+      if (current?.latest && (latest.dataDate < current.latest || (latest.dataDate === current.latest && Number(sameDate?.count || 0) >= symbols.length))) {
+        return json({ ok: true, source: latest.source, dataDates: [latest.dataDate], observedDates: latest.observedDates, failures: latest.failures, unchanged: true, latestSavedDate: current.latest });
+      }
+      const result = await ingestTdccDistributionSnapshot({ env, payload: latest.payload, eligibleSymbols: new Set(symbols), fetchedAt: new Date().toISOString(), transport: latest.source === "csv" ? "official-csv" : "official-openapi" });
       if (result.dataDates.length !== 1) throw new Error("invalid_response");
       const saved = await env.DB.prepare("SELECT d.symbol FROM taiwan_stock_shareholder_distribution d INNER JOIN tdcc_continuous_symbols s ON s.symbol=d.symbol AND s.active=1 WHERE d.data_date=? ORDER BY d.symbol").bind(result.dataDates[0]).all<SymbolRow>();
       const snapshot = await recordTdccLatestSnapshot({ db: env.DB, runId, dataDate: result.dataDates[0], symbols: (saved.results || []).map((row) => row.symbol) });
-      return json({ ok: true, source: "tdcc-official-openapi-1-5", ...result, snapshot, health: await readTdccContinuousHealth(env.DB) });
+      return json({ ok: true, source: latest.source, observedDates: latest.observedDates, failures: latest.failures, ...result, snapshot, health: await readTdccContinuousHealth(env.DB) });
     }
     if (action === "chip-targets") {
       await refreshTdccContinuousTargets(request, env);

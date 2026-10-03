@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { tdccFixture } from "./fixtures/taiwan-stock-chip.mjs";
 import {
   CONTROL_PLANE_TIMEOUT_MS,
   createTdccHistorySession,
@@ -105,6 +106,7 @@ test("continuous runner 不接受固定 symbol，並限制 claim 與總時間", 
   const parsed = parseRunnerArgs(["--continuous", "--claim-limit=4", "--chip-warm-limit=40", "--max-run-ms=1200000", "--run-id=gha-123-1", "--trigger=schedule"]);
   assert.equal(parsed.continuous, true);
   assert.equal(parseRunnerArgs(["--history-only"]).historyOnly, true);
+  assert.equal(parseRunnerArgs(["--continuous", "--latest-only"]).latestOnly, true);
   assert.equal(parsed.claimLimit, 4);
   assert.equal(parsed.chipWarmLimit, 40);
   assert.equal(parsed.maxRunMs, 1200000);
@@ -114,6 +116,29 @@ test("continuous runner 不接受固定 symbol，並限制 claim 與總時間", 
   assert.throws(() => parseRunnerArgs(["--continuous", "--claim-limit=5"]), /claim-limit/);
   assert.throws(() => parseRunnerArgs(["--continuous", "--chip-warm-limit=41"]), /chip-warm-limit/);
   assert.throws(() => parseRunnerArgs(["--continuous", "--max-run-ms=30000"]), /max-run-ms/);
+});
+
+test("latest-only 早期時槽只刷新最新週次，不啟動歷史 claim 或籌碼預熱", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalSecret = process.env.TDCC_CONTINUOUS_BACKFILL_SECRET;
+  process.env.TDCC_CONTINUOUS_BACKFILL_SECRET = "test-only-secret";
+  const actions = [];
+  globalThis.fetch = async (_input, init = {}) => {
+    const body = init.body ? JSON.parse(String(init.body)) : null;
+    actions.push(body?.action || "control");
+    if (!body) return Response.json({ ok: true, historyAutomationEnabled: true });
+    if (body.action === "refresh-latest") return Response.json({ ok: true, unchanged: true, source: "csv", dataDates: ["2026-10-02"] });
+    if (["start-run", "finish-run"].includes(body.action)) return Response.json({ ok: true });
+    throw new Error("unexpected_source_request");
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalSecret === undefined) delete process.env.TDCC_CONTINUOUS_BACKFILL_SECRET;
+    else process.env.TDCC_CONTINUOUS_BACKFILL_SECRET = originalSecret;
+  });
+  const result = await runContinuousBackfill(parseRunnerArgs(["--continuous", "--latest-only", "--site-url=http://127.0.0.1:5174", "--run-id=latest-noop"]));
+  assert.equal(result.noOp, true);
+  assert.deepEqual(actions, ["control", "start-run", "refresh-latest", "finish-run"]);
 });
 
 test("history-only runner 在 queue probe 無工作時不建立 run、claim 或 TDCC 歷史 session", async (t) => {
@@ -153,12 +178,14 @@ test("日籌碼預熱錯誤摘要只輸出 allowlist reason", () => {
   assert.equal(safeChipWarmReason(new Error("unexpected upstream body token=hidden")), "provider_unavailable");
 });
 
-test("runner 先以最新官方 OpenAPI 確認目標代號，舊週才可保留缺值", async () => {
-  const rows = Array.from({ length: 1000 }, (_, index) => ({ "證券代號": String(1000 + index) }));
-  rows.push({ "證券代號": "2330  " }, { "證券代號": "00981A" });
-  const fetchImpl = async () => new Response(JSON.stringify(rows), { status: 200, headers: { "content-type": "application/json" } });
+test("runner 以最新官方 CSV／JSON 確認目標代號，舊週才可保留缺值", async () => {
+  const targetRows = [tdccFixture, tdccFixture.map((row) => ({ ...row, "證券代號": "00981A" }))].flat();
+  const rows = [...targetRows, ...Array.from({ length: 58 }, (_, index) => tdccFixture.map((row) => ({ ...row, "證券代號": String(1000 + index) }))).flat()];
+  const header = "資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%";
+  const csv = `${header}\n${rows.map((row) => [row["\uFEFF資料日期"], row.證券代號, row.持股分級, row.人數, row.股數, row["占集保庫存數比例%"]].join(",")).join("\n")}`;
+  const fetchImpl = async (url) => String(url).includes("getOD.ashx") ? new Response(csv) : Response.json(rows);
   assert.deepEqual(await verifyCurrentOfficialSymbols(["2330.TW", "00981A.TW"], fetchImpl), ["2330.TW", "00981A.TW"]);
-  await assert.rejects(verifyCurrentOfficialSymbols(["MISSING.TW"], fetchImpl), /官方最新資料找不到目標代號/);
+  await assert.rejects(verifyCurrentOfficialSymbols(["MISSING.TW"], fetchImpl), /invalid_response/);
 });
 
 test("runner 以官方上市日 metadata 保留新 ETF 上市前缺值", () => {

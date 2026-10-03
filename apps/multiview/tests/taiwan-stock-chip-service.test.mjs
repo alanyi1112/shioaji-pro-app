@@ -7,6 +7,16 @@ import { holdingFixture, institutionalFixture, marginFixture, tdccEtfFixture, td
 const eligible = { eligible: true, symbol: "2330.TW", exchange: "TWSE", eligibleSymbols: new Set(["2330.TW"]) };
 const etfEligible = { eligible: true, symbol: "00919.TW", exchange: "TWSE", quoteType: "ETF", eligibleSymbols: new Set(["00919.TW"]) };
 
+function tdccMarketFetch(fixture, onRequest = () => {}) {
+  const market = [fixture, ...Array.from({ length: 59 }, (_, index) => fixture.map((row) => ({ ...row, "證券代號": String(1000 + index) })))].flat();
+  const header = "資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%";
+  const csv = `${header}\n${market.map((row) => [row["\uFEFF資料日期"], row["證券代號"], row["持股分級"], row["人數"], row["股數"], row["占集保庫存數比例%"]].join(",")).join("\n")}`;
+  return async (input) => {
+    onRequest(input);
+    return String(input).includes("getOD.ashx") ? new Response(csv) : Response.json(market);
+  };
+}
+
 class ChipStatement {
   constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
   bind(...args) { this.args = args; return this; }
@@ -198,7 +208,7 @@ test("TDCC coverage 安全回傳官方計畫、完整缺週數、bounded dates �
   db.dispatches.set("2330.TW", { symbol: "2330.TW", status: "unavailable", deployment_target: "sites", requested_at: "2026-07-10T00:01:00Z", last_error_code: "dispatch_not_configured" });
   const result = await taiwanStockChipPayload({
     url: new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&interval=1d&start=2025-07-01&end=2026-07-10&datasets=shareholder-distribution"),
-    env: { DB: db }, eligibility: eligible, fetchImpl: async () => Response.json(tdccFixture), now: "2026-07-10T12:00:00Z",
+    env: { DB: db }, eligibility: eligible, fetchImpl: tdccMarketFetch(tdccFixture), now: "2026-07-10T12:00:00Z",
   });
   const coverage = result.body.coverage[0];
   assert.equal(coverage.savedWeeks, 1);
@@ -360,17 +370,15 @@ test("相同 symbol dataset range 的併發請求共用 FinMind single-flight", 
 
 test("TDCC 全市場快照共用 single-flight 且回傳大戶散戶級距結果", async () => {
   let calls = 0;
-  const fetchImpl = async () => {
+  const fetchImpl = tdccMarketFetch(tdccFixture, async () => {
     calls += 1;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    return Response.json(tdccFixture);
-  };
+  });
   const url = new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-07-01&end=2026-07-15&datasets=shareholder-distribution");
   const [first, second] = await Promise.all([
     taiwanStockChipPayload({ url, env: {}, eligibility: eligible, fetchImpl }),
     taiwanStockChipPayload({ url, env: {}, eligibility: eligible, fetchImpl }),
   ]);
-  assert.equal(calls, 1);
+  assert.equal(calls, 2);
   for (const result of [first, second]) {
     assert.equal(result.body.distributionRows.length, 1);
     assert.deepEqual(result.body.distributionRows[0].largeHolder.levelIds, [15]);
@@ -381,12 +389,12 @@ test("TDCC 全市場快照共用 single-flight 且回傳大戶散戶級距結果
 test("TDCC ETF 最新快照以 symbol + dataDate 冪等保存並逐週累積", async () => {
   const db = new ChipFakeD1();
   const url = new URL("http://local/api/taiwan-stock-chip?symbol=00919.TW&start=2026-07-01&end=2026-07-15&datasets=shareholder-distribution");
-  const first = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: etfEligible, fetchImpl: async () => Response.json(tdccEtfFixture) });
+  const first = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: etfEligible, fetchImpl: tdccMarketFetch(tdccEtfFixture) });
   assert.equal(first.body.distributionRows.length, 1);
   const state = db.states.get("__MARKET__:tdcc-1-5-v3|shareholder-distribution");
   state.last_success_at = "2026-01-01T00:00:00.000Z";
   const newer = tdccEtfFixture.map((row) => ({ ...row, "\uFEFF資料日期": "20260716" }));
-  const second = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: etfEligible, fetchImpl: async () => Response.json(newer) });
+  const second = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: etfEligible, fetchImpl: tdccMarketFetch(newer) });
   assert.deepEqual(second.body.distributionRows.map((row) => row.dataDate), ["2026-07-09"]);
   assert.equal(db.distribution.size, 2);
   const repeated = await taiwanStockChipPayload({ url, env: { DB: db }, eligibility: etfEligible, fetchImpl: async () => { throw new Error("should hit cache"); } });
@@ -842,7 +850,7 @@ test("不同 symbol 或 range 不共用 FinMind single-flight", async () => {
 
 test("TDCC 只有較新合法快照時明確回傳 history_not_archived", async () => {
   const url = new URL("http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-06-01&end=2026-06-30&datasets=shareholder-distribution");
-  const result = await taiwanStockChipPayload({ url, env: {}, eligibility: eligible, fetchImpl: async () => Response.json(tdccFixture) });
+  const result = await taiwanStockChipPayload({ url, env: {}, eligibility: eligible, fetchImpl: tdccMarketFetch(tdccFixture) });
   assert.deepEqual(result.body.availability["shareholder-distribution"], { status: "unavailable", reason: "history_not_archived", rowCount: 0 });
   assert.deepEqual(result.body.coverage[0], {
     dataset: "shareholder-distribution", start: null, end: null,

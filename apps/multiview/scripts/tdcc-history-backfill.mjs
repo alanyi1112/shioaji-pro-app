@@ -5,6 +5,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseTdccSnapshot } from "../worker/taiwan-stock-chip.ts";
+import { fetchTdccLatestOfficial } from "../worker/tdcc-latest-source.ts";
 
 export const TDCC_HISTORY_URL = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStock";
 export const TDCC_LATEST_OPEN_DATA_URL = "https://openapi.tdcc.com.tw/v1/opendata/1-5";
@@ -15,7 +16,7 @@ export const TDCC_LISTING_METADATA = Object.freeze({
 });
 export const DEFAULT_SITE_URL = "https://quote-chart-multiview.alanyi1112.chatgpt.site";
 const SYMBOL_PATTERN = /^[0-9A-Z]{4,8}\.(TW|TWO)$/;
-const CONTINUOUS_SAFE_ERRORS = new Set(["captcha_or_blocked", "candidate_mismatch", "history_automation_not_permitted", "invalid_response", "provider_unavailable", "rate_limited", "timeout"]);
+const CONTINUOUS_SAFE_ERRORS = new Set(["captcha_or_blocked", "candidate_mismatch", "history_automation_not_permitted", "invalid_response", "provider_unavailable", "rate_limited", "source_conflict", "timeout"]);
 
 export function safeContinuousRunnerError(value) {
   const raw = String(value instanceof Error ? value.message : value || "invalid_response");
@@ -68,6 +69,7 @@ export function parseRunnerArgs(argv) {
     maxRunMs,
     continuous: flags.has("continuous"),
     historyOnly: flags.has("history-only"),
+    latestOnly: flags.has("latest-only"),
     trigger: values.get("trigger") === "schedule" ? "schedule" : "workflow_dispatch",
     runId: values.get("run-id") || `gha-${process.env.GITHUB_RUN_ID || Date.now()}-${process.env.GITHUB_RUN_ATTEMPT || 1}`,
     headful: flags.has("headful"),
@@ -95,13 +97,7 @@ export function validateTargetSymbols(input) {
 }
 
 export async function verifyCurrentOfficialSymbols(symbols, fetchImpl = fetch) {
-  const response = await fetchImpl(TDCC_LATEST_OPEN_DATA_URL, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30000) });
-  if (!response.ok) throw new Error(response.status === 429 ? "rate_limited" : "provider_unavailable");
-  const payload = await response.json();
-  if (!Array.isArray(payload) || payload.length < 1000) throw new Error("invalid_response");
-  const codes = new Set(payload.map((row) => String(row?.["證券代號"] ?? row?.["證券代碼"] ?? "").trim()).filter(Boolean));
-  const missing = symbols.filter((symbol) => !codes.has(symbol.replace(/\.(TW|TWO)$/, "")));
-  if (missing.length) throw new Error(`官方最新資料找不到目標代號：${missing.join(",")}`);
+  await fetchTdccLatestOfficial({ eligibleSymbols: new Set(symbols), fetchImpl });
   return symbols;
 }
 
@@ -508,7 +504,11 @@ export async function runContinuousBackfill(options) {
     await continuousRequest(options.siteUrl, { action: "start-run", runId: options.runId, trigger: options.trigger });
     if (!options.historyOnly) {
       const latest = await continuousRequest(options.siteUrl, { action: "refresh-latest", runId: options.runId });
-      process.stdout.write(`${JSON.stringify({ event: "latest-refreshed", dataDate: latest.dataDates?.[0] || null, symbols: latest.symbols || 0 })}\n`);
+      process.stdout.write(`${JSON.stringify({ event: latest.unchanged ? "latest-unchanged" : "latest-refreshed", dataDate: latest.dataDates?.[0] || null, source: latest.source || null, observedDates: latest.observedDates || {}, symbols: latest.symbols || 0 })}\n`);
+      if (options.latestOnly) {
+        await continuousRequest(options.siteUrl, { action: "finish-run", runId: options.runId });
+        return { runId: options.runId, latestOnly: true, noOp: Boolean(latest.unchanged), dataDate: latest.dataDates?.[0] || null };
+      }
       try {
         const chipWarm = await warmWatchlistChipData(options);
         process.stdout.write(`${JSON.stringify({ event: "chip-warm-summary", ...chipWarm })}\n`);
