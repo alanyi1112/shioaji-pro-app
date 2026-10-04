@@ -1,0 +1,1489 @@
+{
+  "date": "2026-10-04",
+  "timezone": "Asia/Taipei",
+  "baseCommit": "b2cbb55bad93db740cccb48fe7714a87300b9bf4",
+  "groups": [
+    {
+      "name": "01-hygiene",
+      "commit": "d8c89ba637c892503dec16280225cc340af34f72",
+      "files": [
+        {
+          "path": ".gitignore",
+          "sha256": "843ad2edce1df90e1035ecbeedfcfb380d6ee1538fbd985e8ebb39ad3d353232"
+        }
+      ]
+    },
+    {
+      "name": "02-market-core",
+      "commit": "2f67e550e9f89f26d4924eaa087223045641eefd",
+      "files": [
+        {
+          "path": "src/components/candle-chart.css.ts",
+          "sha256": "75fed65f84b1756b3d9c5451bdf37d445953720329cdb7a447ede0b75cea6b79"
+        },
+        {
+          "path": "src/components/candle-chart.tsx",
+          "sha256": "40ec00eb57f5f4490c83c643227d43d5ed8bbff6f6e4b60845fa36049a82bb3e"
+        },
+        {
+          "path": "src/lib/api.ts",
+          "sha256": "f1ff79322a3703be7cd639a37d8f2464b85f0ff436532d77c3d4565c70d7fe0d"
+        },
+        {
+          "path": "src/lib/chart-kbar-memory-cache.test.ts",
+          "sha256": "3f56fe836e992353fa0fa78606bc2fca8b822eb05f9adfbbeaa14e50f2f7317f"
+        },
+        {
+          "path": "src/lib/chart-kbar-memory-cache.ts",
+          "sha256": "2f44a002665390359fa318cc72e2579371c804e3a3265bcf6eb30aec3757ba57"
+        },
+        {
+          "path": "src/lib/contracts-cache.test.ts",
+          "sha256": "7867cf042fd12a60be7f8ba80438eb383d7f7e65497d10a9c24dda3616892930"
+        },
+        {
+          "path": "src/lib/contracts-cache.ts",
+          "sha256": "85e056049efd017539ad852a6e4972a93e61c9f42134e77b56fee1b9f3e24736"
+        },
+        {
+          "path": "src/lib/shared-event-source-worker.test.ts",
+          "sha256": "8ccd29c8a3989b628fbd7bb44afbfa1a44303cd0644001380fe90b12bd1aed87"
+        },
+        {
+          "path": "src/lib/shared-event-source-worker.ts",
+          "sha256": "186bcb7d50fad2b986fb55b76fb8abc639b7e3640cd12874ea4ee4e48a8db28c"
+        },
+        {
+          "path": "src/lib/shared-event-source.test.ts",
+          "sha256": "faf0d78df77b664335bae8183374d6e32691ebdf6d301ba72a6a6524c245a1c9"
+        },
+        {
+          "path": "src/lib/shared-event-source.ts",
+          "sha256": "761283adbbfadaecfb28bdf50aaa57377e0cd297628a2b45eab68cf165703b28"
+        },
+        {
+          "path": "src/lib/shioaji-kbar-dedupe.test.ts",
+          "sha256": "badfe941acccfffe5b6147a8638ec899922fd837adf74e6c42b30881807ade9f"
+        },
+        {
+          "path": "src/lib/shioaji.ts",
+          "sha256": "b59d3dee54dd5b9b4c896e204cb0b269948690823d074b4f9e80e5cd02060ecf"
+        },
+        {
+          "path": "src/lib/stream-generation.test.ts",
+          "sha256": "699c4afffc4be18ed132384ffb1adfd7211d787fa3234acf45fa30b242f449a6"
+        },
+        {
+          "path": "src/lib/stream.ts",
+          "sha256": "fe258bb1aa622aef9bb2a644c6c3f5e321041b3f390e9e3be6aeb476b59e5deb"
+        },
+        {
+          "path": "src/lib/utils/kbars.test.ts",
+          "sha256": "b3d26c004c924b2fb0a3c0066c115b8f843d3f4d9483a0e634d49d9cd2b83e83"
+        },
+        {
+          "path": "src/lib/utils/kbars.ts",
+          "sha256": "c0d8a33f5d614f8d1554ac321080fa589197177cd075a629e0c4e8e8c36c59d9"
+        }
+      ]
+    },
+    {
+      "name": "03-tick-tape",
+      "commit": "c32dd2693662522523b28a03c3e77f6eb48632a7",
+      "files": [
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/.openspec.yaml",
+          "sha256": "cf5360f31deed84738022ca9c3a2083e4a5b799c20222b896b83cca22d874996"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/design.md",
+          "sha256": "78b1815e306fddafa25648f7c808d90b295795cbcf9b226e4b70ecf8aee05af3"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/proposal.md",
+          "sha256": "4720bd9c70f6274ef60d0a5ca9d645a87ea90549bdd9a2f5505bd773c53896d9"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/specs/tick-tape-price-volume-distribution/spec.md",
+          "sha256": "6cf72569d37f6b83cb6e30a0751f8b61ffea4cb9d126fc8f1ce2ea38091890e2"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/tasks.md",
+          "sha256": "35b7d8cb887e86b2892bdbb461b5aad310c703918e9cf5f5da87c13561e375ba"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/verification.md",
+          "sha256": "a9fd6d87ebdedd55ee90f09cb7bbfd77ba307b47b17405763bad5ca849cc01ca"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-price-volume-distribution/verification/live-2026-10-01.md",
+          "sha256": "0cc699b198947f85cd4a25f629f7aabf337dc65b176a54509797a4dd46ce3adb"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/.openspec.yaml",
+          "sha256": "cf5360f31deed84738022ca9c3a2083e4a5b799c20222b896b83cca22d874996"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/design.md",
+          "sha256": "30c278ec6998b66079e1f27320ebf9af8fd4648b9d4c4683c3bf76df199d32d8"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/proposal.md",
+          "sha256": "439efb0aedfbba44f8154e4a3b836d8a1a78fa564500a8f14648c73bf4b3d055"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/specs/tick-tape-realtime-money-flow/spec.md",
+          "sha256": "a2b35f1c629ecb3f9ddae57597db59e16f087eb08b0d4e25c9fe2b1c2cfd7199"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/tasks.md",
+          "sha256": "fd063bc36af68dd836a188f17cb87c21b82446b7e1772fed1892e870a0f5736c"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/verification.md",
+          "sha256": "28d3692a6ce88405bdd0bced7b12d91f724c50987c8095eab2fca3dcf59862d2"
+        },
+        {
+          "path": "openspec/changes/archive/2026-10-01-add-tick-tape-realtime-money-flow/verification/live-2026-10-01.md",
+          "sha256": "5f194c2c84ab4f8b4296ef5944ad9244b4e8ef6da0404c23d40e6fac8d5e575e"
+        },
+        {
+          "path": "openspec/specs/tick-tape-price-volume-distribution/spec.md",
+          "sha256": "56d0b98762064624a5eea29353d8ac7620289835e83c48c4cb91d578ab496bb7"
+        },
+        {
+          "path": "openspec/specs/tick-tape-realtime-money-flow/spec.md",
+          "sha256": "354c0cc3db033942c451fa419de79c4c70232b99b100bcc0e1e03f7ccf2b430c"
+        },
+        {
+          "path": "src/components/debug-panel.css.ts",
+          "sha256": "06e16204f2049f39b672949bb61b5d5fc5eadfa007df6734ebd38af19fb471da"
+        },
+        {
+          "path": "src/components/debug-panel.tsx",
+          "sha256": "0cbf2459f32ccfb86bc440b1c050a5cafe2b927a22773904b52aaac8e46e8104"
+        },
+        {
+          "path": "src/components/tick-tape-money-flow.tsx",
+          "sha256": "e7fec61a9920ac3958dde79671e416b380dd73f2de5b6ec56b2bf8a75ca868fa"
+        },
+        {
+          "path": "src/components/tick-tape-session.browser.test.ts",
+          "sha256": "872d8ade74f357cf6201b29f253a1b4bb84600ad99c6c238b65d510d55307473"
+        },
+        {
+          "path": "src/components/tick-tape.css.ts",
+          "sha256": "3c274485061c3fd092f663da32be98d013f9c61993000c07110cbaf44fd94432"
+        },
+        {
+          "path": "src/components/tick-tape.tsx",
+          "sha256": "6c8489ff639afe0d5e560ebb4a5420222fda4129e6b7510b8ede2c4f724aa61b"
+        },
+        {
+          "path": "src/lib/tick-tape-money-flow.test.ts",
+          "sha256": "5273eb61ed62d2d54434759566a941a2a534b7669f63b3563bb87c4646c67708"
+        },
+        {
+          "path": "src/lib/tick-tape-money-flow.ts",
+          "sha256": "0cd5243c86b06d79cc1bd21546e88b5045b19a08217fb3ef09f97e4c69cc6322"
+        },
+        {
+          "path": "src/lib/tick-tape-price-volume.test.ts",
+          "sha256": "dc4cc2dfbf0f33abcf5e03d9a2c1ff6d0719420bfb9ac78d52c956b4ec7ee3fb"
+        },
+        {
+          "path": "src/lib/tick-tape-price-volume.ts",
+          "sha256": "030bb79b2c518777996af6854dadc71977eeb8f2ab269806131be65c00b8fdf7"
+        },
+        {
+          "path": "src/lib/tick-tape-repository.ts",
+          "sha256": "08287c926ba303f1fcb7bce0055801c6656351a50716b06542510cbde975b152"
+        },
+        {
+          "path": "src/lib/tick-tape-session.test.ts",
+          "sha256": "0f16d1b357c0a9f59ff61e755c12b1a6901159885eaad41f658564a5ff500e16"
+        },
+        {
+          "path": "src/lib/tick-tape-session.ts",
+          "sha256": "677c64fda7f556815ab84038252070f00c7a8cfb02a111be395e28afb4bb3a23"
+        },
+        {
+          "path": "src/lib/tick-tape-source-verification.test.ts",
+          "sha256": "e6abe562289e81af391738cb1ff99d73155c33db321efbad69a7795da24bcf33"
+        },
+        {
+          "path": "src/lib/tick-tape-source-verification.ts",
+          "sha256": "bb38314f1f0fa1cdddab97659ac37ddf81b60983fd48fe8184a6b0b076174a87"
+        },
+        {
+          "path": "src/lib/use-tick-tape-session.browser.test.ts",
+          "sha256": "1cb2d33202230206be38bda97a50aaa5cc111d426e98118670852218b0ceca26"
+        },
+        {
+          "path": "src/lib/use-tick-tape-session.ts",
+          "sha256": "f22755c0b43ccc24056f5e9c232a4700ec48c3bf4eff5ce1e5cf4353d78a94c6"
+        }
+      ]
+    },
+    {
+      "name": "04-monitor-runtime",
+      "commit": "31ac6c86a17bbb3e68c124f48b46f1626840d1f7",
+      "files": [
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/.openspec.yaml",
+          "sha256": "5d113f7d56015df3c7cad21b6f5da445ffbc4edc2785a2391465abec93ac5afc"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/design.md",
+          "sha256": "b68afd0a59aef5ed6292392eea0976af9c7774d7135b11dca05dad701b444c03"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/proposal.md",
+          "sha256": "95e69edc6584773fbb71e6670cc5d84731267bb47eefdc6309b6097bdf944d0e"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/specs/intraday-monitor-postclose-tail-recovery/spec.md",
+          "sha256": "0d68defb573bd411ed2059c2574a7d6f1ce49ece99b29731ab86c9eb7d3af044"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/specs/intraday-stock-selection-workspace/spec.md",
+          "sha256": "20cf99c35fd205df05630ec2201bda4d264e804738ecd9ed73e9bb878b99386e"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/tasks.md",
+          "sha256": "71045582c75724097689433c224a812a25ee07bcde3f02632ea9846d822a845d"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/verification/offline-implementation-2026-10-02.md",
+          "sha256": "aee944806410f1ef802e78e22d5755af484ff8c1556709014934630ee2aa810e"
+        },
+        {
+          "path": "openspec/changes/automate-intraday-monitor-postclose-tail-recovery/verification/source-contract-audit-2026-10-02.md",
+          "sha256": "c921d5ef49de11aec42df3ce0fa7d92133924fc63340b926a970865e7e48d95f"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/.openspec.yaml",
+          "sha256": "cf5360f31deed84738022ca9c3a2083e4a5b799c20222b896b83cca22d874996"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/acceptance/implementation-verification-2026-09-22.md",
+          "sha256": "c8e9559fd13d54b48d5431a2015e71eea8d9b8e3abed531e004ea789d7831c42"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/acceptance/live-2026-10-01.md",
+          "sha256": "6a7ad4fa5697dc7a7b31119d31d07affb73dd31565c4defecbf6bbd9aae0af19"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/acceptance/live-2026-10-02.md",
+          "sha256": "4e84eec855a64a17e9dcc4cbcc8654c4e7e0c5c463c1f220c3c3beccfd5051d5"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/acceptance/runtime-verifier-metadata.json",
+          "sha256": "81120dcd407dd0a5242dc1561a33479afe22dda43a47a38fb6280f32d18fbe0b"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/design.md",
+          "sha256": "849903db7cedb4e09f8caa64dbd388ff177eaa43e585442d2951034bdf89e64e"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/proposal.md",
+          "sha256": "bd5fb1d10755e6ee9ff821774e49420150fe7b246e4c096e5a2acb0a988f4c65"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/specs/intraday-monitor-premarket-readiness/spec.md",
+          "sha256": "77ab90197e765e7ca0f2bf373a4f425c9bc53d1255c2120df95639c6ba701428"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/specs/intraday-monitor-tiered-capacity-evaluation/spec.md",
+          "sha256": "4158540498deb2625b6b12e75af496aa1a7132393f6e27297547b03eb0ebdfef"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/specs/intraday-relative-volume-monitor/spec.md",
+          "sha256": "993a4a3ebf4239e605b4f29593d4ac9e7ff5489178e444f7a770875a8bfbe943"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/specs/intraday-stock-selection-workspace/spec.md",
+          "sha256": "abd006ebf4fef6e72d984360cb02ded71416fc91fdcc78a7c3fc81867c1dae70"
+        },
+        {
+          "path": "openspec/changes/repair-intraday-monitor-daily-rollover-and-status-truthfulness/tasks.md",
+          "sha256": "e9f917e8f80d210e3bbff417b76e3439873634dd96c6375a6b35b602e59a2446"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/.openspec.yaml",
+          "sha256": "5edc88a042fdda2550686e54689bdd6779b13445bcaf782a1af9426634b9b4fb"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/design.md",
+          "sha256": "f893baa39b84f1c0d2006dd4c2d7b0725e319871bf3eefcab8dabf544d190cac"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/proposal.md",
+          "sha256": "da475eb2bc6d3c88cf9c43e63c5ebb2910aedac529bb1cab5c39a396cec99f79"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/specs/intraday-monitor-premarket-readiness/spec.md",
+          "sha256": "e43529e85bd0479e3d7fc3459cab7ab659d475d17e0d6bd98857d9dce4533482"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/specs/intraday-monitor-tiered-capacity-evaluation/spec.md",
+          "sha256": "f0cfdf80865cec9f5b45565b4eb77946c5cc7031f8e1a4eeae0ada7701cb963e"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/specs/intraday-relative-volume-monitor/spec.md",
+          "sha256": "5a86fc8ac318ae722a90222504e6b24abefa683399f693f14681e89d38063819"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/specs/intraday-stock-selection-workspace/spec.md",
+          "sha256": "edce6e17662e31f4626b2226c339fcc93c71355bb3cbcfb93d9e6df73ca2ad9a"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/tasks.md",
+          "sha256": "0e815a343d7c31de175022ba3cd501ba62e400badc74503b82ef5f19c9f34515"
+        },
+        {
+          "path": "openspec/changes/support-dynamic-intraday-monitor-cohorts/verification.md",
+          "sha256": "5f4d0096581d35a29fc86271588c630327a363adb54f1440a825d585bb3a2a39"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/.openspec.yaml",
+          "sha256": "dadfffd827282f22738d1215a8fa326bc6e3bda0a2aae3e3af6d203a1ef4c4aa"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/acceptance/implementation-verification-2026-09-30.md",
+          "sha256": "b2f6ff44e7483de49ce778b7becfea3445c866d7b811a98187bf2f682e83349e"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/design.md",
+          "sha256": "de1d1655a94e9cf8606d93fa4461d80deea23b83e650abb12674d53297d1cc82"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/proposal.md",
+          "sha256": "14220e4a18ce0cd6bda275f94f103572cb48b31f5a6890a946939ed85ec55b14"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/specs/intraday-monitor-premarket-readiness/spec.md",
+          "sha256": "7180d5f66193c0ed62766a55c5eb574cb0e178cb4dfab504ce208e4e01556ef6"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/specs/intraday-relative-volume-monitor/spec.md",
+          "sha256": "89dc8ff3633479f1340c810add3eb2c4127bf2142f80b977a506367ef7281113"
+        },
+        {
+          "path": "openspec/changes/support-intraday-monitor-late-boot-premarket-catchup/tasks.md",
+          "sha256": "b73364be73b7374760e58e3925634468d95065741d7f82fc4b138627fa40a934"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/audit-dynamic-daily-baseline.mjs",
+          "sha256": "2bf6d5516b27fb2b3d3d206e04ab376c02024626983154da03d95506f330ccd1"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/audit-monitor-failures.mjs",
+          "sha256": "21117dcb226af6d25453620e7234cf55aaf22504767c3bc8872f68e7a32e06c2"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/audit-monitor-failures.test.mjs",
+          "sha256": "4e4771d4eb39c86889d6c89c0a80bbce0ae32061d9387996f37be0f78de490e5"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/baseline-bandwidth-budget.mjs",
+          "sha256": "dcce35e4a140e4882895374ff022ba91b02b582815a55142dcfae9e08d30bfc2"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/baseline-bandwidth-budget.test.mjs",
+          "sha256": "5b0e51d3907f6b4936a226b279935eb31bbf52ef2f52514afe0a50e18176043f"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/bounded-kbar-transport.mjs",
+          "sha256": "0d904d6ffde09bac8b826f59052117183a667966e4097a59b88ae7c22133990c"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/bounded-kbar-transport.test.mjs",
+          "sha256": "c69eecba19d4c84dbd603ddca6f570b914f4f7d19fab23b042a6ba0474e2bb47"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/capture-direct-160-stage.mjs",
+          "sha256": "f6423a43bf948af39f9daeabaa5a8142f35905de86b7e58ea780525e4773670b"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/capture-direct-160-stage.test.mjs",
+          "sha256": "37607bf5db78dc6fbc78a99508698dbc7b444a9192e4d0e5f67ea56041b3403e"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/collect-direct-160-baseline.py",
+          "sha256": "ab79eb1ca0c5cba46f49c70b722e5bb6f5f97e7af40613190516720de26cacac"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/collect-direct-160-baseline.test.py",
+          "sha256": "018241ba49c374e776b54896ab54cf4f37e9c5705f43fb09864205e504fd1120"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/config-repository.mjs",
+          "sha256": "3489646a5210b3aef03ffda6edb397c404ad251404629832de9ee13c1b9041d0"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/config-repository.test.mjs",
+          "sha256": "037d5bad1c6ff4d391055465ac4f3447ef42150be0d65e412a6dbfd7f2ebe1f5"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/current-session-authority.mjs",
+          "sha256": "f484dc333583194a74a212d2ac0c245709bd5834f792b5ae4567a47655d52231"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/current-session-authority.test.mjs",
+          "sha256": "c8b599778f946463e4206a4b2fd442010e3a5bb0d2df208511618424c4286cd0"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/daily-session-runtime-authority.mjs",
+          "sha256": "90bb607d8d55ac20bcef61c5084ace9f765abe0da9a2d019682c78ecdc7c7e51"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/direct-160-baseline.mjs",
+          "sha256": "fad391ab685a8362efcfde532c480043ca96244b208dc007aaef816db7022662"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/direct-160-baseline.test.mjs",
+          "sha256": "cf122597f89133fb8a2e3c14500ce292ae0f844a113f45d9dc4ad368bf73e051"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/direct-160-product-runtime.mjs",
+          "sha256": "be351c6714017407ce76e3cccb38574130a7895f8f649d9b291126df9cea21b1"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/direct-160-product-runtime.test.mjs",
+          "sha256": "a92af536325d3821cdc6082e514ef43733fe33c6c7528f42d6fb37ca81be8ed2"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/direct-160-tail-gap-review.mjs",
+          "sha256": "c4a11c74005c96403d286ba962ca8f6f21ed00d6feaac0ca08085e90bb5435c1"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/direct-160-tail-gap-review.test.mjs",
+          "sha256": "06de5a8f21c82a5680f1c9b7616eb4f57f7a197f94db23623f2e40db6068e070"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-baseline-delta-budget.mjs",
+          "sha256": "02fd18331a3af1b04b8203dbe65866d9395710b7103692ee40b0d5c8010830fd"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-baseline-delta-budget.test.mjs",
+          "sha256": "14cbcdc3103dcf861ec9653997c458388359df3b2ff7045adbcbf6b918350f5f"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-active-plan.mjs",
+          "sha256": "a5ff70ff3a81d4cc13c8562756d01e425104eddef81224b8729c5d04e9c98ced"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-admission.mjs",
+          "sha256": "bdfc80b44a723f0ea3a357cf0a6c029d9d00d08a3e70bc29ae6c2edbc36cc3e4"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-admission.test.mjs",
+          "sha256": "a05e283e03fcff326eb5b69e52fb292c99101916d2c34240ce14eb05d2c3dd08"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-baseline-api-port.mjs",
+          "sha256": "15bcb12e52db1342101a59751588f0847f7cafd7aed45ebbf5622b8a1166ea10"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-baseline-api-port.test.mjs",
+          "sha256": "36b4bbe430a1ed07211aa2ec1d5f52c4e32cb0637568324b5cd3afde5cd37ce4"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-baseline-delta-worker.mjs",
+          "sha256": "e4c8712262bac43df35d107e248b9e0f3f5997c435f6861d3c7b291630e4107e"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-baseline-delta-worker.test.mjs",
+          "sha256": "65e8d0e9e43c4a7c3ea7e8be6b41d69f570f6b61542cbd72f4efb80d5b943424"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-baseline-resolver.mjs",
+          "sha256": "6c5ce723cbf1dce51b384523ec93b40083b06b7a1576dd601459689bf7765f7c"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-baseline-resolver.test.mjs",
+          "sha256": "770aadc936c09ef06dc27f8da23121b9d677be3b533486c3803a70144b96c476"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-cohort-plan.mjs",
+          "sha256": "e906a57f2f9a47b23f556b1f599c6520ea6cba71f0ca096f3c999f928f1c6952"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-cohort-plan.test.mjs",
+          "sha256": "8af17fb7838ffb847fc92f58f9f613ac1d382f12aff1fb0d337f77ee65b0e373"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-live-stage.mjs",
+          "sha256": "b430453955efd21f941c1971d582d71109eee3042bdb623a4b3079864ef9bd36"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-live-stage.test.mjs",
+          "sha256": "2b8897341d8938a149298b11f26425e004e809ee78cbb8a09b6f5be2721dd1a3"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-observation-evaluator.mjs",
+          "sha256": "74c5b70836bbab7ea65166b2081fe7788761e8aec497ebb30ccbb477aaf08789"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-observation-evaluator.test.mjs",
+          "sha256": "8297cddbf7557e04c4659b1469808b3231febca4bef24a232daba78275cb41b9"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-postclose-preparer.mjs",
+          "sha256": "80371e3046d479bb39e8bb551c30b5c1b538532b340a66a4c6fcf943de2a952b"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-postclose-preparer.test.mjs",
+          "sha256": "bafe8673b7361b30e000a13afa9e67de536f045993de752cc773ab60718f9a98"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-premarket-gate.mjs",
+          "sha256": "15fa0fe79cb03ef86847088a9dca2e7bbe4da63dced5779c71494cd21726aeb5"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-premarket-gate.test.mjs",
+          "sha256": "b6ccfbf1177ec0b22572ea26ec518673610170428b9ccbef30cd74fa7e518ecd"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-premarket-orchestrator.mjs",
+          "sha256": "855c89d69db14bee690223911a922a7411f1553bbca4d60fdd6ea45863b20b58"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-revision-policy.mjs",
+          "sha256": "e82c720917f57983d87f5b7df5ff0b49b8d9c6250a36adfd4dda17b62c38142c"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-revision-policy.test.mjs",
+          "sha256": "901dde0b9518b2f7a7ed50addbe371d5b4329cc77510895e0ac82e3f359065cf"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-run-registry.mjs",
+          "sha256": "98a807845723fc7744d0985feaa42370165f7752b19cd2c520e5866269553d4c"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-run-registry.test.mjs",
+          "sha256": "d19673d7905d7a9815c7bc91e7ab436febd311238be9e602d8f3559cd41da29d"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-session-proof.mjs",
+          "sha256": "9fd320294ed0021d26621f8b3429c165ee0d560e663955b2d9ac33f06240865a"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-session-proof.test.mjs",
+          "sha256": "6e7fc3446c1d0a2ca3e2a86dd82e1284f4c167cd1de342ced6eefa9a04dbba0f"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-status-projection.mjs",
+          "sha256": "44c5249f0b862b7fb3e5d341dcf86fb9afba24943a54310abcbfa616f8d877de"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-status-projection.test.mjs",
+          "sha256": "69fc2dd5889cc1fdc59df1a1ecb639f24056617ecb4231ce331b4c6731cd3bab"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/dynamic-daily-storage.mjs",
+          "sha256": "6bca3c727796ff008b44b973f4a49767e86dbb84fd0c56aed91ad1addebc9cb1"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/fixtures/legacy-product-state-v1.mjs",
+          "sha256": "6dc46db7070b5ed6b9406a911bc9482c2d2c88ef3a4831a8ab8c849030244d89"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/install-daily-rollover-state.mjs",
+          "sha256": "c6e258537bd417b7f6b68cfb32e1c11ba4914c08846999f4af5962c89d744298"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/install-daily-rollover-state.test.mjs",
+          "sha256": "1d32e92ffda544cf9eb3cae225e6ee97897e21e675f6206e417df8579f8116c3"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/kbar-shadow-session-recorder.mjs",
+          "sha256": "b352b759a2d0379c300ada522a5a3f8a35443ac7cc1d2fa0dc5144ce16d89ad9"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/kbar-shadow-session-recorder.test.mjs",
+          "sha256": "4994d5f14e4e329b6cde9317f6de671a2d6cf0509516a1e6e3fee9bbf97b5e35"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/late-boot-catchup.mjs",
+          "sha256": "9f1b5ae9c91316b7fe0ad5fdd912834bcb83830e498fc0688974ee11a63a8277"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/late-boot-catchup.test.mjs",
+          "sha256": "1fbba52988cdbb482b83313f231d8daf7db7dd2d65b13a62a58340737ce08061"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/late-boot-policy.mjs",
+          "sha256": "486260accff240cefaae31fb4b0879eb6b4c4728ee98f09ddea4c4c87e910b34"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/late-boot-policy.test.mjs",
+          "sha256": "4de6769e374b87a0ba8679f68cc9edaaaba64120ffa081519950f3db2e2c891a"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/local-api-service.mjs",
+          "sha256": "c4731837ae7032b7745e213d56490d181415127f72da40c4736b692d19b580d9"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/local-api.test.mjs",
+          "sha256": "d9b2e8477f06f2abc91f2976633c14f77cbf368b9efd6928103ed2fdff4640a0"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/local-incident-alert.mjs",
+          "sha256": "b4cd1ee21263023a431d0ae6b7fb5b78217291068b84fcf7caa4d72486c2277a"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/local-incident-alert.test.mjs",
+          "sha256": "e1dd69cbe9b3921433583d4e09395d6a16c706bc7b4b2c4516a392b6759b2144"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/passive-chart-freshness-evidence.test.mjs",
+          "sha256": "c55ac84eba10486e90c2ddaae3a5c594527bd7b2ba41e62db3d63c521f4c589e"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/pilot-acceptance-bundle.test.mjs",
+          "sha256": "fb147450c45c057d13e37f533deaa7044b257dcd818464b5cf60c5a1371dcf0e"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-daily-baseline.mjs",
+          "sha256": "597f4a658c044432694f83b982c7bba29e3a41360150b0eaa830253b39b419e3"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-daily-baseline.test.mjs",
+          "sha256": "f1bdbdd0627e6c75531dfe050859bb311ec81d9c25dbd38bb385c011aa54e5e5"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-tail-recovery-core.mjs",
+          "sha256": "a4df35e14c6fc03de8768b5985f35ffec1c76b339f1cbedb769ffe9c9c4bd0f7"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-tail-recovery-core.test.mjs",
+          "sha256": "89cb432d7d52b67797eede602ca605076af1dc46277e831f7960da6df4a7a0d5"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-tail-recovery-view.mjs",
+          "sha256": "d33a886b3df80afc4e1a3f94ed0f4904458b75ce8f0cc48a418317c84749130d"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-tail-recovery-view.test.mjs",
+          "sha256": "516a29c899e305ea4dad56dca7a48a19f0b5060fa45dbe5b9fd2cd87ccb502dd"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/postclose-tail-recovery.mjs",
+          "sha256": "f3181192c11695f110a78003795cd312289877096c96fdb1499fe7a7e110ba16"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/premarket-capture-start-claim.mjs",
+          "sha256": "5387ad3f5a054f1ba379951c3ccac33298615d9600ce7ee88b729cf497b30608"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/premarket-capture-start-claim.test.mjs",
+          "sha256": "d06ae41936bdd74798604d31b948599bfb11492c5eaffb22f982b7fbef9770c0"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/premarket-daily-session.mjs",
+          "sha256": "7edf1702bb40db875102cd9b8ade9ab2ddd451e560511b4b044e2091deb07733"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/premarket-daily-session.test.mjs",
+          "sha256": "3a636afac66e27142f0323531b1690e6e2b64f41cc8a798c390ce4639f125fb5"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/premarket-orchestrator.mjs",
+          "sha256": "02011d18ee3a92747fe6b7f8e567823596eebccd4f12ac74349d851c0102ca42"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/premarket-orchestrator.test.mjs",
+          "sha256": "8f7fb6a96cfcd1dc347184430a233a90e49f6e3f41b22d72720f13c84e294709"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/recover-missed-0820-session.mjs",
+          "sha256": "b0d6f445e486aae181d42de32f3de23d7af2a7c01c18972166afd89fd9ba6399"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/runtime-artifact-bundle.mjs",
+          "sha256": "3b3f7807b51f9a0535eac28e0eb52c7b06cb52f5331b0e7942506aef3068c224"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/runtime-artifact-bundle.test.mjs",
+          "sha256": "7c66a0d5f4ca46fc3b557a6e536cb8d0935576e8c7b28870ac7467feebeeba45"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/session-state-repository.mjs",
+          "sha256": "9dd0554290323cd4cb18111392a5c063f0fa7e9bab199fda097357674415d017"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/session-state-repository.test.mjs",
+          "sha256": "d2615ef66ab99c2eb9ded04cb48deb97b0b5a84a3672bf7123d0235e12db3f90"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/tiered-capacity-stage-artifacts.mjs",
+          "sha256": "69e42668cd99e3817fdba2031eadc8051db9ff3125564e168d056d7bfbb5af99"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/tiered-capacity-stage-artifacts.test.mjs",
+          "sha256": "0579a9f4a6eeee86b22a7a40a7e314bec4ea3c8caf8fefd3a112a91d2fd70186"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/trading-calendar-authority.mjs",
+          "sha256": "205ea0159c8fa1ffc9a058268bf9e07ec4b55fca91d7fed39c9ef8e77ad23e89"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/trading-calendar-authority.test.mjs",
+          "sha256": "422baa35f69a51dc4fa4a25e9e05fb65d00b5a01d18ed2b92ca0427694d4ff41"
+        },
+        {
+          "path": "scripts/intraday-monitor-runtime/vite-local-api-gateway.mjs",
+          "sha256": "8ea06fa78d0173f76b0e952db1edee56fa0a04e4beaf3dc0f2d2fc9fb432bcd6"
+        }
+      ]
+    },
+    {
+      "name": "05-screener",
+      "commit": "12e5bf7eb7567a34d791d5001621964543924de2",
+      "files": [
+        {
+          "path": "apps/multiview/db/schema.ts",
+          "sha256": "e62170d024d09d9923b4ee64f62d6c93f66a1b162ccd7c17e1141a41578f0fcb"
+        },
+        {
+          "path": "apps/multiview/drizzle/0034_multiview_system_tab_memberships.sql",
+          "sha256": "c7aad253bbb4d541def00ce5f3d79cc1bfb601490b85dcecbcd99e12afcc8d07"
+        },
+        {
+          "path": "apps/multiview/drizzle/0035_screener_bollinger_history.sql",
+          "sha256": "ea55c2e0945f9a63a24770002a98d4d0b2f5ea9dc42f87a3951ea8774c3f0f83"
+        },
+        {
+          "path": "apps/multiview/drizzle/0036_screener_bollinger_publication.sql",
+          "sha256": "832b72868dfc28e4a9857a0207aa9948b5bf503a71012f80e6b03e16b6caadad"
+        },
+        {
+          "path": "apps/multiview/drizzle/0037_screener_daily_quotes_cache.sql",
+          "sha256": "6241a0dd1c1a8e001b35ce4b0a1751406c6cbe700af5176e7d8708649f7f074a"
+        },
+        {
+          "path": "apps/multiview/drizzle/0038_screener_source_selection.sql",
+          "sha256": "4e0bef842b08442fe1d1fde98b388ca547892fe145500d52baf823b583c1ed11"
+        },
+        {
+          "path": "apps/multiview/drizzle/0039_broker_bandwidth_reservations.sql",
+          "sha256": "6e449f4d0d36555ab2f2e637f501a920f6b90408042e99ae5380cb621dc4934d"
+        },
+        {
+          "path": "apps/multiview/drizzle/meta/_journal.json",
+          "sha256": "4b96cf1ca128de1fe22de8f10edda370c21ba0cb57dd60b70426752a3a7c20ea"
+        },
+        {
+          "path": "apps/multiview/tests/broker-bandwidth-reservations.test.mjs",
+          "sha256": "42371e1d87553215fa93b350f526a42718ef7a7c4f66fbab09bf86417043d9ba"
+        },
+        {
+          "path": "apps/multiview/tests/broker-local-conservative-ledger.test.mjs",
+          "sha256": "1d742bcc19e147ed0fbe0eb2a44452b2d4ce7ff9e814408f765ec464219e13b7"
+        },
+        {
+          "path": "apps/multiview/tests/helpers/bollinger-fallback.mjs",
+          "sha256": "a973a515e247f2caac25beace4d54d87ff6cc997492b246fb814d3b72d00e58d"
+        },
+        {
+          "path": "apps/multiview/tests/helpers/calendar-notices.mjs",
+          "sha256": "2d0d7a28533929999d3709a028d0726721fa4f0f20524a9ad8fc4678711a9ca1"
+        },
+        {
+          "path": "apps/multiview/tests/official-trading-session.test.mjs",
+          "sha256": "5f2267194516d248de11ba42834af401d6a8107d4381480fd13d840a4ed3b675"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-bollinger-live-audit.test.mjs",
+          "sha256": "614dc03d6de205bf3bbf6ecd01f5592aab3321eefdeb28418050bd0e01e9b543"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-bollinger-prepare.test.mjs",
+          "sha256": "78a481446750c6737a9ef6dddf229bce148de81380e007932e8327a2d01c1544"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-bollinger-retention.test.mjs",
+          "sha256": "faa169dc82b32f0e68cd6f4046ce63d2973f18a9aeb04c1498bbde7335926c81"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-bollinger-source-fetch.test.mjs",
+          "sha256": "c8a084a451c84ab3c172bfddd3879f355ee3a0707c94cad11a5f9d6400aa9306"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-broker-commitment-writer.test.mjs",
+          "sha256": "6d78a4fc373bcea6778fa94e98e73a7c77130e25dc997cc9d48595047866662a"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-broker-commitments.test.mjs",
+          "sha256": "f6a016b371afeceb87f0bec50169b98dabaaf46d4e9b9c275d176207b4bea6ce"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-broker-policy-review.test.mjs",
+          "sha256": "3d064a3e4e870cf05a772386b89b27d4e8e8706e5756d6137672edb14ecc36de"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-broker-ports.test.mjs",
+          "sha256": "727c85bbe681d0ad1376b142ec28c2a36c26478533a05228a6016200cc6b2390"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-calendar-exceptions.test.mjs",
+          "sha256": "02ccc7581216ce334ff0e67838b7a86f451995f3893a8366a2fcaa99f31434fe"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-fallback-publication.test.mjs",
+          "sha256": "b1522223c3788a163b40a0915cd2bd0b8ccfd97d9253b1d14ebafcd1ef2e3cc5"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-provider-prepare.test.mjs",
+          "sha256": "a1f75cf4d9f6139de338febe07a1652f6f02498cd9f3f8bc4cf1fb7bfe56d930"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-runtime-budget-producer.test.mjs",
+          "sha256": "33524fe5148e46bf0e2578e24572780ebca70662f4e7b89e25427e305c514f79"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-shioaji-daily-quotes.test.mjs",
+          "sha256": "a86b00fb75bd990d0b062a0d73b5df6729102dd8f5dcf851791444d6be36d932"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-source-calibration.test.mjs",
+          "sha256": "a9798180e24e8b6815d568c3672928cddf091aa6b2dce56e4627b5a1655ac52e"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-source-selection.test.mjs",
+          "sha256": "3b5ef93e7ab137cef22f9bcac56f8346e090ad3e46a1eb9e09bd71261504e597"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-v5-publisher-route.test.mjs",
+          "sha256": "4659244b0b228a087dd8d7504c174a4eab6f34a7a2094ff2cdc2a4dfb7886155"
+        },
+        {
+          "path": "apps/multiview/tests/stock-screener-v8-publication.test.mjs",
+          "sha256": "4604a24ec1a8823a08b25e8321d1d9d05048538ccf8156a6fb3c67aeecb5cfd8"
+        },
+        {
+          "path": "apps/multiview/worker/official-trading-session.ts",
+          "sha256": "d36f1709fef67136145b0f764f11cbe1a857362c60d8c77410a24eaa5ce7bffe"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-route.ts",
+          "sha256": "3eaffa79ebcdb248ba6d76ab9e3a0de6d3613be2896bef8a746a7a8a95c41ebc"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v7-publisher.ts",
+          "sha256": "8634e7eda26cfaf4b5734328f576fdf25b778a46888cd0110b9c9c70611f3135"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v7-repository.ts",
+          "sha256": "a3f3aa78b675e90b580ce0e1782d8ffdf497b4a7a332f96c8bbbbbe70d085000"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v7-route.ts",
+          "sha256": "efc31563a983767eb3f990dcb4163672e05aaa7f067344bc385dae445e78f4dc"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v8-legacy-join.ts",
+          "sha256": "5849032bad9d0afa2a132f86a425186cbe807698c457c501ead65b91ef4ffcb3"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v8-publisher.ts",
+          "sha256": "fd7cff32bacc6866d0176a61361bb9fc7cd4721a8af4e09d6423b298e7c8d39a"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v8-repository.ts",
+          "sha256": "8af5f0a75583a470b9efabdc2ee170198ebad4b43571c4994bc10af697ca078a"
+        },
+        {
+          "path": "apps/multiview/worker/stock-screener-v8-route.ts",
+          "sha256": "b515d778cc1a6c617a43a63a5bf6f66208976e9be2eb1a8511b78c8ea176a64a"
+        },
+        {
+          "path": "package.json",
+          "sha256": "afdd55128dcaee091ad818bc8f1af0c119a8394ba9fb90041d78f3611b37d0c0"
+        },
+        {
+          "path": "scripts/broker-bandwidth-reservations.mjs",
+          "sha256": "6a22e1d88210bc624e495dab11029717630ec7ba2456a4d1d0b7abe2fa3037cb"
+        },
+        {
+          "path": "scripts/broker-local-conservative-ledger.mjs",
+          "sha256": "59f01d96133c45dc3b7e3138272973c6dcc05daa6914b4e7d1b3d37a0247a163"
+        },
+        {
+          "path": "scripts/realtimestock-runtime",
+          "sha256": "6c1d60a1e4a4a67476fafcca3a2d6581e9c43329245f5711f43ca4bb0994c14f"
+        },
+        {
+          "path": "scripts/stock-screener-bollinger-calendar.ts",
+          "sha256": "063ffc17e9a3267a21a13328444c10af8e7431a3579bae4497f8157b69ce0e2c"
+        },
+        {
+          "path": "scripts/stock-screener-bollinger-live-audit.mjs",
+          "sha256": "0b4b38974ed7e9d994cc29944b512cd3dbe90f095f23027259b3b7ca204fafa4"
+        },
+        {
+          "path": "scripts/stock-screener-bollinger-local-readonly-check.mjs",
+          "sha256": "d6449d16ba563b50b81253dde0da9e47748b5d20daaa7d39f5cb7fed33b154b0"
+        },
+        {
+          "path": "scripts/stock-screener-bollinger-prepare.ts",
+          "sha256": "fcbe85d4c559d65bc4af1d7e673d9206455fbce09d7bcae73d7b59a822fb5044"
+        },
+        {
+          "path": "scripts/stock-screener-bollinger-schedule.ts",
+          "sha256": "38a717d18627df0df8ca58a44bee11914b667a2072c4f0d2a716476ab2fcb8eb"
+        },
+        {
+          "path": "scripts/stock-screener-bollinger-source-fetch.mjs",
+          "sha256": "f70a7392d8962875af6fdf3dfb84cb24d354044aa4b6f21388e319462783ff5d"
+        },
+        {
+          "path": "scripts/stock-screener-broker-commitments.mjs",
+          "sha256": "8cb1adb0f20fd4ec2953f04ae1f08770031a18cf14e1e6e565b70ae98bf1d1f1"
+        },
+        {
+          "path": "scripts/stock-screener-broker-policy-review.mjs",
+          "sha256": "64731f9cd30e449330ea453de0028f3e4b72c530b84f05c8de6a5d6c8e791fc8"
+        },
+        {
+          "path": "scripts/stock-screener-broker-ports.mjs",
+          "sha256": "1185fa8429240f3fd22fcecd8eb797c6ae476befe4df9544506d18e80366994c"
+        },
+        {
+          "path": "scripts/stock-screener-calendar-exceptions.ts",
+          "sha256": "b809ffb5eff989e1df5e792217991ae94cf6b507ab183f71901dd9eee5380d58"
+        },
+        {
+          "path": "scripts/stock-screener-chip-update.mjs",
+          "sha256": "ac1be7a9b47c2f4e0f349542e28f5d0c6a1e7d506467287d372f9f338705dab8"
+        },
+        {
+          "path": "scripts/stock-screener-gateway.mjs",
+          "sha256": "c4d5fdd3cefefcfcdb5c44c62376fcd58207eb3074add8e74ea6f2b346f0aabf"
+        },
+        {
+          "path": "scripts/stock-screener-ohlcv-bootstrap.mjs",
+          "sha256": "e833fa4b042843bc8da9f5fa1ab77c5c257cdc7627377b43573580d4a0cd17b9"
+        },
+        {
+          "path": "scripts/stock-screener-provider-prepare.mjs",
+          "sha256": "202ffcc474c4f4002c9808ba608aeb92e56ec9f76fe0a6e753cf6430c43ca35f"
+        },
+        {
+          "path": "scripts/stock-screener-runtime-budget-producer.mjs",
+          "sha256": "e3935ab24dfbe2be72edb0c8cf6907eed57c328d468737a149827b5a4a75ffb9"
+        },
+        {
+          "path": "scripts/stock-screener-shioaji-daily-quotes.mjs",
+          "sha256": "4da9d723b53ae4c578497a4b8054c1d316cba2ef684a4440d09ee9142bb4f89b"
+        },
+        {
+          "path": "scripts/stock-screener-source-calibration.mjs",
+          "sha256": "ab734df96e86a83cbfbfd1d3b98150213bd54b2e1666f93555c4b9abaa998ba0"
+        },
+        {
+          "path": "scripts/stock-screener-source-selection.mjs",
+          "sha256": "249f2c415cd71f0af6537c26ed84d6a9c1fab1adcd191fcb7254c3bf3ff2b925"
+        },
+        {
+          "path": "scripts/stock-screener-sqlite.mjs",
+          "sha256": "9578103322863a7cf229dd088154b07dd946787d85e7cb2fcdec0e7e8b872f8f"
+        },
+        {
+          "path": "scripts/stock-screener-update.mjs",
+          "sha256": "dd9d0d9655e645ab9a96b599aa337e439074fc71ff792b96c8e333f46811c54e"
+        },
+        {
+          "path": "scripts/stock-screener-v7-verify.mjs",
+          "sha256": "5f39643986b08fe733f7a5485353b49cc6b3a008bf69195caaf8883577c69ea8"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-bollinger-panel.browser.test.ts/------UI----fixture--------------------------------1.png",
+          "sha256": "dd42fce88bc75d596db381c40f3d5e59b6937a48e393c6290459009d321e189c"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-bollinger-panel.browser.test.ts/------UI----fixture---------------320px------------------------1.png",
+          "sha256": "dd42fce88bc75d596db381c40f3d5e59b6937a48e393c6290459009d321e189c"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-bollinger-panel.browser.test.ts/------UI----fixture---------daily-profile------------------------1.png",
+          "sha256": "2bf298a1e0a3c52507cb9e39f2c068bbf52a7b0d4c04bf685ecf3b81163460c9"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-bollinger-panel.browser.test.ts/------UI----fixture---------revision----------daily-profile-------------1.png",
+          "sha256": "608bcaf60b5bfb55d14b07bf368048504443214d051ac264e1a35262514d1754"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-bollinger-panel.browser.test.ts/------UI----fixture--320px-600px--32px-------------------------1.png",
+          "sha256": "e290c0a56d739ba666564915565825aa4fd1e9b1cb7b0dddca330953d1be9fc4"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-bollinger-panel.browser.test.ts/------UI----fixture--pending-------------------GET-------1.png",
+          "sha256": "79189eb558680587129e20cec849ccf78e91de63ef6abe1baef511c30a58e2e4"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture------------------------------1.png",
+          "sha256": "e77949ab5e982a0a3fe72bede9dc44448e35169ddaf0595c2ebe01a690915c18"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture----------------------------1.png",
+          "sha256": "68093c62844b91d28a703d0820beb18e9002b6d539fd2a0583bbf8ddc3ab7404"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture------------------------true------1.png",
+          "sha256": "e77949ab5e982a0a3fe72bede9dc44448e35169ddaf0595c2ebe01a690915c18"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture------------------------v6-----------1.png",
+          "sha256": "fad1eab8744f9afda5f63f74c285ac77510fef6b82d702a0bbe80f9db1e90a39"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture------------------v5-------------evidence-1.png",
+          "sha256": "d1ae8ea258ce70740053ea09740ce0e4310b7b070c3e5be725c9d280524f109c"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture------------------v5------------v6----1.png",
+          "sha256": "0b97b8071166c9f083ab9fa68b1a07060d438b0c763fd1e517794305a9f241a9"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture---------------v4---------P-D-pivot---hash----1.png",
+          "sha256": "e77949ab5e982a0a3fe72bede9dc44448e35169ddaf0595c2ebe01a690915c18"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture-------------editor--------------------1.png",
+          "sha256": "4b55cfc7119231b52fe216bc7919cc721f4e4dc5d3ed7ca34aec0e60aa3da69e"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture------------hover------------highlight---------1.png",
+          "sha256": "16b4588ecd6d20ec17ff368d1e73c2510ee1d8fdc14608114834b85b6bd97e3e"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture--------v5-------------v3------1.png",
+          "sha256": "97a40620ea5689beda403506208940e1b0198ad198b17792e44cea052239d71a"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture-----v1-----------------------v3-query-1.png",
+          "sha256": "e77949ab5e982a0a3fe72bede9dc44448e35169ddaf0595c2ebe01a690915c18"
+        },
+        {
+          "path": "src/components/__screenshots__/stock-screener-panel.browser.test.ts/--------fixture-----v2-----------------------------1.png",
+          "sha256": "756f5c5ac6994fc1c0e7c5dfe2212c82cedf5c596e70fc01032f2d8607f2ccee"
+        },
+        {
+          "path": "src/components/stock-screener-bollinger-editor.tsx",
+          "sha256": "2886c842e7b12b643a8aa7a37225d04d6d3ba908c779ecfed32232f78173fc5f"
+        },
+        {
+          "path": "src/components/stock-screener-bollinger-panel.browser.test.ts",
+          "sha256": "3b6fc8da5e254795bbd7aef402b8ae2d52209c7b6c64dce9e93d2545f31bf74f"
+        },
+        {
+          "path": "src/components/stock-screener-bollinger-results.tsx",
+          "sha256": "118e27bdba0ff98a38a3db367dc12368711b71729268928146a249608c662b16"
+        },
+        {
+          "path": "src/components/stock-screener-condition-accordion.tsx",
+          "sha256": "72156cad50f973c7700d58800633dff4945bea2fddad84f918cdfc99d4a126eb"
+        },
+        {
+          "path": "src/components/stock-screener-panel.browser.test.ts",
+          "sha256": "44f3e0252abfbead186175abc211f038a2e75501bf6dc71eba70d6a3869a3bac"
+        },
+        {
+          "path": "src/components/stock-screener-panel.css.ts",
+          "sha256": "875872feffed1c3d316a1e864892b1f07aba8d2ca6951cab0055f62919bc8f6e"
+        },
+        {
+          "path": "src/components/stock-screener-panel.tsx",
+          "sha256": "33823b250f74e5517686f6abc6f89977c5b8e3915e004de910029c325562cb1c"
+        },
+        {
+          "path": "src/lib/stock-screener-api.ts",
+          "sha256": "14f81372a984315370a1416ef9ff6dd4f1f6bf6ec86d129e1be148b256a586fa"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-api.test.ts",
+          "sha256": "a3ce7cc7a3b411ceb7338c08088c35ad9f218a642690ca0aaf33415697f48dbf"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-api.ts",
+          "sha256": "2bd7c741e1d8546134e6ffa2c5b860956e412b1cb635b0ceffe362998ff8578d"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-history.test.ts",
+          "sha256": "c75cda9017c96a801741c57e5e1b7597ec91db0cc934be94302a55c31ef899b6"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-history.ts",
+          "sha256": "7a06c05f87111cdde6d452ff837746f0e5aa85fad119ea5b3011d32b80f6afce"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-query.test.ts",
+          "sha256": "96def2e5363e0c0a9c9ed8349944e9ce3206c28366d3d91dd6c1ec553886c6d2"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-query.ts",
+          "sha256": "9bef7b93cb594bdc360bf82135486c019bef7d2435347341960edc6924fd0a98"
+        },
+        {
+          "path": "src/lib/stock-screener-bollinger-source.ts",
+          "sha256": "a357454f2c00505729236a3e5b155570abe38893f040e6e11e71bb64ac818dc9"
+        },
+        {
+          "path": "src/lib/stock-screener-condition-ui.test.ts",
+          "sha256": "e127430f74825859b804d7873fd861464005ea331570c883696429ca2f2f6c31"
+        },
+        {
+          "path": "src/lib/stock-screener-condition-ui.ts",
+          "sha256": "bd215f78af68e22b2356fece336e5a326693eefc3e8a94c2759efd9929edf912"
+        },
+        {
+          "path": "src/lib/stock-screener-gateway.test.ts",
+          "sha256": "bdf660ae803ef02fabf1940aa45133b3043efe2fd8643ceafae020ff502b1433"
+        },
+        {
+          "path": "src/lib/stock-screener-source-comparison.ts",
+          "sha256": "b9dfa004b3e103fb5bb05cad2eba7b90f57abe885f84f20eb317d754ba903335"
+        },
+        {
+          "path": "src/lib/stock-screener-source-evidence.ts",
+          "sha256": "795bf9023152b9ddddf14b4b33fe3d03c706197d9269cb790d96a6e62bafff60"
+        },
+        {
+          "path": "src/lib/stock-screener-technical-patterns.test.ts",
+          "sha256": "4f5b8a9756650599c021e7b79b8094978a6ba864bba6619508402be60a4a2ba8"
+        },
+        {
+          "path": "src/lib/stock-screener-technical-patterns.ts",
+          "sha256": "55803e1f47baf2d197c8166f566fb5a909f6730bbb14bab5c6e9c613db7ffd4b"
+        },
+        {
+          "path": "src/lib/stock-screener-v7.test.ts",
+          "sha256": "a206ec03c1ba56b9c44a8d4318a3b4c31d267d71670ebeacb293bb08e6d341ce"
+        },
+        {
+          "path": "src/lib/stock-screener-v7.ts",
+          "sha256": "11b671af91f33928ba683db385daca1eb78f745f338f183d5fbb9b4ebed71234"
+        },
+        {
+          "path": "src/lib/stock-screener-v8.test.ts",
+          "sha256": "d8146f01be86b18c663a8febc2b937fc0d3b528f3768e87f289b453f4eb9e417"
+        },
+        {
+          "path": "src/lib/stock-screener-v8.ts",
+          "sha256": "4be05ac7762f49e64700916cdec4956f22d3a69ba0ed358252b125873a488554"
+        },
+        {
+          "path": "src/lib/stock-screener-window.test.ts",
+          "sha256": "31c1273fa60799b52ccba5890d1a7b4abe6e505b13a000ac47af184ee925ecb7"
+        },
+        {
+          "path": "src/lib/stock-screener-window.ts",
+          "sha256": "708eefd4c39c9f624193ae56c9b8103109148657e746cd1d6bbc839ca815dfdd"
+        },
+        {
+          "path": "src/stock-screener-entry.css.ts",
+          "sha256": "66ac1866df541fd43d81622a2c8e6c1e5f39c585962e2037e6d6400556ff2e2d"
+        },
+        {
+          "path": "src/stock-screener-entry.tsx",
+          "sha256": "57911394b93f1d4980ad8f65a50933d8741f337c4140bb4b88fc96f9f69654af"
+        }
+      ]
+    },
+    {
+      "name": "06-multiview",
+      "commit": "b576910ae5aff030ea2628787227cd71bb7c3d41",
+      "files": [
+        {
+          "path": "apps/multiview/docs/tdcc-continuous-backfill.md",
+          "sha256": "75bd7eeeeafcf944f30f37841e345008de8a15c8879291e7637a0f64297e9790"
+        },
+        {
+          "path": "apps/multiview/public/static/app.js",
+          "sha256": "97bb581eec2d292b1366fa18a79ab0e2bbce06c54503984c421f9e17cddb06ed"
+        },
+        {
+          "path": "apps/multiview/public/static/chip-panes.js",
+          "sha256": "a477638acf4039acd0c1b8667ccdb8c065c6fa26b3548fc77f12959e37c37dda"
+        },
+        {
+          "path": "apps/multiview/public/static/index.html",
+          "sha256": "a4b45da69f9eedab870f35867e93ca0d8a8059de1e7ff5b06c85013f937cebd5"
+        },
+        {
+          "path": "apps/multiview/public/static/realtime-charts.js",
+          "sha256": "040fb36ee6cf7350e884866dcbed7d8f208f1c1cd084075dd3648e31a914ef43"
+        },
+        {
+          "path": "apps/multiview/public/static/styles.css",
+          "sha256": "56d096228430dc3c16c0008d84c07a484d4e919019616091f1376d261954d19b"
+        },
+        {
+          "path": "apps/multiview/scripts/audit-official-daily-coverage.mjs",
+          "sha256": "c3ce9d7ee4ce91596b7388e06e803dc6f46b351de792a891ba007ec3ca401b5d"
+        },
+        {
+          "path": "apps/multiview/scripts/local-candle-continuity.mjs",
+          "sha256": "75461ad1595d92579a64df48a97bd1792f089a04a31dfdff952490ca1bb928f0"
+        },
+        {
+          "path": "apps/multiview/tests/candle-history.test.mjs",
+          "sha256": "70e744efabbee31675beb72dcaf2ceba82d5fbcfa9f4a02a26af19a5d8ce32ef"
+        },
+        {
+          "path": "apps/multiview/tests/chart-viewport-coordinator.test.mjs",
+          "sha256": "e3aec7889f28b446aa36375cbf166bad17e137fa452b7deb434c3bfb79132224"
+        },
+        {
+          "path": "apps/multiview/tests/cloudflare-runtime.test.mjs",
+          "sha256": "dff66927c4fae6c65f6320d214c40736753f8335fa22d219da6e201744688dbe"
+        },
+        {
+          "path": "apps/multiview/tests/personal-tab-management.test.mjs",
+          "sha256": "00b9ea74bac61c32debc0fe7876a00a805e0d0de07c265211256790bd124ae04"
+        },
+        {
+          "path": "apps/multiview/tests/realtime-charts.test.mjs",
+          "sha256": "4c5d240dd65e1db23de3f6f7bac742c59e5bfd378e0213e1d56c763c626f9550"
+        },
+        {
+          "path": "apps/multiview/tests/rendered-html.test.mjs",
+          "sha256": "3634922f3967e37456292bc945ef6f6472516d8c09a13240a0ce0786ef5f7ad7"
+        },
+        {
+          "path": "apps/multiview/tests/subchart-interaction.test.mjs",
+          "sha256": "362bf3327ecfbb6246f28df0b7c06169ad91833196a2e4175a36733081122792"
+        },
+        {
+          "path": "apps/multiview/tests/watchlist-direct-app-browser.test.mjs",
+          "sha256": "7c8099f4ebe8ad140696cd919187d68a96bddb34da2fb4c85c15bff1a52d6451"
+        },
+        {
+          "path": "apps/multiview/tests/watchlist-direct-browser.test.mjs",
+          "sha256": "78fc487119b1db23a08d17718aded66a83a17182830f4bf19b3d42a4549e248c"
+        },
+        {
+          "path": "apps/multiview/tests/watchlist-direct-interaction.test.mjs",
+          "sha256": "c2dab61ceb7e238ba10fb1f0986efd18b3816275faa01fbf2748ca7ac066dd3d"
+        },
+        {
+          "path": "apps/multiview/tests/watchlist-direct-manipulation.test.mjs",
+          "sha256": "a5c2d1553e926c513c556fb0d132ec4993a76d520f5cfd92c8e4a0c00555b27f"
+        },
+        {
+          "path": "apps/multiview/worker-configuration.d.ts",
+          "sha256": "6ab8788f1312e146d6d8d2e2fc1e1a4578ffb45b1b0bbc1a33bd3530862e22b7"
+        },
+        {
+          "path": "apps/multiview/worker/app.ts",
+          "sha256": "d6896681366867175cb7ef18ee1052df2940e43ea7a06bc8f2c0cc30d5441af7"
+        },
+        {
+          "path": "apps/multiview/worker/index.ts",
+          "sha256": "dc80387aff5a9e5a29042ba329684f605c45340e22d7ba414f98e1d2a10acd28"
+        },
+        {
+          "path": "apps/multiview/worker/indicators.ts",
+          "sha256": "7d42c4615700c4e295beb57a6bc09fcb6797cd5765f8c1053dd8db6acda9dbb1"
+        },
+        {
+          "path": "openspec/changes/enable-multiview-cross-tab-instrument-transfer-and-quick-remove/.openspec.yaml",
+          "sha256": "062e545e250441aa0692c22d7a65e07334f1c0f2e706c0e297f36065b6a0699c"
+        },
+        {
+          "path": "openspec/changes/enable-multiview-cross-tab-instrument-transfer-and-quick-remove/design.md",
+          "sha256": "02010f91688d858827073e72e768a8a08ee7d4cc28cf4b9cbad0ca67222ffd6d"
+        },
+        {
+          "path": "openspec/changes/enable-multiview-cross-tab-instrument-transfer-and-quick-remove/proposal.md",
+          "sha256": "4f337c25c70c2ecd1e3c7a16eea5abbd70b7c0ebbbb0f3f9ee47b56ca0a388b6"
+        },
+        {
+          "path": "openspec/changes/enable-multiview-cross-tab-instrument-transfer-and-quick-remove/specs/multiview-watchlist-direct-manipulation/spec.md",
+          "sha256": "fa9ed67404365d3c22fe84a50e7e1e06bcc2e8dc9181112ecb71eac2d14afb69"
+        },
+        {
+          "path": "openspec/changes/enable-multiview-cross-tab-instrument-transfer-and-quick-remove/tasks.md",
+          "sha256": "c801d5f0134159a6bccf1c61473d505e73b4a48707e24edb51eaba95cef7437b"
+        },
+        {
+          "path": "openspec/changes/enable-multiview-cross-tab-instrument-transfer-and-quick-remove/verification.md",
+          "sha256": "b4c5211e425eff1cabd636661e94604de51b5fa03fd65874ebf328f843ec1e8f"
+        }
+      ]
+    },
+    {
+      "name": "07-workspace-integration",
+      "commit": "38a7947bdb3e6c1dc3b447e018e37bd44ed24da5",
+      "files": [
+        {
+          "path": "docs/local-runtime-macos.md",
+          "sha256": "95eadbf171dcf120f268cfbc91dc2fc301fc90783c919e88a4749f13ada6354f"
+        },
+        {
+          "path": "src/App.tsx",
+          "sha256": "a91edb860bc590a9ed3892546537a8033afc8890b24e120421e4ef27cefc037c"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/---------------------------1.png",
+          "sha256": "644ce92f4447062d6b22241270fe5a5034b13b41b6a96a5a6628be1d20dac0e7"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/-------------------lease----live-authority-event-------1.png",
+          "sha256": "49709b2b2194c50319d153aca420a710260973f75ac9f8510b7a40967d6d8d03"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/-----------------frame-----------live-region-1.png",
+          "sha256": "b0d0579ecc75bb583e8c84fd99e2814307657c855df1fa5d13cdbd897d36fd98"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/----------160---UI-fixture----------------K-----1.png",
+          "sha256": "c9b7ea3cbcd76967509bbc63c7e43f96974d2538e1667d0786b348544649ae2c"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/----------160-GO---------------baseline-unknown---reviewer-provenance-1.png",
+          "sha256": "b8536654c2c55f18f122a7ec95a6270faf3d50f374ec01cd1fe8d8a5ef04b86b"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/----------workspace------server-event-id-------------1.png",
+          "sha256": "2ee9225b1f22519569d27d28a024d7ff6626a806e778235856d2ff7fc84bb25c"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/---------Gate-0--------------------1.png",
+          "sha256": "b8c84080dd0233b74c80e4bd57e72854f6a02713a506fc82d0952017d8f8f723"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/-------Notification-denied-default-----------------1.png",
+          "sha256": "2c514104124867e8dc8dc45ec448e1a8f36d8778c7a92844e1d10ed9bd388fa3"
+        },
+        {
+          "path": "src/components/__screenshots__/intraday-monitor-panel.browser.test.ts/-------lease-renew----------lease-----cursor----SSE-1.png",
+          "sha256": "0a32e2b3c8cff54765bd734bf559d2545ca8003d1d33932714ecb432869d1760"
+        },
+        {
+          "path": "src/components/hud-header.browser.test.ts",
+          "sha256": "58afdadb11983534db8d4882bc2ccca235948e005d1f4b5cf1df7b78e1286977"
+        },
+        {
+          "path": "src/components/hud-header.css.ts",
+          "sha256": "9edd49dfb0b64675cffa8b4d0ea4121ec7337e4152e25090fd28f55c5f325e14"
+        },
+        {
+          "path": "src/components/hud-header.tsx",
+          "sha256": "5fec802d37f690d58f527d3aac5eba62f0ad84887268ab5c7fc26253799be469"
+        },
+        {
+          "path": "src/components/intraday-monitor-panel.browser.test.ts",
+          "sha256": "41bb23ba09668af20cfc56d541fc24583cea0e2adfeae1a0f8958e8587537591"
+        },
+        {
+          "path": "src/components/intraday-monitor-panel.css.ts",
+          "sha256": "6f2901ebcb7d21337a025272d8aff5f2d4bf20833c3098561ccca52fa086f74e"
+        },
+        {
+          "path": "src/components/intraday-monitor-panel.tsx",
+          "sha256": "59e73a4d0ead00edd6fd343ae5850dad60b1d25271c55a2e86e064cbe5969060"
+        },
+        {
+          "path": "src/components/quote-board.tsx",
+          "sha256": "7bd26788df6e2ac499c4be91945e1272a1cbc4211ad105edf2c90bc284d00898"
+        },
+        {
+          "path": "src/components/workspace-layout-menu.tsx",
+          "sha256": "bdfb0d0b7541c39943473cdc4bc0e6413c74ed28416191f3950f4cc64dfaa3b9"
+        },
+        {
+          "path": "src/lib/intraday-monitor-api.ts",
+          "sha256": "f15f067314e5d947c526e6f007e3dbaa1934ab011f4288a3264cf9c62e7af2ee"
+        },
+        {
+          "path": "src/lib/intraday-monitor-config-draft.test.ts",
+          "sha256": "07538b7934e8825f003563d8516ffaacb21ee2a5a17876ea12f80486b8603057"
+        },
+        {
+          "path": "src/lib/intraday-monitor-config-draft.ts",
+          "sha256": "1697cd01fede3cff6fe6d2a0d282085a78eda745d5df162a2f889116b42b9fd0"
+        },
+        {
+          "path": "src/lib/intraday-monitor-invalidation.browser.test.ts",
+          "sha256": "6039d1e23e0f7434f10bc00f2922f8c88ec6dfe70a767a08eb2e9f1b2fa6cf04"
+        },
+        {
+          "path": "src/lib/intraday-monitor-invalidation.ts",
+          "sha256": "0ebc6e08c6188b61c456ae33324015e982ff49cb01521a3bc748dc03485bcc28"
+        },
+        {
+          "path": "src/lib/intraday-monitor-multiview-watchlists.test.ts",
+          "sha256": "d0775717955798061819a933ec6c8b630802e049db86e4df84045c873eeb7621"
+        },
+        {
+          "path": "src/lib/intraday-monitor-multiview-watchlists.ts",
+          "sha256": "a1c2a6d5c77d7356a1e3fa7d99dfff6648b016930817dbcdff4de91f89d35758"
+        },
+        {
+          "path": "src/lib/intraday-monitor-notifications.test.ts",
+          "sha256": "9229be5661ae45144f19ccf3380fac9839e8877fa2abfaeca849de0847afd83a"
+        },
+        {
+          "path": "src/lib/intraday-monitor-notifications.ts",
+          "sha256": "15d913e06cb55a1b4f40b200794910ceffb08fc42750469853193362811d40d4"
+        },
+        {
+          "path": "src/lib/intraday-monitor-view-model.test.ts",
+          "sha256": "cbe3f4350c67cfdfcf200c96b5ed80936ca965eda1edc34ec766826d4ed79639"
+        },
+        {
+          "path": "src/lib/intraday-monitor-view-model.ts",
+          "sha256": "63556688050618a00b56192b28b12869761b3f31b257ad258ac1aa76e4665196"
+        },
+        {
+          "path": "src/lib/intraday-monitor-watchlist.test.ts",
+          "sha256": "1da131cf41355d85599b042e2a16c4b8facfdf6fc9aaef1da7b851b786799eed"
+        },
+        {
+          "path": "src/lib/intraday-monitor-watchlist.ts",
+          "sha256": "de3a82728e976d838b5f0fcd82674dff99360bc51e1234d6d7dbeec6eb55ad4d"
+        },
+        {
+          "path": "src/lib/intraday-stock-selection-window.test.ts",
+          "sha256": "a573f7ab903e9cc5d4b6775493ed2aa81439d109bfdbdf4891a07f0c14dcf347"
+        },
+        {
+          "path": "src/lib/intraday-stock-selection-window.ts",
+          "sha256": "fc219e6ed8680681413e0c76c2f40366148453e63d2e7235b0882fcbc4c2706f"
+        },
+        {
+          "path": "src/lib/passive-chart-evidence-collection.browser.test.ts",
+          "sha256": "75ca0af0c866b9c84315bc8e056d9694b4593af8c45e960fcf7b3d0e1d37cee0"
+        },
+        {
+          "path": "src/lib/passive-chart-evidence-collection.ts",
+          "sha256": "f5949b004fb0fad3d9ae5cd451b52c1de30b6213ea79fcde3a71c955ff164fbf"
+        },
+        {
+          "path": "src/lib/screener-chart-selection.test.ts",
+          "sha256": "7b66ba19a431d3a0a799844c2d628d1ac493970cb8d10a84821f562c72f4b935"
+        },
+        {
+          "path": "src/lib/screener-chart-selection.ts",
+          "sha256": "2ffb1af437e678b58a5adeab68b1d9d9f3983aefe265b95b4137240cdc2a2ac0"
+        },
+        {
+          "path": "src/lib/workspace.test.ts",
+          "sha256": "51cd5eb2432ac630a4de38fa62e3d7053c93feee4a914794dba8557fec22c8ac"
+        },
+        {
+          "path": "src/lib/workspace.ts",
+          "sha256": "ea879a9a34b55453c565932f1b18b8a769ac19c29999924444b49d46aa4cba65"
+        },
+        {
+          "path": "src/main.tsx",
+          "sha256": "8549c74243273f42a61cec8b780ef0f1206cac7e2e313a368fc6c0edcc2dbf91"
+        }
+      ]
+    }
+  ]
+}
