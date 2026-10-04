@@ -15,6 +15,23 @@ dist/
 # Logs
 *.log
 
+# Local acceptance output and credentials
+.vitest-attachments/
+outputs/
+exports/
+src/components/bollinger-*-fixture.png
+scripts/certs/
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Python cache
+__pycache__/
+*.py[cod]
+
 # OS / Editor
 .DS_Store
 .vscode/
