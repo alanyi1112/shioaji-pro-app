@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { StockScreenerPanel } from './stock-screener-panel';
+import { StockScreenerBollingerResults } from './stock-screener-bollinger-results';
 import { DEFAULT_CRITERIA_V7 } from '../lib/stock-screener-v7';
 import { buildBollingerFrozenFeatures, countBollingerStages, evaluateBollingerStages, migrateCriteriaV7ToV8 } from '../lib/stock-screener-v8';
 import { BOLLINGER_PREFS, decodeBollingerResponse, type BollingerQueryDraft, type BollingerResponse } from '../lib/stock-screener-bollinger-api';
@@ -66,7 +67,7 @@ afterEach(async () => { if (root) await act(async () => root?.unmount()); root =
     localStorage.removeItem(BOLLINGER_PREFS); localStorage.removeItem('sj-pro-stock-screener-v7'); });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === text)!;
 async function mount({ enabled = true, state = 'ready', width = 320, font = 32, backup = false, amount = false,
-    preparationReason = 'source_contract_pending' } = {}) {
+    preparationReason = 'source_contract_pending', profileFailure = 0 } = {}) {
     if (enabled) localStorage.setItem(BOLLINGER_PREFS, JSON.stringify({ version: 8, query }));
     document.documentElement.style.fontSize = `${font}px`;
     const host = document.createElement('div'); host.classList.add(darkTwClass);
@@ -81,6 +82,7 @@ async function mount({ enabled = true, state = 'ready', width = 320, font = 32, 
         const url = new URL(String(input), location.href);
         if (url.pathname.endsWith('/daily-profile')) {
             if (init?.method === 'PUT') { const saved = JSON.parse(String(init.body));
+                if (profileFailure) return Response.json({ reason: profileFailure === 409 ? 'profile_revision_conflict' : 'same_origin_required' }, { status: profileFailure });
                 if (saved.expectedRevision !== (profile?.revision ?? 0)) return Response.json({ reason: 'profile_revision_conflict' }, { status: 409 });
                 profile = { revision: saved.expectedRevision + 1, enabled: saved.enabled, criteria: saved.criteria, createdAt: '2026-10-03T04:00:00Z' }; }
             return Response.json({ version: 8, profile, sourceRequests: 0 });
@@ -106,6 +108,67 @@ async function mount({ enabled = true, state = 'ready', width = 320, font = 32, 
     return { host, fetcher, onPick, onOpenChart, onAddToWatchlist, profile: () => profile };
 }
 describe('布林三階段 UI（隔離 fixture）', () => {
+    it.each(['dark-tw', 'dark-intl', 'midnight-tw', 'midnight-intl', 'light-tw', 'light-intl'])('%s 結果階段獨立著色，對比至少4.5且保留無法判定文字', async theme => {
+        const { themeClasses } = await import('../theme.css');
+        const host = document.createElement('div'); host.className = themeClasses[theme]!;
+        host.style.background = vars.color.panel; host.style.color = vars.color.foreground;
+        document.body.append(host); root = createRoot(host);
+        const response = decodeBollingerResponse(structuredClone(report));
+        response.rows = (['compressing', 'preparing', 'breakout', 'unknown', 'notMatched'] as const).map(stage => ({
+            ...response.rows[0]!, symbol: `fixture-${stage}`, outcome: { ...response.rows[0]!.outcome, stage },
+        }));
+        const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
+        const onPick = vi.fn(), onAdd = vi.fn();
+        await act(async () => root?.render(createElement(StockScreenerBollingerResults, {
+            response, filter: 'all', onFilter: vi.fn(), onPick, onAdd, targetAvailable: true, statuses: {},
+        })));
+        const labels = ['正在壓縮', '準備突破', '今日正式突破', '無法判定', '未符合'];
+        const spans = [...host.querySelectorAll<HTMLElement>('[data-bollinger-stage]')];
+        expect(spans.map(s => s.textContent)).toEqual(labels);
+        const luminance = (color: string) => {
+            const rgb = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map(v => {
+                const n = v / 255; return n <= .04045 ? n / 12.92 : ((n + .055) / 1.055) ** 2.4;
+            });
+            return rgb[0]! * .2126 + rgb[1]! * .7152 + rgb[2]! * .0722;
+        };
+        const colors = spans.slice(0, 3).map(s => getComputedStyle(s).color);
+        expect(new Set(colors).size).toBe(3);
+        for (const background of [vars.color.panel, vars.color.muted]) {
+            host.style.background = background;
+            const bg = luminance(getComputedStyle(host).backgroundColor);
+            for (const span of spans.slice(0, 3)) {
+                const fg = luminance(getComputedStyle(span).color);
+                expect((Math.max(fg, bg) + .05) / (Math.min(fg, bg) + .05)).toBeGreaterThanOrEqual(4.5);
+                expect(getComputedStyle(span).fontWeight).toBe('700');
+            }
+        }
+        expect(spans[3]!.className).toBe(''); expect(spans[4]!.className).toBe('');
+        await act(async () => spans[0]!.closest('button')!.click());
+        expect(onPick).toHaveBeenCalledTimes(1); expect(onAdd).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled();
+    });
+    it('每日獨立按鈕不受手動全部取消影響，PUT明確保存 stages 與 revision', async () => {
+        const { host, fetcher, profile } = await mount();
+        await act(async () => button(host, '全部取消').click());
+        const details = host.querySelector<HTMLDetailsElement>('[aria-label="每日布林策略設定"]')!;
+        await act(async () => details.querySelector('summary')!.click());
+        const stageButtons = host.querySelectorAll<HTMLButtonElement>('[aria-label="每日布林三階段選擇"] button');
+        await act(async () => { stageButtons[0]!.click(); stageButtons[1]!.click(); });
+        expect(fetcher.mock.calls.filter(([,init]) => init?.method === 'PUT')).toHaveLength(0);
+        await act(async () => button(host, '儲存每日策略').click());
+        expect(profile()?.criteria.bollSqueezeStages.stages).toEqual(['breakout']);
+        expect(profile()?.revision).toBe(1); expect(profile()?.enabled).toBe(true);
+        expect(fetcher.mock.calls.filter(([,init]) => init?.method === 'PUT')).toHaveLength(1);
+        expect(fetcher.mock.calls.filter(([url]) => String(url).includes('/results'))).toHaveLength(0);
+    });
+    it.each([[409, '其他視窗'], [403, '安全檢查']])('每日HTTP %s 失敗保持未儲存且不自動重試', async (profileFailure, text) => {
+        const { host, fetcher, profile } = await mount({ profileFailure });
+        const details = host.querySelector<HTMLDetailsElement>('[aria-label="每日布林策略設定"]')!;
+        await act(async () => details.querySelector('summary')!.click());
+        await act(async () => button(host, '儲存每日策略').click());
+        expect(host.textContent).toContain(text); expect(profile()).toBeNull();
+        expect(fetcher.mock.calls.filter(([,init]) => init?.method === 'PUT')).toHaveLength(1);
+        expect(host.querySelectorAll('button[aria-pressed="true"]')).toHaveLength(3);
+    });
     it('擴窗待準備顯示所需與已備日數，不顯示可操作股票或寫入每日設定', async () => {
         const { host, fetcher, onPick, onAddToWatchlist } = await mount({ state: 'history_pending', preparationReason: 'history_pending' });
         await act(async () => button(host, '開始篩選').click());

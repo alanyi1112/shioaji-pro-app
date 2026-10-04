@@ -33,10 +33,12 @@ import {
 } from '../lib/stock-screener-condition-ui';
 import { StockScreenerConditionAccordion } from './stock-screener-condition-accordion';
 import * as styles from './stock-screener-panel.css';
-import { DEFAULT_BOLLINGER_SQUEEZE, validateCriteriaV8, type BollingerSqueezeCriteria } from '../lib/stock-screener-v8';
+import { DEFAULT_BOLLINGER_SQUEEZE, validateCriteriaV8, type BollingerSqueezeCriteria, type CriteriaV8 } from '../lib/stock-screener-v8';
 import { BOLLINGER_PREFS, loadBollingerPreference, bollingerSearch, decodeBollingerResponse,
     type BollingerQueryDraft, type BollingerResponse, type BollingerDailyProfileView } from '../lib/stock-screener-bollinger-api';
 import { StockScreenerBollingerResults } from './stock-screener-bollinger-results';
+import { StockScreenerDailyBollinger } from './stock-screener-daily-bollinger';
+import { dailyBollingerSaveError } from '../lib/stock-screener-daily-bollinger-ui';
 
 const PREFS = 'sj-pro-stock-screener-v7';
 const V6_PREFS = 'sj-pro-stock-screener-v6';
@@ -328,18 +330,18 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         } catch (e) { if (generation.current === ticket) setError(e instanceof Error ? e.message : '布林查詢失敗'); }
         finally { clearTimeout(timer); if (generation.current === ticket) setBusy(false); }
     }
-    async function saveDailyProfile(enabled = true) {
-        const profileCriteria = enabled ? uiCriteria : dailyProfile?.criteria;
-        if (!profileReady || profileBusy || !profileCriteria || !validateCriteriaV8(profileCriteria) || enabled && !bollinger.enabled) return;
+    async function saveDailyProfile(enabled = true, criteria?: CriteriaV8) {
+        const profileCriteria = enabled ? criteria ?? uiCriteria : dailyProfile?.criteria;
+        if (!profileReady || profileBusy || !profileCriteria || !validateCriteriaV8(profileCriteria) || enabled && !profileCriteria.bollSqueezeStages.enabled) return;
         setProfileBusy(true); setProfileMessage('');
         const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 10000);
         try {
             const r = await fetch('/api/stock-screener/daily-profile?version=8', { method: 'PUT', signal: abort.signal, credentials: 'same-origin',
                 headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: dailyProfile?.revision ?? 0, enabled, criteria: profileCriteria }) });
-            const value = await r.json(); if (!r.ok) throw new Error(r.status === 409 ? '每日設定已被其他視窗更新，請重新載入後確認' : '每日設定儲存失敗');
+            const value = await r.json(); if (!r.ok) throw new Error(dailyBollingerSaveError(r.status, value?.reason));
             if (value.version !== 8 || !Number.isSafeInteger(value.profile?.revision) || !validateCriteriaV8(value.profile.criteria)) throw new Error('每日設定回應無效');
             setDailyProfile(value.profile); setProfileMessage(`已儲存每日策略 revision ${value.profile.revision}；${enabled ? '背景依官方資料與有界預算準備' : '已停用'}。沒有立即下載。`);
-        } catch (e) { setProfileMessage(e instanceof Error ? e.message : '每日設定儲存失敗'); }
+        } catch (e) { setProfileMessage(abort.signal.aborted ? '每日設定儲存逾時，是否已寫入尚未確認；請重新載入後核對 revision，再決定是否重試。' : e instanceof Error ? e.message : '每日設定儲存失敗'); }
         finally { clearTimeout(timer); setProfileBusy(false); }
     }
 
@@ -457,11 +459,10 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                     <option value='code'>股票代碼</option><option value='bbw'>帶寬 BBW</option><option value='percentilePosition'>前期百分位位置</option><option value='b'>上軌位置 b</option><option value='breakoutVolumeRatio'>突破量倍數</option><option value='momentum'>動能</option></select></label>
                 <button type='button' disabled={!valid || !profileReady || profileBusy} onClick={() => void saveDailyProfile()}>套用至每日自動篩選</button>
             </div>}
-            {dailyProfile && <p className={styles.note}>每日策略 revision {dailyProfile.revision} · {dailyProfile.enabled ? '已啟用' : '已停用'}（獨立於本頁草稿）
-                {dailyProfile.enabled && <button type='button' disabled={profileBusy} onClick={() => void saveDailyProfile(false)}>停用每日布林策略</button>}</p>}
+            <StockScreenerDailyBollinger profile={dailyProfile} ready={profileReady} busy={profileBusy} onSave={saveDailyProfile} />
             {profileMessage && <p role='status' className={styles.note}>{profileMessage}</p>}
             {bollingerApplied && (JSON.stringify(bollingerApplied.criteria) !== JSON.stringify(uiCriteria) || bollingerApplied.sort !== bollingerSort || bollingerApplied.direction !== draft.direction) && <p role='status'>布林條件尚未套用；下方保留上次查詢，每日設定未變。</p>}
-            {!valid && <p role='alert'>至少啟用一項條件且參數必須合法；籌碼比例最多兩位小數，連續週數 1–12，投信 5–10 日，價量／融資 1–20 日，新高 2–120 日。</p>}
+            {!valid && <p role='alert'>手動選股：至少啟用一項條件且參數必須合法；籌碼比例最多兩位小數，連續週數 1–12，投信 5–10 日，價量／融資 1–20 日，新高 2–120 日。每日策略設定獨立，不受本項警告影響。</p>}
             {dirty && <p role='status'>條件尚未套用；下方仍是上次篩選結果。</p>}
         </form>
         <div className={styles.status} role='status' aria-live='polite'>

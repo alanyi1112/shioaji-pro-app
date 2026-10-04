@@ -60,7 +60,9 @@ export function StockScreenerBollingerResults({ response, filter, onFilter, onPi
                 ? (Number(volume.numerator) / Number(volume.denominator)).toFixed(2) : '—';
             return <article className={styles.row} key={row.symbol}>
                 <div className={styles.rowTop}><button type='button' className={styles.rowAction} disabled={!targetAvailable || !response.canUseResults || response.state !== 'ready'} onClick={() => onPick(stock)}>
-                    <strong>{row.code} {row.name} · {bollingerStageLabels[row.outcome.stage]}</strong><span>{row.outcome.date} · {row.market}</span>
+                    <strong>{row.code} {row.name} · <span data-bollinger-stage={row.outcome.stage}
+                        className={row.outcome.stage === 'compressing' || row.outcome.stage === 'preparing' || row.outcome.stage === 'breakout'
+                            ? styles.bollingerResultStage[row.outcome.stage] : undefined}>{bollingerStageLabels[row.outcome.stage]}</span></strong><span>{row.outcome.date} · {row.market}</span>
                     <span>BBW {row.outcome.setup.bbw?.toFixed(4) ?? '—'} · 前期百分位位置 {percentile}% · b {row.outcome.setup.b?.toFixed(3) ?? '—'} · 突破量 {ratio}×</span>
                     {response.legacyJoin && <span>組合結果：{row.verdict === 'pass' ? '符合' : row.verdict === 'fail' ? '未符合' : '無法判定'}</span>}
                 </button><button type='button' className={styles.addButton} disabled={!response.canUseResults || response.state !== 'ready' || ['pending', 'complete'].includes(statuses[row.symbol]?.status ?? '')} onClick={() => onAdd(stock)}>

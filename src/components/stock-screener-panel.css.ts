@@ -1,11 +1,16 @@
-import { globalStyle, style } from '@vanilla-extract/css';
-import { vars } from '../theme.css';
+import { globalStyle, style, styleVariants } from '@vanilla-extract/css';
+import { themeClasses, vars } from '../theme.css';
 
 export const root = style({
     overflow: 'auto', minHeight: 0, minWidth: 0, flex: 1,
     padding: 10, fontSize: '0.78rem', display: 'flex', flexDirection: 'column', gap: 10,
 });
 export const controls = style({ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' });
+export const dailyStageButtons = style({ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '8px 0' });
+globalStyle(`${root} ${dailyStageButtons} > button[aria-pressed="true"]`, {
+    color: vars.color.accent, borderColor: vars.color.accent, background: vars.color.accentDim,
+});
+globalStyle(`${dailyStageButtons} > button`, { whiteSpace: 'normal', overflowWrap: 'anywhere', minHeight: 32 });
 export const draftToolbar = style({ display: 'flex', flexDirection: 'column', gap: 6 });
 export const selectedConditions = style({ display: 'flex', flexWrap: 'wrap', gap: 4 });
 export const settingsDetails = style({ marginTop: 8, border: `1px solid ${vars.color.border}`, borderRadius: 4, padding: 8 });
@@ -38,6 +43,14 @@ export const conditionCard = style({ display: 'flex', flexWrap: 'wrap', gap: 8, 
 export const note = style({ color: vars.color.mutedForeground, lineHeight: 1.5, margin: 0, overflowWrap: 'anywhere' });
 export const status = style({ border: `1px solid ${vars.color.border}`, borderRadius: 4, padding: 8, lineHeight: 1.6, flexShrink: 0 });
 export const results = style({ display: 'flex', flexDirection: 'column', gap: 4 });
+export const bollingerResultStage = styleVariants({
+    compressing: { dark: '#75bdff', light: '#075fae' },
+    preparing: { dark: '#ffd166', light: '#935700' },
+    breakout: { dark: '#d5a6ff', light: '#7532a8' },
+}, colors => ({
+    color: colors.dark, fontWeight: 700,
+    selectors: { [`.${themeClasses['light-tw']} &, .${themeClasses['light-intl']} &`]: { color: colors.light } },
+}));
 export const row = style({
     display: 'flex', flexDirection: 'column', alignItems: 'stretch', gap: 4,
     whiteSpace: 'normal', overflowWrap: 'anywhere', width: '100%',
