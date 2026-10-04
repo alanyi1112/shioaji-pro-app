@@ -10173,11 +10173,16 @@ function syncChartOrderForTab(tab) {
     return;
   }
   const visibleItems = visibleSymbolsForActiveCategory();
-  while (state.panels.length > visibleItems.length) {
-    const panel = state.panels.pop();
-    panel?.destroy();
-    panel?.element.remove();
+  const previousPanels = state.panels;
+  const byIdentity = new Map(previousPanels.map((panel) => [panel.getCanonicalIdentity?.(), panel]));
+  const nextPanels = visibleItems.map((item, index) =>
+    byIdentity.get(panelCanonicalIdentity(tab, item)) || createPanel(index, state.panelRenderGeneration));
+  for (const panel of previousPanels) {
+    if (nextPanels.includes(panel)) continue;
+    panel.destroy();
+    panel.element.remove();
   }
+  state.panels = nextPanels;
   const grid = document.getElementById("chart-grid");
   grid?.querySelector(".chart-grid-empty")?.remove();
   if (!visibleItems.length && grid) {
@@ -10187,11 +10192,14 @@ function syncChartOrderForTab(tab) {
     grid.appendChild(empty);
   }
   state.panels.forEach((panel, index) => {
+    grid?.appendChild(panel.element);
     panel.setCanonicalItem?.(visibleItems[index], index);
-    const changed = panel.applyOrderedSymbol(defaultSymbolForPanel(index));
-    if (changed) panel.load();
+    if (previousPanels.includes(panel)) panel.refreshSymbolOptions?.(panel.getDisplaySymbol?.());
+    else panel.load();
   });
   refreshPanelReorderAffordances();
+  schedulePanelReorderLayoutRefresh();
+  exposeQuoteChartDebug();
   cancelPanelPayloadPrefetch();
   scheduleAdjacentPagePrefetch();
 }

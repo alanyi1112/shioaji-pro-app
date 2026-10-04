@@ -1,0 +1,209 @@
+{
+  "schemaVersion": "multiview-isolated-real-cache-acceptance/1",
+  "observedAt": "2026-10-04T09:38:43.396Z",
+  "initialChartCount": 1,
+  "boundaryBefore": {
+    "streamStatus": "healthy",
+    "activeConnections": 63,
+    "watchlistHash": "366952bbbb6a96cedbcee8d786e42ddb538c35d0664b4683c41f043bb3365fc0"
+  },
+  "boundaryAfter": {
+    "streamStatus": "healthy",
+    "activeConnections": 63,
+    "watchlistHash": "366952bbbb6a96cedbcee8d786e42ddb538c35d0664b4683c41f043bb3365fc0"
+  },
+  "sourceMode": "persisted-real-market-data-not-live-stream",
+  "realListsBefore": "072c3191a6137b8913ff3b30b43d3b80a71fff6f5f079a006d12779b9957c55c",
+  "realListsAfter": "072c3191a6137b8913ff3b30b43d3b80a71fff6f5f079a006d12779b9957c55c",
+  "sources": [
+    {
+      "symbol": "2449.TW",
+      "sessionDate": "2026-10-02",
+      "sourceProvider": "yfinance",
+      "quoteVerification": {
+        "status": "verified",
+        "scope": "close",
+        "provider": "twse",
+        "referenceSessionDate": "2026-10-02",
+        "checkedAt": "2026-10-04T09:33:52.329Z",
+        "referenceClose": 295.5,
+        "fieldResults": {
+          "open": "match",
+          "high": "match",
+          "low": "match",
+          "close": "match",
+          "volume": "mismatch"
+        },
+        "mismatchFields": [
+          "volume"
+        ]
+      },
+      "candles": 160,
+      "payloadHash": "9558ea8e794c88adbb8e3bfe1a3646f0647c640769226d598a65166eaa075a67",
+      "first": 1770080400,
+      "last": 1790902800
+    },
+    {
+      "symbol": "2330.TW",
+      "sessionDate": "2026-10-02",
+      "sourceProvider": "yfinance",
+      "quoteVerification": {
+        "status": "verified",
+        "scope": "close",
+        "provider": "twse",
+        "referenceSessionDate": "2026-10-02",
+        "checkedAt": "2026-10-03T01:21:58.634Z",
+        "referenceClose": 2500,
+        "fieldResults": {
+          "open": "match",
+          "high": "match",
+          "low": "match",
+          "close": "match",
+          "volume": "mismatch"
+        },
+        "mismatchFields": [
+          "volume"
+        ]
+      },
+      "candles": 160,
+      "payloadHash": "e6617610e15d39f80832a15cc6d1d6dbcc2742fa66294b635c02da59d3d293aa",
+      "first": 1770080400,
+      "last": 1790902800
+    }
+  ],
+  "copy": {
+    "panelsAndCanvasesPreserved": true,
+    "viewport": [
+      {
+        "symbol": "2449.TW",
+        "visibleLogicalRange": {
+          "from": 0,
+          "to": 161
+        },
+        "barSpacing": 8.506172839506172
+      }
+    ],
+    "streamRegistrationsBefore": 3,
+    "streamRegistrationsAfter": 3,
+    "candleRequestsAdded": 0
+  },
+  "move": {
+    "sourceFallback": "2330.TW",
+    "unaffectedCanvasPreserved": true,
+    "barSpacing": 3.9382716049382718
+  },
+  "refreshPersistence": true,
+  "emptyState": true,
+  "writes": [
+    {
+      "path": "/api/instruments/transfer",
+      "method": "POST"
+    },
+    {
+      "path": "/api/instruments/remove-from-tab",
+      "method": "POST"
+    },
+    {
+      "path": "/api/instruments/transfer",
+      "method": "POST"
+    }
+  ],
+  "candleRequests": [
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2330.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2330.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2330.TW",
+      "interval": "1d"
+    },
+    {
+      "symbol": "2449.TW",
+      "interval": "1d"
+    }
+  ],
+  "blockedApiRequests": [
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/local-shioaji/api/v1/data/contracts/2449",
+      "method": "GET"
+    },
+    {
+      "path": "/local-shioaji/api/v1/data/contracts/2449",
+      "method": "GET"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    },
+    {
+      "path": "/api/candles/batch",
+      "method": "POST"
+    }
+  ],
+  "externalRequests": [],
+  "browserErrors": []
+}

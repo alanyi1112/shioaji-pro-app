@@ -589,8 +589,12 @@ test("前端排序協調器、拖曳把手與 K 線原地同步 contract 完整"
   assert.match(appScript, /document\.addEventListener\("visibilitychange", drag\.onVisibilityChange\)/);
   assert.match(appScript, /WATCHLIST_DRAG_MAX_SCROLL_PX/);
   assert.match(appScript, /event\.key !== "Escape"/);
-  assert.match(appScript, /applyOrderedSymbol\(defaultSymbolForPanel\(index\)\)/);
-  assert.match(appScript, /if \(changed\) panel\.load\(\)/);
+  const syncOrder = appScript.slice(appScript.indexOf("function syncChartOrderForTab(tab)"), appScript.indexOf("function providerForSymbol(symbol)"));
+  assert.match(syncOrder, /byIdentity\.get\(panelCanonicalIdentity\(tab, item\)\)/);
+  assert.match(syncOrder, /if \(nextPanels\.includes\(panel\)\) continue/);
+  assert.match(syncOrder, /if \(previousPanels\.includes\(panel\)\) panel\.refreshSymbolOptions/);
+  assert.match(syncOrder, /else panel\.load\(\)/);
+  assert.doesNotMatch(syncOrder, /applyOrderedSymbol\(defaultSymbolForPanel/);
   assert.match(styles, /touch-action: none/);
   assert.match(styles, /\.watchlist-drop-indicator/);
   assert.match(styles, /cursor: grabbing/);
