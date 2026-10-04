@@ -139,6 +139,13 @@ body.is-mode-b-page-scroll {
   color: var(--text);
 }
 
+.market-tab.is-watchlist-drop-target {
+  border-color: #fbbf24;
+  background: rgba(251, 191, 36, 0.22);
+  color: #fff7d6;
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.35);
+}
+
 .category-pagination {
   display: inline-flex;
   align-items: center;
@@ -1238,6 +1245,15 @@ select {
   grid-template-rows: minmax(0, 1fr);
 }
 
+.chart-grid-empty {
+  grid-column: 1 / -1;
+  align-self: center;
+  justify-self: center;
+  color: var(--muted);
+  text-align: center;
+  padding: 24px;
+}
+
 .chart-grid.grid-2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-rows: minmax(0, 1fr);
@@ -1624,7 +1640,7 @@ select {
   min-width: 0;
   width: 100%;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 3px;
 }
@@ -1657,6 +1673,61 @@ select {
 
 .panel-reorder-handle:active {
   cursor: grabbing;
+}
+
+.panel-watchlist-menu-trigger {
+  position: relative;
+  z-index: 1;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 5px;
+}
+
+.panel-watchlist-menu-trigger:hover,
+.panel-watchlist-menu-trigger:focus-visible {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.panel-context-menu .watchlist-target-list {
+  display: grid;
+  gap: 3px;
+  padding: 4px 8px 7px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.panel-context-menu .watchlist-target-list button {
+  text-align: left;
+}
+
+.panel-context-menu .watchlist-menu-note {
+  margin: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.watchlist-remove-confirm {
+  max-width: min(420px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #111827;
+  color: var(--text);
+  padding: 18px;
+}
+
+.watchlist-remove-confirm::backdrop {
+  background: rgba(2, 6, 23, 0.7);
+}
+
+.watchlist-remove-confirm form {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .price-value-row {
@@ -2056,6 +2127,7 @@ select {
 
 .chip-pane-group-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
   min-height: 32px;
@@ -2076,6 +2148,21 @@ select {
 .chip-pane-group-count {
   color: #94a3b8;
   font-size: 10px;
+}
+
+.chip-pane-group-date-scope {
+  flex: 1 1 280px;
+  min-width: min(100%, 220px);
+  margin-left: auto;
+  color: #7dd3fc;
+  font-size: 10px;
+  line-height: 1.35;
+  text-align: right;
+  white-space: normal;
+}
+
+.chip-pane-group-date-scope[hidden] {
+  display: none;
 }
 
 .chip-pane-group-drag-handle {
@@ -2542,8 +2629,10 @@ select {
 .panel-context-menu {
   position: fixed;
   z-index: 10030;
-  width: min(176px, calc(100vw - 16px));
+  width: min(240px, calc(100vw - 16px));
   min-width: 0;
+  max-height: min(75vh, 540px);
+  overflow-y: auto;
   padding: 4px;
   border: 1px solid #475569;
   border-radius: 7px;
@@ -2561,6 +2650,21 @@ select {
 
 .panel-context-menu button[hidden] {
   display: none;
+}
+
+.panel-context-menu details[hidden],
+.panel-context-menu .watchlist-menu-note[hidden] {
+  display: none;
+}
+
+.panel-context-menu details > summary {
+  cursor: pointer;
+  padding: 7px 10px;
+  color: #f8fafc;
+}
+
+.panel-context-menu details > summary:focus-visible {
+  outline: 2px solid #38bdf8;
 }
 
 .chart-drawing-tools {

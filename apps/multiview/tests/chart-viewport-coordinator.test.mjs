@@ -98,6 +98,29 @@ test("局部日期錨點跨資料集合保留小數位置與跨度", () => {
   assert.deepEqual(plain(range), { from: 20.25, to: 40.75 });
 });
 
+test("日 K 錨點可按交易期間對齊 00:00 live 與 09:00 canonical 時間", () => {
+  const runtime = loadInteractions();
+  const range = runtime.interactions.viewportRangeFromSnapshot({
+    fromTime: 1000,
+    toTime: 2000,
+    fromFraction: -0.25,
+    toFraction: 0.25,
+    span: 10.5,
+    rightAttached: false,
+    userInteracted: true,
+  }, [
+    { time: 500 },
+    { time: 1009 },
+    { time: 1509 },
+    { time: 2009 },
+    { time: 2509 },
+  ], {
+    rightOffsetBars: 2,
+    normalizeTime: (time) => Math.floor(Number(time) / 10),
+  });
+  assert.deepEqual(plain(range), { from: 0.75, to: 3.25 });
+});
+
 test("日期錨點只剩一側或全部缺少時仍產生有界範圍", () => {
   const runtime = loadInteractions();
   const target = candles(100, 100);

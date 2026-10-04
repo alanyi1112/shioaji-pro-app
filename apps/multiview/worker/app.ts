@@ -145,6 +145,7 @@ import { recordCacheEvent, runtimeUsageSummary } from "./runtime-usage";
 import { localShioajiAdapterHealth } from "./local-shioaji-adapter";
 import { notifyRealtimeWatchlistSymbols, readRealtimeHealth, realtimeViewerCapability, type RealtimeEnv } from "./realtime-routing";
 import { auditTaiwanDailyContinuity, cacheTaiwanOfficialMonthPayload } from "./taiwan-daily-continuity";
+import { resolveOfficialCompletedSession, seedOfficialTradingCalendar } from "./official-trading-session";
 import {
   STOCK_SCREENER_LIST_SYNC_SCHEMA_VERSION,
   STOCK_SCREENER_MULTIVIEW_TAB_LABEL,
@@ -200,6 +201,7 @@ type UserInstrumentRow = {
   date_source?: string | null;
   recommender?: string | null;
 };
+type SystemTabInstrumentRow = UserInstrumentRow & { system_tab_id: string };
 type CatalogDbRow = {
   symbol?: unknown; exchange?: unknown; localized_name?: unknown; english_name?: unknown; aliases_json?: unknown;
   market?: unknown; group_name?: unknown; quote_type?: unknown; provider?: unknown; source?: unknown;
@@ -233,7 +235,7 @@ type TwseMisPayload = { msgArray?: Array<Record<string, unknown>> };
 type TpexMirrorRow = { payload?: string | null; source_fetched_at?: string | null };
 type MassiveApiRow = Record<string, unknown>;
 type MassivePayload = { reason?: string; results?: MassiveApiRow[]; [key: string]: unknown };
-type SaveInstrumentInput = { symbol?: unknown; name?: unknown; provider?: unknown; tabId?: unknown; tab?: unknown; group?: unknown; market?: unknown; enabled?: unknown; defaultOrder?: unknown; recommender?: unknown };
+type SaveInstrumentInput = { symbol?: unknown; name?: unknown; provider?: unknown; tabId?: unknown; tabKey?: unknown; tab?: unknown; group?: unknown; market?: unknown; enabled?: unknown; defaultOrder?: unknown; recommender?: unknown };
 type ChipHealthRow = { dataset: string; coverage_start?: string | null; coverage_end?: string | null; source_date?: string | null; status?: string | null; reason_code?: string | null; last_success_at?: string | null; last_attempt_at?: string | null };
 type ChipBackfillStateRow = ChipHealthRow & { symbol?: string | null; retry_after?: string | null };
 type ExistingWatchlistRow = { item_id?: string | null; recommender?: string | null };
@@ -353,7 +355,7 @@ function parseSetup(text: string): Instrument[] {
   });
 }
 
-function systemTabs(instruments: Instrument[]): MarketTab[] {
+function systemTabs(instruments: Instrument[]): (MarketTab & { source: "system" })[] {
   return Object.keys(TAB_IDS).map((label, index) => ({ id: TAB_IDS[label], label, displayLabel: label, sortOrder: index + 1, enabled: true, isDefault: index === 0, source: "system", defaultSymbols: instruments.filter((item) => item.tab === label && item.enabled && item.defaultOrder !== null).sort((a, b) => (a.defaultOrder ?? 999) - (b.defaultOrder ?? 999)).map((item) => item.symbol) }));
 }
 
@@ -374,6 +376,9 @@ async function ensureDb(db?: D1Database) {
       await db.batch([
         db.prepare(`CREATE TABLE IF NOT EXISTS user_tabs (user_id TEXT NOT NULL, id TEXT NOT NULL, label TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1, is_default INTEGER NOT NULL DEFAULT 0, source_tab_id TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, id))`),
     db.prepare(`CREATE TABLE IF NOT EXISTS user_instruments (user_id TEXT NOT NULL, item_id TEXT, symbol TEXT NOT NULL, name TEXT NOT NULL, provider TEXT NOT NULL, tab_id TEXT NOT NULL DEFAULT '', tab_label TEXT NOT NULL, group_name TEXT NOT NULL, market TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER, added_at TEXT, date_status TEXT NOT NULL DEFAULT 'legacy_unknown', date_source TEXT, recommender TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, symbol, tab_id))`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS user_system_tab_instruments (user_id TEXT NOT NULL, system_tab_id TEXT NOT NULL, symbol TEXT NOT NULL, item_id TEXT, name TEXT NOT NULL, provider TEXT NOT NULL, group_name TEXT NOT NULL, market TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER, added_at TEXT, date_status TEXT NOT NULL DEFAULT 'legacy_unknown', date_source TEXT, recommender TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (user_id, system_tab_id, symbol))`),
+    db.prepare(`CREATE UNIQUE INDEX IF NOT EXISTS user_system_tab_instruments_item_idx ON user_system_tab_instruments (user_id, item_id)`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS user_watchlist_mutation_revision (user_id TEXT PRIMARY KEY NOT NULL, revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0))`),
     db.prepare(`CREATE TABLE IF NOT EXISTS candle_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, expires_at INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     db.prepare(`CREATE INDEX IF NOT EXISTS candle_cache_expires_at_idx ON candle_cache (expires_at)`),
     db.prepare(`CREATE TABLE IF NOT EXISTS cache_maintenance_state (maintenance_key TEXT PRIMARY KEY NOT NULL, last_run_at TEXT, deleted_rows INTEGER NOT NULL DEFAULT 0, remaining_rows INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'not_run', reason_code TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
@@ -514,12 +519,12 @@ async function personalInstruments(db: D1Database | undefined, uid: string): Pro
     symbol: row.symbol,
     name: row.name,
     provider: row.provider,
-    tabId: row.tab_id,
+    tabId: row.tab_id ?? undefined,
     tab: row.tab_label,
     group: row.group_name,
     market: row.market,
     enabled: Boolean(row.enabled),
-    defaultOrder: row.sort_order,
+    defaultOrder: row.sort_order ?? null,
     itemId: row.item_id || null,
     addedAt: row.added_at || null,
     dateStatus: row.date_status === "known" ? "known" : "legacy_unknown",
@@ -528,35 +533,86 @@ async function personalInstruments(db: D1Database | undefined, uid: string): Pro
   }));
 }
 
+async function systemTabInstruments(db: D1Database | undefined, uid: string) {
+  if (!db) return [];
+  await ensureDb(db);
+  const result = await db.prepare("SELECT * FROM user_system_tab_instruments WHERE user_id=? ORDER BY COALESCE(sort_order,999999),symbol").bind(uid).all<SystemTabInstrumentRow>();
+  return result.results.map((row) => ({
+    systemTabId: row.system_tab_id,
+    symbol: row.symbol,
+    name: row.name,
+    provider: row.provider,
+    group: row.group_name,
+    market: row.market,
+    enabled: Boolean(row.enabled),
+    defaultOrder: row.sort_order ?? null,
+    itemId: row.item_id || null,
+    addedAt: row.added_at || null,
+    dateStatus: row.date_status === "known" ? "known" as const : "legacy_unknown" as const,
+    dateSource: row.date_source === "server" ? "server" as const : null,
+    recommender: row.recommender || "",
+  }));
+}
+
+function effectiveInstrumentsForTab(tab: MarketTab, legacy: Instrument[], scoped: Awaited<ReturnType<typeof systemTabInstruments>>) {
+  const bySymbol = new Map<string, Instrument>();
+  if (tab.tabKey?.startsWith("system:")) {
+    const baseLabel = Object.entries(TAB_IDS).find(([, id]) => id === (tab.sourceTabId || tab.id))?.[0] || tab.label;
+    for (const item of legacy) {
+      if (item.enabled && !item.tabId && (item.tab === baseLabel || item.tab === tab.label)) bySymbol.set(item.symbol, item);
+    }
+    for (const item of scoped.filter((candidate) => candidate.systemTabId === (tab.sourceTabId || tab.id))) {
+      if (item.enabled) bySymbol.set(item.symbol, { ...item, tabId: tab.tabKey, tab: tab.label });
+      else bySymbol.delete(item.symbol);
+    }
+  } else {
+    for (const item of legacy) {
+      if (item.enabled && !item.tabId && item.tab === tab.label) bySymbol.set(item.symbol, item);
+    }
+    for (const item of legacy) {
+      if (item.tabId !== tab.id) continue;
+      if (item.enabled) bySymbol.set(item.symbol, item);
+      else bySymbol.delete(item.symbol);
+    }
+  }
+  return [...bySymbol.values()].sort((a, b) => (a.defaultOrder ?? Number.MAX_SAFE_INTEGER) - (b.defaultOrder ?? Number.MAX_SAFE_INTEGER) || a.symbol.localeCompare(b.symbol));
+}
+
+function mergeWatchlistInstruments(base: Instrument[], custom: Instrument[]) {
+  const merged = [...base];
+  for (const item of custom) {
+    const index = merged.findIndex((candidate) => candidate.symbol === item.symbol && (candidate.tabId ?? "") === (item.tabId ?? "") && (item.tabId || candidate.tab === item.tab));
+    if (index >= 0) merged[index] = item;
+    else merged.push(item);
+  }
+  return merged;
+}
+
 async function instrumentPayload(request: Request, env: Env) {
   const base = parseSetup(await setupText(request, env));
   const uid = userId(request);
-  const [tabRows, custom] = await Promise.all([personalTabRows(env.DB, uid), personalInstruments(env.DB, uid)]);
-  const merged = [...base];
-  for (const item of custom) {
-    const index = merged.findIndex((candidate) => candidate.symbol === item.symbol && (candidate.tabId ?? "") === (item.tabId ?? ""));
-    if (index >= 0) merged[index] = item; else merged.push(item);
-  }
+  const [tabRows, custom, scoped] = await Promise.all([personalTabRows(env.DB, uid), personalInstruments(env.DB, uid), systemTabInstruments(env.DB, uid)]);
+  const merged = mergeWatchlistInstruments(base, custom);
   const model = resolveEffectiveTabs(systemTabs(merged), tabRows);
-  const systemLabelById = new Map(Object.entries(TAB_IDS).map(([label, id]) => [id, label]));
+  const knownSystemLabels = new Set([
+    ...Object.keys(TAB_IDS),
+    ...model.managedTabs.filter((tab) => tab.tabKey?.startsWith("system:")).map((tab) => tab.label),
+  ]);
+  const unresolvedLegacy = custom.filter((item) => !item.tabId && !knownSystemLabels.has(item.tab));
   for (const tab of model.managedTabs) {
-    if (tab.tabKey.startsWith("system:")) {
-      const baseLabel = systemLabelById.get(tab.sourceTabId || tab.id) || tab.label;
-      tab.defaultSymbols = merged
-        .filter((item) => item.enabled && !item.tabId && (item.tab === baseLabel || item.tab === tab.label))
-        .sort((a, b) => (a.defaultOrder ?? Number.MAX_SAFE_INTEGER) - (b.defaultOrder ?? Number.MAX_SAFE_INTEGER) || a.symbol.localeCompare(b.symbol))
-        .map((item) => item.symbol);
-    } else if (tab.source === "personal") tab.defaultSymbols = merged
-      .filter((item) => item.enabled && (item.tabId === tab.id || (!item.tabId && item.tab === tab.label)))
-      .sort((a, b) => (a.defaultOrder ?? Number.MAX_SAFE_INTEGER) - (b.defaultOrder ?? Number.MAX_SAFE_INTEGER) || a.symbol.localeCompare(b.symbol))
-      .map((item) => item.symbol);
+    tab.defaultSymbols = effectiveInstrumentsForTab(tab, merged, scoped).map((item) => item.symbol);
   }
   return {
     instruments: merged.filter((item) => item.enabled),
+    systemMemberships: scoped,
+    hiddenPersonalMemberships: custom.filter((item) => item.tabId && !item.enabled).map((item) => ({ tabId: item.tabId, symbol: item.symbol })),
     managedTabs: model.managedTabs,
     marketTabs: model.marketTabs,
     personalTabs: compatiblePersonalTabs(tabRows),
-    tabDiagnostics: model.diagnostics.map((item) => ({ code: item.code, tabKey: item.tabKey })),
+    tabDiagnostics: [
+      ...model.diagnostics.map((item) => ({ code: item.code, tabKey: item.tabKey })),
+      ...unresolvedLegacy.map((item) => ({ code: "legacy_system_membership_unresolved", symbol: item.symbol, tabLabel: item.tab })),
+    ],
     setupErrors: [],
     intervals: intervalsForRequest(request),
     personalSync: { configured: Boolean(env.DB), authenticated: true },
@@ -568,7 +624,7 @@ type SearchWarning = { source: string; message: string };
 function rowToCatalogEntry(row: CatalogDbRow): CatalogEntry | null {
   const symbol = normalizeSymbol(row?.symbol);
   const localizedName = String(row?.localized_name || "").trim();
-  const exchange = inferredExchange(symbol, row?.exchange);
+  const exchange = inferredExchange(symbol, String(row?.exchange || ""));
   if (!symbol || !localizedName || !exchange) return null;
   let aliases: string[] = [];
   try { aliases = Array.isArray(row?.aliases_json) ? row.aliases_json : JSON.parse(String(row?.aliases_json || "[]")); }
@@ -576,9 +632,9 @@ function rowToCatalogEntry(row: CatalogDbRow): CatalogEntry | null {
   return { symbol, exchange, localizedName, englishName: String(row?.english_name || ""), aliases, market: String(row?.market || ""), group: String(row?.group_name || "商品"), quoteType: String(row?.quote_type || ""), provider: String(row?.provider || "yfinance"), source: String(row?.source || "taiwan-catalog").includes("official") ? "taiwan-catalog" : String(row?.source || "catalog"), sourceUpdatedAt: String(row?.source_updated_at || ""), active: Boolean(row?.active ?? true) };
 }
 
-async function readInstrumentCatalog(db?: D1Database) {
+async function readInstrumentCatalog(db?: D1Database, ensureSchema = true) {
   if (!db) return [];
-  await ensureDb(db);
+  if (ensureSchema) await ensureDb(db);
   const result = await db.prepare("SELECT * FROM instrument_catalog WHERE active = 1").all<CatalogDbRow>();
   return result.results.map(rowToCatalogEntry).filter((item): item is CatalogEntry => Boolean(item));
 }
@@ -666,7 +722,7 @@ function externalCandidate(item: OfficialCatalogRow, query: string): InstrumentC
   const catalog: CatalogEntry = localized || { symbol, exchange: String(item?.exchange || item?.exchDisp || ""), localizedName: "", englishName, aliases: [], provider: "yfinance", source: "yahoo-search", market: String(item?.exchDisp || item?.exchange || "外部市場"), group: String(item?.typeDisp || item?.quoteType || "商品"), quoteType: String(item?.quoteType || ""), active: true };
   const match = scoreCatalogEntry(query, catalog) || (/^[\x00-\x7F]+$/.test(query) ? { score: 400, matchedBy: "external" } : null);
   if (!match) return null;
-  return { ...catalog, source: localized ? "localized-seed" : "yahoo-search", englishName: localized?.englishName || englishName, name: localized?.localizedName || englishName || symbol, exchange: inferredExchange(symbol, localized?.exchange || item?.exchange || item?.exchDisp), aliases: localized?.aliases || [], enabled: true, ...match };
+  return { ...catalog, source: localized ? "localized-seed" : "yahoo-search", englishName: localized?.englishName || englishName, name: localized?.localizedName || englishName || symbol, exchange: inferredExchange(symbol, String(localized?.exchange || item?.exchange || item?.exchDisp || "")), aliases: localized?.aliases || [], enabled: true, ...match };
 }
 
 async function searchInstruments(request: Request, env: Env) {
@@ -749,20 +805,6 @@ function taipeiClock(now: Date) {
   };
 }
 
-function previousTaiwanWeekday(dateText: string) {
-  const date = new Date(`${dateText}T00:00:00Z`);
-  do { date.setUTCDate(date.getUTCDate() - 1); } while ([0, 6].includes(date.getUTCDay()));
-  return date.toISOString().slice(0, 10);
-}
-
-export function stableTaiwanDailyCoverageEnd(now: Date) {
-  const clock = taipeiClock(now);
-  if (["Sat", "Sun"].includes(clock.weekday)) return previousTaiwanWeekday(clock.date);
-  if (clock.minutes < 8 * 60 + 30) return previousTaiwanWeekday(clock.date);
-  if (clock.minutes >= 15 * 60) return clock.date;
-  return null;
-}
-
 function sessionDateForCandle(row: HistoryCandle | undefined) {
   if (!row) return null;
   try {
@@ -779,9 +821,8 @@ function sessionDateForSourceUpdate(value: string | undefined) {
   return sessionDateForCandle({ time: Math.floor(Date.parse(value) / 1000), open: 1, high: 1, low: 1, close: 1, volume: 0, sourceTimeZone: "Asia/Taipei" });
 }
 
-function taiwanDailyCoverageComplete(symbol: string, interval: string, rows: HistoryCandle[], now: Date) {
+function taiwanDailyCoverageComplete(symbol: string, interval: string, rows: HistoryCandle[], expected: string | null) {
   if (interval !== "1d" || !/\.(TW|TWO)$/i.test(symbol)) return false;
-  const expected = stableTaiwanDailyCoverageEnd(now);
   const actual = sessionDateForCandle(rows.at(-1));
   return Boolean(expected && actual && actual >= expected);
 }
@@ -797,17 +838,22 @@ async function invalidateCandlePayloadCache(db: D1Database | undefined, symbol: 
   }
 }
 
-function taiwanDailyContinuityOptions(env: Env, symbol: string, interval: string, now: Date, maxOfficialMonths?: number) {
+function taiwanDailyContinuityOptions(env: Env, symbol: string, interval: string, now: Date, expectedSession: string | null, maxOfficialMonths?: number) {
   if (interval !== "1d" || !/\.(TW|TWO)$/i.test(symbol)) return {};
   return {
-    continuityAudit: (rows: HistoryCandle[], requiredRows: number) => auditTaiwanDailyContinuity({
+    continuityAudit: (rows: HistoryCandle[], requiredRows: number) => expectedSession ? auditTaiwanDailyContinuity({
       db: env.DB,
       symbol,
       rows,
       requiredRows,
-      expectedThrough: stableTaiwanDailyCoverageEnd(now),
+      expectedThrough: expectedSession,
       now,
       maxOfficialMonths,
+    }) : Promise.resolve({
+      status: "unknown" as const, checkedFrom: sessionDateForCandle(rows[0]), checkedThrough: null,
+      checkedAt: now.toISOString(), verifiedThrough: null, missingSessionCount: 0,
+      missingSessionDates: [], excludedSessionDates: [], reasonCode: "calendar_authority_unavailable",
+      repairRows: [], candidateMonths: [], officialRequests: 0,
     }),
     invalidatePayloadCache: () => invalidateCandlePayloadCache(env.DB, symbol, interval),
   };
@@ -916,6 +962,8 @@ async function cachedCandlePayload(
     }
   }
   try {
+    const expectedSession = /\.(TW|TWO)$/i.test(symbol)
+      ? (await resolveOfficialCompletedSession(requestNow, fetch, env.DB)).expectedSession : null;
     const baseProvider = providerForCandleSymbol(symbol);
     const provider = baseProvider === "yfinance" && interval === "1wk"
       ? "yfinance-weekly-from-daily-v1"
@@ -932,8 +980,8 @@ async function cachedCandlePayload(
         const fetched = await fetchHistoryCandles(env, symbol, interval, mode, requestNow, startTime);
         return { rows: fetched.rows, source: fetched.provider };
       },
-      coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, interval, rows, requestNow),
-      ...taiwanDailyContinuityOptions(env, symbol, interval, requestNow),
+      coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, interval, rows, expectedSession),
+      ...taiwanDailyContinuityOptions(env, symbol, interval, requestNow, expectedSession),
       now: requestNow,
     });
     let pivotReferenceRows: Candle[] = [];
@@ -954,8 +1002,8 @@ async function cachedCandlePayload(
               const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
               return { rows: fetched.rows, source: fetched.provider };
             },
-            coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
-            ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow),
+            coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, expectedSession),
+            ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow, expectedSession),
             now: requestNow,
           });
           pivotReferenceRows = dailyHistory.rows;
@@ -964,7 +1012,7 @@ async function cachedCandlePayload(
         }
       }
     }
-    const payload = candlePayloadFromRows(
+    const payload: CandlePayloadResult = candlePayloadFromRows(
       symbol,
       interval,
       history.rows,
@@ -988,8 +1036,8 @@ async function cachedCandlePayload(
         const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
         return { rows: fetched.rows, source: fetched.provider };
       },
-      coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
-      ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow),
+      coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, expectedSession),
+      ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow, expectedSession),
       now: requestNow,
       });
       const dailyPayload = candlePayloadFromRows(
@@ -1017,7 +1065,7 @@ async function cachedCandlePayload(
         await env.DB.prepare(`INSERT INTO candle_cache (cache_key,payload,expires_at) VALUES (?,?,?) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload,expires_at=excluded.expires_at,updated_at=CURRENT_TIMESTAMP`).bind(key, JSON.stringify(payload), now + cacheTtl(interval)).run();
       } catch {
         recordCacheEvent("write_failure");
-        payload.dataWindow = { ...payload.dataWindow, cache: { ...payload.dataWindow.cache, store: "memory", state: "miss", source: payload.quote?.sourceProvider, tailRefresh: "success", reason: "d1_unavailable" } };
+        payload.dataWindow = { ...payload.dataWindow, cache: { ...payload.dataWindow.cache, store: "worker-memory", state: "miss", source: payload.quote?.sourceProvider, tailRefresh: "success", reason: "d1_unavailable" } };
       }
     }
     return payload;
@@ -1029,7 +1077,7 @@ async function cachedCandlePayload(
   }
 }
 
-async function verifyMarketQuote(env: Env, symbol: string, interval: string, candles: Candle[], current: QuoteState) {
+async function verifyMarketQuote(env: Env, symbol: string, interval: string, candles: Candle[], current: QuoteState): Promise<QuoteState> {
   if (interval !== "1d" || !candles.length) return { ...current, verification: { status: "unverified", provider: null, reason: "unsupported_interval" } };
   if (current?.marketPhase === "open") return { ...current, verification: { status: "not_applicable", provider: null, reason: "market_open" } };
   if (current?.kind !== "session-close") return { ...current, verification: { status: "unverified", provider: null, reason: "unsupported_quote_kind" } };
@@ -1081,7 +1129,7 @@ function parseTwseMiIndex(payload: TwseMiIndexPayload, sessionDate: string, chec
     return fields.includes("證券代號") && fields.includes("收盤價");
   });
   if (!table) return { reason: "reference_not_published", checkedAt };
-  if (!Array.isArray(table.data)) return { reason: "invalid_reference_data", checkedAt };
+  if (!Array.isArray(table.data) || !Array.isArray(table.fields)) return { reason: "invalid_reference_data", checkedAt };
   const fields = table.fields.map((field: unknown) => String(field).trim());
   const codeIndex = fields.indexOf("證券代號");
   const volumeIndex = fields.indexOf("成交股數");
@@ -1222,8 +1270,9 @@ async function ingestInstrumentCatalog(request: Request, env: Env) {
   if (!Array.isArray(body?.rows) || body.rows.length < minimumRows || body.rows.length > 2500) return json({ ok: false, error: "Invalid payload" }, 400);
   const fetchedAt = String(body?.fetchedAt || "");
   if (!Number.isFinite(Date.parse(fetchedAt))) return json({ ok: false, error: "Invalid payload" }, 400);
-  const entries = body.rows.map((item) => normalizedOfficialCatalogRow(jsonObject(item) as OfficialCatalogRow, source, fetchedAt));
-  if (entries.some((item: CatalogEntry | null) => !item)) return json({ ok: false, error: "Invalid payload" }, 400);
+  const candidates = body.rows.map((item) => normalizedOfficialCatalogRow(jsonObject(item) as OfficialCatalogRow, source, fetchedAt));
+  if (candidates.some((item: CatalogEntry | null) => !item)) return json({ ok: false, error: "Invalid payload" }, 400);
+  const entries = candidates.filter((item): item is CatalogEntry => item !== null);
   if (entries.filter((item: CatalogEntry) => /[^\x00-\x7F]/.test(item.localizedName)).length < entries.length * 0.9) return json({ ok: false, error: "Invalid payload" }, 400);
   const unique = new Set(entries.map((item: CatalogEntry) => `${item.symbol}|${item.exchange}`));
   if (unique.size !== entries.length) return json({ ok: false, error: "Invalid payload" }, 400);
@@ -1594,13 +1643,13 @@ async function tdccHistoryBackfill(request: Request, env: Env) {
       const backfill = await startTdccHistoryBackfill({
         db: env.DB,
         jobId: String(body?.jobId || "tdcc-one-year"),
-        expectedDates: body?.expectedDates,
+        expectedDates: requiredStringArray(body?.expectedDates),
         mode,
-        targetSymbols: body?.targetSymbols,
+        targetSymbols: optionalStringArray(body?.targetSymbols),
       });
       return json({ ok: true, source, backfill });
     }
-    if (body?.action !== "ingest-week" || !["tdcc-official-history-export", "tdcc-official-history-query"].includes(body?.source)) throw new Error("invalid_response");
+    if (body?.action !== "ingest-week" || !["tdcc-official-history-export", "tdcc-official-history-query"].includes(String(body?.source || ""))) throw new Error("invalid_response");
     const jobId = String(body?.jobId || "");
     const dataDate = String(body?.dataDate || "");
     const fetchedAt = String(body?.fetchedAt || "");
@@ -2365,6 +2414,24 @@ async function saveInstrument(request: Request, env: Env, list?: SaveInstrumentI
     return json({ ok: false, error: code === "recommender_too_long" ? "推薦人最多 80 個字。" : "推薦人包含不允許的控制字元。" }, 400);
   }
   for (const item of normalizedItems) {
+    if (item.tabKey) {
+      const contextForTab = await directWatchlistContext(request, env);
+      const tab = contextForTab?.model.managedTabs.find((candidate) => candidate.tabKey === item.tabKey && candidate.enabled);
+      if (!tab || !contextForTab || (tab.tabKey?.startsWith("system:") && String(item.tabId || "") !== "")) {
+        return json({ ok: false, error: "頁籤身分已變更，請重新整理。" }, 409);
+      }
+      if (tab.tabKey?.startsWith("system:")) {
+        const current = contextForTab.scoped.find((candidate) => candidate.systemTabId === (tab.sourceTabId || tab.id) && candidate.symbol === item.symbolText);
+        const recommender = item.recommenderProvided ? item.recommenderText : current?.recommender || "";
+        await env.DB.prepare(`INSERT INTO user_system_tab_instruments
+          (user_id,system_tab_id,symbol,item_id,name,provider,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(user_id,system_tab_id,symbol) DO UPDATE SET name=excluded.name,provider=excluded.provider,group_name=excluded.group_name,market=excluded.market,enabled=excluded.enabled,sort_order=excluded.sort_order,recommender=excluded.recommender,updated_at=CURRENT_TIMESTAMP`)
+          .bind(uid, tab.sourceTabId || tab.id, item.symbolText, newWatchlistItemId(), String(item.name || item.symbolText), String(item.provider || "yfinance"), String(item.group || "自訂"), String(item.market || tab.label), item.enabled === false ? 0 : 1, item.defaultOrder == null ? null : Number(item.defaultOrder), taipeiCalendarDate(), "known", "server", recommender).run();
+        continue;
+      }
+      if (String(item.tabId || "") !== tab.id) return json({ ok: false, error: "頁籤身分已變更，請重新整理。" }, 409);
+    }
     const tabId = String(item.tabId || "");
     const existing = await env.DB.prepare("SELECT item_id,recommender FROM user_instruments WHERE user_id = ? AND symbol = ? AND tab_id = ?").bind(uid, item.symbolText, tabId).first<ExistingWatchlistRow>();
     const values = [
@@ -2392,6 +2459,135 @@ async function saveInstrument(request: Request, env: Env, list?: SaveInstrumentI
   scheduleWatchlistChipPrewarm(request, env, normalizedItems, context);
   const realtime = await syncRealtimeWatchlist(request, env, uid);
   return json({ ...(await instrumentPayload(request, env)), ok: true, realtime });
+}
+
+async function directWatchlistContext(request: Request, env: Env) {
+  const uid = identifiedUserId(request);
+  if (!uid || !env.DB) return null;
+  await ensureDb(env.DB);
+  const [baseText, rows, custom, scoped, revisionRow] = await Promise.all([
+    setupText(request, env), personalTabRows(env.DB, uid), personalInstruments(env.DB, uid), systemTabInstruments(env.DB, uid),
+    env.DB.prepare("SELECT revision FROM user_watchlist_mutation_revision WHERE user_id=?").bind(uid).first<{ revision: number }>(),
+  ]);
+  const legacy = mergeWatchlistInstruments(parseSetup(baseText), custom);
+  const model = resolveEffectiveTabs(systemTabs(legacy), rows);
+  return { uid, legacy, scoped, model, revision: Number(revisionRow?.revision || 0) };
+}
+
+function directWatchlistRevisionGuard(db: D1Database, uid: string, expectedRevision: number) {
+  return db.prepare(`INSERT INTO user_watchlist_mutation_revision (user_id,revision) VALUES (?,1)
+    ON CONFLICT(user_id) DO UPDATE SET revision=CASE WHEN revision=? THEN revision+1 ELSE -1 END`)
+    .bind(uid, expectedRevision);
+}
+
+function directWatchlistWriteFailure(error: unknown, defaultMessage: string) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (/CHECK constraint failed.*revision|user_watchlist_mutation_revision.*CHECK/i.test(message)) {
+    return json({ ok: false, reason: "concurrent_change", error: "清單剛被其他操作更新，請重新整理後重試。" }, 409);
+  }
+  return json({ ok: false, reason: "write_failed", error: defaultMessage }, 503);
+}
+
+function directWatchlistMemberStatement(db: D1Database, uid: string, tab: MarketTab, item: Instrument, enabled: boolean, sortOrder: number | null) {
+  const itemId = newWatchlistItemId();
+  if (tab.tabKey?.startsWith("system:")) {
+    return db.prepare(`INSERT INTO user_system_tab_instruments
+      (user_id,system_tab_id,symbol,item_id,name,provider,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(user_id,system_tab_id,symbol) DO UPDATE SET enabled=excluded.enabled,sort_order=excluded.sort_order,updated_at=CURRENT_TIMESTAMP`)
+      .bind(uid, tab.sourceTabId || tab.id, item.symbol, itemId, item.name, item.provider, item.group, item.market,
+        enabled ? 1 : 0, sortOrder, taipeiCalendarDate(), "known", "server", item.recommender || "");
+  }
+  return db.prepare(`INSERT INTO user_instruments
+    (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(user_id,symbol,tab_id) DO UPDATE SET enabled=excluded.enabled,sort_order=excluded.sort_order,updated_at=CURRENT_TIMESTAMP`)
+    .bind(uid, itemId, item.symbol, item.name, item.provider, tab.id, tab.label, item.group, item.market,
+      enabled ? 1 : 0, sortOrder, taipeiCalendarDate(), "known", "server", item.recommender || "");
+}
+
+function directWatchlistSourceRemovalStatement(db: D1Database, context: NonNullable<Awaited<ReturnType<typeof directWatchlistContext>>>, tab: MarketTab, item: Instrument) {
+  const hasInheritedPersonalMember = !tab.tabKey?.startsWith("system:")
+    && context.legacy.some((candidate) => candidate.symbol === item.symbol && candidate.enabled && !candidate.tabId && candidate.tab === tab.label);
+  if (!tab.tabKey?.startsWith("system:") && item.tabId === tab.id && !hasInheritedPersonalMember) {
+    return db.prepare("DELETE FROM user_instruments WHERE user_id=? AND symbol=? AND tab_id=?").bind(context.uid, item.symbol, tab.id);
+  }
+  return directWatchlistMemberStatement(db, context.uid, tab, item, false, item.defaultOrder);
+}
+
+function directWatchlistFirstOrder(items: Instrument[]) {
+  const minimum = items.reduce((value, item) => Math.min(value, item.defaultOrder ?? Number.MAX_SAFE_INTEGER), 0);
+  if (!Number.isSafeInteger(minimum) || minimum <= Number.MIN_SAFE_INTEGER + 1) return null;
+  return minimum - 1;
+}
+
+async function transferWatchlistInstrument(request: Request, env: Env) {
+  if (!env.DB) return json({ ok: false, error: "清單資料庫尚未啟用。" }, 503);
+  const body = await parseTabMutationBody(request);
+  const symbol = String(body?.symbol || "").trim().toUpperCase();
+  const sourceTabKey = String(body?.sourceTabKey || "");
+  const targetTabKey = String(body?.targetTabKey || "");
+  const mode = body?.mode;
+  if (!symbol || !sourceTabKey || !targetTabKey || sourceTabKey === targetTabKey || (mode !== "move" && mode !== "copy")) {
+    return json({ ok: false, reason: "invalid_transfer", error: "移動或複製資料不完整。" }, 400);
+  }
+  const context = await directWatchlistContext(request, env);
+  if (!context) return authenticationFailure();
+  const blocked = tabMutationBlockedResponse(context.model);
+  if (blocked) return blocked;
+  const source = context.model.marketTabs.find((tab) => tab.tabKey === sourceTabKey);
+  const target = context.model.marketTabs.find((tab) => tab.tabKey === targetTabKey);
+  if (!source || !target) return json({ ok: false, reason: "tab_changed", error: "來源或目的頁籤已變更，請重新整理。" }, 409);
+  const sourceItems = effectiveInstrumentsForTab(source, context.legacy, context.scoped);
+  const sourceItem = sourceItems.find((item) => item.symbol === symbol);
+  if (!sourceItem) return json({ ok: false, reason: "source_changed", error: "來源頁籤已沒有這個商品，請重新整理。" }, 409);
+  const targetItems = effectiveInstrumentsForTab(target, context.legacy, context.scoped);
+  const targetItem = targetItems.find((item) => item.symbol === symbol);
+  const firstOrder = directWatchlistFirstOrder(targetItems.filter((item) => item.symbol !== symbol));
+  if (firstOrder === null) return json({ ok: false, reason: "order_exhausted", error: "目的頁籤排序需要先整理。" }, 409);
+  const statements = [
+    directWatchlistRevisionGuard(env.DB, context.uid, context.revision),
+    directWatchlistMemberStatement(env.DB, context.uid, target, targetItem || sourceItem, true, firstOrder),
+  ];
+  if (mode === "move") statements.push(directWatchlistSourceRemovalStatement(env.DB, context, source, sourceItem));
+  try { await env.DB.batch(statements); }
+  catch (error) { return directWatchlistWriteFailure(error, "清單異動失敗，來源與目的頁籤均未變更。"); }
+  const refreshed = await directWatchlistContext(request, env);
+  const refreshedSource = refreshed?.model.marketTabs.find((tab) => tab.tabKey === sourceTabKey);
+  const refreshedTarget = refreshed?.model.marketTabs.find((tab) => tab.tabKey === targetTabKey);
+  const targetFirst = refreshed && refreshedTarget ? effectiveInstrumentsForTab(refreshedTarget, refreshed.legacy, refreshed.scoped)[0]?.symbol : null;
+  const sourceStillHasItem = refreshed && refreshedSource ? effectiveInstrumentsForTab(refreshedSource, refreshed.legacy, refreshed.scoped).some((item) => item.symbol === symbol) : true;
+  if (targetFirst !== symbol || sourceStillHasItem !== (mode === "copy")) {
+    return json({ ok: false, reason: "post_write_conflict", error: "清單在異動期間再次變更，請重新整理確認。" }, 409);
+  }
+  return json({ ...(await instrumentPayload(request, env)), ok: true, mode, symbol, sourceTabKey, targetTabKey });
+}
+
+async function removeWatchlistInstrumentFromTab(request: Request, env: Env) {
+  if (!env.DB) return json({ ok: false, error: "清單資料庫尚未啟用。" }, 503);
+  const body = await parseTabMutationBody(request);
+  const symbol = String(body?.symbol || "").trim().toUpperCase();
+  const sourceTabKey = String(body?.sourceTabKey || "");
+  if (!symbol || !sourceTabKey) return json({ ok: false, reason: "invalid_removal", error: "移除商品資料不完整。" }, 400);
+  const context = await directWatchlistContext(request, env);
+  if (!context) return authenticationFailure();
+  const blocked = tabMutationBlockedResponse(context.model);
+  if (blocked) return blocked;
+  const source = context.model.marketTabs.find((tab) => tab.tabKey === sourceTabKey);
+  if (!source) return json({ ok: false, reason: "tab_changed", error: "頁籤已變更，請重新整理。" }, 409);
+  const sourceItem = effectiveInstrumentsForTab(source, context.legacy, context.scoped).find((item) => item.symbol === symbol);
+  if (!sourceItem) return json({ ok: false, reason: "source_changed", error: "這個商品已不在該頁籤，請重新整理。" }, 409);
+  try { await env.DB.batch([
+    directWatchlistRevisionGuard(env.DB, context.uid, context.revision),
+    directWatchlistSourceRemovalStatement(env.DB, context, source, sourceItem),
+  ]); }
+  catch (error) { return directWatchlistWriteFailure(error, "移除失敗，清單未變更。"); }
+  const refreshed = await directWatchlistContext(request, env);
+  const refreshedSource = refreshed?.model.marketTabs.find((tab) => tab.tabKey === sourceTabKey);
+  if (!refreshed || !refreshedSource || effectiveInstrumentsForTab(refreshedSource, refreshed.legacy, refreshed.scoped).some((item) => item.symbol === symbol)) {
+    return json({ ok: false, reason: "post_write_conflict", error: "清單在異動期間再次變更，請重新整理確認。" }, 409);
+  }
+  return json({ ...(await instrumentPayload(request, env)), ok: true, symbol, sourceTabKey });
 }
 
 async function syncStockScreenerListItem(request: Request, env: Env) {
@@ -2482,8 +2678,11 @@ async function syncRealtimeWatchlist(request: Request, env: Env, uid: string) {
   if (!env.DB || !realtimeViewerCapability(request, env)) {
     return notifyRealtimeWatchlistSymbols(request, env, []);
   }
-  const rows = await env.DB.prepare("SELECT symbol FROM user_instruments WHERE user_id=? AND enabled=1 ORDER BY symbol").bind(uid).all<SymbolRow>();
-  return notifyRealtimeWatchlistSymbols(request, env, rows.results.map((row) => row.symbol));
+  const [rows, scoped] = await Promise.all([
+    env.DB.prepare("SELECT symbol FROM user_instruments WHERE user_id=? AND enabled=1 ORDER BY symbol").bind(uid).all<SymbolRow>(),
+    env.DB.prepare("SELECT symbol FROM user_system_tab_instruments WHERE user_id=? AND enabled=1 ORDER BY symbol").bind(uid).all<SymbolRow>(),
+  ]);
+  return notifyRealtimeWatchlistSymbols(request, env, [...new Set([...rows.results, ...scoped.results].map((row) => row.symbol))]);
 }
 
 async function updateWatchlistMetadata(request: Request, env: Env, itemId: string) {
@@ -2491,8 +2690,9 @@ async function updateWatchlistMetadata(request: Request, env: Env, itemId: strin
   const uid = identifiedUserId(request);
   if (!uid) return json({ ok: false, error: "請先登入後再修改清單。" }, 401);
   await ensureDb(env.DB);
-  const existing = await env.DB.prepare("SELECT item_id FROM user_instruments WHERE user_id = ? AND item_id = ?").bind(uid, itemId).first<ExistingWatchlistRow>();
-  if (!existing) return json({ ok: false, error: "找不到清單項目。" }, 404);
+  const scopedExisting = await env.DB.prepare("SELECT item_id FROM user_system_tab_instruments WHERE user_id = ? AND item_id = ?").bind(uid, itemId).first<ExistingWatchlistRow>();
+  const existing = scopedExisting ? null : await env.DB.prepare("SELECT item_id FROM user_instruments WHERE user_id = ? AND item_id = ?").bind(uid, itemId).first<ExistingWatchlistRow>();
+  if (!existing && !scopedExisting) return json({ ok: false, error: "找不到清單項目。" }, 404);
   let body: JsonObject;
   try { body = jsonObject(await request.json()); }
   catch { return json({ ok: false, error: "推薦人資料格式不正確。" }, 400); }
@@ -2502,7 +2702,7 @@ async function updateWatchlistMetadata(request: Request, env: Env, itemId: strin
     const code = error instanceof Error ? error.message : "";
     return json({ ok: false, error: code === "recommender_too_long" ? "推薦人最多 80 個字。" : "推薦人包含不允許的控制字元。" }, 400);
   }
-  await env.DB.prepare("UPDATE user_instruments SET recommender = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND item_id = ?").bind(recommender, uid, itemId).run();
+  await env.DB.prepare(`UPDATE ${scopedExisting ? "user_system_tab_instruments" : "user_instruments"} SET recommender = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND item_id = ?`).bind(recommender, uid, itemId).run();
   return json({ ...(await instrumentPayload(request, env)), ok: true, itemId });
 }
 
@@ -2524,16 +2724,6 @@ function parseReorderRequest(value: unknown): ReorderRequest {
   return { tabId, tabLabel, scope, items, revision };
 }
 
-function mergedSystemInstruments(base: Instrument[], custom: Instrument[]) {
-  const merged = [...base];
-  for (const item of custom.filter((candidate) => !(candidate.tabId || ""))) {
-    const index = merged.findIndex((candidate) => candidate.symbol === item.symbol && candidate.tab === item.tab);
-    if (index >= 0) merged[index] = item;
-    else merged.push(item);
-  }
-  return merged;
-}
-
 async function reorderInstruments(request: Request, env: Env) {
   if (!env.DB) return json({ ok: false, error: "Sites D1 尚未啟用。" }, 503);
   let reorder: ReorderRequest;
@@ -2541,29 +2731,21 @@ async function reorderInstruments(request: Request, env: Env) {
   catch (error) { return json({ ok: false, error: error instanceof Error ? error.message : "排序資料無效。" }, 400); }
 
   await ensureDb(env.DB);
-  const uid = userId(request);
-  const [base, tabRows, custom] = await Promise.all([
-    setupText(request, env).then(parseSetup),
-    personalTabRows(env.DB, uid),
-    personalInstruments(env.DB, uid),
-  ]);
+  const context = await directWatchlistContext(request, env);
+  if (!context) return authenticationFailure();
+  const { uid, model, legacy, scoped } = context;
 
   let eligible: Instrument[];
   if (reorder.scope === "system") {
-    const effective = resolveEffectiveTabs(systemTabs(mergedSystemInstruments(base, custom)), tabRows)
-      .marketTabs.find((tab) => tab.tabKey === systemTabKey(reorder.tabId));
+    const effective = model.marketTabs.find((tab) => tab.tabKey === systemTabKey(reorder.tabId));
     if (!effective || effective.label !== reorder.tabLabel) return json({ ok: false, error: "系統頁籤身分不符。" }, 400);
     if (reorder.items.some((item) => item.tabId !== "")) return json({ ok: false, error: "排序包含其他頁籤的商品。" }, 400);
-    const baseLabel = Object.entries(TAB_IDS).find(([, id]) => id === reorder.tabId)?.[0] || reorder.tabLabel;
-    eligible = mergedSystemInstruments(base, custom).filter((item) => item.enabled && !(item.tabId || "") && [baseLabel, reorder.tabLabel].includes(item.tab));
+    eligible = effectiveInstrumentsForTab(effective, legacy, scoped);
   } else {
-    const tab = tabRows.find((candidate) => candidate.id === reorder.tabId && candidate.label === reorder.tabLabel && Boolean(candidate.enabled) && !candidate.source_tab_id);
+    const tab = model.marketTabs.find((candidate) => candidate.tabKey === personalTabKey(reorder.tabId) && candidate.label === reorder.tabLabel);
     if (!tab) return json({ ok: false, error: "找不到指定的個人頁籤。" }, 400);
     if (reorder.items.some((item) => item.tabId !== reorder.tabId)) return json({ ok: false, error: "排序包含其他頁籤的商品。" }, 400);
-    const inherited = mergedSystemInstruments(base, custom).filter((item) => item.enabled && !(item.tabId || "") && item.tab === reorder.tabLabel);
-    const personal = custom.filter((item) => item.enabled && item.tabId === reorder.tabId);
-    const personalBySymbol = new Map(personal.map((item) => [item.symbol, item]));
-    eligible = [...inherited.map((item) => personalBySymbol.get(item.symbol) || item), ...personal.filter((item) => !inherited.some((candidate) => candidate.symbol === item.symbol))];
+    eligible = effectiveInstrumentsForTab(tab, legacy, scoped);
   }
 
   const eligibleBySymbol = new Map(eligible.map((item) => [item.symbol, item]));
@@ -2574,9 +2756,12 @@ async function reorderInstruments(request: Request, env: Env) {
 
   const statements = submittedSymbols.map((symbol, index) => {
     const item = eligibleBySymbol.get(symbol)!;
-    const targetTabId = reorder.scope === "personal" ? reorder.tabId : "";
-    return env.DB!.prepare(`INSERT INTO user_instruments (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,symbol,tab_id) DO UPDATE SET sort_order=excluded.sort_order,updated_at=CURRENT_TIMESTAMP`)
-      .bind(uid, newWatchlistItemId(), symbol, item.name, item.provider, targetTabId, reorder.tabLabel, item.group, item.market, 1, index + 1, null, "legacy_unknown", null, "");
+    if (reorder.scope === "personal") {
+      return env.DB!.prepare(`INSERT INTO user_instruments (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,symbol,tab_id) DO UPDATE SET sort_order=excluded.sort_order,updated_at=CURRENT_TIMESTAMP`)
+        .bind(uid, newWatchlistItemId(), symbol, item.name, item.provider, reorder.tabId, reorder.tabLabel, item.group, item.market, 1, index + 1, null, "legacy_unknown", null, "");
+    }
+    const tab = model.marketTabs.find((candidate) => candidate.tabKey === systemTabKey(reorder.tabId))!;
+    return directWatchlistMemberStatement(env.DB!, uid, tab, item, true, index + 1);
   });
   await env.DB.batch(statements);
   return json({ ok: true, tabId: reorder.tabId, tabLabel: reorder.tabLabel, scope: reorder.scope, revision: reorder.revision, order: submittedSymbols });
@@ -2825,10 +3010,12 @@ type DailyContinuityHealthRow = {
 };
 
 async function readDailyContinuityHealth(db: D1Database | undefined, now = new Date()) {
+  const calendar = await resolveOfficialCompletedSession(now, fetch, db);
   const empty = {
     global: { d1: db ? "available" : "unavailable", schema: db ? "unknown" : "unavailable" },
-    counts: { enabledSymbols: 0, complete: 0, partial: 0, unknown: 0, notAudited: 0, latestSessionCoverage: 0 },
-    expectedCompletedSession: stableTaiwanDailyCoverageEnd(now),
+    counts: { enabledSymbols: 0, complete: 0, partial: 0, unknown: 0, notAudited: 0, latestSessionCoverage: 0, latestSessionVerified: 0 },
+    expectedCompletedSession: calendar.expectedSession,
+    calendar: { status: calendar.status, reasonCode: calendar.reasonCode },
     items: [] as Array<Record<string, unknown>>,
   };
   if (!db) return empty;
@@ -2846,7 +3033,7 @@ async function readDailyContinuityHealth(db: D1Database | undefined, now = new D
       ORDER BY enabled.symbol
       LIMIT 200
     `).all<DailyContinuityHealthRow>();
-    const expectedCompletedSession = stableTaiwanDailyCoverageEnd(now);
+    const expectedCompletedSession = calendar.expectedSession;
     const items = (result.results || []).map((row) => {
       const status = ["complete", "partial", "unknown"].includes(String(row.continuity_status))
         ? String(row.continuity_status) as "complete" | "partial" | "unknown"
@@ -2864,6 +3051,9 @@ async function readDailyContinuityHealth(db: D1Database | undefined, now = new D
         lastChecked: row.continuity_checked_at || null,
         reasonCode: row.continuity_reason_code || (row.continuity_checked_at ? null : "continuity_not_audited"),
         latestSessionCovered: Boolean(expectedCompletedSession && coverageEndDate && coverageEndDate >= expectedCompletedSession),
+        latestSessionVerified: Boolean(expectedCompletedSession && status === "complete" && !Number(row.missing_session_count)
+          && row.continuity_through && row.continuity_through >= expectedCompletedSession
+          && coverageEndDate && coverageEndDate >= expectedCompletedSession),
       };
     });
     return {
@@ -2875,8 +3065,10 @@ async function readDailyContinuityHealth(db: D1Database | undefined, now = new D
         unknown: items.filter((item) => item.continuityStatus === "unknown").length,
         notAudited: items.filter((item) => !item.lastChecked).length,
         latestSessionCoverage: items.filter((item) => item.latestSessionCovered).length,
+        latestSessionVerified: items.filter((item) => item.latestSessionVerified).length,
       },
       expectedCompletedSession,
+      calendar: { status: calendar.status, reasonCode: calendar.reasonCode },
       items,
     };
   } catch {
@@ -2951,6 +3143,7 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
       };
     }
   }
+  const expectedSession = (await resolveOfficialCompletedSession(requestNow, fetch, env.DB)).expectedSession;
   const history = await acquireCandleHistory({
     db: env.DB,
     provider: providerForCandleSymbol(symbol),
@@ -2961,8 +3154,8 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
       const fetched = await fetchHistoryCandles(env, symbol, "1d", mode, requestNow, startTime);
       return { rows: fetched.rows, source: fetched.provider };
     },
-    coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, requestNow),
-    ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow, 4),
+    coverageComplete: (rows) => taiwanDailyCoverageComplete(symbol, "1d", rows, expectedSession),
+    ...taiwanDailyContinuityOptions(env, symbol, "1d", requestNow, expectedSession, 4),
     now: requestNow,
   });
   const continuity = history.cache.continuity;
@@ -2983,8 +3176,9 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
 export async function runLocalCandleContinuity(request: Request, env: Env) {
   if (env.DEPLOYMENT_TARGET !== "local" || !env.LOCAL_PIPELINE_SECRET || !env.DB) throw new Error("local_only");
   const now = new Date();
-  const expectedSession = stableTaiwanDailyCoverageEnd(now);
-  if (!expectedSession) return { done: false, processed: 0, reasonCode: "reference_not_published" };
+  const calendar = await resolveOfficialCompletedSession(now, fetch, env.DB);
+  const expectedSession = calendar.expectedSession;
+  if (!expectedSession) return { done: false, processed: 0, reasonCode: calendar.reasonCode || "calendar_authority_unavailable" };
   const runId = `local-daily-continuity-${expectedSession}`;
   // Reuse the audited state machine without installing or exposing another secret.
   const auditEnv = { ...env, CANDLE_CONTINUITY_AUDIT_SECRET: env.LOCAL_PIPELINE_SECRET };
@@ -3049,6 +3243,15 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
   await ensureDb(env.DB);
   const action = String(body.action || "");
   if (action) {
+    if (action === "seed-official-trading-calendar") {
+      if (!local || !env.DB || !Number.isInteger(body.year)) return json({ ok: false, reasonCode: "invalid_payload" }, 400);
+      try {
+        const seeded = await seedOfficialTradingCalendar(env.DB, Number(body.year), body.twse, body.tpex, new Date());
+        return json({ ok: true, seeded });
+      } catch {
+        return json({ ok: false, reasonCode: "calendar_schema_mismatch" }, 400);
+      }
+    }
     if (action === "acceptance-cache-official-months") {
       const symbols = normalizeCandleContinuityAcceptanceSymbols([body.symbol]);
       const months = Array.isArray(body.months) ? body.months : [];
@@ -3078,7 +3281,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
           symbol: symbols[0],
           rows: historyRows,
           requiredRows: Math.min(320, Math.max(1, historyRows.length)),
-          expectedThrough: stableTaiwanDailyCoverageEnd(now),
+          expectedThrough: (await resolveOfficialCompletedSession(now, fetch, env.DB)).expectedSession,
           now,
         });
         if (continuity.repairRows.length) {
@@ -3105,8 +3308,10 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
     const now = new Date();
     try {
       if (action === "orchestrator-start") {
-        const expectedSession = typeof body.expectedSession === "string" ? body.expectedSession : stableTaiwanDailyCoverageEnd(now);
-        if (!expectedSession) throw new Error("invalid_response");
+        const calendar = await resolveOfficialCompletedSession(now, fetch, env.DB);
+        const expectedSession = calendar.expectedSession;
+        if (!expectedSession) throw new Error(calendar.reasonCode || "calendar_authority_unavailable");
+        if (body.expectedSession && body.expectedSession !== expectedSession) throw new Error("expected_session_mismatch");
         const trigger = body.trigger === "schedule" ? "schedule" : body.trigger === "local" ? "local" : "workflow_dispatch";
         const targets = planCandleContinuityTargets({
           candidates: await candleContinuityTargetCandidates(request, env),
@@ -3215,8 +3420,8 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   const url = new URL(request.url); const path = url.pathname;
   const personalPath = path === "/api/instruments"
     || path.startsWith("/api/instruments/")
-    || path.startsWith("/api/watchlist-items/")
     || path === "/api/integrations/stock-screener-list/items"
+    || path.startsWith("/api/watchlist-items/")
     || path === "/api/taiwan-stock-chip/backfill"
     || path === "/api/tabs"
     || path.startsWith("/api/tabs/")
@@ -3254,8 +3459,9 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
   }
   if (path === "/api/instruments" && request.method === "GET") {
     const payload = await instrumentPayload(request, env);
+    const readOnlyPurpose = url.searchParams.get("purpose");
     if (url.searchParams.get("mode") === "read-only"
-      && url.searchParams.get("purpose") === "stock-screener-list-sync-refresh") {
+      && ["intraday-monitor-import", "stock-screener-list-sync-refresh"].includes(readOnlyPurpose || "")) {
       return json({ ...payload, realtime: { status: "not-requested", acceptedSymbolCount: 0 } });
     }
     const uid = identifiedUserId(request);
@@ -3301,33 +3507,29 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
     return deleteCustomTab(request, env, tabKey);
   }
   if (path === "/api/instruments" && request.method === "POST") return saveInstrument(request, env, undefined, context);
-  if (path === "/api/instruments/reorder" && request.method === "POST") return reorderInstruments(request, env);
+  if (path === "/api/instruments/transfer" && request.method === "POST") return transferWatchlistInstrument(request, env);
+  if (path === "/api/instruments/remove-from-tab" && request.method === "POST") return removeWatchlistInstrumentFromTab(request, env);
   if (path === "/api/integrations/stock-screener-list/items" && request.method === "POST") return syncStockScreenerListItem(request, env);
+  if (path === "/api/instruments/reorder" && request.method === "POST") return reorderInstruments(request, env);
   const watchlistMetadataMatch = path.match(/^\/api\/watchlist-items\/([^/]+)\/metadata$/);
   if (watchlistMetadataMatch && request.method === "PATCH") return updateWatchlistMetadata(request, env, decodeURIComponent(watchlistMetadataMatch[1]));
   const instrumentMatch = path.match(/^\/api\/instruments\/(.+)$/);
   if (instrumentMatch && request.method === "DELETE") {
     if (!env.DB) return json({ ok: false, error: "Sites D1 尚未啟用。" }, 503);
     await ensureDb(env.DB);
-    const uid = userId(request);
     const symbol = decodeURIComponent(instrumentMatch[1]).toUpperCase();
     const tabId = url.searchParams.get("tabId") || "";
     const tabLabel = url.searchParams.get("tabLabel") || "";
     const systemScope = url.searchParams.get("scope") === "system";
-    if (systemScope) {
-      const baseLabel = Object.entries(TAB_IDS).find(([, id]) => id === tabId)?.[0] || tabLabel;
-      const base = parseSetup(await setupText(request, env)).find((item) => item.symbol === symbol && (!baseLabel || item.tab === baseLabel || item.tab === tabLabel));
-      const statements = [env.DB.prepare("DELETE FROM user_instruments WHERE user_id = ? AND symbol = ? AND tab_id IN (?, '')").bind(uid, symbol, tabId)];
-      if (base) {
-        statements.push(env.DB.prepare(`INSERT INTO user_instruments (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order,added_at,date_status,date_source,recommender) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,symbol,tab_id) DO UPDATE SET name=excluded.name,provider=excluded.provider,tab_label=excluded.tab_label,group_name=excluded.group_name,market=excluded.market,enabled=excluded.enabled,sort_order=excluded.sort_order,updated_at=CURRENT_TIMESTAMP`).bind(uid, newWatchlistItemId(), symbol, base.name, base.provider, "", base.tab, base.group, base.market, 0, base.defaultOrder, null, "legacy_unknown", null, ""));
-      }
-      await env.DB.batch(statements);
-    } else if (tabId) {
-      await env.DB.prepare("DELETE FROM user_instruments WHERE user_id = ? AND symbol = ? AND tab_id = ?").bind(uid, symbol, tabId).run();
-    } else {
-      await env.DB.prepare("DELETE FROM user_instruments WHERE user_id = ? AND symbol = ?").bind(uid, symbol).run();
-    }
-    await syncRealtimeWatchlist(request, env, uid);
+    const context = await directWatchlistContext(request, env);
+    if (!context) return authenticationFailure();
+    const tabKey = url.searchParams.get("tabKey") || (tabId ? (systemScope ? systemTabKey(tabId) : personalTabKey(tabId)) : "");
+    const tab = context.model.marketTabs.find((candidate) => candidate.tabKey === tabKey && candidate.label === tabLabel);
+    if (!tab || !symbol) return json({ ok: false, reason: "tab_changed", error: "頁籤身分已變更，請重新整理。" }, 409);
+    const item = effectiveInstrumentsForTab(tab, context.legacy, context.scoped).find((candidate) => candidate.symbol === symbol);
+    if (!item) return json({ ok: false, reason: "source_changed", error: "商品已不在這個頁籤。" }, 409);
+    await env.DB.batch([directWatchlistSourceRemovalStatement(env.DB, context, tab, item)]);
+    await syncRealtimeWatchlist(request, env, context.uid);
     return json({ ...(await instrumentPayload(request, env)), ok: true });
   }
   return null;

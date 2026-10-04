@@ -17,6 +17,8 @@ const {
   __test: {
     groupForPane,
     groupSelectionState,
+    chipCoverageFrequencyLabel,
+    chipGroupDateScopeText,
     chipReadoutLayoutSignature,
     candleDateMappingSignature,
     countDrawableSeriesPoints,
@@ -759,6 +761,54 @@ test("十二個籌碼副圖只屬於三個固定資料群組且群組內順序�
   assert.equal(groupForPane("retail-holder"), "holder");
 });
 
+test("籌碼群組日期只使用可見副圖對應的 coverage，並明確區分日資料與週資料", () => {
+  const payload = {
+    coverage: [
+      { dataset: "institutional-flow", end: "2026-09-22", frequency: "daily" },
+      { dataset: "foreign-holding", end: "2026-09-21", frequency: "daily" },
+      { dataset: "margin-short", end: "2026-09-21", frequency: "daily" },
+      { dataset: "securities-lending", end: "2026-09-22", frequency: "daily" },
+      { dataset: "shareholder-distribution", end: "2026-09-18", frequency: "weekly" },
+    ],
+  };
+
+  assert.equal(
+    chipGroupDateScopeText("institutional", ["foreign-flow-holding", "investment-trust-flow"], payload),
+    "買賣超（日）至 2026-09-22 · 外資持股（日）至 2026-09-21",
+  );
+  assert.equal(
+    chipGroupDateScopeText("institutional", ["investment-trust-flow"], payload),
+    "買賣超（日）至 2026-09-22",
+  );
+  assert.equal(
+    chipGroupDateScopeText("margin-financing", ["margin", "securities-lending"], payload),
+    "融資融券（日）至 2026-09-21 · 借券（日）至 2026-09-22",
+  );
+  assert.equal(
+    chipGroupDateScopeText("holder", ["big-holder", "retail-holder"], payload),
+    "TDCC（週）至 2026-09-18",
+  );
+});
+
+test("籌碼群組 coverage 缺少日期或頻率時不推測其他資料日期", () => {
+  assert.equal(chipCoverageFrequencyLabel("daily"), "日");
+  assert.equal(chipCoverageFrequencyLabel("weekly"), "週");
+  assert.equal(chipCoverageFrequencyLabel(), "頻率未標示");
+  assert.equal(
+    chipGroupDateScopeText("holder", ["big-holder"], {
+      coverage: [{ dataset: "shareholder-distribution", requestedEnd: "2026-09-22" }],
+    }),
+    "TDCC（頻率未標示）尚無可驗證日期",
+  );
+  assert.equal(
+    chipGroupDateScopeText("institutional", ["investment-trust-flow"], {
+      coverage: [{ dataset: "foreign-holding", end: "2026-09-21", frequency: "daily" }],
+    }),
+    "買賣超（頻率未標示）尚無可驗證日期",
+  );
+  assert.equal(chipGroupDateScopeText("holder", ["big-holder"], undefined), "TDCC（頻率未標示）尚無可驗證日期");
+});
+
 test("群組父選項具備 checked、unchecked、indeterminate 並可一次切換全部子項", () => {
   assert.equal(groupSelectionState("margin-financing", []), "unchecked");
   assert.equal(groupSelectionState("margin-financing", ["margin"]), "indeterminate");
@@ -885,6 +935,7 @@ test("主圖三套壓撐公式預設關閉且共用所選參考 K、viewport-saf
   assert.match(appSource, /function persistSupportResistanceInputState\([\s\S]*?source\.enabled = enabled/);
   assert.match(appSource, /function restoreSupportResistanceInputsForContext\(symbol, interval\)[\s\S]*?source\?\.enabled\?\.has\(input\.value\)/);
   assert.match(appSource, /function applicableSupportResistanceSources\(\)[\s\S]*?supportResistanceSourceApplies\(source\.sourceInterval, targetInterval\)/);
+  assert.match(appSource, /if \(indicators\.pivot_points\) drawPivotPoints\(indicators\.pivot_points\);[\s\S]*?else \{[\s\S]*?renderPivotPointOverlay\(\);[\s\S]*?\}/);
   assert.match(appSource, /function pivotAnchorTimeForTarget\(source, projection\)[\s\S]*?supportResistanceReferenceKeyForTime\(row\.time, source\.sourceInterval\)/);
   assert.match(appSource, /label\.dataset\.sourceInterval = sourceInterval/);
   assert.match(indexHtml, /class="pivot-point-layer"/);
@@ -900,7 +951,7 @@ test("主圖三套壓撐公式預設關閉且共用所選參考 K、viewport-saf
   assert.match(appSource, /liveBatchCoordinator\.subscribe\(panelSubscriptionId/);
   assert.match(appSource, /display_count=\$\{encodeURIComponent\(oldCandleCount\)\}/);
   assert.match(appSource, /if \(\(payload\.candles \|\| \[\]\)\.length < oldCandleCount\)/);
-  assert.match(appSource, /function captureViewportSnapshot\(candles/);
+  assert.match(appSource, /function captureViewportSnapshot\(\s*candles/);
   assert.match(appSource, /function restoreViewportSnapshot\(snapshot, candles/);
   assert.match(appSource, /streamPivotMode !== selectedPivotMode\(\)/);
   assert.match(appSource, /function pausePanelStreamsForForegroundRequest\(\)[\s\S]*?state\.panels\.forEach\(\(panel\) => panel\.pauseStream\?\.\(\)\)/);
@@ -994,6 +1045,10 @@ test("方式 B 提供單一資料群組拖曳把手與右鍵群組排序，方�
   assert.match(chipSource, /textContent = "下移資料群組"/);
   assert.match(chipSource, /modeBGroupOrder/);
   assert.match(styles, /\.chip-pane-group-drag-handle\s*\{/);
+  assert.match(chipSource, /className = "chip-pane-group-date-scope"/);
+  assert.match(chipSource, /chipGroupDateScopeText\(groupId, children, payload\)/);
+  assert.match(styles, /\.chip-pane-group-date-scope\s*\{[^}]*white-space:\s*normal/s);
+  assert.match(styles, /\.chip-pane-stack\[data-chip-mode="A"\] \.chip-pane-group-header\s*\{[^}]*display:\s*none/s);
   assert.match(styles, /\.chip-pane-group\.is-dragging\s*\{[^}]*display:\s*none/s);
   assert.doesNotMatch(indexHtml, /chip-pane-(?:move-up|move-down)/);
 });

@@ -29,6 +29,85 @@
     });
   }
 
+  /**
+   * Expanding the canonical history window must not replace rows already
+   * owned by the active Shioaji session. Daily and higher intervals are
+   * atomic by Taipei trading period because official history can use 09:00
+   * while the live candle uses 00:00 for the same session. Intraday candles
+   * remain atomic by their exact timestamp.
+   */
+  function mergeHistoricalWindowWithLiveCandles(history, liveCandles, interval) {
+    const normalizedInterval = normalizeLocalInterval(interval);
+    const periodInterval = ["1d", "1wk", "1mo"].includes(normalizedInterval);
+    const candleKey = (row) => {
+      const time = Number(row?.time);
+      if (!Number.isFinite(time)) return "";
+      if (!periodInterval) return `time:${time}`;
+      const sessionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(row?.sessionDate || ""))
+        ? String(row.sessionDate)
+        : sessionDateForTime(time);
+      const key = sessionDate ? periodKey(normalizedInterval, sessionDate) : "";
+      return key ? `period:${normalizedInterval}:${key}` : `time:${time}`;
+    };
+    const merged = new Map();
+    for (const row of history || []) {
+      const time = Number(row?.time);
+      const key = candleKey(row);
+      if (key) merged.set(key, { ...row, time });
+    }
+    for (const row of liveCandles || []) {
+      const time = Number(row?.time);
+      const key = candleKey(row);
+      if (key) {
+        const canonicalRow = merged.get(key);
+        // Keep the canonical history coordinate when live data replaces the
+        // same daily/weekly/monthly period.  Otherwise a 00:00 live candle and
+        // 09:00 canonical indicators create two logical points for one
+        // trading day, which makes candle spacing grow after history loading.
+        const alignedTime = periodInterval && Number.isFinite(Number(canonicalRow?.time))
+          ? Number(canonicalRow.time)
+          : time;
+        merged.set(key, { ...row, time: alignedTime });
+      }
+    }
+    return [...merged.values()].sort((left, right) => left.time - right.time);
+  }
+
+  function alignPivotIndicatorToCandles(pivotPoints, candles, interval) {
+    if (!pivotPoints || typeof pivotPoints !== "object") return pivotPoints;
+    const normalizedInterval = normalizeLocalInterval(interval);
+    if (!["1d", "1wk", "1mo"].includes(normalizedInterval)) return pivotPoints;
+    const timeByPeriod = new Map();
+    for (const row of candles || []) {
+      const time = Number(row?.time);
+      if (!Number.isFinite(time)) continue;
+      const sessionDate = /^\d{4}-\d{2}-\d{2}$/.test(String(row?.sessionDate || ""))
+        ? String(row.sessionDate)
+        : sessionDateForTime(time);
+      const key = sessionDate ? periodKey(normalizedInterval, sessionDate) : "";
+      if (key) timeByPeriod.set(key, time);
+    }
+    const alignedTime = (value) => {
+      const time = Number(value);
+      if (!Number.isFinite(time)) return value;
+      const sessionDate = sessionDateForTime(time);
+      const key = sessionDate ? periodKey(normalizedInterval, sessionDate) : "";
+      return key && timeByPeriod.has(key) ? timeByPeriod.get(key) : time;
+    };
+    return {
+      ...pivotPoints,
+      targets: Array.isArray(pivotPoints.targets)
+        ? pivotPoints.targets.map((target) => ({ ...target, time: alignedTime(target?.time) }))
+        : pivotPoints.targets,
+      projections: Array.isArray(pivotPoints.projections)
+        ? pivotPoints.projections.map((projection) => ({
+          ...projection,
+          referenceTime: alignedTime(projection?.referenceTime),
+        }))
+        : pivotPoints.projections,
+    };
+  }
+
   function validMinutePoint(point) {
     const open = Number(point?.open); const high = Number(point?.high); const low = Number(point?.low); const close = Number(point?.close);
     return Number.isFinite(Number(point?.time))
@@ -762,6 +841,8 @@
     createDailyKlineAccumulator,
     createIntradayAccumulator,
     createMinuteKlineAccumulator,
+    alignPivotIndicatorToCandles,
+    mergeHistoricalWindowWithLiveCandles,
     mergeRealtimeOverlay,
     normalizeLocalInterval,
     periodKey,

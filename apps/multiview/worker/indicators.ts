@@ -33,10 +33,10 @@ const integerInRange = (value: unknown, minimum: number, maximum: number, fallba
 };
 
 export function normalizeIndicatorParameters(input: Partial<{
-  rsi: Partial<IndicatorParameters["rsi"]>;
-  kd: Partial<IndicatorParameters["kd"]>;
-  macd: Partial<IndicatorParameters["macd"]>;
-  atr: Partial<IndicatorParameters["atr"]>;
+  rsi: Partial<Record<keyof IndicatorParameters["rsi"], unknown>>;
+  kd: Partial<Record<keyof IndicatorParameters["kd"], unknown>>;
+  macd: Partial<Record<keyof IndicatorParameters["macd"], unknown>>;
+  atr: Partial<Record<keyof IndicatorParameters["atr"], unknown>>;
 }> = {}): IndicatorParameters {
   const shortPeriod = integerInRange(input.rsi?.shortPeriod, 2, 100, DEFAULT_INDICATOR_PARAMETERS.rsi.shortPeriod);
   const longPeriod = integerInRange(input.rsi?.longPeriod, 2, 100, DEFAULT_INDICATOR_PARAMETERS.rsi.longPeriod);

@@ -305,6 +305,10 @@ test("台股 Yahoo 當日 close 空缺時以官方 OHLCV 補成共享 K 棒，�
   let officialCalls = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    if (url.pathname.includes('holidaySchedule')) return Response.json({ stat: 'ok', queryYear: 2026,
+      fields: ['日期', '名稱', '說明'], data: [['2026-01-01', '開國紀念日', '依規定放假。']] });
+    if (url.pathname.includes('/bulletin/tradingDate')) return Response.json({ data: { html:
+      '<table><tr><td>中華民國115年有價證券櫃檯買賣市場開（休）市日期表</td></tr></table><table><tr><th>名稱</th><th>日期</th><th>星期</th><th>說明</th></tr><tr><td>開國紀念日</td><td>1月1日</td><td>四</td><td>依規定放假。</td></tr></table>' } });
     if (url.hostname === "query1.finance.yahoo.com") {
       yahooCalls += 1;
       return Response.json({ chart: { result: [{
@@ -662,6 +666,15 @@ test("Worker `/api/candles` 跨 display_count 共用 history，重新載入 Work
 test("health 分開呈現 D1 schema 與逐商品 continuity，舊 coverage 不會算入 latest session", async (context) => {
   context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-08-28T10:00:00Z') });
   const db = new SqliteD1();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes('holidaySchedule')) return new Response(JSON.stringify({ stat: 'ok', queryYear: 2026,
+      fields: ['日期', '名稱', '說明'], data: [['2026-01-01', '開國紀念日', '依規定放假。']] }));
+    if (url.includes('/bulletin/tradingDate')) return new Response(JSON.stringify({ data: { html:
+      '<table><tr><td>中華民國115年有價證券櫃檯買賣市場開（休）市日期表</td></tr></table><table><tr><th>名稱</th><th>日期</th><th>星期</th><th>說明</th></tr><tr><td>開國紀念日</td><td>1月1日</td><td>四</td><td>依規定放假。</td></tr></table>' } }));
+    return originalFetch(input, init);
+  };
   try {
     const service = await builtWorker("continuity-health");
     const env = workerEnvironment(db);
@@ -669,6 +682,7 @@ test("health 分開呈現 D1 schema 與逐商品 continuity，舊 coverage 不�
     const insertInstrument = db.database.prepare("INSERT INTO user_instruments (user_id,item_id,symbol,name,provider,tab_label,group_name,market,enabled) VALUES (?,?,?,?,?,?,?,?,1)");
     insertInstrument.run("owner", "one", "2330.TW", "台積電", "yfinance", "台股", "上市", "台灣股市");
     insertInstrument.run("owner", "two", "3008.TW", "大立光", "yfinance", "台股", "上市", "台灣股市");
+    insertInstrument.run("owner", "three", "2881.TW", "富邦金", "yfinance", "台股", "上市", "台灣股市");
     db.database.prepare(`INSERT INTO candle_history_state (
       provider,symbol,interval,coverage_end,available_rows,status,continuity_status,continuity_through,
       continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json
@@ -683,17 +697,28 @@ test("health 分開呈現 D1 schema 與逐商品 continuity，舊 coverage 不�
       "yfinance", "3008.TW", "1d", Date.parse("2026-07-31T01:00:00Z") / 1000, 320, "partial", "partial", "2026-08-28",
       "2026-08-28T08:00:00.000Z", 10, "[]", "[]", "missing_traded_session",
     );
+    db.database.prepare(`INSERT INTO candle_history_state (
+      provider,symbol,interval,coverage_end,available_rows,status,continuity_status,continuity_through,
+      continuity_checked_at,missing_session_count,missing_session_dates_json,excluded_session_dates_json
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      "yfinance", "2881.TW", "1d", Date.parse("2026-08-27T01:00:00Z") / 1000, 320, "complete", "complete", "2026-08-27",
+      "2026-08-27T08:00:00.000Z", 0, "[]", "[]",
+    );
 
     const payload = await (await service.fetch(new Request("http://localhost/api/health"), env, workerContext)).json();
     assert.deepEqual(payload.dailyCandleContinuity.global, { d1: "available", schema: "current" });
     assert.deepEqual(payload.dailyCandleContinuity.counts, {
-      enabledSymbols: 2, complete: 1, partial: 1, unknown: 0, notAudited: 0, latestSessionCoverage: 1,
+      enabledSymbols: 3, complete: 2, partial: 1, unknown: 0, notAudited: 0, latestSessionCoverage: 1, latestSessionVerified: 1,
     });
+    assert.deepEqual(payload.dailyCandleContinuity.calendar, { status: 'verified', reasonCode: null });
     assert.deepEqual(payload.dailyCandleContinuity.items.map((item) => [item.symbol, item.continuityStatus, item.missingSessionCount, item.latestSessionCovered]), [
       ["2330.TW", "complete", 0, true],
+      ["2881.TW", "complete", 0, false],
       ["3008.TW", "partial", 10, false],
     ]);
+    assert.equal(payload.dailyCandleContinuity.items.find((item) => item.symbol === '2881.TW').latestSessionVerified, false);
   } finally {
+    globalThis.fetch = originalFetch;
     db.close();
   }
 });
@@ -812,13 +837,18 @@ test("Worker Yahoo 首次使用 full range、到期使用 tail range，並保留
   }
 });
 
-test("Sites frontend 保留 history window 擴張、停止條件與可視範圍位移 contract", async () => {
+test("Sites frontend 保留 history window 擴張、停止條件、日期錨點與 K 棒間距 contract", async () => {
   const appScript = await readFile(new URL("../public/static/app.js", import.meta.url), "utf8");
   assert.match(appScript, /const HISTORY_LOAD_BATCH_BARS = 160/);
   assert.match(appScript, /display_count=\$\{encodeURIComponent\(nextDisplayCount\)\}/);
   assert.match(appScript, /if \(nextCount <= currentCount\) \{[\s\S]*?historyHasMoreBefore = false/);
   assert.match(appScript, /historyHasMoreBefore = Boolean\(payload\.dataWindow\?\.hasMoreBefore\)/);
-  assert.match(appScript, /const preparedPayload = preparePanelPayload\(payload\);[\s\S]*?applyPayload\(preparedPayload, \{ prepared: true, preserveVisibleLogicalRange, oldCandleCount: currentCount \}\);[\s\S]*?writePanelPayloadCache\(symbol, interval, preparedPayload, pivotMode\)/);
-  assert.match(appScript, /const addedCandles = Math\.max\(0, newCandleCount - oldCandleCount\)/);
-  assert.match(appScript, /setSynchronizedVisibleLogicalRange\(preservedRange\)/);
+  assert.match(appScript, /const viewportSnapshot = captureViewportSnapshot\([\s\S]*?range,[\s\S]*?forceUserInteracted: true[\s\S]*?loadMoreHistoricalCandles\(viewportSnapshot\)/);
+  assert.match(appScript, /const preparedPayload = preparePanelPayload\(payload\);[\s\S]*?const livePayload = lastPayload;[\s\S]*?const viewportSnapshot = interactionViewportSnapshot[\s\S]*?mergeHistoricalWindowWithLiveCandles[\s\S]*?alignPivotIndicatorToCandles[\s\S]*?applyPayload\(mergedPayload, \{ prepared: true, viewportSnapshot, oldCandleCount: currentCount \}\);[\s\S]*?writePanelPayloadCache\(symbol, interval, preparedPayload, pivotMode\)/);
+  assert.match(appScript, /function applyPayload\(payload, options = \{\}\)[\s\S]*?normalizedPayload\?\.indicators\?\.pivot_points[\s\S]*?alignPivotIndicatorToCandles\([\s\S]*?normalizedPayload\.candles \|\| \[\][\s\S]*?intervalSelect\.value/);
+  assert.match(appScript, /if \(indicators\.pivot_points\) drawPivotPoints\(indicators\.pivot_points\);[\s\S]*?alignCurrentPivotCarrierToCandles\(candles\)[\s\S]*?function alignCurrentPivotCarrierToCandles\(candles\)[\s\S]*?source\.targetPeriodByTime\.entries\(\)[\s\S]*?latestPivotAnchorTime\(pivotSelectedReferenceKey\)[\s\S]*?persistCurrentPivotCarrier\(\)/);
+  assert.match(appScript, /function captureViewportSnapshot[\s\S]*?forceUserInteracted = false[\s\S]*?span: Number\(range\.to\) - Number\(range\.from\)[\s\S]*?userInteracted: forceUserInteracted \|\| Boolean[\s\S]*?barSpacing: Number\(chart\?\.timeScale\(\)\.options\?\.\(\)\.barSpacing\)/);
+  assert.match(appScript, /function normalizeViewportAnchorTime[\s\S]*?\["1d", "1wk", "1mo"\][\s\S]*?sessionDateForTime[\s\S]*?periodKey/);
+  assert.match(appScript, /function restoreViewportSnapshot[\s\S]*?applyOptions\(\{ barSpacing: snapshot\.barSpacing \}\)[\s\S]*?normalizeTime: normalizeViewportAnchorTime[\s\S]*?setSynchronizedVisibleLogicalRange\(range, \{ user: snapshot\.userInteracted === true \}\)/);
+  assert.match(appScript, /function setSynchronizedVisibleLogicalRange\(range, \{ commit = true, user = false \} = \{\}\)[\s\S]*?viewportCoordinator\?\.commit\?\.\(range, \{ user \}\)/);
 });

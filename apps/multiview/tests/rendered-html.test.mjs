@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { LOCALIZED_INSTRUMENT_SEED, normalizeSearchText, normalizeSymbol, validateLocalizedSeed } from "../worker/instrument-catalog.ts";
 import { inferTaiwanMarketPhase, inferUnitedStatesMarketPhase } from "../worker/market-phase.ts";
+import { SqliteD1 } from "./helpers/sqlite-d1.mjs";
 
 const root = new URL("../", import.meta.url);
 const indexHtml = await readFile(new URL("../public/static/index.html", import.meta.url), "utf8");
@@ -447,25 +448,25 @@ test("本機商品設定保留四個市場並開放 1／5／15／60 分與日週
   assert.deepEqual(payload.intervals, ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo"]);
 });
 
-test("刪除系統頁籤商品後不會從預設清單復活，且不影響其他頁籤", async () => {
+test("刪除系統頁籤商品後不會從預設清單復活，且不影響其他頁籤", async (t) => {
   const service = await worker();
-  const db = new FakeD1();
-  db.userInstruments.set("local-sites-user|2330.TW|my-tab", {
-    user_id: "local-sites-user", symbol: "2330.TW", name: "台積電自選", provider: "yfinance",
-    tab_id: "my-tab", tab_label: "自選", group_name: "個股", market: "台灣股市", enabled: 1, sort_order: 1,
-  });
+  const db = new SqliteD1();
+  t.after(() => db.close());
+  await service.fetch(new Request("http://localhost/api/instruments"), { ...environment(), DB: db }, context);
+  db.exec("INSERT INTO user_tabs (user_id,id,label,sort_order,enabled,is_default,source_tab_id) VALUES ('local-sites-user','my-tab','自選',5,1,0,'')");
+  db.exec("INSERT INTO user_instruments (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled,sort_order) VALUES ('local-sites-user','personal-2330','2330.TW','台積電自選','yfinance','my-tab','自選','個股','台灣股市',1,1)");
   const env = { ...environment(), DB: db };
 
   const response = await service.fetch(new Request("http://localhost/api/instruments/2330.TW?tabId=taiwan-stocks&tabLabel=%E5%8F%B0%E8%82%A1&scope=system", { method: "DELETE" }), env, context);
   assert.equal(response.status, 200);
   const payload = await response.json();
-  assert.equal(payload.instruments.some((item) => item.symbol === "2330.TW" && !item.tabId), false);
+  assert.equal(payload.marketTabs.find((tab) => tab.tabKey === "system:taiwan-stocks").defaultSymbols.includes("2330.TW"), false);
   assert.equal(payload.instruments.some((item) => item.symbol === "2330.TW" && item.tabId === "my-tab"), true);
-  assert.equal(db.userInstruments.get("local-sites-user|2330.TW|")?.enabled, 0);
+  assert.equal(db.database.prepare("SELECT enabled FROM user_system_tab_instruments WHERE user_id='local-sites-user' AND system_tab_id='taiwan-stocks' AND symbol='2330.TW'").get()?.enabled, 0);
 
   const reloaded = await service.fetch(new Request("http://localhost/api/instruments"), env, context);
   const reloadedPayload = await reloaded.json();
-  assert.equal(reloadedPayload.instruments.some((item) => item.symbol === "2330.TW" && !item.tabId), false);
+  assert.equal(reloadedPayload.marketTabs.find((tab) => tab.tabKey === "system:taiwan-stocks").defaultSymbols.includes("2330.TW"), false);
   assert.equal(reloadedPayload.instruments.some((item) => item.symbol === "2330.TW" && item.tabId === "my-tab"), true);
 });
 
@@ -484,7 +485,7 @@ test("主圖估算融資成本與清單 metadata UI 保留偏好、缺值及無�
   assert.match(appScript, /state\.activeMarketTabId/);
   assert.match(appScript, /estimatedMarginAbortController\?\.abort\(\)/);
   assert.match(indexHtml, /chip-panes\.js\?v=20260904-panel-export-lease-v1/);
-  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260904-panel-export-lease-v1/);
+  assert.match(indexHtml, /kbar-turnover\.js\?v=20260826-turnover-readout-v1[\s\S]*chart-payload\.js\?v=20260826-turnover-readout-v1[\s\S]*app\.js\?v=20260923-pivot-anchor-v1/);
   assert.match(appScript, /requestData\?\.\(\{[\s\S]*datasets: \["margin-short"\]/);
   assert.match(appScript, /加入日期未知/);
   assert.match(indexHtml, /id="watchlist-symbol-recommender"[^>]*maxlength="80"/);
@@ -515,9 +516,10 @@ test("個人頁籤排序以單次 batch 保存 revision，且不改寫非排序�
   assert.deepEqual(payload.marketTabs.find((tab) => tab.id === "my-tab").defaultSymbols, ["BBB", "AAA"]);
 });
 
-test("系統頁籤排序保存為個人 override，並全批拒絕重複、跨頁籤與未知項目", async () => {
+test("系統頁籤排序保存為獨立 override，並全批拒絕重複、跨頁籤與未知項目", async (t) => {
   const service = await worker();
-  const db = new FakeD1();
+  const db = new SqliteD1();
+  t.after(() => db.close());
   const env = { ...environment(), DB: db };
   const initial = await (await service.fetch(new Request("http://localhost/api/instruments"), env, context)).json();
   const taiwan = initial.marketTabs.find((tab) => tab.id === "taiwan-stocks").defaultSymbols;
@@ -526,13 +528,13 @@ test("系統頁籤排序保存為個人 override，並全批拒絕重複、跨�
   const response = await request({ tabId: "taiwan-stocks", tabLabel: "台股", scope: "system", revision: 11, items: order.map((symbol) => ({ symbol, tabId: "" })) });
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).order, order);
-  assert.equal(db.userInstruments.get(`local-sites-user|${order[0]}|`)?.sort_order, 1);
+  assert.equal(db.database.prepare("SELECT sort_order FROM user_system_tab_instruments WHERE user_id=? AND system_tab_id='taiwan-stocks' AND symbol=?").get("local-sites-user", order[0])?.sort_order, 1);
 
-  const before = [...db.userInstruments.values()].map((item) => ({ ...item }));
+  const before = db.database.prepare("SELECT * FROM user_system_tab_instruments ORDER BY symbol").all();
   assert.equal((await request({ tabId: "taiwan-stocks", tabLabel: "台股", scope: "system", revision: 12, items: [{ symbol: order[0], tabId: "" }, { symbol: order[0], tabId: "" }] })).status, 400);
   assert.equal((await request({ tabId: "taiwan-stocks", tabLabel: "台股", scope: "system", revision: 13, items: order.map((symbol) => ({ symbol, tabId: "other" })) })).status, 400);
   assert.equal((await request({ tabId: "taiwan-stocks", tabLabel: "台股", scope: "system", revision: 14, items: [...order.slice(0, -1).map((symbol) => ({ symbol, tabId: "" })), { symbol: "UNKNOWN", tabId: "" }] })).status, 409);
-  assert.deepEqual([...db.userInstruments.values()].map((item) => ({ ...item })), before);
+  assert.deepEqual(db.database.prepare("SELECT * FROM user_system_tab_instruments ORDER BY symbol").all(), before);
 });
 
 test("同一 symbol 在個人與系統頁籤的排序彼此隔離", async () => {
@@ -1965,7 +1967,7 @@ test("主副圖支援三模式、所有圖數、十二個可排序 pane 與安�
   assert.match(indexHtml, /chart-annotations\.js\?v=20260809-fibonacci-levels-persistence-v2/);
   assert.match(indexHtml, /chip-panes\.js\?v=20260904-panel-export-lease-v1/);
   assert.match(indexHtml, /panel-image-export\.js\?v=20260904-panel-export-lease-v1/);
-  assert.match(indexHtml, /app\.js\?v=20260904-panel-export-lease-v1/);
+  assert.match(indexHtml, /app\.js\?v=20260923-pivot-anchor-v1/);
 });
 
 test("固定範圍 VP 價格標籤無範圍前綴，水平線為 1px 且控制線為 2px", async () => {
@@ -2102,7 +2104,7 @@ test("多圖 panel 支援直覺拖曳、鍵盤排序、原地同步與完整 cle
   assert.match(appScript, /event\.button !== 0/);
   assert.match(appScript, /PANEL_DRAG_MOVEMENT_THRESHOLD_PX = 6/);
   assert.match(appScript, /select, details, summary, button, input, textarea, a/);
-  assert.match(moveBlock, /updatePanelDragPreview\(drag, event\.clientX, event\.clientY\)/);
+  assert.match(moveBlock, /updatePanelDragPreview\(drag, event\.clientX, event\.clientY, event\.altKey\)/);
   assert.doesNotMatch(moveBlock, /appendChild|state\.panels\s*=/);
   assert.match(appScript, /window\.addEventListener\("pointermove", drag\.onMove, true\)/);
   assert.match(appScript, /window\.addEventListener\("pointerup", drag\.onUp, true\)/);

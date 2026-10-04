@@ -67,12 +67,13 @@ const worker = {
     if (appResponse) return withLocalLauncherCors(request, appResponse);
 
     if (url.pathname === "/_vinext/image") {
-      if (!env.IMAGES) return new Response("Image optimization is not configured", { status: 404 });
+      const images = env.IMAGES;
+      if (!images) return new Response("Image optimization is not configured", { status: 404 });
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
-          const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
+          const result = await images.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
       }, allowedWidths);

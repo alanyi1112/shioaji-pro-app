@@ -186,6 +186,28 @@ test("頁籤 reorder 驗證完整清單並以 owner 範圍正規化 1..N", async
   assert.equal(JSON.stringify(db.database.prepare("SELECT sort_order FROM user_tabs WHERE user_id='alice@example.com' AND enabled=1 ORDER BY sort_order").all()), snapshot);
 });
 
+test("盤中監控匯入模式只讀取我的清單且不要求 realtime 同步", async (t) => {
+  const service = await builtWorker();
+  const db = new SqliteD1();
+  t.after(() => db.close());
+  const env = environment(db);
+  const response = await service.fetch(userRequest(
+    "/api/instruments?mode=read-only&purpose=intraday-monitor-import",
+    "alice@example.com",
+  ), env, execution);
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload.realtime, { status: "not-requested", acceptedSymbolCount: 0 });
+  assert.ok(Array.isArray(payload.managedTabs));
+  assert.ok(Array.isArray(payload.instruments));
+
+  const ordinary = await service.fetch(userRequest(
+    "/api/instruments?mode=read-only&purpose=unknown",
+    "alice@example.com",
+  ), env, execution);
+  assert.notEqual((await ordinary.json()).realtime.status, "not-requested");
+});
+
 test("visibility 建立 system override、保留商品並將取消隱藏頁籤放到最後", async (t) => {
   const service = await builtWorker();
   const db = new SqliteD1();

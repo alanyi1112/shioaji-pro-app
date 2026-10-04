@@ -57,3 +57,5 @@ Cloudflare D1 與 Sites D1 是獨立資料庫。若 Cloudflare 只有最新一�
 5. 套用 SQL 後，以安全聚合查詢核對每個 active symbol 的 coverage、實際 published rows、51 個 completed items、零 missing dates，以及 `00919.TW`、`2330.TW` 的大戶／散戶歷史 UI。
 
 復原 SQL 對 `symbol + data_date` 採 material changed-only upsert；同一快照重跑不會只因 `source_fetched_at` 不同而重寫既有歷史。暫存快照、SQL 與備份完成驗證後應從暫存目錄移除，不得放入 Git、OpenSpec 或部署 artifact。
+
+2026-09-17 核對 macOS `launchd.plist(5)`：Weekday 的 0／7 為週日，1–5 為週一至週五，6 為週六。已修正原本誤用 1 起算週日造成的日期偏移；實際安裝排程須一併重新載入，不能只修改 repo。

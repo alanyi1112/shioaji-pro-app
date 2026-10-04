@@ -288,6 +288,55 @@ test("日 K 原子取代 Yahoo 同日 provisional，不重複成交量", () => {
   assert.equal(result.candle.realtime.provisional, true);
 });
 
+test("歷史視窗擴張以台北交易日取代不同時間鍵的同日 K，且保留 Shioaji 即時尾端", () => {
+  const canonical = [
+    candle("2026-07-29", { close: 9 }),
+    candle("2026-07-30", { close: 10 }),
+    candle("2026-07-31", { time: Date.parse("2026-07-31T09:00:00+08:00") / 1000, close: 11 }),
+  ];
+  const live = [
+    candle("2026-07-31", { close: 12, provider: "shioaji-kbars" }),
+    candle("2026-08-03", { close: 13, provider: "shioaji-kbars", realtime: { provisional: true } }),
+  ];
+  const merged = api.mergeHistoricalWindowWithLiveCandles(canonical, live, "1d");
+  assert.deepEqual(Array.from(merged, (row) => row.close), [9, 10, 12, 13]);
+  assert.equal(merged.at(-1).realtime.provisional, true);
+  const replaced = merged.filter((row) => api.sessionDateForTime(row.time) === "2026-07-31");
+  assert.equal(replaced.length, 1);
+  assert.equal(replaced[0].time, canonical[2].time);
+});
+
+test("分鐘歷史視窗仍以精確 timestamp 合併，不誤刪同交易日不同分鐘", () => {
+  const first = candle("2026-07-31", { time: Date.parse("2026-07-31T09:00:00+08:00") / 1000, close: 10 });
+  const second = candle("2026-07-31", { time: Date.parse("2026-07-31T09:01:00+08:00") / 1000, close: 11 });
+  const corrected = { ...first, close: 12, provider: "shioaji" };
+  const merged = api.mergeHistoricalWindowWithLiveCandles([first, second], [corrected], "1m");
+  assert.deepEqual(Array.from(merged, (row) => row.close), [12, 11]);
+});
+
+test("日 K 壓撐 target 與 reference time 對齊 canonical 同交易日座標", () => {
+  const liveTime = Date.parse("2026-07-31T00:00:00+08:00") / 1000;
+  const canonicalTime = Date.parse("2026-07-31T09:00:00+08:00") / 1000;
+  const pivotPoints = {
+    targets: [{ time: liveTime, referencePeriodKey: "2026-07-31" }],
+    projections: [{ referenceTime: liveTime, referencePeriodKey: "2026-07-31" }],
+  };
+  const aligned = api.alignPivotIndicatorToCandles(pivotPoints, [
+    candle("2026-07-31", { time: canonicalTime }),
+  ], "1d");
+  assert.equal(aligned.targets[0].time, canonicalTime);
+  assert.equal(aligned.projections[0].referenceTime, canonicalTime);
+  assert.equal(pivotPoints.targets[0].time, liveTime);
+});
+
+test("分鐘壓撐仍維持來源 K 棒精確 timestamp", () => {
+  const pivotPoints = {
+    targets: [{ time: 100, referencePeriodKey: "100" }],
+    projections: [{ referenceTime: 100, referencePeriodKey: "100" }],
+  };
+  assert.equal(api.alignPivotIndicatorToCandles(pivotPoints, [{ time: 101 }], "1m"), pivotPoints);
+});
+
 test("週／月只聚合今日以前 canonical daily base 再加 Shioaji 今日量", () => {
   const daily = [
     candle("2026-07-27", { open: 15, high: 18, low: 14, close: 17, volume: 100 }),

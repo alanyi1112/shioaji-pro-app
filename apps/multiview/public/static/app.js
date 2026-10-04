@@ -219,6 +219,9 @@ const PANEL_DRAG_CLICK_SUPPRESSION_MS = 500;
 const PANEL_REORDER_HELPERS = window.QuoteChartPanelReordering || {};
 const state = {
   instruments: [],
+  systemMemberships: [],
+  hiddenPersonalMemberships: [],
+  watchlistDirectMutationPending: false,
   marketTabs: [],
   managedTabs: [],
   personalTabs: [],
@@ -863,6 +866,8 @@ async function loadInstruments() {
   const response = await fetch("/api/instruments", { headers: getAuthHeaders() });
   const payload = await response.json();
   state.instruments = payload.instruments || [];
+  state.systemMemberships = payload.systemMemberships || [];
+  state.hiddenPersonalMemberships = payload.hiddenPersonalMemberships || [];
   state.marketTabs = payload.marketTabs || [];
   state.managedTabs = payload.managedTabs || payload.marketTabs || [];
   state.personalTabs = payload.personalTabs || [];
@@ -1373,6 +1378,18 @@ function orderedInstrumentsForTab(tab) {
       const current = bySymbol.get(item.symbol);
       if (!current || item.tabId === tabIdentity(tab)) bySymbol.set(item.symbol, item);
     });
+  if (reorderScopeForTab(tab) === "system") {
+    state.systemMemberships
+      .filter((item) => item.systemTabId === (tab.sourceTabId || tab.id))
+      .forEach((item) => {
+        if (item.enabled) bySymbol.set(item.symbol, { ...item, tabId: tabIdentity(tab), tab: tab.label });
+        else bySymbol.delete(item.symbol);
+      });
+  } else {
+    state.hiddenPersonalMemberships
+      .filter((item) => item.tabId === tab.id)
+      .forEach((item) => bySymbol.delete(item.symbol));
+  }
   return [...bySymbol.values()]
     .sort((a, b) => instrumentOrderValue(a) - instrumentOrderValue(b) || a.symbol.localeCompare(b.symbol, "en"));
 }
@@ -1841,6 +1858,7 @@ async function savePersonalInstrument() {
       symbol,
       name: nameInput?.value.trim() || symbol,
       tabId: savedTabId,
+      tabKey: tabIdentity(tab),
       tab: tab?.label || activeMarketTab()?.label || state.activeMarketTab,
       group: groupInput?.value.trim() || "自訂",
       provider: providerInput?.value || providerForSymbol(symbol),
@@ -1941,6 +1959,7 @@ async function persistWatchlistReorder(controller) {
   const draft = controller.draft.map((item) => ({ ...item }));
   const draftSource = controller.draftSource;
   controller.inFlight = true;
+  controller.lastError = "";
   controller.inFlightRevision = revision;
   controller.dirty = false;
   setWatchlistMessage("排序儲存中…", "loading");
@@ -1954,6 +1973,7 @@ async function persistWatchlistReorder(controller) {
       if (draftSource === "panel") setPanelReorderStatus("商品順序已永久儲存");
     }
   } catch (error) {
+    controller.lastError = error.message || AUTH_REQUIRED_MESSAGE;
     if (controller.revision === revision && !controller.dirty) {
       restoreManagedInstrumentOrder(controller.confirmed, controller.tab);
       renderWatchlistManager(state.selectedManagementSymbol);
@@ -1976,6 +1996,7 @@ async function saveManagedInstrumentOrderBatch(tab, instruments, revision) {
       tabId: tab.id,
       tabLabel: tab.label,
       scope: reorderScopeForTab(tab),
+      tabKey: tabIdentity(tab),
       revision,
       items: instruments.map((item) => ({ symbol: item.symbol, tabId: reorderScopeForTab(tab) === "system" ? "" : tab.id })),
     }),
@@ -2328,6 +2349,102 @@ function renderMarketTabs() {
   renderCategoryPagination();
 }
 
+function directWatchlistTargetFromPoint(clientX, clientY) {
+  const node = document.elementFromPoint(clientX, clientY)?.closest?.(".market-tab[data-market-tab]");
+  const key = node?.dataset?.marketTab;
+  return key && key !== state.activeMarketTabId ? validMarketTab(key) : undefined;
+}
+
+function clearDirectWatchlistDropTarget() {
+  document.querySelectorAll(".market-tab.is-watchlist-drop-target").forEach((node) => node.classList.remove("is-watchlist-drop-target"));
+}
+
+async function settleWatchlistOrderBeforeMutation(tab) {
+  const controller = state.watchlistReorderControllers.get(watchlistTabKey(tab));
+  if (!controller) return;
+  flushWatchlistReorder(tab);
+  const deadline = Date.now() + 10000;
+  while ((controller.inFlight || controller.dirty || controller.timer) && Date.now() < deadline) {
+    await new Promise((resolve) => window.setTimeout(resolve, 40));
+  }
+  if (controller.inFlight || controller.dirty || controller.timer || controller.lastError) {
+    throw new Error(controller.lastError || "清單排序尚未儲存完成，請稍後重試。");
+  }
+}
+
+async function performDirectWatchlistMutation({ panel, targetTab, mode }) {
+  if (state.watchlistDirectMutationPending) return;
+  const sourceTab = activeMarketTab();
+  const symbol = panel?.getCanonicalSymbol?.();
+  if (!sourceTab || !symbol || panel.getDisplaySymbol?.() !== symbol ||
+      !orderedInstrumentsForTab(sourceTab).some((item) => item.symbol === symbol)) {
+    setPanelReorderStatus("目前顯示商品與清單商品不一致；請先切回清單商品再操作。");
+    return;
+  }
+  if (mode !== "remove" && (!targetTab || tabIdentity(targetTab) === tabIdentity(sourceTab))) return;
+  state.watchlistDirectMutationPending = true;
+  const sourceKey = tabIdentity(sourceTab);
+  const targetKey = tabIdentity(targetTab);
+  try {
+    await settleWatchlistOrderBeforeMutation(sourceTab);
+    if (targetTab) await settleWatchlistOrderBeforeMutation(targetTab);
+    const latestResponse = await fetch("/api/instruments", { headers: getAuthHeaders() });
+    const latest = await latestResponse.json();
+    if (!latestResponse.ok || latest.error) throw new Error(latest.error || "無法確認最新清單。");
+    const liveSource = latest.marketTabs?.find((item) => tabIdentity(item) === sourceKey);
+    const liveTarget = targetTab && latest.marketTabs?.find((item) => tabIdentity(item) === targetKey);
+    if (!liveSource?.defaultSymbols?.includes(symbol) || (targetTab && !liveTarget)) throw new Error("頁籤或商品清單已變更，請重新整理後重試。");
+    const response = await fetch(mode === "remove" ? "/api/instruments/remove-from-tab" : "/api/instruments/transfer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+      body: JSON.stringify({ sourceTabKey: sourceKey, targetTabKey: targetKey, symbol, mode }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.error) throw new Error(payload.error || "清單異動失敗。");
+    applyInstrumentSetupPayload(payload);
+    if (mode !== "copy") syncChartOrderForTab(sourceTab);
+    setPanelReorderStatus(`${symbol} 已${mode === "copy" ? `複製到「${tabDisplayLabel(targetTab)}」` : mode === "move" ? `移到「${tabDisplayLabel(targetTab)}」` : `從「${tabDisplayLabel(sourceTab)}」移除`}`);
+  } catch (error) {
+    setPanelReorderStatus(error?.message || "清單異動失敗，請重試。");
+    try {
+      const response = await fetch("/api/instruments", { headers: getAuthHeaders() });
+      if (response.ok) applyInstrumentSetupPayload(await response.json());
+    } catch {}
+  } finally {
+    state.watchlistDirectMutationPending = false;
+  }
+}
+
+function confirmDirectWatchlistRemoval(symbol, tab) {
+  return new Promise((resolve) => {
+    const dialog = document.createElement("dialog");
+    dialog.className = "watchlist-remove-confirm";
+    dialog.setAttribute("aria-label", "確認從清單移除商品");
+    const title = document.createElement("h3");
+    title.textContent = "從清單移除商品？";
+    const message = document.createElement("p");
+    message.textContent = `將「${symbol}」從「${tabDisplayLabel(tab)}」頁籤移除。只變更這個頁籤，不刪除商品資料、其他頁籤或線圖歷史。`;
+    const form = document.createElement("form");
+    form.method = "dialog";
+    const cancel = document.createElement("button");
+    cancel.value = "cancel";
+    cancel.textContent = "取消";
+    const accept = document.createElement("button");
+    accept.value = "remove";
+    accept.textContent = "從這個頁籤移除";
+    form.append(cancel, accept);
+    dialog.append(title, message, form);
+    document.body.appendChild(dialog);
+    dialog.addEventListener("close", () => {
+      const accepted = dialog.returnValue === "remove";
+      dialog.remove();
+      resolve(accepted);
+    }, { once: true });
+    dialog.showModal();
+    cancel.focus();
+  });
+}
+
 function setActiveMarketTab(tabId) {
   const nextTab = validMarketTab(tabId);
   if (!nextTab || tabIdentity(nextTab) === state.activeMarketTabId) return;
@@ -2356,6 +2473,13 @@ function renderPanels(count) {
   state.panels = [];
   previousPanels.forEach((panel) => panel.destroy());
   grid.innerHTML = "";
+
+  if (panelCount === 0) {
+    const empty = document.createElement("p");
+    empty.className = "chart-grid-empty";
+    empty.textContent = "這個頁籤目前沒有商品。可從清單管理新增，或從其他頁籤拖入商品。";
+    grid.appendChild(empty);
+  }
 
   for (let index = 0; index < panelCount; index += 1) {
     const panel = createPanel(index, renderGeneration);
@@ -2466,7 +2590,8 @@ function panelDragStartAllowed(target) {
 }
 
 function startPanelDragCandidate(event, panel) {
-  if (!panelReorderingEnabled() || event.button !== 0 || state.panelDrag || !panelDragStartAllowed(event.target)) return;
+  const fromHandle = Boolean(event.target?.closest?.(".panel-reorder-handle"));
+  if ((!panelReorderingEnabled() && !fromHandle) || event.button !== 0 || state.panelDrag || state.watchlistDirectMutationPending || !panelDragStartAllowed(event.target)) return;
   const sourceIndex = state.panels.indexOf(panel);
   if (sourceIndex < 0) return;
   const drag = {
@@ -2475,6 +2600,7 @@ function startPanelDragCandidate(event, panel) {
     sourceIndex,
     targetIndex: sourceIndex,
     panel,
+    fromHandle,
     origin: event.currentTarget,
     startX: event.clientX,
     startY: event.clientY,
@@ -2489,7 +2615,11 @@ function startPanelDragCandidate(event, panel) {
   drag.onCancel = () => cancelPanelDrag("pointercancel");
   drag.onBlur = () => cancelPanelDrag("blur");
   drag.onVisibility = () => { if (document.hidden) cancelPanelDrag("hidden"); };
-  drag.onKeydown = (keyEvent) => { if (keyEvent.key === "Escape") { keyEvent.preventDefault(); cancelPanelDrag("escape"); } };
+  drag.onKeydown = (keyEvent) => {
+    if (keyEvent.key === "Escape") { keyEvent.preventDefault(); cancelPanelDrag("escape"); }
+    else if (keyEvent.key === "Alt" && drag.activated) updatePanelDragPreview(drag, drag.lastX, drag.lastY, true);
+  };
+  drag.onKeyup = (keyEvent) => { if (keyEvent.key === "Alt" && drag.activated) updatePanelDragPreview(drag, drag.lastX, drag.lastY, false); };
   state.panelDrag = drag;
   drag.origin.setPointerCapture?.(event.pointerId);
   window.addEventListener("pointermove", drag.onMove, true);
@@ -2499,6 +2629,7 @@ function startPanelDragCandidate(event, panel) {
   window.addEventListener("resize", drag.onCancel, { passive: true });
   document.addEventListener("visibilitychange", drag.onVisibility);
   document.addEventListener("keydown", drag.onKeydown, true);
+  document.addEventListener("keyup", drag.onKeyup, true);
   exposeQuoteChartDebug();
 }
 
@@ -2521,9 +2652,20 @@ function activatePanelDrag(drag) {
   exposeQuoteChartDebug();
 }
 
-function updatePanelDragPreview(drag, clientX, clientY) {
+function updatePanelDragPreview(drag, clientX, clientY, copy = false) {
   if (!drag.activated) return;
   drag.ghost.style.transform = `translate3d(${Math.round(clientX + 14)}px, ${Math.round(clientY + 14)}px, 0)`;
+  clearDirectWatchlistDropTarget();
+  const targetTab = drag.fromHandle ? directWatchlistTargetFromPoint(clientX, clientY) : undefined;
+  drag.targetTabKey = targetTab ? tabIdentity(targetTab) : "";
+  if (targetTab) {
+    document.querySelector(`.market-tab[data-market-tab="${CSS.escape(drag.targetTabKey)}"]`)?.classList.add("is-watchlist-drop-target");
+    drag.indicator.style.display = "none";
+    drag.ghost.textContent = `${copy ? "複製" : "移動"} ${drag.panel.getCanonicalSymbol?.() || "商品"} → ${tabDisplayLabel(targetTab)}`;
+    return;
+  }
+  drag.ghost.textContent = `${drag.panel.getCanonicalSymbol?.() || "商品"}｜拖往其他頁籤${drag.fromHandle ? "；按 Option 複製" : ""}`;
+  drag.indicator.style.display = "";
   const targetIndex = PANEL_REORDER_HELPERS.targetIndexFromPoint?.(drag.rects, clientX, clientY);
   if (targetIndex < 0 || !drag.rects[targetIndex]) return;
   drag.targetIndex = targetIndex;
@@ -2550,7 +2692,7 @@ function handlePanelDragMove(event) {
   if (!drag.activated) return;
   event.preventDefault();
   event.stopPropagation();
-  updatePanelDragPreview(drag, event.clientX, event.clientY);
+  updatePanelDragPreview(drag, event.clientX, event.clientY, event.altKey);
 }
 
 function panelDropIsValid(drag, event) {
@@ -2572,10 +2714,15 @@ function finishPanelDrag(event) {
   event.preventDefault();
   event.stopPropagation();
   const valid = panelDropIsValid(drag, event);
+  const targetTab = drag.fromHandle ? directWatchlistTargetFromPoint(event.clientX, event.clientY) : undefined;
   const sourceIndex = drag.sourceIndex;
   const targetIndex = drag.targetIndex;
   cleanupPanelDrag();
   state.panelDragSuppressUntil = Date.now() + PANEL_DRAG_CLICK_SUPPRESSION_MS;
+  if (targetTab) {
+    void performDirectWatchlistMutation({ panel: drag.panel, targetTab, mode: event.altKey ? "copy" : "move" });
+    return;
+  }
   if (!valid) {
     state.panelReorderMetrics.cancels += 1;
     setPanelReorderStatus("已取消商品拖曳排序");
@@ -2608,9 +2755,11 @@ function cleanupPanelDrag() {
   window.removeEventListener("resize", drag.onCancel);
   document.removeEventListener("visibilitychange", drag.onVisibility);
   document.removeEventListener("keydown", drag.onKeydown, true);
+  document.removeEventListener("keyup", drag.onKeyup, true);
   if (drag.origin.hasPointerCapture?.(drag.pointerId)) drag.origin.releasePointerCapture(drag.pointerId);
   drag.ghost?.remove();
   drag.indicator?.remove();
+  clearDirectWatchlistDropTarget();
   drag.panel.element.classList.remove("is-panel-drag-source");
   document.getElementById("chart-grid")?.classList.remove("is-panel-reordering");
   state.panelDrag = undefined;
@@ -3398,6 +3547,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   const status = element.querySelector(".panel-status");
   const priceStrip = element.querySelector(".price-strip");
   const panelReorderHandle = element.querySelector(".panel-reorder-handle");
+  const panelWatchlistMenuTrigger = element.querySelector(".panel-watchlist-menu-trigger");
   const priceLabel = element.querySelector(".price-label");
   const priceValue = element.querySelector(".price-value");
   const priceDirection = element.querySelector(".price-direction");
@@ -3532,6 +3682,24 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   panelOrderAction.textContent = "下單";
   panelOrderAction.disabled = true;
   panelContextMenu.appendChild(panelOrderAction);
+  const watchlistMoveGroup = document.createElement("details");
+  const watchlistMoveSummary = document.createElement("summary");
+  watchlistMoveSummary.textContent = "移動到…";
+  const watchlistMoveTargets = document.createElement("div");
+  watchlistMoveTargets.className = "watchlist-target-list";
+  watchlistMoveGroup.append(watchlistMoveSummary, watchlistMoveTargets);
+  const watchlistCopyGroup = document.createElement("details");
+  const watchlistCopySummary = document.createElement("summary");
+  watchlistCopySummary.textContent = "複製到…";
+  const watchlistCopyTargets = document.createElement("div");
+  watchlistCopyTargets.className = "watchlist-target-list";
+  watchlistCopyGroup.append(watchlistCopySummary, watchlistCopyTargets);
+  const watchlistRemoveAction = document.createElement("button");
+  watchlistRemoveAction.type = "button";
+  watchlistRemoveAction.setAttribute("role", "menuitem");
+  const watchlistMenuNote = document.createElement("p");
+  watchlistMenuNote.className = "watchlist-menu-note";
+  panelContextMenu.append(watchlistMoveGroup, watchlistCopyGroup, watchlistRemoveAction, watchlistMenuNote);
   const panelRemoveTechnicalAction = document.createElement("button");
   panelRemoveTechnicalAction.type = "button";
   panelRemoveTechnicalAction.setAttribute("role", "menuitem");
@@ -3663,6 +3831,39 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     panelPeRiverDetailsAction.setAttribute("aria-expanded", "false");
     panelPeRiverDetails.hidden = true;
     panelPeRiverDetails.replaceChildren();
+    watchlistMoveGroup.open = false;
+    watchlistCopyGroup.open = false;
+  }
+
+  function refreshDirectWatchlistMenu() {
+    const tab = activeMarketTab();
+    const symbol = canonicalItemSymbol;
+    const eligible = Boolean(tab && symbol && symbolSelect.value === symbol &&
+      orderedInstrumentsForTab(tab).some((item) => item.symbol === symbol) && !state.watchlistDirectMutationPending);
+    const reason = !symbol ? "此卡片沒有清單商品。" : symbolSelect.value !== symbol
+      ? `目前顯示 ${symbolSelect.value}，但清單商品是 ${symbol}；請先切回清單商品。`
+      : state.watchlistDirectMutationPending ? "清單異動中，請稍後。" : "";
+    watchlistMenuNote.textContent = reason;
+    watchlistMenuNote.hidden = !reason;
+    watchlistRemoveAction.textContent = `從「${tabDisplayLabel(tab) || "目前頁籤"}」移除「${symbol || "商品"}」…`;
+    watchlistRemoveAction.disabled = !eligible;
+    watchlistMoveTargets.replaceChildren();
+    watchlistCopyTargets.replaceChildren();
+    for (const target of state.marketTabs.filter((candidate) => tabIdentity(candidate) !== tabIdentity(tab))) {
+      for (const [mode, container] of [["move", watchlistMoveTargets], ["copy", watchlistCopyTargets]]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = tabDisplayLabel(target);
+        button.disabled = !eligible;
+        button.addEventListener("click", () => {
+          closePanelContextMenu();
+          void performDirectWatchlistMutation({ panel: controller, targetTab: target, mode });
+        });
+        container.appendChild(button);
+      }
+    }
+    watchlistMoveGroup.hidden = !watchlistMoveTargets.childElementCount;
+    watchlistCopyGroup.hidden = !watchlistCopyTargets.childElementCount;
   }
 
   async function refreshPanelOrderAction() {
@@ -3711,6 +3912,7 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     panelContextPointedDate = pointedDate || formatChartDate(sharedHoverTime) || formatChartDate(lastPayload?.candles?.at(-1)?.time);
     panelRemoveTechnicalAction.hidden = !showTechnicalRemove;
     refreshPanelPeRiverDetails();
+    refreshDirectWatchlistMenu();
     panelContextMenu.hidden = false;
     panelContextMenu.style.left = "0px";
     panelContextMenu.style.top = "0px";
@@ -4090,6 +4292,23 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     }
   }
 
+  async function handleDirectWatchlistRemoveClick() {
+    const tab = activeMarketTab();
+    const symbol = canonicalItemSymbol;
+    closePanelContextMenu();
+    if (!tab || !symbol || symbolSelect.value !== symbol) return;
+    if (await confirmDirectWatchlistRemoval(symbol, tab)) {
+      await performDirectWatchlistMutation({ panel: controller, mode: "remove" });
+    }
+  }
+
+  function handleWatchlistMenuTriggerClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = panelWatchlistMenuTrigger.getBoundingClientRect();
+    openPanelContextMenu(rect.left, rect.bottom + 4);
+  }
+
   function handleRemoveTechnicalSubchart() {
     closePanelContextMenu();
     let changed = false;
@@ -4107,6 +4326,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   element.addEventListener("keydown", handlePanelContextKeydown);
   panelExportAction.addEventListener("click", handlePanelExportClick);
   panelOrderAction.addEventListener("click", handlePanelOrderClick);
+  watchlistRemoveAction.addEventListener("click", handleDirectWatchlistRemoveClick);
+  panelWatchlistMenuTrigger.addEventListener("click", handleWatchlistMenuTriggerClick);
   panelRemoveTechnicalAction.addEventListener("click", handleRemoveTechnicalSubchart);
   panelPeRiverDetailsAction.addEventListener("click", togglePanelPeRiverDetails);
   document.addEventListener("pointerdown", handlePanelContextPointerDown, true);
@@ -4895,7 +5116,20 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
   function applyPayload(payload, options = {}) {
     if (!isPanelActive()) return;
     if (destroyed || !chart || !candleSeries || !volumeSeries) return;
-    const preparedPayload = options.prepared ? payload : applyPayloadStep("prepare", () => preparePanelPayload(payload));
+    const normalizedPayload = options.prepared ? payload : applyPayloadStep("prepare", () => preparePanelPayload(payload));
+    const preparedPayload = normalizedPayload?.indicators?.pivot_points
+      ? {
+        ...normalizedPayload,
+        indicators: {
+          ...normalizedPayload.indicators,
+          pivot_points: window.QuoteChartRealtimeCharts.alignPivotIndicatorToCandles(
+            normalizedPayload.indicators.pivot_points,
+            normalizedPayload.candles || [],
+            intervalSelect.value,
+          ),
+        },
+      }
+      : normalizedPayload;
     const previousPayload = lastPayload;
     payload = preparedPayload;
     const preserveVisibleLogicalRange = options.preserveVisibleLogicalRange;
@@ -4932,8 +5166,18 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       if (selectedMain.has("bollinger")) drawBollinger(indicators.bollinger || {});
       else clearBollinger();
     });
-    if (selectedSupportResistanceFormulas(selectedMain).size) drawPivotPoints(indicators.pivot_points);
-    else {
+    if (selectedSupportResistanceFormulas(selectedMain).size) {
+      // Realtime-derived indicator payloads intentionally omit Pivot／三關價／CDP.
+      // Absence means "keep the loaded carrier"; an explicit unavailable
+      // pivot payload still reaches drawPivotPoints and clears it fail-closed.
+      if (indicators.pivot_points) drawPivotPoints(indicators.pivot_points);
+      else {
+        alignCurrentPivotCarrierToCandles(candles);
+        updatePivotAutoScale();
+        updatePivotReadout();
+        renderPivotPointOverlay();
+      }
+    } else {
       clearCurrentPivotCarrier();
       updatePivotAutoScale();
       updatePivotReadout();
@@ -5944,8 +6188,14 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     setSynchronizedVisibleLogicalRange(preservedRange);
   }
 
-  function captureViewportSnapshot(candles = lastPayload?.candles || []) {
-    const range = chart?.timeScale().getVisibleLogicalRange?.();
+  function captureViewportSnapshot(
+    candles = lastPayload?.candles || [],
+    logicalRange,
+    { forceUserInteracted = false } = {},
+  ) {
+    const range = isFiniteLogicalRange(logicalRange)
+      ? logicalRange
+      : chart?.timeScale().getVisibleLogicalRange?.();
     if (!isFiniteLogicalRange(range) || !candles.length) return undefined;
     const fromIndex = Math.max(0, Math.min(candles.length - 1, Math.floor(Number(range.from))));
     const toIndex = Math.max(0, Math.min(candles.length - 1, Math.ceil(Number(range.to))));
@@ -5956,9 +6206,22 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       toFraction: Number(range.to) - toIndex,
       span: Number(range.to) - Number(range.from),
       rightAttached: Number(range.to) >= candles.length - 1 + RIGHT_OFFSET_BARS - 1,
-      userInteracted: Boolean(viewportCoordinator?.hasUserInteracted?.()),
+      userInteracted: forceUserInteracted || Boolean(viewportCoordinator?.hasUserInteracted?.()),
       barSpacing: Number(chart?.timeScale().options?.().barSpacing),
     };
+  }
+
+  function normalizeViewportAnchorTime(time) {
+    const normalizedTime = Number(normalizeChartTime(time));
+    const currentInterval = String(intervalSelect?.value || "");
+    if (!["1d", "1wk", "1mo"].includes(currentInterval) || !Number.isFinite(normalizedTime)) {
+      return normalizeChartTime(time);
+    }
+    const sessionDate = window.QuoteChartRealtimeCharts.sessionDateForTime(normalizedTime);
+    const key = sessionDate
+      ? window.QuoteChartRealtimeCharts.periodKey(currentInterval, sessionDate)
+      : "";
+    return key ? `period:${currentInterval}:${key}` : normalizedTime;
   }
 
   function restoreViewportSnapshot(snapshot, candles = []) {
@@ -5966,14 +6229,16 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     if (Number.isFinite(snapshot.barSpacing)) chart.timeScale().applyOptions({ barSpacing: snapshot.barSpacing });
     const range = window.QuoteChartInteractions.viewportRangeFromSnapshot(snapshot, candles, {
       rightOffsetBars: RIGHT_OFFSET_BARS,
-      normalizeTime: normalizeChartTime,
+      normalizeTime: normalizeViewportAnchorTime,
     });
-    if (isFiniteLogicalRange(range)) setSynchronizedVisibleLogicalRange(range);
+    if (isFiniteLogicalRange(range)) {
+      setSynchronizedVisibleLogicalRange(range, { user: snapshot.userInteracted === true });
+    }
   }
 
-  function setSynchronizedVisibleLogicalRange(range, { commit = true } = {}) {
+  function setSynchronizedVisibleLogicalRange(range, { commit = true, user = false } = {}) {
     if (!isFiniteLogicalRange(range) || !chart) return;
-    if (commit) viewportCoordinator?.commit?.(range);
+    if (commit) viewportCoordinator?.commit?.(range, { user });
     isSyncingTimeScale = true;
     try {
       runViewportProgrammatic(() => {
@@ -6031,16 +6296,24 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
     const visibleBars = Number(range.to) - Number(range.from);
     if (range.from >= 0 && range.to <= currentCount - 1 && visibleBars <= currentCount - 1) return;
     if (range.from > HISTORY_PREFETCH_THRESHOLD_BARS && visibleBars <= currentCount - 1) return;
+    // Freeze the gesture range before the asynchronous fetch.  Pointer-up and
+    // source callbacks may otherwise restore the old full range while history
+    // is in flight, causing the completed load to fit all candles and change
+    // bar spacing instead of only panning the viewport.
+    const viewportSnapshot = captureViewportSnapshot(
+      lastPayload?.candles || [],
+      range,
+      { forceUserInteracted: true },
+    );
     if (historyLoadTimer) panelLifecycle.clearTimer(historyLoadTimer);
-    const anchorRange = { from: Number(range.from), to: Number(range.to) };
     historyLoadTimer = panelLifecycle.setTimer(() => {
       historyLoadTimer = 0;
       if (!isPanelActive()) return;
-      loadMoreHistoricalCandles(anchorRange);
+      loadMoreHistoricalCandles(viewportSnapshot);
     }, HISTORY_LOAD_DEBOUNCE_MS);
   }
 
-  async function loadMoreHistoricalCandles(anchorRange) {
+  async function loadMoreHistoricalCandles(interactionViewportSnapshot) {
     if (!isPanelActive() || historyLoadInFlight || !historyHasMoreBefore) return;
     const currentCount = (lastPayload?.candles || []).length;
     const nextDisplayCount = Math.min(MAX_HISTORY_DISPLAY_CANDLES, currentCount + HISTORY_LOAD_BATCH_BARS);
@@ -6059,9 +6332,45 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
         historyHasMoreBefore = false;
         return;
       }
-      const preserveVisibleLogicalRange = chart?.timeScale().getVisibleLogicalRange() || anchorRange;
       const preparedPayload = preparePanelPayload(payload);
-      applyPayload(preparedPayload, { prepared: true, preserveVisibleLogicalRange, oldCandleCount: currentCount });
+      const livePayload = lastPayload;
+      const viewportSnapshot = interactionViewportSnapshot
+        || captureViewportSnapshot(livePayload?.candles || []);
+      const keepShioajiTail = prefersShioajiDisplay(symbol, interval)
+        && livePayload?.realtimeProvider === "shioaji"
+        && Array.isArray(livePayload?.candles)
+        && livePayload.candles.length > 0;
+      const mergedCandles = keepShioajiTail
+        ? window.QuoteChartRealtimeCharts.mergeHistoricalWindowWithLiveCandles(
+          preparedPayload.candles || [],
+          livePayload.candles,
+          interval,
+        )
+        : preparedPayload.candles;
+      const alignedLivePivotPoints = livePayload.indicators?.pivot_points
+        ? window.QuoteChartRealtimeCharts.alignPivotIndicatorToCandles(
+          livePayload.indicators.pivot_points,
+          mergedCandles,
+          interval,
+        )
+        : undefined;
+      const mergedPayload = keepShioajiTail ? {
+        ...preparedPayload,
+        candles: mergedCandles,
+        indicators: {
+          ...(preparedPayload.indicators || {}),
+          ...(alignedLivePivotPoints
+            ? { pivot_points: alignedLivePivotPoints }
+            : {}),
+        },
+        quote: livePayload.quote,
+        quoteTime: livePayload.quoteTime,
+        marketSession: livePayload.marketSession,
+        realtimeProvider: livePayload.realtimeProvider,
+      } : preparedPayload;
+      applyPayload(mergedPayload, { prepared: true, viewportSnapshot, oldCandleCount: currentCount });
+      // Cache remains canonical-only; the provisional Shioaji tail belongs to
+      // this live session and is reattached only for the active render.
       writePanelPayloadCache(symbol, interval, preparedPayload, pivotMode);
       historyHasMoreBefore = Boolean(payload.dataWindow?.hasMoreBefore);
       if (nextCount >= MAX_HISTORY_DISPLAY_CANDLES) historyHasMoreBefore = false;
@@ -6675,6 +6984,30 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       .map(([time]) => Number(time))
       .filter(Number.isFinite)
       .sort((left, right) => right - left)[0];
+  }
+
+  function alignCurrentPivotCarrierToCandles(candles) {
+    const source = currentSupportResistanceSource(false);
+    if (!source?.projectionByPeriod?.size || !source?.targetPeriodByTime?.size) return;
+    const aligned = window.QuoteChartRealtimeCharts.alignPivotIndicatorToCandles({
+      projections: [...source.projectionByPeriod.values()],
+      targets: [...source.targetPeriodByTime.entries()].map(([time, referencePeriodKey]) => ({
+        time,
+        referencePeriodKey,
+      })),
+    }, candles, source.sourceInterval);
+    pivotProjectionByPeriod = new Map((aligned.projections || []).map((projection) => [
+      projection.referencePeriodKey,
+      projection,
+    ]));
+    pivotTargetPeriodByTime = new Map((aligned.targets || []).map((target) => [
+      normalizeChartTime(target.time),
+      target.referencePeriodKey,
+    ]));
+    pivotSelectedReferenceKey = source.selectedReferenceKey;
+    pivotSelectionPinned = Boolean(source.pinned);
+    pivotSelectedAnchorTime = latestPivotAnchorTime(pivotSelectedReferenceKey);
+    persistCurrentPivotCarrier();
   }
 
   function defaultPivotProjection() {
@@ -9275,16 +9608,17 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
 
   function updatePanelReorderLabel(enabled = panelReorderingEnabled()) {
     const usable = Boolean(enabled && canonicalIdentity && state.panels.length > 1);
+    const transferable = Boolean(canonicalIdentity && canonicalItemSymbol && symbolSelect.value === canonicalItemSymbol && state.marketTabs.length > 1);
     element.dataset.panelReorderEnabled = String(usable);
     priceStrip.dataset.panelReorderEnabled = String(usable);
-    panelReorderHandle.hidden = !usable;
-    panelReorderHandle.disabled = !usable;
-    if (!usable) return;
+    panelReorderHandle.hidden = !usable && !transferable;
+    panelReorderHandle.disabled = !usable && !transferable;
+    if (!usable && !transferable) return;
     const total = state.panels.length;
     const display = symbolSelect.value && symbolSelect.value !== canonicalItemSymbol ? `，目前顯示 ${symbolSelect.value}` : "";
     const label = `移動清單商品 ${canonicalItemSymbol}${display}，目前第 ${panelPosition + 1} 位，共 ${total} 位`;
     panelReorderHandle.setAttribute("aria-label", label);
-    panelReorderHandle.title = `${label}；也可按住本區域拖曳`;
+    panelReorderHandle.title = `${label}；拖到其他頁籤可移動，放開時按 Option 可複製`;
   }
 
   function setPosition(nextPosition) {
@@ -9397,6 +9731,8 @@ function createPanel(index, renderGeneration = state.panelRenderGeneration) {
       element.removeEventListener("keydown", handlePanelContextKeydown);
       panelExportAction.removeEventListener("click", handlePanelExportClick);
       panelOrderAction.removeEventListener("click", handlePanelOrderClick);
+      watchlistRemoveAction.removeEventListener("click", handleDirectWatchlistRemoveClick);
+      panelWatchlistMenuTrigger.removeEventListener("click", handleWatchlistMenuTriggerClick);
       priceStrip.removeEventListener("pointerdown", handlePanelReorderPointerDown);
       panelReorderHandle.removeEventListener("keydown", handlePanelReorderHandleKeydown);
       panelRemoveTechnicalAction.removeEventListener("click", handleRemoveTechnicalSubchart);
@@ -9568,9 +9904,9 @@ function isSingleChartViewActive() {
   return currentChartCount() === 1 && Boolean(state.singleChartView);
 }
 
-function panelCountForActiveCategory(chartCount = currentChartCount()) {
+function panelCountForActiveCategory() {
   const page = activeCategoryPaginationState();
-  return page.visibleSymbols.length || chartCount;
+  return page.visibleSymbols.length;
 }
 
 function categoryPageIndexForSymbol(symbols, symbol, chartCount) {
@@ -9650,7 +9986,8 @@ function renderCategoryPagination() {
 }
 
 function defaultSymbolForPanel(index) {
-  if (isSingleChartViewActive() && index === 0 && state.singleChartView?.tabId === state.activeMarketTabId) return state.singleChartView.symbol;
+  if (isSingleChartViewActive() && index === 0 && state.singleChartView?.tabId === state.activeMarketTabId
+    && symbolsForActiveTab().some((item) => item.symbol === state.singleChartView.symbol)) return state.singleChartView.symbol;
   const defaults = activeCategoryPaginationState().visibleSymbols;
   const options = visibleSymbolsForActiveCategory();
   return defaults[index] || options[index]?.symbol || "SAMPLE";
@@ -9711,6 +10048,7 @@ async function deleteManagedInstrument(symbol, tab) {
   const params = new URLSearchParams({
     tabId: tab?.id || "",
     tabLabel: tab?.label || "",
+    tabKey: tabIdentity(tab),
     scope: reorderScopeForTab(tab),
   });
   const response = await fetch(`/api/instruments/${encodeURIComponent(symbol)}?${params}`, {
@@ -9725,6 +10063,8 @@ async function deleteManagedInstrument(symbol, tab) {
 
 function applyInstrumentSetupPayload(payload, options = {}) {
   state.instruments = payload.instruments || [];
+  state.systemMemberships = payload.systemMemberships || [];
+  state.hiddenPersonalMemberships = payload.hiddenPersonalMemberships || [];
   const tabController = state.watchlistTabReorderController;
   const preserveTabDraft = !options.forceTabOrder && Boolean(tabController && (tabController.dirty || tabController.inFlight));
   if (!preserveTabDraft) {
@@ -9751,13 +10091,29 @@ function snapshotManagedInstrumentOrder(instruments, tab = selectedManagementTab
   return instruments.map((item) => ({
     ...item,
     ...(personal ? { tabId: tab.id, tab: tab.label } : {}),
-    __watchlistHadExact: personal ? state.instruments.some((candidate) => candidate.symbol === item.symbol && candidate.tabId === tab.id) : true,
+    __watchlistHadExact: personal
+      ? state.instruments.some((candidate) => candidate.symbol === item.symbol && candidate.tabId === tab.id)
+      : state.systemMemberships.some((candidate) => candidate.symbol === item.symbol && candidate.systemTabId === (tab.sourceTabId || tab.id)),
   }));
 }
 
 function applyManagedInstrumentOrderLocally(instruments, tab = selectedManagementTab()) {
   if (!tab) return;
   const personal = reorderScopeForTab(tab) === "personal";
+  if (!personal) {
+    const systemTabId = tab.sourceTabId || tab.id;
+    const bySymbol = new Map(instruments.map((item) => [item.symbol, item]));
+    const seen = new Set();
+    state.systemMemberships = state.systemMemberships.map((item) => {
+      if (item.systemTabId !== systemTabId || !bySymbol.has(item.symbol)) return item;
+      seen.add(item.symbol);
+      return { ...item, defaultOrder: bySymbol.get(item.symbol).defaultOrder };
+    });
+    for (const item of instruments) {
+      if (!seen.has(item.symbol)) state.systemMemberships.push({ ...item, systemTabId, enabled: true });
+    }
+    return;
+  }
   const normalized = instruments.map((item) => {
     const clean = { ...item };
     delete clean.__watchlistHadExact;
@@ -9790,13 +10146,13 @@ function restoreManagedInstrumentOrder(previousOrder, tab = selectedManagementTa
     });
     return;
   }
-  const byKey = new Map(previousOrder.map((item) => [reorderItemKey(tab, item), item]));
-  state.instruments = state.instruments.map((item) => {
-    const previous = byKey.get(reorderItemKey(tab, item));
-    if (!instrumentBelongsToTab(item, tab) || !previous) return item;
-    const clean = { ...previous };
-    delete clean.__watchlistHadExact;
-    return { ...item, ...clean };
+  const systemTabId = tab.sourceTabId || tab.id;
+  const previousBySymbol = new Map(previousOrder.map((item) => [item.symbol, item]));
+  state.systemMemberships = state.systemMemberships.filter((item) =>
+    item.systemTabId !== systemTabId || !previousBySymbol.has(item.symbol) || previousBySymbol.get(item.symbol).__watchlistHadExact);
+  state.systemMemberships = state.systemMemberships.map((item) => {
+    const previous = item.systemTabId === systemTabId && previousBySymbol.get(item.symbol);
+    return previous ? { ...item, defaultOrder: previous.defaultOrder } : item;
   });
 }
 
@@ -9817,6 +10173,19 @@ function syncChartOrderForTab(tab) {
     return;
   }
   const visibleItems = visibleSymbolsForActiveCategory();
+  while (state.panels.length > visibleItems.length) {
+    const panel = state.panels.pop();
+    panel?.destroy();
+    panel?.element.remove();
+  }
+  const grid = document.getElementById("chart-grid");
+  grid?.querySelector(".chart-grid-empty")?.remove();
+  if (!visibleItems.length && grid) {
+    const empty = document.createElement("p");
+    empty.className = "chart-grid-empty";
+    empty.textContent = "這個頁籤目前沒有商品。可從清單管理新增，或從其他頁籤拖入商品。";
+    grid.appendChild(empty);
+  }
   state.panels.forEach((panel, index) => {
     panel.setCanonicalItem?.(visibleItems[index], index);
     const changed = panel.applyOrderedSymbol(defaultSymbolForPanel(index));
@@ -9828,11 +10197,13 @@ function syncChartOrderForTab(tab) {
 }
 
 function providerForSymbol(symbol) {
-  return managedInstruments().find((item) => item.symbol === symbol)?.provider || "yfinance";
+  return symbolsForActiveTab().find((item) => item.symbol === symbol)?.provider
+    || managedInstruments().find((item) => item.symbol === symbol)?.provider || "yfinance";
 }
 
 function instrumentDisplayNameForSymbol(symbol) {
-  const instrument = managedInstruments().find((item) => item.symbol === symbol);
+  const instrument = symbolsForActiveTab().find((item) => item.symbol === symbol)
+    || managedInstruments().find((item) => item.symbol === symbol);
   return instrument?.name || symbol || "--";
 }
 
@@ -10358,7 +10729,8 @@ function pricePrecisionForInstrument(symbol, value, context = "trade-price", ref
     value,
     normalizedContext,
     referencePrice,
-    managedInstruments().find((item) => item.symbol === symbol),
+    symbolsForActiveTab().find((item) => item.symbol === symbol)
+      || managedInstruments().find((item) => item.symbol === symbol),
   );
   if (taiwanPrecision) return taiwanPrecision;
   if (isJpyCurrencySymbol(symbol)) return { minimumFractionDigits: 2, maximumFractionDigits: 3 };

@@ -374,6 +374,13 @@
     "securities-lending": "借券成交",
     "shareholder-distribution": "股權分散",
   });
+  const CHIP_DATASET_DATE_SCOPE_LABELS = Object.freeze({
+    "institutional-flow": "買賣超",
+    "foreign-holding": "外資持股",
+    "margin-short": "融資融券",
+    "securities-lending": "借券",
+    "shareholder-distribution": "TDCC",
+  });
   const requestMetrics = {
     requested: 0,
     cacheHit: 0,
@@ -1088,6 +1095,27 @@
 
   function groupForPane(paneId) {
     return PANE_GROUP_BY_ID.get(migratePaneId(paneId)) || "";
+  }
+
+  function chipCoverageFrequencyLabel(frequency) {
+    if (frequency === "daily") return "日";
+    if (frequency === "weekly") return "週";
+    return "頻率未標示";
+  }
+
+  function chipGroupDateScopeText(groupId, paneIds = [], payload) {
+    const selectedDatasets = new Set((Array.isArray(paneIds) ? paneIds : [])
+      .filter((paneId) => groupForPane(paneId) === groupId)
+      .flatMap((paneId) => datasetsForDefinition(CHIP_PANE_REGISTRY.find((item) => item.id === migratePaneId(paneId)) || {})));
+    const coverageByDataset = new Map((Array.isArray(payload?.coverage) ? payload.coverage : [])
+      .filter((item) => item?.dataset)
+      .map((item) => [item.dataset, item]));
+    return CHIP_DATASETS.filter((dataset) => selectedDatasets.has(dataset)).map((dataset) => {
+      const coverage = coverageByDataset.get(dataset);
+      const label = CHIP_DATASET_DATE_SCOPE_LABELS[dataset] || CHIP_DATASET_LABELS[dataset] || dataset;
+      const frequency = chipCoverageFrequencyLabel(coverage?.frequency);
+      return `${label}（${frequency}）${coverage?.end ? `至 ${coverage.end}` : "尚無可驗證日期"}`;
+    }).join(" · ");
   }
 
   function normalizeGroupOrder(order, paneOrder = [], selectedIds = []) {
@@ -3277,9 +3305,12 @@
       label.textContent = definition.label;
       const count = document.createElement("span");
       count.className = "chip-pane-group-count";
+      const dateScope = document.createElement("span");
+      dateScope.className = "chip-pane-group-date-scope";
+      dateScope.setAttribute("aria-label", `${definition.label}資料截止日`);
       const body = document.createElement("div");
       body.className = "chip-pane-group-body";
-      header.append(dragHandle, label, count);
+      header.append(dragHandle, label, count, dateScope);
       element.append(header, body);
       const startDrag = (event) => {
         if (isPaneDragIgnoredTarget(event.target)) return;
@@ -3297,8 +3328,11 @@
         element,
         body,
         dragHandle,
-        update(paneCount) {
+        update(paneCount, dateScopeText = "") {
           count.textContent = `${paneCount} 個副圖`;
+          dateScope.textContent = dateScopeText;
+          dateScope.title = dateScopeText;
+          dateScope.hidden = !dateScopeText;
           dragHandle.hidden = mode !== "B";
         },
         destroy() {
@@ -3454,7 +3488,15 @@
           const controller = controllers.get(paneId);
           if (controller) groupController.body.appendChild(controller.element);
         }
-        groupController.update(children.length);
+        groupController.update(children.length, chipGroupDateScopeText(groupId, children, payload));
+      }
+    }
+
+    function refreshGroupDateScopes() {
+      const paneIds = desiredPaneIds();
+      for (const [groupId, groupController] of groupControllers) {
+        const children = paneIds.filter((paneId) => groupForPane(paneId) === groupId);
+        groupController.update(children.length, chipGroupDateScopeText(groupId, children, payload));
       }
     }
 
@@ -3849,6 +3891,7 @@
         payload = undefined;
         payloadRequestKey = "";
         payloadMaterialSignature = "";
+        refreshGroupDateScopes();
         setNotice("");
         return;
       }
@@ -3860,6 +3903,7 @@
         payload = undefined;
         payloadRequestKey = "";
         payloadMaterialSignature = "";
+        refreshGroupDateScopes();
         options.stack.classList.toggle("chip-state-unavailable", Boolean(controllers.size));
         setNotice(controllers.size ? (context.interval !== "1d" ? "籌碼副圖只支援日 K" : "此商品沒有可載入的台股證券籌碼資料") : "");
         for (const controller of controllers.values()) controller.render({ rows: [], distributionRows: [], availability: {} }, context.candles);
@@ -3873,6 +3917,7 @@
         payload = cached.payload;
         payloadRequestKey = requestKey;
         payloadMaterialSignature = chipPayloadMaterialSignature(payload);
+        refreshGroupDateScopes();
         const cachedWarnings = warningMessages(payload.warnings);
         if (!cachedWarnings.length) dismissedNoticeSignature = "";
         setNotice(
@@ -3894,6 +3939,7 @@
         payload = result;
         payloadRequestKey = requestKey;
         payloadMaterialSignature = chipPayloadMaterialSignature(result);
+        refreshGroupDateScopes();
         const warningText = warningMessages(result.warnings);
         if (!warningText.length) dismissedNoticeSignature = "";
         setNotice(warningText, { dismissible: true, signature: warningNoticeSignature(context, warningText) });
@@ -4053,6 +4099,8 @@
       detailItemsForPane,
       groupForPane,
       groupSelectionState,
+      chipCoverageFrequencyLabel,
+      chipGroupDateScopeText,
       holderAggregate,
       holderDetailModel,
       paneChartInteractionOptions,
