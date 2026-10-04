@@ -3,7 +3,7 @@
 // via useSyncExternalStore without prop drilling.
 
 import { getApiBase } from './runtime';
-import { createStreamSource, type StreamSource } from './shared-event-source';
+import { createStreamSource, type SharedStreamDiagnostics, type StreamSource } from './shared-event-source';
 import { apiPost } from './api';
 import type { SseBidAsk, SseIndexQuote, SseTick } from './types/market';
 import {
@@ -311,6 +311,22 @@ async function resubscribeAll() {
 
 let es: StreamSource | null = null;
 let contractEs: StreamSource | null = null;
+// Manual, read-only observability over the page's existing SharedWorker port.
+// These calls never create an EventSource or a broker subscription.
+export function getMarketStreamDiagnostics(): Promise<SharedStreamDiagnostics | null> {
+    return es?.getDiagnostics?.() ?? Promise.resolve(null);
+}
+
+export function watchMarketStreamTicks(code: string): Promise<boolean> {
+    return es?.watchTicks?.(code) ?? Promise.resolve(false);
+}
+
+export function interruptMarketStreamForAcceptance(simulation: boolean): Promise<boolean> {
+    return es?.interruptForAcceptance?.(simulation) ?? Promise.resolve(false);
+}
+export function silenceMarketStreamForWatchdogAcceptance(simulation: boolean): Promise<boolean> {
+    return es?.silenceForWatchdogAcceptance?.(simulation) ?? Promise.resolve(false);
+}
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let contractRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryDelay = 1000;
@@ -331,6 +347,13 @@ function connect() {
             everDown = false;
             void resubscribeAll(); // server may have restarted — replay subs
         }
+    };
+    es.onreconnecting = (event) => {
+        if (es !== connection) return;
+        // A local acceptance pause only closes this SSE listener. The broker
+        // session and its subscriptions remain alive and must not be replayed.
+        if ((event as CustomEvent<string> | undefined)?.detail !== 'acceptance_interrupt') everDown = true;
+        setStatus('down');
     };
 
     for (const ev of ['tick_stk', 'tick_fop']) {

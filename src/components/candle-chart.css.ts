@@ -13,7 +13,9 @@ export const wrap = style({
 export const toolbar = style({
     position: 'relative',
     display: 'flex',
+    flexWrap: 'wrap',
     gap: '2px',
+    rowGap: '3px',
     padding: `4px ${vars.space.sm}`,
     borderBottom: `1px solid ${vars.color.border}`,
     flexShrink: 0,

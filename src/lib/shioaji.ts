@@ -340,11 +340,92 @@ export function fetchSnapshots(contracts: ContractBase[]) {
     });
 }
 
-export function fetchKbars(contract: ContractBase, start: string, end: string) {
-    return apiPost<KBars>('/api/v1/data/kbars', {
+type PendingKbarRequest = {
+    controller: AbortController;
+    consumers: Set<symbol>;
+    keepAlive: boolean;
+    settled: boolean;
+    promise: Promise<KBars>;
+};
+
+const pendingKbarRequests = new Map<string, PendingKbarRequest>();
+
+function abortedKbarRequest(): Error {
+    const error = new Error('K 線請求已取消');
+    error.name = 'AbortError';
+    return error;
+}
+
+export function fetchKbars(
+    contract: ContractBase,
+    start: string,
+    end: string,
+    signal?: AbortSignal,
+) {
+    const body = {
         contract: contractKey(contract),
         start,
         end,
+    };
+    const key = JSON.stringify(body);
+    let pending = pendingKbarRequests.get(key);
+    if (pending?.controller.signal.aborted) {
+        pendingKbarRequests.delete(key);
+        pending = undefined;
+    }
+    if (!pending) {
+        const controller = new AbortController();
+        pending = {
+            controller,
+            consumers: new Set(),
+            keepAlive: false,
+            settled: false,
+            promise: Promise.resolve({} as KBars),
+        };
+        const entry = pending;
+        entry.promise = apiPost<KBars>('/api/v1/data/kbars', body, {
+            signal: controller.signal,
+        }).finally(() => {
+            entry.settled = true;
+            if (pendingKbarRequests.get(key) === entry) {
+                pendingKbarRequests.delete(key);
+            }
+        });
+        pendingKbarRequests.set(key, entry);
+    }
+
+    if (!signal) {
+        pending.keepAlive = true;
+        return pending.promise;
+    }
+
+    const consumer = Symbol(key);
+    pending.consumers.add(consumer);
+    const release = () => {
+        pending!.consumers.delete(consumer);
+        if (
+            !pending!.settled &&
+            !pending!.keepAlive &&
+            pending!.consumers.size === 0
+        ) {
+            pending!.controller.abort();
+        }
+    };
+    return new Promise<KBars>((resolve, reject) => {
+        if (signal.aborted) {
+            release();
+            reject(abortedKbarRequest());
+            return;
+        }
+        const onAbort = () => {
+            release();
+            reject(abortedKbarRequest());
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+        pending!.promise.then(resolve, reject).finally(() => {
+            signal.removeEventListener('abort', onAbort);
+            release();
+        });
     });
 }
 

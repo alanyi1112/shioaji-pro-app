@@ -181,10 +181,15 @@ import type { Candle } from '../lib/types/market';
 import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
 import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
 import { addKbarTurnoverTwd } from '../lib/kbar-turnover';
+import {
+    recallChartKbars,
+    rememberChartKbars,
+} from '../lib/chart-kbar-memory-cache';
 import { roundToTick } from '../lib/utils/ticksize';
 import { getChartColors, useThemeSettings } from '../lib/theme-store';
 import {
     aggregate,
+    chartWallClockToTaipeiInstant,
     dateStrOffset,
     kbarsToCandles,
     kbarsToTaiwanStockCandles,
@@ -282,11 +287,14 @@ export function CandleChart({
     trades = [],
     onOrdersChanged,
     initialDaily = false,
+    dailySelectionGeneration,
 }: {
     contract: ContractInfo;
     trades?: Trade[];
     onOrdersChanged?: () => void;
     initialDaily?: boolean;
+    /** A new screener selection switches only this target chart to daily once. */
+    dailySelectionGeneration?: number;
 }) {
     const diagnosticRef = useRef<HTMLDivElement>(null);
     const hostRef = useRef<HTMLDivElement>(null);
@@ -295,6 +303,12 @@ export function CandleChart({
     const volSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
     const lastBarRef = useRef<Candle | null>(null);
     const [tfIdx, setTfIdx] = useState(initialDaily ? 4 : 1); // Existing charts keep 5m; explicit screener charts start daily.
+    const appliedDailySelectionRef = useRef<number | undefined>(undefined);
+    useEffect(() => {
+        if (dailySelectionGeneration === undefined || appliedDailySelectionRef.current === dailySelectionGeneration) return;
+        appliedDailySelectionRef.current = dailySelectionGeneration;
+        setTfIdx(4);
+    }, [dailySelectionGeneration]);
     const [empty, setEmpty] = useState(false);
     const [loading, setLoading] = useState(false);
     const loadingRef = useRef(loading);
@@ -322,7 +336,9 @@ export function CandleChart({
         delete node.dataset.chartLastVisualErrorAt;
         delete node.dataset.chartLastVisualError;
         if (Number.isFinite(sourceTime)) {
-            node.dataset.chartLastSourceTime = new Date(Number(sourceTime) * 1_000).toISOString();
+            node.dataset.chartLastSourceTime = new Date(
+                chartWallClockToTaipeiInstant(Number(sourceTime)) * 1_000,
+            ).toISOString();
         } else {
             delete node.dataset.chartLastSourceTime;
         }
@@ -331,7 +347,9 @@ export function CandleChart({
         const node = diagnosticRef.current;
         if (!node) return;
         node.dataset.chartLastSourceReceivedAt = new Date().toISOString();
-        node.dataset.chartLastReceivedSourceTime = new Date(sourceTime * 1_000).toISOString();
+        node.dataset.chartLastReceivedSourceTime = new Date(
+            chartWallClockToTaipeiInstant(sourceTime) * 1_000,
+        ).toISOString();
     };
     const markPassiveVisualError = () => {
         const node = diagnosticRef.current;
@@ -1803,6 +1821,7 @@ export function CandleChart({
     // never render with the prior daily snapshot for an intermediate frame.
     useLayoutEffect(() => {
         let cancelled = false;
+        const loadController = new AbortController();
         const stagedTargetObservation = targetDateObservationRef.current;
         const exactTargetObservation =
             stagedTargetObservation &&
@@ -1822,6 +1841,14 @@ export function CandleChart({
             !cancelled &&
             isLatestGeneration(chartLoadGenerationRef, generation);
         const loadKey = `${contract.code}|${tf.minutes}`;
+        const cacheKey = [
+            contract.security_type,
+            contract.region ?? 'TW',
+            contract.exchange ?? '',
+            contract.code,
+            contract.target_code ?? '',
+            tf.minutes,
+        ].join('|');
         const liveVolumeIdentity = `${loadKey}|${generation}`;
         liveVolumeIdentityRef.current = liveVolumeIdentity;
         liveVolumeCursorRef.current.clear();
@@ -1904,12 +1931,28 @@ export function CandleChart({
                 message: `${exactTargetObservation.targetDate} 的 simulation 1 分 K 已載入`,
             });
             return () => {
+                loadController.abort();
                 cancelled = true;
             };
         }
-        // Never label the previous symbol's drawing/readout as the new code
-        // while its history request is still in flight.
-        clearSeries(false);
+        const cachedRaw = recallChartKbars(cacheKey);
+        if (cachedRaw?.length) {
+            // Stale-while-revalidate: switching back to a recently viewed
+            // symbol paints its own last canonical rows before the browser can
+            // display an empty frame. The request below still refreshes from
+            // Shioaji and remains the final authority.
+            rawRef.current = cachedRaw;
+            rawIdentityRef.current = loadKey;
+            const cachedBars = aggregate(cachedRaw, tf.minutes);
+            applyBars(cachedBars);
+            lastBarRef.current = cachedBars.at(-1) ?? null;
+            loadedKeyRef.current = loadKey;
+            setLoading(false);
+        } else {
+            // Never label the previous symbol's drawing/readout as the new code
+            // while its history request is still in flight.
+            clearSeries(false);
+        }
 
         // ---- older-history paging (TradingView-style infinite scroll) ----
         let oldestDay: number = tf.days; // days-ago covered so far
@@ -1925,6 +1968,7 @@ export function CandleChart({
                 contract,
                 dateStrOffset(from),
                 dateStrOffset(oldestDay + 1),
+                loadController.signal,
             )
                 .then((k) => {
                     if (!isCurrent() || loadedKeyRef.current !== loadKey) return;
@@ -1940,6 +1984,7 @@ export function CandleChart({
                     }
                     dryPages = 0;
                     rawRef.current = [...older, ...rawRef.current];
+                    rememberChartKbars(cacheKey, rawRef.current);
                     const bars = reattachLiveCandleTail(
                         aggregate(rawRef.current, tf.minutes),
                         barsRef.current,
@@ -1954,7 +1999,12 @@ export function CandleChart({
                 });
         };
 
-        fetchKbars(contract, dateStrOffset(tf.days), dateStrOffset(0))
+        fetchKbars(
+            contract,
+            dateStrOffset(tf.days),
+            dateStrOffset(0),
+            loadController.signal,
+        )
             .then((k) => {
                 if (!isCurrent() || !candleSeriesRef.current) return;
                 const raw = canonicalKbarsForContract(contract, k);
@@ -1967,6 +2017,7 @@ export function CandleChart({
                 }
                 rawRef.current = raw;
                 rawIdentityRef.current = loadKey;
+                rememberChartKbars(cacheKey, raw);
                 if (usesTaiwanStockCommonLots(contract)) {
                     const latestRaw = raw[raw.length - 1]!;
                     const sessionDate = wallClockDateKey(latestRaw.time);
@@ -2015,25 +2066,45 @@ export function CandleChart({
                     .priceScale()
                     .applyOptions({ autoScale: true });
             })
-            .catch(() => {
+            .catch((error) => {
                 if (!isCurrent()) return;
-                clearSeries();
-                setEmpty(true);
+                console.warn('K 線載入失敗', error);
+                if (!cachedRaw?.length) {
+                    clearSeries();
+                    setEmpty(true);
+                }
             })
             .finally(() => {
                 if (isCurrent()) setLoading(false);
             });
         return () => {
+            if (
+                rawIdentityRef.current === loadKey &&
+                rawRef.current.length > 0
+            ) {
+                rememberChartKbars(cacheKey, rawRef.current);
+            }
+            loadController.abort();
             cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [contract, historyReloadVersion, tf]);
+    }, [
+        contract.code,
+        contract.security_type,
+        contract.region,
+        contract.exchange,
+        contract.target_code,
+        historyReloadVersion,
+        tf.days,
+        tf.minutes,
+    ]);
 
     // A formula-enabled reload starts on 5m. Bootstrap one product-scoped,
     // timeframe-independent canonical 1m authority window so minute charts
     // can mirror the automatic 1D reference without using their viewport.
     useEffect(() => {
         let cancelled = false;
+        const loadController = new AbortController();
         const key = supportResistanceProductKey(contract);
         supportResistanceAuthorityRef.current = {
             key,
@@ -2041,7 +2112,12 @@ export function CandleChart({
             loadState: 'loading',
             sourceAvailable: false,
         };
-        fetchKbars(contract, dateStrOffset(45), dateStrOffset(0))
+        fetchKbars(
+            contract,
+            dateStrOffset(45),
+            dateStrOffset(0),
+            loadController.signal,
+        )
             .then((kbars) => {
                 if (cancelled) return;
                 supportResistanceAuthorityRef.current = {
@@ -2066,9 +2142,16 @@ export function CandleChart({
                 }
             });
         return () => {
+            loadController.abort();
             cancelled = true;
         };
-    }, [contract]);
+    }, [
+        contract.code,
+        contract.security_type,
+        contract.region,
+        contract.exchange,
+        contract.target_code,
+    ]);
 
     // Live trade/index quote -> update the current bar. Index products use
     // quote_idx rather than the regular tick stream in Shioaji 1.7.
@@ -2200,7 +2283,10 @@ export function CandleChart({
                 value: bar.volume,
                 color: bar.close >= bar.open ? colors.upVol : colors.downVol,
             });
-            markPassiveVisualCommit(bar.time);
+            // A forming daily or multi-minute candle keeps the same chart
+            // bucket while genuine trades advance. Record the trade source
+            // instant, not the display bucket's opening time.
+            markPassiveVisualCommit(tickTime);
         } catch {
             // Recover a rejected incremental update from the already-canonical
             // in-memory bars. Only record a visual commit after both series
@@ -2218,7 +2304,7 @@ export function CandleChart({
                     value: item.volume,
                     color: item.close >= item.open ? colors.upVol : colors.downVol,
                 })));
-                markPassiveVisualCommit(bar.time);
+                markPassiveVisualCommit(tickTime);
             } catch {
                 markPassiveVisualError();
             }

@@ -4,7 +4,7 @@ vi.mock('./api', () => ({ apiPost: vi.fn(async () => ({ success: true })) }));
 class Source {
     static instances: Source[] = [];
     listeners = new Map<string, (event: { data: string }) => void>();
-    onopen = () => {}; onerror = () => {}; close = vi.fn();
+    onopen = () => {}; onerror = () => {}; onreconnecting = () => {}; close = vi.fn();
     constructor(readonly url: string) { Source.instances.push(this); }
     addEventListener(name: string, fn: (event: { data: string }) => void) { this.listeners.set(name, fn); }
     tick() { this.listeners.get('tick_stk')?.({ data: JSON.stringify({ code: '2330', date: '2026-09-11', time: '10:00:00', close: '100', volume: 10, total_volume: 10, tick_type: 1 }) }); }
@@ -45,4 +45,16 @@ it('重連後舊 SSE 的成交、heartbeat 與 error 不得污染新連線', asy
     old.tick(); old.onerror(); old.listeners.get('heartbeat')?.({ data: '{}' });
     expect(listener).toHaveBeenCalledTimes(1); expect(stream.getStreamStatus()).toBe('live'); expect(current.close).not.toHaveBeenCalled();
     current.tick(); expect(listener).toHaveBeenCalledTimes(2); off();
+});
+it('共用 worker 偵測靜默斷流時先標示 down，保留同一頁連線並於重新開啟後恢復', async () => {
+    vi.resetModules(); Source.instances = [];
+    vi.stubGlobal('EventSource', Source); vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')));
+    const stream = await import('./stream');
+    stream.ensureStream();
+    const current = Source.instances.find(source => source.url.endsWith('/stream/data'))!;
+    current.onopen(); expect(stream.getStreamStatus()).toBe('live');
+    current.onreconnecting(); expect(stream.getStreamStatus()).toBe('down');
+    expect(current.close).not.toHaveBeenCalled();
+    current.onopen(); expect(stream.getStreamStatus()).toBe('live');
+    expect(Source.instances.filter(source => source.url.endsWith('/stream/data'))).toHaveLength(1);
 });

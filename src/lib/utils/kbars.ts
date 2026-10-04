@@ -19,6 +19,12 @@ export function wallClockToUtc(dt: string): number {
     return Date.UTC(y, mo - 1, d, h, mi, s) / 1000;
 }
 
+// Chart coordinates encode Taiwan wall-clock as UTC for the axis. Evidence
+// timestamps must undo that presentation offset to describe the source instant.
+export function chartWallClockToTaipeiInstant(chartTime: number): number {
+    return chartTime - 8 * 60 * 60;
+}
+
 export function kbarsToCandles(k: KBars): Candle[] {
     const out: Candle[] = [];
     const alignedAmount =

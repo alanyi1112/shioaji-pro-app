@@ -50,12 +50,17 @@ export async function apiGet<T>(path: string): Promise<T> {
     return res.json() as Promise<T>;
 }
 
-export async function apiPost<T>(path: string, body: unknown): Promise<T> {
+export async function apiPost<T>(
+    path: string,
+    body: unknown,
+    options: { signal?: AbortSignal } = {},
+): Promise<T> {
     assertRuntimeAllowsRequest(path, 'POST');
     const res = await doFetch(base() + path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: options.signal,
     });
     if (!res.ok) await throwApiError(res);
     return res.json() as Promise<T>;

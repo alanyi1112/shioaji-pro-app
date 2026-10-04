@@ -3,13 +3,14 @@
 // its quote streams once, and exposes a useSyncExternalStore hook.
 
 import { useSyncExternalStore } from 'react';
-import { resolveContract, subscribeContractQuotes } from './shioaji';
+import { resolveContract, subscribeQuote } from './shioaji';
 import { registerCodeAlias } from './stream';
 import type { ContractInfo, SecurityType } from './types/contract';
+import type { QuoteTypeName } from './types/market';
 
 const cache = new Map<string, ContractInfo>();
 const pending = new Map<string, Promise<ContractInfo>>();
-const subscribed = new Set<string>();
+const subscribed = new Map<string, Set<QuoteTypeName>>();
 const subscriptionPending = new Set<string>();
 const listeners = new Set<() => void>();
 
@@ -30,18 +31,18 @@ export function primeContract(contract: ContractInfo) {
 }
 
 function ensureQuoteSubscription(contract: ContractInfo) {
-    if (
-        subscribed.has(contract.code) ||
-        subscriptionPending.has(contract.code)
-    ) {
-        return;
-    }
+    if (subscriptionPending.has(contract.code)) return;
+    const required: QuoteTypeName[] = contract.security_type === 'IND' ? ['Quote'] : ['Tick', 'BidAsk'];
+    const confirmed = subscribed.get(contract.code) ?? new Set<QuoteTypeName>();
+    const missing = required.filter(type => !confirmed.has(type));
+    if (!missing.length) return;
     subscriptionPending.add(contract.code);
-    void subscribeContractQuotes(contract)
+    void Promise.allSettled(missing.map(type => subscribeQuote(contract, type)))
         .then((results) => {
-            if (results.some((result) => result.status === 'fulfilled')) {
-                subscribed.add(contract.code);
-            }
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled') confirmed.add(missing[index]!);
+            });
+            if (confirmed.size) subscribed.set(contract.code, confirmed);
         })
         .finally(() => subscriptionPending.delete(contract.code));
 }
