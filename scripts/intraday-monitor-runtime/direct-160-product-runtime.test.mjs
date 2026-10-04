@@ -414,7 +414,9 @@ describe('direct 160 product runtime', () => {
             receipt: { created: false },
             state: { phase: 'complete_go', operations: { activeLimitMutations: 1 } },
         });
-    });
+        // 160-symbol SQLite fixtures and repeated atomic review writes need the
+        // same bounded integration budget as the other full-cohort tests above.
+    }, 30_000);
 
     it('legacy product state 缺少 current session 時不得成為今日 control-plane authority', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'direct-160-state-backed-'));
