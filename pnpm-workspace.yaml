@@ -5,6 +5,11 @@ overrides:
   esbuild: 0.28.1
   postcss: 8.5.25
   undici: 7.29.0
+allowBuilds:
+  '@fission-ai/openspec@1.7.0': true
+  esbuild@0.28.1: true
+  unrs-resolver@1.12.2: true
+  workerd@1.20260801.1: true
 minimumReleaseAgeExclude:
   - '@cloudflare/vite-plugin@1.51.0'
   - miniflare@5.20260801.0-alpha
