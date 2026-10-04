@@ -107,6 +107,16 @@ test("隔離完整應用：Option 複製、移動遞補、快捷移除與刷新�
   const menuState = await page.locator(".panel-context-menu:visible").last().evaluate((node) => ({ hidden: node.hidden, text: node.innerText }));
   assert.match(menuState.text, /移除/, `menu=${JSON.stringify(menuState)} errors=${JSON.stringify(browserErrors)}`);
   assert.match(menuState.text, new RegExp(`移除「${symbol.replaceAll(".", "\\.")}`), `menu=${JSON.stringify(menuState)} errors=${JSON.stringify(browserErrors)}`);
+  const menu = page.locator(".panel-context-menu:visible").last();
+  const menuBox = await menu.boundingBox();
+  assert.equal(Math.round(menuBox.width), 240, "跨頁籤選單需容納操作名稱");
+  assert.ok(menuBox.x >= 0 && menuBox.x + menuBox.width <= 1450, "選單不得超出視窗");
+  await page.setViewportSize({ width: 220, height: 900 });
+  await page.locator(".chart-panel .panel-watchlist-menu-trigger").first().click();
+  if (!(await menu.isVisible())) await page.locator(".chart-panel .panel-watchlist-menu-trigger").first().click();
+  const narrowBox = await menu.boundingBox();
+  assert.ok(narrowBox.width <= 204 && narrowBox.x >= 0 && narrowBox.x + narrowBox.width <= 220, "窄視窗選單應縮小並保持可見");
+  await page.setViewportSize({ width: 1450, height: 900 });
   await page.getByRole("menuitem", { name: new RegExp(`移除「${symbol}`) }).click();
   await page.getByRole("dialog", { name: "確認從清單移除商品" }).getByRole("button", { name: "從這個頁籤移除" }).click();
   await page.getByText("這個頁籤目前沒有商品。可從清單管理新增，或從其他頁籤拖入商品。").waitFor();

@@ -42,6 +42,19 @@ function twseMiIndexFixture({ date = "20260709", fields = ["證券代號", "收�
   };
 }
 
+// 日曆 authority 與收盤行情共用網域，但屬於不同來源契約與計數。
+function officialCalendarFixture(url) {
+  if (url.hostname === "www.twse.com.tw" && url.pathname === "/rwd/zh/holidaySchedule/holidaySchedule") {
+    const year = Number(url.searchParams.get("queryYear")) + 1911;
+    return Response.json({ stat: "ok", queryYear: year, fields: ["日期", "名稱", "說明"], data: [[`${year}-01-01`, "測試休市日", "市場無交易"]] });
+  }
+  if (url.hostname === "www.tpex.org.tw" && url.pathname === "/www/zh-tw/bulletin/tradingDate") {
+    const year = Number(url.searchParams.get("date"));
+    return Response.json({ data: { html: `<table><tr><th colspan="4">${year - 1911}年開（休）市日期表</th></tr><tr><td>測試休市日</td><td>1月1日</td><td>星期四</td><td>市場無交易，僅用於隔離測試</td></tr></table>` } });
+  }
+  return null;
+}
+
 class FakeStatement {
   constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
   bind(...args) { this.args = args; return this; }
@@ -1214,6 +1227,8 @@ test("台股盤中 quote contract 不呼叫任何官方收盤來源且 candles �
   const sourceQuoteTime = Date.parse("2026-09-21T02:04:00.000Z") / 1000;
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com") {
       upstreamCalls.yahoo += 1;
       return Response.json({ chart: { result: [{
@@ -1322,6 +1337,8 @@ test("台股官方核對會對齊交易日、重用全市場資料並保持 stre
   const closeBySymbol = { "2330.TW": 100, "2317.TW": 50, "6146.TWO": 206, "8069.TWO": 200.5 };
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com" && url.pathname.includes("/v8/finance/chart/")) {
       const symbol = decodeURIComponent(url.pathname.split("/").pop());
       const close = closeBySymbol[symbol];
@@ -1429,6 +1446,8 @@ test("TWSE MI_INDEX 尚未發布時維持 pending，且共用 negative cache、�
   const closeBySymbol = { "2330.TW": 100, "2317.TW": 50 };
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com") {
       const symbol = decodeURIComponent(url.pathname.split("/").pop());
       const close = closeBySymbol[symbol];
@@ -1473,6 +1492,8 @@ test("TWSE MI_INDEX HTTP 失敗時先使用 tse MIS，不會越級呼叫 STOCK_D
   const calls = { miIndex: 0, mis: 0, openapi: 0 };
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com") {
       return Response.json({ chart: { result: [{
         timestamp: [1783472400, 1783558800, 1783645200],
@@ -1511,6 +1532,8 @@ test("TWSE MI_INDEX 回傳日期不同時不得直接比較", async () => {
   let misCalls = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com") {
       return Response.json({ chart: { result: [{
         timestamp: [1783472400, 1783558800, 1783645200],
@@ -1544,6 +1567,8 @@ test("TWSE MI_INDEX 格式錯誤且 MIS 失敗時，最後以 STOCK_DAY_ALL 保�
   const calls = { miIndex: 0, mis: 0, openapi: 0 };
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com") {
       return Response.json({ chart: { result: [{
         timestamp: [1783472400, 1783558800, 1783645200],
@@ -1585,6 +1610,8 @@ test("TWSE 無成交、空值與非有限收盤價不會誤報 mismatch", async 
   let miIndexCalls = 0;
   globalThis.fetch = async (input) => {
     const url = new URL(typeof input === "string" ? input : input.url);
+    const calendar = officialCalendarFixture(url);
+    if (calendar) return calendar;
     if (url.hostname === "query1.finance.yahoo.com") {
       const symbol = decodeURIComponent(url.pathname.split("/").pop());
       const close = closeBySymbol[symbol];

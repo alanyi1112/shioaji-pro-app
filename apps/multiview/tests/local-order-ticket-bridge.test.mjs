@@ -82,7 +82,7 @@ test("MultiView 以同頁遮罩 iframe 顯示既有 OrderTicket，不另開分�
   assert.match(styles, /\.order-ticket-modal\s*\{[\s\S]*?width: min\(420px,[\s\S]*?height: min\(500px,/);
 });
 
-test("商品右鍵選單維持精簡寬度，詳細資料展開時才加寬", () => {
-  assert.match(styles, /\.panel-context-menu\s*\{[\s\S]*?width:\s*min\(176px, calc\(100vw - 16px\)\);[\s\S]*?min-width:\s*0;/);
+test("商品右鍵選單容納跨頁籤操作並限制於視窗寬度，詳細資料展開時才加寬", () => {
+  assert.match(styles, /\.panel-context-menu\s*\{[\s\S]*?width:\s*min\(240px, calc\(100vw - 16px\)\);[\s\S]*?min-width:\s*0;/);
   assert.match(styles, /\.panel-context-menu:has\(\.panel-context-menu-pe-river-details:not\(\[hidden\]\)\)\s*\{[\s\S]*?width:\s*min\(520px, calc\(100vw - 16px\)\);/);
 });

@@ -1316,8 +1316,17 @@ function authorizedTdccContinuous(request: Request, env: Env) {
     && internalAuthorization(request) === `Bearer ${env.TDCC_CONTINUOUS_BACKFILL_SECRET}`;
 }
 
-async function fetchTdccLatestSnapshot(symbols: ReadonlySet<string>) {
-  return fetchTdccLatestOfficial({ eligibleSymbols: symbols, timeoutMs: TDCC_CONTINUOUS_CONTRACT.requestTimeoutMs });
+const tdccLatestSnapshotFlights = new Map<string, ReturnType<typeof fetchTdccLatestOfficial>>();
+
+function fetchTdccLatestSnapshot(symbols: ReadonlySet<string>) {
+  const key = JSON.stringify([...symbols].sort());
+  const existing = tdccLatestSnapshotFlights.get(key);
+  if (existing) return existing;
+  // 僅共用進行中的公開來源請求；結束後釋放，下一輪仍取得最新週資料。
+  const pending = fetchTdccLatestOfficial({ eligibleSymbols: symbols, timeoutMs: TDCC_CONTINUOUS_CONTRACT.requestTimeoutMs })
+    .finally(() => { if (tdccLatestSnapshotFlights.get(key) === pending) tdccLatestSnapshotFlights.delete(key); });
+  tdccLatestSnapshotFlights.set(key, pending);
+  return pending;
 }
 
 function chipBackfillWorkflowResult(orchestrator: unknown, done: boolean) {

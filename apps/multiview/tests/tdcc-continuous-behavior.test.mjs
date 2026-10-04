@@ -230,19 +230,18 @@ test("blocked 與 retryable 失敗逐 symbol 隔離，health 不洩漏錯誤內�
 
 function tdccRows(symbols, dataDate = "20260710") {
   const rows = [];
-  for (const symbol of symbols) {
+  const marketSymbols = [...symbols, ...Array.from({ length: 60 - symbols.length }, (_, index) => `${9000 + index}.TW`)];
+  for (const symbol of marketSymbols) {
     const code = symbol.replace(/\.(TW|TWO)$/, "");
     for (let level = 1; level <= 17; level += 1) rows.push({
       "資料日期": dataDate,
       "證券代號": code,
       "持股分級": String(level),
-      "持股數分級": level === 16 ? "差異調整" : level === 17 ? "合計" : `級距 ${level}`,
       "人數": String(level === 17 ? 15 : level === 16 ? 0 : 1),
       "股數": String(level === 17 ? 15000 : level === 16 ? 0 : 1000),
       "占集保庫存數比例%": level === 17 ? "15.00" : level === 16 ? "0.00" : "1.00",
     });
   }
-  while (rows.length < 1000) rows.push({ "資料日期": dataDate, "證券代號": `X${String(rows.length).padStart(4, "0")}` });
   return rows;
 }
 
@@ -264,14 +263,21 @@ test("latest-refresh endpoint 無前端流量也保存新週、同週重跑冪�
   const post = (body) => service.fetch(new Request("http://local/api/internal/tdcc-continuous-backfill", { method: "POST", headers, body: JSON.stringify(body) }), env, context);
   await post({ action: "start-run", runId: "integration-run", trigger: "workflow_dispatch" });
   const originalFetch = globalThis.fetch;
-  let calls = 0;
-  globalThis.fetch = async (url, init) => {
-    if (String(url).includes("openapi.tdcc.com.tw")) {
-      calls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return new Response(JSON.stringify(tdccRows(["2330.TW", "00919.TW"])), { headers: { "content-type": "application/json" } });
-    }
-    return originalFetch(url, init);
+  const calls = { csv: 0, openapi: 0 };
+  let dataDate = "20260710";
+  let unavailable = false;
+  globalThis.fetch = async (url) => {
+    const address = new URL(String(url));
+    const source = address.hostname === "opendata.tdcc.com.tw" && address.pathname === "/getOD.ashx" ? "csv"
+      : address.hostname === "openapi.tdcc.com.tw" && address.pathname === "/v1/opendata/1-5" ? "openapi" : null;
+    assert.ok(source, `unexpected external request ${address}`);
+    calls[source] += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (unavailable) return new Response("fixture unavailable", { status: 503 });
+    const rows = tdccRows(["2330.TW", "00919.TW"], dataDate);
+    if (source === "openapi") return Response.json(rows);
+    const fields = ["資料日期", "證券代號", "持股分級", "人數", "股數", "占集保庫存數比例%"];
+    return new Response([fields.join(","), ...rows.map((row) => fields.map((field) => row[field]).join(","))].join("\n"));
   };
   t.after(() => { globalThis.fetch = originalFetch; });
   const responses = await Promise.all([
@@ -279,13 +285,27 @@ test("latest-refresh endpoint 無前端流量也保存新週、同週重跑冪�
     post({ action: "refresh-latest", runId: "integration-run" }),
   ]);
   assert.deepEqual(responses.map((response) => response?.status), [200, 200]);
-  assert.equal(calls, 1);
+  assert.deepEqual(calls, { csv: 1, openapi: 1 });
   assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM taiwan_stock_shareholder_distribution").first("rows"), 2);
   const again = await post({ action: "refresh-latest", runId: "integration-run" });
   assert.equal(again?.status, 200);
+  assert.equal((await again.json()).unchanged, true);
+  assert.deepEqual(calls, { csv: 2, openapi: 2 });
   assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM taiwan_stock_shareholder_distribution").first("rows"), 2);
   const health = await readTdccContinuousHealth(db, new Date());
   assert.equal(health.latestDataDate, "2026-07-10");
+  unavailable = true;
+  const failed = await Promise.all([post({ action: "refresh-latest", runId: "integration-run" }), post({ action: "refresh-latest", runId: "integration-run" })]);
+  assert.deepEqual(failed.map((response) => response.status), [503, 503]);
+  assert.deepEqual(calls, { csv: 3, openapi: 3 });
+  assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM taiwan_stock_shareholder_distribution").first("rows"), 2);
+  unavailable = false;
+  dataDate = "20260717";
+  const recovered = await post({ action: "refresh-latest", runId: "integration-run" });
+  assert.equal(recovered.status, 200);
+  assert.deepEqual(calls, { csv: 4, openapi: 4 });
+  assert.equal(await db.prepare("SELECT COUNT(*) AS rows FROM taiwan_stock_shareholder_distribution").first("rows"), 4);
+  assert.equal((await readTdccContinuousHealth(db, new Date())).latestDataDate, "2026-07-17");
 });
 
 test("record latest snapshot 只更新已返回 targets，且 latest 優先 heartbeat 可獨立完成", async (t) => {

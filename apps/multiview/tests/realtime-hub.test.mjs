@@ -227,19 +227,26 @@ test("個人清單刪除會送出 owner 完整需求快照並以空集合釋放"
   };
 
   assert.equal((await invoke("/api/instruments")).status, 200);
+  db.exec("INSERT INTO user_tabs (user_id,id,label,sort_order,enabled,is_default,source_tab_id) VALUES ('fixture-owner@example.test','watch','測試清單',5,1,0,'')");
   db.database.prepare(`INSERT INTO user_instruments
     (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled)
-    VALUES (?,?,?,?,?,?,?,?,?,1)`).run("fixture-owner@example.test", "one", "8069.TWO", "fixture-one", "yfinance", "", "台股", "fixture", "台灣股市");
+    VALUES (?,?,?,?,?,?,?,?,?,1)`).run("fixture-owner@example.test", "one", "8069.TWO", "fixture-one", "yfinance", "watch", "測試清單", "fixture", "台灣股市");
   db.database.prepare(`INSERT INTO user_instruments
     (user_id,item_id,symbol,name,provider,tab_id,tab_label,group_name,market,enabled)
-    VALUES (?,?,?,?,?,?,?,?,?,1)`).run("fixture-owner@example.test", "two", "2330.TW", "fixture-two", "yfinance", "", "台股", "fixture", "台灣股市");
+    VALUES (?,?,?,?,?,?,?,?,?,1)`).run("fixture-owner@example.test", "two", "2330.TW", "fixture-two", "yfinance", "watch", "測試清單", "fixture", "台灣股市");
 
-  const deleted = await invoke("/api/instruments/8069.TWO", { method: "DELETE" });
+  const beforeUnscoped = forwarded.length;
+  const unscoped = await invoke("/api/instruments/8069.TWO", { method: "DELETE" });
+  assert.equal(unscoped.status, 409);
+  assert.equal(forwarded.length, beforeUnscoped, "拒絕不明頁籤不得變更即時需求");
+  assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM user_instruments WHERE enabled=1").get().count, 2);
+
+  const deleted = await invoke("/api/instruments/8069.TWO?tabKey=personal%3Awatch&tabLabel=" + encodeURIComponent("測試清單"), { method: "DELETE" });
   assert.equal(deleted.status, 200);
   assert.deepEqual(forwarded.at(-1).symbols, ["2330.TW"]);
   const scopeId = forwarded.at(-1).scopeId;
 
-  const cleared = await invoke("/api/instruments/2330.TW", { method: "DELETE" });
+  const cleared = await invoke("/api/instruments/2330.TW?tabKey=personal%3Awatch&tabLabel=" + encodeURIComponent("測試清單"), { method: "DELETE" });
   assert.equal(cleared.status, 200);
   assert.deepEqual(forwarded.at(-1).symbols, []);
   assert.equal(forwarded.at(-1).scopeId, scopeId);

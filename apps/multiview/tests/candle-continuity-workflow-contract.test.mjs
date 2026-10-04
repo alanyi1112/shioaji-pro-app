@@ -109,8 +109,10 @@ test("Worker 控制面沿用獨立 audit secret、三個 orchestrator action 與
   assert.match(appSource, /summary\.candleCount < displayCount/);
   assert.match(appSource, /auditCandleContinuitySymbol\(env, symbol, now, 160, body\.preferPersisted === true\)/);
   assert.match(appSource, /claimCandleContinuityItems\(\{ db: env\.DB, runId, owner, limit: 1, now \}\)/);
-  assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow, 4\)/);
-  assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow\)/);
+  assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow, expectedSession, 4\)/);
+  assert.match(appSource, /taiwanDailyContinuityOptions\(env, symbol, "1d", requestNow, expectedSession\)/);
+  assert.match(appSource, /resolveOfficialCompletedSession\(requestNow, fetch, env\.DB\)/);
+  assert.match(appSource, /reasonCode: "calendar_authority_unavailable"/);
   assert.match(appSource, /SELECT \* FROM user_instruments WHERE enabled=1/);
   assert.doesNotMatch(appSource, /source: "catalog", enabled: true/);
   assert.match(appSource, /catalogBySymbol\.get\(item\.symbol\)/);
