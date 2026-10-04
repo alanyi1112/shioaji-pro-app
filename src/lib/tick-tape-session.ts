@@ -1,5 +1,7 @@
 import type { ContractBase } from './types/contract';
 import { largeTradeEligibility, normalizeTickTapeEvent, type TickTapeEventInput, type TickTapeRow } from './tick-tape-large-trade';
+import { PriceVolumeDistributionAccumulator, type PriceVolumeDistributionSnapshot } from './tick-tape-price-volume';
+import { MoneyFlowAccumulator, type MoneyFlowSnapshot } from './tick-tape-money-flow';
 
 export const TAPE_INPUT_LIMIT = 500_000;
 export interface LargeTradeSettings {
@@ -107,6 +109,8 @@ function lowerBound(values: number[], value: number) {
 }
 export class SessionTapeClassifier {
     readonly result: SessionTapeResult;
+    private distribution = new PriceVolumeDistributionAccumulator();
+    private moneyFlow = new MoneyFlowAccumulator();
     private queue: number[] = [];
     private sorted: number[] = [];
     private head = 0;
@@ -115,6 +119,12 @@ export class SessionTapeClassifier {
         const error = validateLargeTradeSettings(settings);
         if (error) throw new Error(error);
         this.result = { rows: [], largeIndices: [], sampleCount: 0, configRevision: JSON.stringify(settings) };
+    }
+    getPriceVolumeDistribution(): PriceVolumeDistributionSnapshot {
+        return this.distribution.snapshot();
+    }
+    getMoneyFlow(): MoneyFlowSnapshot {
+        return this.moneyFlow.snapshot();
     }
     append(input: TickTapeEventInput) {
         if (!allSessionEligible(input)) return;
@@ -130,9 +140,12 @@ export class SessionTapeClassifier {
         const occurrence = (this.occurrences.get(event.tradeKey) ?? 0) + 1;
         this.occurrences.set(event.tradeKey, occurrence);
         const index = this.result.rows.length;
-        this.result.rows.push({ ...event, tradeKey: `${event.tradeKey}#${occurrence}`, tradeAmountTwd: amount,
+        const row: SessionTapeRow = { ...event, tradeKey: `${event.tradeKey}#${occurrence}`, tradeAmountTwd: amount,
             thresholdAtDetection: dynamic, dynamicThreshold: dynamic, conditions, isLarge, eligibilityReason: reason,
-            ruleVersion: 'tw-large-trade/2026-09-11.2', configRevision: this.result.configRevision });
+            ruleVersion: 'tw-large-trade/2026-09-11.2', configRevision: this.result.configRevision };
+        this.result.rows.push(row);
+        this.distribution.append(row);
+        this.moneyFlow.append(row);
         if (isLarge) this.result.largeIndices.push(index);
         if (reason === 'eligible') {
             if (this.queue.length === this.settings.sampleSize) {

@@ -15,10 +15,10 @@ const roots: Root[] = [];
 function history(count: number): HistoryTicks {
     return { datetime: Array.from({ length: count }, (_, index) => `${date}T10:00:${String(Math.floor(index / 100000) % 60).padStart(2, '0')}.${String(index % 100000).padStart(6, '0')}`), close: Array(count).fill(100), volume: Array(count).fill(10), tick_type: Array(count).fill(1), bid_price: Array(count).fill(99), bid_volume: Array(count).fill(1), ask_price: Array(count).fill(101), ask_volume: Array(count).fill(1) };
 }
-async function mount(h: () => Promise<HistoryTicks>, subscriber = (_listener: (tick: SseTick) => void) => () => undefined) {
+async function mount(h: () => Promise<HistoryTicks>, subscriber = (_listener: (tick: SseTick) => void) => () => undefined, contract = stock) {
     const host = document.createElement('div'); host.style.cssText = 'height:600px;width:420px'; document.body.append(host);
     const root = createRoot(host); roots.push(root);
-    await act(async () => { root.render(createElement(TickTape, { contract: stock, historyLoader: h, tickSubscriber: subscriber })); });
+    await act(async () => { root.render(createElement(TickTape, { contract, historyLoader: h, tickSubscriber: subscriber })); });
     await settle();
     return { host, root };
 }
@@ -99,6 +99,35 @@ describe('完整日成交面板', () => {
         await expect.poll(() => view.scrollTop).toBe(0);
         expect(subscriber).toHaveBeenCalledOnce();
     });
+    it('等價商品物件重新 render 保留捲動位置，真正切換商品才重置', async () => {
+        const loader = async () => history(2500);
+        const subscriber = (_listener: (tick: SseTick) => void) => () => undefined;
+        const { host, root } = await mount(loader, subscriber);
+        await expect.poll(() => host.textContent).toContain('全部 2500');
+        await click(button(host, '當日最早'));
+        const view = host.querySelector<HTMLElement>('[aria-label="成交明細列表"]')!;
+        await expect.poll(() => view.scrollTop).toBeGreaterThan(0);
+        const previousTop = view.scrollTop;
+
+        await act(async () => {
+            root.render(createElement(TickTape, {
+                contract: { ...stock },
+                historyLoader: loader,
+                tickSubscriber: subscriber,
+            }));
+        });
+        expect(view.scrollTop).toBe(previousTop);
+        expect(host.textContent).toContain('全部 2500');
+
+        await act(async () => {
+            root.render(createElement(TickTape, {
+                contract: { ...stock, code: '2317' },
+                historyLoader: loader,
+                tickSubscriber: subscriber,
+            }));
+        });
+        expect(view.scrollTop).toBe(0);
+    });
     it('開盤及延後收盤在全部、大單不包含；空來源及失敗不宣稱零成交', async () => {
         const h = history(4); h.datetime = ['09:00:00', '09:00:00.000001', '13:25:00', '13:33:00'].map(t => `${date}T${t}`);
         const { host } = await mount(async () => h);
@@ -132,6 +161,59 @@ describe('完整日成交面板', () => {
         });
         await expect.poll(() => second.host.textContent).toContain('大單 0');
         expect(first.host.querySelector('button:focus')?.textContent).toBe('大單設定');
+    });
+    it('分價量表同步大單設定，partial／failed／empty 與不支援商品不誤導', async () => {
+        const h = history(1); h.volume = [5]; h.close = [200];
+        const partial = await mount(async () => h);
+        await click(button(partial.host, '分價量表'));
+        expect(partial.host.querySelector('[data-coverage-state="partial"]')?.textContent).toContain('部分資料');
+        expect(partial.host.textContent).toContain('—大單成交均價');
+        expect(partial.host.querySelectorAll('[data-price-marker]')).toHaveLength(1);
+        expect(partial.host.querySelector('[data-price-marker="current"]')).toBeTruthy();
+        await click(button(partial.host, '大單設定'));
+        const select = partial.host.querySelector('select')!;
+        await act(async () => { select.value = 'OR'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+        await click(button(partial.host, '套用'));
+        await expect.poll(() => partial.host.textContent).toContain('200.0大單成交均價');
+        await click(button(partial.host, '資金流向'));
+        expect(partial.host.querySelector('[data-coverage-state="partial"]')?.textContent).toContain('部分資料');
+        expect(partial.host.textContent).toContain('主動買賣成交淨額');
+
+        const empty = await mount(async () => history(0));
+        await click(button(empty.host, '分價量表'));
+        expect(empty.host.textContent).toContain('尚未確認當日無成交');
+        expect(empty.host.textContent).toContain('共 0 個成交價位／0 張');
+        await click(button(empty.host, '資金流向'));
+        expect(empty.host.querySelectorAll('[data-money-series]')).toHaveLength(0);
+        expect(empty.host.textContent).toContain('0 個成交分鐘');
+
+        const failed = await mount(async () => { throw new Error('連線失敗'); });
+        await click(button(failed.host, '分價量表'));
+        expect(failed.host.querySelector('[data-coverage-state="failed"]')?.textContent).toContain('成交資料載入失敗');
+        await click(button(failed.host, '資金流向'));
+        expect(failed.host.querySelector('[data-coverage-state="failed"]')?.textContent).toContain('成交資料載入失敗');
+
+        const future = await mount(async () => history(1), undefined, { ...stock, code: 'TXFR1', security_type: 'FUT', exchange: 'TAIFEX' });
+        expect(button(future.host, '分價量表')).toBeUndefined();
+        expect(button(future.host, '資金流向')).toBeUndefined();
+        expect(future.host.textContent).not.toContain('大單設定');
+    });
+    it('來源確有未知方向時列出原始成交欄位，但不改變資金流向淨額', async () => {
+        const h = history(2);
+        h.tick_type = [0, 1];
+        const { host } = await mount(async () => h);
+        await click(button(host, '資金流向'));
+        await expect.poll(() => host.textContent).toContain('未知方向 1 筆');
+        const details = host.querySelector<HTMLDetailsElement>('details')!;
+        expect(details.querySelector('summary')?.textContent).toContain('顯示最近 1 筆');
+        await click(details.querySelector<HTMLElement>('summary')!);
+        expect(details.textContent).toContain(`${date} 10:00:00.000000`);
+        expect(details.textContent).toContain('價 100');
+        expect(details.textContent).toContain('量 10 張');
+        expect(details.textContent).toContain('方向碼 0');
+        expect(details.textContent).toContain('金額 1,000,000 元');
+        expect(details.textContent).toContain('歷史');
+        expect(host.textContent).toContain('1.00');
     });
     it('取消過期重算，重算中的新成交納入最新設定', async () => {
         let listener!: (tick: SseTick) => void;
@@ -222,6 +304,29 @@ describe('完整日成交面板', () => {
             const replayMs = performance.now() - started;
             expect(model.result.rows).toHaveLength(count);
             expect(model.result.largeIndices).toHaveLength(count);
+            const distribution = model.getPriceVolumeDistribution();
+            expect(distribution.rows).toEqual([expect.objectContaining({
+                price: 100,
+                totalVolume: count * 10,
+                buyVolume: count * 10,
+                sellVolume: 0,
+                unknownVolume: 0,
+                largeVolume: count * 10,
+                totalShare: 1,
+                largeShare: 1,
+                barRatio: 1,
+            })]);
+            expect(distribution.totalAveragePrice).toBe(100);
+            expect(distribution.largeAveragePrice).toBe(100);
+            const moneyFlow = model.getMoneyFlow();
+            expect(moneyFlow).toMatchObject({
+                overallNetTwd: count * 1_000_000,
+                largeNetTwd: count * 1_000_000,
+                nonLargeNetTwd: 0,
+                unknownDirectionAmountTwd: 0,
+                unknownDirectionCount: 0,
+            });
+            expect(moneyFlow.points.every(point => point.overallNetTwd === point.largeNetTwd + point.nonLargeNetTwd)).toBe(true);
             expect(pulses).toBeGreaterThan(0);
             const before = await navigator.storage.estimate();
             const writeStart = performance.now(); await writeTapeCache(key, inputs, Date.now());

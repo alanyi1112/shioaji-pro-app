@@ -120,6 +120,17 @@ interface HistoryBudget {
     last: number;
     events?: HistoryBudgetEvent[];
 }
+export async function readHistoryBudgetAudit(): Promise<{ count: number; events: HistoryBudgetEvent[] }> {
+    const db = await openDb();
+    try {
+        const tx = db.transaction('budget', 'readonly');
+        const done = completed(tx);
+        const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date());
+        const value = await request<HistoryBudget | undefined>(tx.objectStore('budget').get(date));
+        await done;
+        return { count: value?.count ?? 0, events: [...(value?.events ?? [])] };
+    } finally { db.close(); }
+}
 interface HistoryFailureCooldown {
     failures: number;
     until: number;

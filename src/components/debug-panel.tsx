@@ -8,10 +8,16 @@ import { getApiBase } from '../lib/runtime';
 import { fetchHealth, fetchInfo } from '../lib/shioaji';
 import {
     getLastHeartbeat,
+    getMarketStreamDiagnostics,
+    interruptMarketStreamForAcceptance,
+    silenceMarketStreamForWatchdogAcceptance,
     getSubscriptionCount,
     onAnyTick,
     onOrderEvent,
+    watchMarketStreamTicks,
 } from '../lib/stream';
+import type { SharedStreamDiagnostics } from '../lib/shared-event-source';
+import { readHistoryBudgetAudit } from '../lib/tick-tape-repository';
 import { analyticsEnabled } from '../lib/analytics';
 import { useTier } from '../lib/features';
 import type { OrderEventReport } from '../lib/order-report';
@@ -30,6 +36,45 @@ export function DebugPanel() {
         { ts: number; data: OrderEventReport }[]
     >([]);
     const [ver, setVer] = useState('');
+    const [diagnostics, setDiagnostics] = useState<SharedStreamDiagnostics | null>(null);
+    const [diagnosticsMessage, setDiagnosticsMessage] = useState('尚未擷取；不會額外建立 SSE 連線');
+    const [watchCode, setWatchCode] = useState('');
+    const [historyAudit, setHistoryAudit] = useState<{ count: number; events: { at: number; queryType: string; reason: string }[] } | null>(null);
+
+    const captureDiagnostics = async () => {
+        const snapshot = await getMarketStreamDiagnostics();
+        setDiagnostics(snapshot);
+        setDiagnosticsMessage(snapshot ? '來自此頁既有 SharedWorker port' : '共用串流未連線，或此瀏覽器使用 EventSource fallback；無法量測 refcount');
+    };
+
+    const startTickWatch = async () => {
+        const code = watchCode.trim().toUpperCase();
+        if (code && !/^[A-Z0-9]{1,10}$/.test(code)) {
+            setDiagnosticsMessage('商品代碼格式不正確');
+            return;
+        }
+        const ok = await watchMarketStreamTicks(code);
+        setDiagnosticsMessage(ok
+            ? (code ? `已暫時觀察 ${code}，最多 5 分鐘／32 筆；再次擷取可查看` : '已停止逐筆觀察')
+            : '無法啟用：共用串流未連線或目前使用 fallback');
+        if (ok) await captureDiagnostics();
+    };
+
+    const interruptStream = async () => {
+        const accepted = await interruptMarketStreamForAcceptance(info?.simulation === true);
+        await captureDiagnostics();
+        setDiagnosticsMessage(accepted
+            ? '驗收中：共用成交 SSE 已短暫中斷，15 秒後自動接回；同瀏覽器看盤頁會暫時顯示斷線'
+            : '未執行中斷：僅限本機開發模擬環境、已連線且最多三次');
+    };
+
+    const silenceStream = async () => {
+        const accepted = await silenceMarketStreamForWatchdogAcceptance(info?.simulation === true);
+        await captureDiagnostics();
+        setDiagnosticsMessage(accepted
+            ? '驗收中：成交來源維持開啟但暫停事件轉發；約 60 秒後應由 watchdog 自行重連，75 秒後保險解除'
+            : '未執行靜默演練：僅限本機開發模擬環境、最近 10 秒有事件且每個 worker 最多一次');
+    };
 
     useEffect(() => {
         appVersion().then(setVer);
@@ -126,6 +171,43 @@ export function DebugPanel() {
                     </div>
                 ))}
             </div>
+            <span className={styles.sectionTitle}>共用行情串流（唯讀）</span>
+            <div className={styles.diagnosticControls}>
+                <button className={styles.diagnosticButton} type="button" onClick={() => void captureDiagnostics()}>擷取狀態</button>
+                <input className={styles.diagnosticInput} aria-label="觀察商品代碼" placeholder="商品代碼" value={watchCode}
+                    onChange={(event) => setWatchCode(event.target.value)} />
+                <button className={styles.diagnosticButton} type="button" onClick={() => void startTickWatch()}>觀察 5 分鐘</button>
+                <button className={styles.diagnosticButton} type="button" onClick={() => {
+                    setWatchCode('');
+                    void watchMarketStreamTicks('').then((ok) => {
+                        setDiagnosticsMessage(ok ? '已停止逐筆觀察' : '共用串流未連線或目前使用 fallback');
+                        if (ok) void captureDiagnostics();
+                    });
+                }}>停止觀察</button>
+            </div>
+            <span className={styles.label}>{diagnosticsMessage}</span>
+            {import.meta.env.DEV && info?.simulation === true && <div className={styles.diagnosticControls}>
+                <span className={styles.sectionTitle}>本機模擬驗收：短暫中斷共用成交 SSE</span>
+                <button className={styles.diagnosticButton} type="button" onClick={() => void interruptStream()}>中斷 15 秒後自動接回</button>
+                <button className={styles.diagnosticButton} type="button" onClick={() => void silenceStream()}>演練 60 秒無事件</button>
+                <button className={styles.diagnosticButton} type="button" onClick={() => {
+                    void readHistoryBudgetAudit().then(setHistoryAudit, () => setDiagnosticsMessage('無法讀取本頁成交查詢預算收據'));
+                }}>讀取成交查詢收據</button>
+            </div>}
+            {historyAudit && <pre className={styles.eventDump}>{JSON.stringify({
+                count: historyAudit.count, events: historyAudit.events.slice(-12),
+            }, null, 2)}</pre>}
+            {diagnostics && <button className={styles.diagnosticButton} type="button" onClick={() => {
+                if (!navigator.clipboard?.writeText) {
+                    setDiagnosticsMessage('瀏覽器未提供剪貼簿；可手動複製下方 JSON');
+                    return;
+                }
+                void navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2)).then(
+                    () => setDiagnosticsMessage('已複製本次唯讀診斷快照'),
+                    () => setDiagnosticsMessage('無法複製；可手動複製下方 JSON'),
+                );
+            }}>複製快照</button>}
+            {diagnostics && <pre className={styles.eventDump}>{JSON.stringify(diagnostics, null, 2)}</pre>}
             <span className={styles.sectionTitle}>最近 order_event</span>
             {events.length === 0 && (
                 <span className={dockStyles.emptyState}>尚無事件</span>

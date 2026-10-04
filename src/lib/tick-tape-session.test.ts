@@ -29,6 +29,13 @@ describe('完整日大單分類', () => {
         for (const input of [event({ time: '09:00:00' }), event({ time: '09:00:00.000001' }), event({ time: '13:24:59.999999' }), event({ time: '13:25:00' }), event({ time: '13:30:00' }), event({ time: '13:33:00' }), event({ time: '14:00:00' }), event({ simtrade: true }), event({ intradayOdd: true })]) c.append(input);
         expect(c.result.rows).toHaveLength(6);
         expect(c.result.rows.map(r => r.isLarge)).toEqual([false, true, true, false, false, false]);
+        expect(c.getPriceVolumeDistribution()).toMatchObject({
+            totalVolume: 60,
+            largeVolume: 20,
+            openPrice: 100,
+            currentPrice: 100,
+            rows: [{ totalVolume: 60, largeVolume: 20 }],
+        });
     });
     it('十進位價格的等值門檻不受二進位小數誤差影響', () => {
         expect(tradeAmountTwd(33.33, 30)).toBe(999900);
@@ -43,6 +50,12 @@ describe('完整日大單分類', () => {
         const c = new SessionTapeClassifier({ ...defaults });
         merged.forEach(input => c.append(input));
         expect(new Set(c.result.rows.map(r => r.tradeKey)).size).toBe(4);
+        expect(c.getMoneyFlow()).toMatchObject({
+            overallNetTwd: 4_000_000,
+            largeNetTwd: 4_000_000,
+            nonLargeNetTwd: 0,
+            points: [{ minute: '10:00', overallNetTwd: 4_000_000 }],
+        });
     });
     it('有來源累計序號時只排除同一重播，保留同值但不同序號成交', () => {
         const h = event({ source: 'history', sourceSequence: '2026-09-11|regular|10', sourceCumulativeVolume: 10 });
@@ -64,6 +77,51 @@ describe('完整日大單分類', () => {
         const inputs = [event({ volume: 1 }), event({ volume: 20 }), event({ volume: 10 })];
         const c = await replaySessionTape(inputs, { ...defaults, warmup: 1, sampleSize: 1 }, new AbortController().signal);
         expect(c.result.rows.map(r => r.dynamicThreshold)).toEqual([null, 100000, 2000000]);
+    });
+    it('資金流向與設定重播原子重建，未知方向只累計摘要', async () => {
+        const inputs = [
+            event({ time: '10:00:00', volume: 5, tickType: 1 }),
+            event({ time: '10:01:00', volume: 20, tickType: 2 }),
+            event({ time: '10:02:00', volume: 2, tickType: 0 }),
+        ];
+        const strict = await replaySessionTape(inputs, { ...defaults }, new AbortController().signal);
+        expect(strict.getMoneyFlow()).toMatchObject({
+            overallNetTwd: -1_500_000,
+            largeNetTwd: -2_000_000,
+            nonLargeNetTwd: 500_000,
+            unknownDirectionCount: 1,
+            unknownDirectionAmountTwd: 200_000,
+        });
+        const relaxed = await replaySessionTape(
+            inputs,
+            { ...defaults, amount: 100_000, lots: 1 },
+            new AbortController().signal,
+        );
+        expect(relaxed.getMoneyFlow()).toMatchObject({
+            overallNetTwd: -1_500_000,
+            largeNetTwd: -1_500_000,
+            nonLargeNetTwd: 0,
+            unknownDirectionCount: 1,
+            unknownDirectionAmountTwd: 200_000,
+        });
+        expect(strict.getMoneyFlow().points).not.toBe(relaxed.getMoneyFlow().points);
+    });
+    it('亂序補齊先排序再重播，商品與交易日由各自 classifier 隔離', async () => {
+        const dayOne = await replaySessionTape(
+            mergeTapeInputs([], [event({ time: '10:02:00' }), event({ time: '10:01:00' })]),
+            { ...defaults },
+            new AbortController().signal,
+        );
+        const dayTwo = await replaySessionTape(
+            [event({ date: '2026-09-12', contract: { ...event().contract, code: '2317' }, close: 200 })],
+            { ...defaults },
+            new AbortController().signal,
+        );
+        expect(dayOne.getMoneyFlow().points.map(point => point.minute)).toEqual(['10:01', '10:02']);
+        expect(dayOne.getMoneyFlow().overallNetTwd).toBe(2_000_000);
+        expect(dayTwo.getMoneyFlow().overallNetTwd).toBe(2_000_000);
+        expect(dayOne.result.rows.every(row => row.contractKey.endsWith(':2330'))).toBe(true);
+        expect(dayTwo.result.rows.every(row => row.contractKey.endsWith(':2317'))).toBe(true);
     });
     it('拒绝非有限值、非法上限及暖機大於取樣', () => {
         for (const settings of [{ ...defaults, amount: NaN }, { ...defaults, sampleSize: 2001 }, { ...defaults, warmup: 121 }, { ...defaults, percentile: 0 }]) expect(validateLargeTradeSettings(settings)).not.toBeNull();

@@ -174,3 +174,20 @@ export function inspectTapeContinuity(inputs: TickTapeEventInput[]) {
     }
     return { continuous: true, through: ordered.length ? `${ordered.at(-1)!.date}T${ordered.at(-1)!.time}` : null, cumulative, reason: null };
 }
+
+export type TapeContinuity = ReturnType<typeof inspectTapeContinuity>;
+
+// The caller has already appended a strictly later trade. Rechecking the
+// entire day's tape on every live event turns busy symbols into O(n²) work.
+// A broken prefix stays broken until an authoritative history merge repairs it.
+export function extendTapeContinuity(previous: TapeContinuity, input: TickTapeEventInput): TapeContinuity {
+    if (!previous.continuous) return previous;
+    if (!Number.isFinite(input.sourceCumulativeVolume) || input.sourceCumulativeVolume! <= 0) {
+        return { ...previous, continuous: false, through: null, reason: 'missing_source_cumulative_volume' };
+    }
+    const cumulative = previous.cumulative + input.volume;
+    if (input.sourceCumulativeVolume !== cumulative) {
+        return { ...previous, continuous: false, through: null, cumulative, reason: 'source_cumulative_volume_gap' };
+    }
+    return { continuous: true, through: `${input.date}T${input.time}`, cumulative, reason: null };
+}

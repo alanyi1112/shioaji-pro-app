@@ -6,7 +6,8 @@ import { getStreamStatus, onAnyTick, subscribeStatusStore } from './stream';
 import { historyTickTapeInputs, liveTickTapeInput, type TickTapeEventInput } from './tick-tape-large-trade';
 import { allSessionEligible, mergeTapeInputs, mergeTapeInputsAsync, onLargeTradeSettings, readLargeTradeSettings, replaySessionTape, SessionTapeClassifier, tapeKey, TAPE_INPUT_LIMIT } from './tick-tape-session';
 import { fetchSessionHistory, readTapeCache, TAPE_SOURCE_LIMITATION, writeTapeCache } from './tick-tape-repository';
-import { inspectTapeContinuity, type TapeCoverageState, type TapeSourceEvidence } from './tick-tape-source-verification';
+import { extendTapeContinuity, inspectTapeContinuity, type TapeCoverageState, type TapeSourceEvidence } from './tick-tape-source-verification';
+import { EMPTY_MONEY_FLOW_SNAPSHOT } from './tick-tape-money-flow';
 
 export function taipeiDate() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(new Date()); }
 export function useTickTapeSession(contractInput: ContractBase, historyLoader?: (contract: ContractBase, count: number) => Promise<HistoryTicks>, tickSubscriber = onAnyTick) {
@@ -25,6 +26,7 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
     useEffect(() => {
         let active = true;
         let inputs: TickTapeEventInput[] = [];
+        let continuity = inspectTapeContinuity(inputs);
         let date = taipeiDate();
         let generation = 1;
         let fetchedAt = 0;
@@ -58,7 +60,6 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
             if (sourceEvidence?.state === 'confirmed_empty' && inputs.length === 0) {
                 setCoverageState('confirmed_empty'); setStatus(sourceEvidence.coverage); return;
             }
-            const continuity = inspectTapeContinuity(inputs);
             const bridgedSnapshot = sourceEvidence?.snapshotTotalVolume !== null
                 && sourceEvidence?.snapshotTotalVolume !== undefined
                 && continuity.cumulative >= sourceEvidence.snapshotTotalVolume;
@@ -123,7 +124,9 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
                     if (cached) {
                         const merged = await mergeCurrent(cached.inputs, loadGeneration);
                         if (!merged) return;
-                        inputs = merged; fetchedAt = cached.metadata.fetchedAt; sourceEvidence = cached.metadata.evidence; await rebuild(); publishCoverage();
+                        inputs = merged; fetchedAt = cached.metadata.fetchedAt; sourceEvidence = cached.metadata.evidence; await rebuild();
+                        continuity = inspectTapeContinuity(inputs);
+                        publishCoverage();
                     }
                 }
                 const result = historyLoader
@@ -135,6 +138,7 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
                 const merged = await mergeCurrent(result.inputs.map(input => ({ ...input, generation })), loadGeneration);
                 if (!merged) return;
                 inputs = merged;
+                continuity = inspectTapeContinuity(inputs);
                 for (const input of inputs) if (input.sourceSequence) seenLive.add(input.sourceSequence);
                 fetchedAt = result.fetchedAt;
                 if (!('fromCache' in result) || result.fromCache !== true) reconnectPending = false;
@@ -146,7 +150,7 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
                         setCoverageState('partial');
                         setStatus('部分資料：歷史來源空白，尚未確認當日無成交');
                     } else publishCoverage();
-                    if (inspectTapeContinuity(inputs).continuous) {
+                    if (continuity.continuous) {
                         scheduledRecoveryReason = null;
                         if (recoveryTimer) clearTimeout(recoveryTimer);
                         recoveryTimer = null;
@@ -158,11 +162,11 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
                 const queuedRecovery = pendingRecoveryReason;
                 pendingRecoveryReason = null;
                 if (active && loadGeneration !== generation) void load();
-                else if (active && queuedRecovery && !inspectTapeContinuity(inputs).continuous) requestRecovery(queuedRecovery);
+                else if (active && queuedRecovery && !continuity.continuous) requestRecovery(queuedRecovery);
             }
         };
         const requestRecovery = (reason: 'live_gap' | 'reconnect_gap') => {
-            if (!active || inspectTapeContinuity(inputs).continuous) return;
+            if (!active || continuity.continuous) return;
             if (loading) {
                 pendingRecoveryReason ??= reason;
                 return;
@@ -175,7 +179,7 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
                         recoveryTimer = null;
                         const scheduled = scheduledRecoveryReason;
                         scheduledRecoveryReason = null;
-                        if (scheduled && !inspectTapeContinuity(inputs).continuous) requestRecovery(scheduled);
+                        if (scheduled && !continuity.continuous) requestRecovery(scheduled);
                     }, delay);
                 }
                 return;
@@ -191,7 +195,7 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
             if (input.date > date) {
                 void persist();
                 generation++; date = input.date; input.generation = generation;
-                inputs = []; fetchedAt = 0; seenLive.clear(); controller.abort();
+                inputs = []; continuity = inspectTapeContinuity(inputs); fetchedAt = 0; seenLive.clear(); controller.abort();
                 sourceEvidence = undefined; reconnectPending = false; lastRecoveryAt = 0;
                 model.current = new SessionTapeClassifier(readLargeTradeSettings());
                 setStatus('部分資料：新交易日，等待歷史補齊');
@@ -205,14 +209,15 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
             const hasGap = Number.isFinite(lastCumulative) && Number.isFinite(input.sourceCumulativeVolume)
                 && input.sourceCumulativeVolume !== lastCumulative! + input.volume;
             inputs.push(input); needsSave = true;
-            if (last && input.time < last.time) { inputs = mergeTapeInputs([], inputs); void rebuild(); }
+            if (last && input.time < last.time) { inputs = mergeTapeInputs([], inputs); continuity = inspectTapeContinuity(inputs); void rebuild(); }
             else {
+                continuity = extendTapeContinuity(continuity, input);
                 model.current.append(input);
                 publish();
             }
             const wasReconnectPending = reconnectPending;
             reconnectPending = false;
-            if (hasGap) {
+            if (hasGap && !continuity.continuous) {
                 setCoverageState('partial');
                 setStatus('部分資料：即時累計成交量出現缺口，正在執行一次有界補齊…');
                 requestRecovery(wasReconnectPending ? 'reconnect_gap' : 'live_gap');
@@ -249,5 +254,17 @@ export function useTickTapeSession(contractInput: ContractBase, historyLoader?: 
         void load();
         return () => { active = false; controller.abort(); off(); offSettings(); offStatus(); clearInterval(timer); if (recoveryTimer) clearTimeout(recoveryTimer); void persist(); };
     }, [contract, historyLoader, tickSubscriber]);
-    return { result: model.current.result, status, coverageState, recomputing };
+    return {
+        result: model.current.result,
+        distribution: model.current.getPriceVolumeDistribution(),
+        // Vite HMR can preserve a pre-feature classifier instance for one render.
+        // The effect replaces it immediately; keep the developer terminal alive
+        // during that transition instead of calling a getter absent on the old object.
+        moneyFlow: typeof model.current.getMoneyFlow === 'function'
+            ? model.current.getMoneyFlow()
+            : EMPTY_MONEY_FLOW_SNAPSHOT,
+        status,
+        coverageState,
+        recomputing,
+    };
 }

@@ -63,6 +63,36 @@ export const sectionTitle = style({
     marginTop: '4px',
 });
 
+export const diagnosticControls = style({
+    display: 'flex',
+    flexWrap: 'wrap',
+    gap: vars.space.xs,
+});
+
+export const diagnosticInput = style({
+    minWidth: 0,
+    width: '7rem',
+    fontFamily: vars.font.mono,
+    fontSize: '0.65rem',
+    color: vars.color.foreground,
+    background: vars.color.inset,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    padding: '3px 7px',
+});
+
+export const diagnosticButton = style({
+    fontFamily: vars.font.display,
+    fontSize: '0.65rem',
+    color: vars.color.foreground,
+    background: vars.color.inset,
+    border: `1px solid ${vars.color.border}`,
+    borderRadius: vars.radius.sm,
+    padding: '3px 7px',
+    cursor: 'pointer',
+    ':hover': { borderColor: vars.color.accent },
+});
+
 export const eventDump = style({
     margin: 0,
     fontFamily: vars.font.mono,

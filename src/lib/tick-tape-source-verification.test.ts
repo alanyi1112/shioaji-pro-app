@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { HistoryTicks } from './types/tick';
 import { mergeTapeInputs } from './tick-tape-session';
-import { inspectTapeContinuity, verifyTickTapeSource } from './tick-tape-source-verification';
+import { extendTapeContinuity, inspectTapeContinuity, verifyTickTapeSource } from './tick-tape-source-verification';
 
 const contract = { code: '2330', exchange: 'TSE', security_type: 'STK', region: 'TW', target_code: null } as const;
 const date = '2026-09-16';
@@ -14,6 +14,25 @@ function ticks(rows: Array<[string, number, number, number?]>): HistoryTicks {
 }
 
 describe('成交明細來源完整性', () => {
+    it('大量連續 live 成交以增量核對；缺口維持部分直到歷史補齊', () => {
+        const first = { contract, date, time: '09:00:00.000000', source: 'live' as const, generation: 1,
+            close: 100, volume: 1, tickType: 1, sourceSequence: `${date}|regular|1`, sourceCumulativeVolume: 1 };
+        let continuity = inspectTapeContinuity([]);
+        for (let cumulative = 1; cumulative <= 100_000; cumulative++) {
+            continuity = extendTapeContinuity(continuity, { ...first, sourceCumulativeVolume: cumulative });
+        }
+        expect(continuity).toMatchObject({ continuous: true, cumulative: 100_000 });
+        continuity = extendTapeContinuity(continuity, { ...first, sourceCumulativeVolume: 100_002 });
+        expect(continuity).toMatchObject({ continuous: false, reason: 'source_cumulative_volume_gap' });
+        expect(extendTapeContinuity(continuity, { ...first, sourceCumulativeVolume: 100_003 }).continuous).toBe(false);
+        expect(inspectTapeContinuity([
+            { ...first, sourceCumulativeVolume: 1 },
+            { ...first, time: '09:00:02.000000', sourceCumulativeVolume: 3 },
+            { ...first, time: '09:00:01.000000', sourceCumulativeVolume: 2 },
+        ])).toMatchObject({ continuous: true, cumulative: 3 });
+        expect(inspectTapeContinuity([{ ...first, sourceCumulativeVolume: 1 }, { ...first, time: '09:00:01.000000', sourceCumulativeVolume: 2 }])).toMatchObject({ continuous: true, cumulative: 2 });
+        expect(extendTapeContinuity(inspectTapeContinuity([]), { ...first, sourceCumulativeVolume: undefined })).toMatchObject({ continuous: false, reason: 'missing_source_cumulative_volume' });
+    });
     it('Snapshot 只核對較早 AllDay 時，較新 RangeTime 尾端仍須 live 核對', () => {
         const allDay = ticks([['09:00:01.000000', 100, 10]]);
         const range = ticks([['09:00:01.000000', 100, 10], ['09:00:02.000000', 100, 5]]);
