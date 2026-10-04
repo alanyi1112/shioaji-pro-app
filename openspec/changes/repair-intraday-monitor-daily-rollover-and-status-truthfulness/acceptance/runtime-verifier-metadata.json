@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "intraday-monitor-runtime-verifier-metadata/1",
+  "sourceIdentity": "openspec-archive:2026-09-16-evaluate-tiered-intraday-monitor-expansion-to-160",
+  "evidenceTradeDate": "2026-09-16",
+  "stage": 160,
+  "decision": "go",
+  "reviewerType": "codex_delegated",
+  "reviewerId": "codex-delegated-review",
+  "authorizationProvenance": "user_delegated_evidence_review",
+  "cohortManifestHash": "e7743272b46c6a207313b2767a910ae6072ff956a8bdd2ff3ceee5c6cbaf6985",
+  "baselinePolicy": "daily_authority_derived_exact_path",
+  "runtimeAuthority": {
+    "brokerWrite": false,
+    "production": false,
+    "historicalResults": false,
+    "historicalNotifications": false
+  }
+}

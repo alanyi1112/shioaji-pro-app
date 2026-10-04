@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createIntradayMonitorKbarShadowSession,
     INTRADAY_MONITOR_KBAR_SHADOW_EVIDENCE_MAXIMUM_BYTES } from './kbar-shadow-session-recorder.mjs';
 import { INTRADAY_MONITOR_KBAR_EVENT_SCHEMA, issueIntradayMonitorKbarSessionCloseAuthority } from './kbar-stream-adapter.mjs';
+import { DYNAMIC_DAILY_STORAGE } from './dynamic-daily-storage.mjs';
+import { DIRECT_160_STORAGE } from './direct-160-storage.mjs';
 
 const contract = () => ({ securityType: 'STK', region: 'TW', exchange: 'TSE', code: '2330', targetCode: null, canonicalSymbol: '2330.TW' });
 function minuteKey(value) { return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`; }
@@ -29,6 +31,28 @@ function cohortEvent(contractValue, minute, volume = 1) {
 }
 
 describe('KBar shadow full-session evidence', () => {
+    it('每日 profile 支援 1–160 檔且每檔獨立封分鐘，保留 Stage exact160', () => {
+        const cohort = Array.from({ length: 159 }, (_, index) => cohortContract(index));
+        const session = createIntradayMonitorKbarShadowSession({ cohort,
+            tradeDate: '2026-09-09', connectionGeneration: 'kbar_generation_full_20_270',
+            startedAt: '2026-09-09T00:52:12.000Z', storageProfile: DYNAMIC_DAILY_STORAGE,
+            nowEpochMs: () => Date.parse('2026-09-09T14:00:00+08:00') });
+        expect(session.recordKbar(cohortEvent(cohort[0], 9 * 60 + 1, 2)))
+            .toMatchObject({ accepted: true, sealed: false });
+        expect(session.recordKbar(cohortEvent(cohort[0], 9 * 60 + 2, 3)))
+            .toMatchObject({ accepted: true, sealed: true, sealedMinute: '09:01', cumulativeVolume: 2 });
+        expect(session.status().symbols[0]).toMatchObject({ sealedMinute: '09:01', cumulativeVolume: 2 });
+        expect(session.status().symbols[1]).toMatchObject({ sealedMinute: null, cumulativeVolume: 0 });
+        expect(() => createIntradayMonitorKbarShadowSession({ cohort: [...cohort,
+            cohortContract(159), cohortContract(160)], tradeDate: '2026-09-09',
+            connectionGeneration: 'kbar_generation_full_20_270',
+            startedAt: '2026-09-09T00:52:12.000Z', storageProfile: DYNAMIC_DAILY_STORAGE }))
+            .toThrow('shadow session options are invalid');
+        expect(() => createIntradayMonitorKbarShadowSession({ cohort,
+            tradeDate: '2026-09-09', connectionGeneration: 'kbar_generation_full_20_270',
+            startedAt: '2026-09-09T00:52:12.000Z', storageProfile: DIRECT_160_STORAGE }))
+            .toThrow('shadow session options are invalid');
+    });
     it('09:01–13:30 全部 seal 後才可成為 baseline', () => {
         const session = createIntradayMonitorKbarShadowSession({ cohort: [contract()], tradeDate: '2026-09-07',
             connectionGeneration: 'kbar_generation_0001', startedAt: '2026-09-07T00:59:30.000Z',
@@ -51,6 +75,29 @@ describe('KBar shadow full-session evidence', () => {
             finalizedAt: '2026-09-07T05:34:30.000Z' });
         expect(evidence.symbols[0].rows.at(-1)).toMatchObject({ cumulativeVolume: 270, sequence: 270 });
         expect(evidence.evidenceHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    });
+
+    it('收盤 sink 拒收時保存安全原因計數，不把最後一分鐘誤當已封存', () => {
+        const session = createIntradayMonitorKbarShadowSession({ cohort: [contract()],
+            tradeDate: '2026-09-07', connectionGeneration: 'kbar_generation_0001',
+            startedAt: '2026-09-07T00:59:30.000Z',
+            nowEpochMs: () => Date.parse('2026-09-07T14:00:00+08:00'),
+            onObservation: (observation) => observation.minuteKey === '13:30'
+                ? { accepted: false, reason: 'evidence_stale' } : { accepted: true },
+        });
+        for (let minute = 9 * 60 + 1; minute <= 13 * 60 + 30; minute += 1) {
+            session.recordKbar(event(minute));
+        }
+        const closedAt = Date.parse('2026-09-07T13:34:30+08:00');
+        const authority = issueIntradayMonitorKbarSessionCloseAuthority({
+            tradeDate: '2026-09-07', observedAtEpochMs: closedAt, timeZone: 'Asia/Taipei',
+        }, closedAt);
+        expect(session.sealSessionClose(authority)).toMatchObject({ accepted: false, sealedCount: 0 });
+        expect(session.evidence({ endedAt: '2026-09-07T05:34:30.000Z' })).toMatchObject({
+            adapter: { sinkRejections: 1, sinkRejectionReasons: { evidence_stale: 1 } },
+            symbols: [{ minuteCount: 269, lastMinute: '13:29', complete: false }],
+            assessment: { fullSession: false },
+        });
     });
 
     it('晚開頁缺少開盤分鐘時只能產生 partial evidence', () => {

@@ -5,7 +5,7 @@ import {
     validatePassiveChartFreshnessEvidence,
 } from './passive-chart-freshness-evidence.mjs';
 
-const fixturePath = new URL('../../openspec/changes/add-configurable-intraday-relative-volume-monitor/acceptance/passive-chart-freshness-2026-09-08.json', import.meta.url);
+const fixturePath = new URL('../../openspec/changes/archive/2026-09-16-add-configurable-intraday-relative-volume-monitor/acceptance/passive-chart-freshness-2026-09-08.json', import.meta.url);
 
 describe('被動 K 線 freshness evidence', () => {
     function observation(observedAt, lastVisualCommitAt) {

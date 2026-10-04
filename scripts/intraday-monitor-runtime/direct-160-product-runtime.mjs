@@ -129,23 +129,55 @@ function productBaseline(item) {
     };
 }
 
-export function createDirect160ProductSink({ manifest, baseline, config, tradeDate,
-    connectionGeneration, evidenceDatabasePath, statePath, approvedActiveLimit = 20,
-    now = () => new Date().toISOString() } = {}) {
+export function inspectDirect160ProductSinkInputs({ manifest, baseline, config, tradeDate,
+    statePath, approvedActiveLimit = 20, sessionCurrent = false,
+    capacityApproval = null, requireCurrentSessionAuthority = false } = {}) {
     const enabled = config?.items?.filter((item) => item.enabled).slice(0, 160) ?? [];
     const manifestSymbols = manifest?.cohort?.map((item) => item.canonicalSymbol) ?? [];
-    const priorState = approvedActiveLimit === 160 ? readDirect160ProductRuntimeState(statePath) : null;
+    if (![20, 160].includes(approvedActiveLimit)) return { ready: false, reason: 'approved_limit_invalid' };
     if (manifestSymbols.length !== 160 || enabled.length !== 160 ||
-        enabled.some((item, index) => canonicalSymbol(item) !== manifestSymbols[index]) ||
-        baseline?.calendar?.targetTradeDate !== tradeDate || baseline?.manifests?.length !== 160 ||
-        baseline.manifests.some((item, index) => item.symbol !== manifestSymbols[index] ||
-            item.tradeDate !== baseline.calendar.previousTradeDate || item.cumulativeSeries?.length !== 270) ||
-        ![20, 160].includes(approvedActiveLimit) || typeof now !== 'function' ||
-        (approvedActiveLimit === 160 && (priorState?.phase !== 'complete_go' ||
-            priorState.evaluationState !== 'go' || priorState.approvedActiveLimit !== 160 ||
-            priorState.manifestHash !== manifest?.manifestHash))) {
-        throw new TypeError('direct 160 product sink inputs are invalid');
+        enabled.some((item, index) => canonicalSymbol(item) !== manifestSymbols[index])) {
+        return { ready: false, reason: 'configured_cohort_mismatch' };
     }
+    if (baseline?.calendar?.targetTradeDate !== tradeDate || baseline?.manifests?.length !== 160 ||
+        baseline.manifests.some((item, index) => item.symbol !== manifestSymbols[index] ||
+            item.tradeDate !== baseline.calendar.previousTradeDate || item.cumulativeSeries?.length !== 270)) {
+        return { ready: false, reason: 'baseline_missing' };
+    }
+    if (requireCurrentSessionAuthority && sessionCurrent !== true) {
+        return { ready: false, reason: 'current_session_missing' };
+    }
+    if (approvedActiveLimit === 160) {
+        const formalApproval = capacityApproval?.decision === 'go' &&
+            capacityApproval.approvedActiveLimit === 160 && capacityApproval.stage === 160 &&
+            HASH.test(capacityApproval.approvalHash ?? '');
+        const priorState = !requireCurrentSessionAuthority && !formalApproval
+            ? readDirect160ProductRuntimeState(statePath) : null;
+        if (!formalApproval && (requireCurrentSessionAuthority ||
+            priorState?.phase !== 'complete_go' || priorState.evaluationState !== 'go' ||
+                priorState.approvedActiveLimit !== 160 ||
+                priorState.manifestHash !== manifest?.manifestHash)) {
+            return { ready: false, reason: 'capacity_approval_missing' };
+        }
+    }
+    return { ready: true, reason: null };
+}
+
+export function createDirect160ProductSink({ manifest, baseline, config, tradeDate,
+    connectionGeneration, evidenceDatabasePath, statePath, approvedActiveLimit = 20,
+    sessionAuthority = null, capacityApproval = null, requireCurrentSessionAuthority = false,
+    now = () => new Date().toISOString() } = {}) {
+    let sessionCurrent = false;
+    try { sessionCurrent = sessionAuthority?.evaluate?.()?.current === true; } catch {}
+    const inputCheck = inspectDirect160ProductSinkInputs({ manifest, baseline, config, tradeDate,
+        statePath, approvedActiveLimit, capacityApproval, requireCurrentSessionAuthority,
+        sessionCurrent });
+    if (!inputCheck.ready || typeof now !== 'function') {
+        throw new TypeError(`direct 160 product sink inputs are invalid: ${inputCheck.reason ?? 'clock_invalid'}`);
+    }
+    const enabled = config.items.filter((item) => item.enabled).slice(0, 160);
+    const manifestSymbols = manifest.cohort.map((item) => item.canonicalSymbol);
+    const priorState = approvedActiveLimit === 160 ? readDirect160ProductRuntimeState(statePath) : null;
     const repository = new IntradayMonitorEvidenceRepository(evidenceDatabasePath);
     const ledger = createIntradayRelativeVolumeTriggerLedger();
     const baselineBySymbol = new Map(baseline.manifests.map((item) => [item.symbol,
@@ -174,6 +206,20 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
     let liveAvailabilityComplete = null;
     const priorActiveLimitMutations = priorState?.operations?.activeLimitMutations ?? 0;
 
+    function currentAuthority() {
+        if (!sessionAuthority) {
+            return { current: !requireCurrentSessionAuthority,
+                controlPlaneAuthority: !requireCurrentSessionAuthority,
+                dataPlaneAuthority: !requireCurrentSessionAuthority,
+                notificationAuthority: !requireCurrentSessionAuthority,
+                reason: requireCurrentSessionAuthority ? 'current_session_missing' : null };
+        }
+        try { return sessionAuthority.evaluate(); }
+        catch { return { current: false, controlPlaneAuthority: false,
+            dataPlaneAuthority: false, notificationAuthority: false,
+            reason: 'current_session_authority_unavailable' }; }
+    }
+
     function snapshot() {
         return {
             schemaVersion: DIRECT_160_PRODUCT_RUNTIME_SCHEMA, phase, tradeDate,
@@ -187,7 +233,8 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
             boundedTransportReady: (phase === 'running_evaluation' || phase === 'running_approved') &&
                 items.every((item) => item.state === 'active' && item.dataPlaneState === 'active'),
             firstMinuteCanary, liveAvailabilityComplete,
-            notificationAuthority: phase === 'running_approved', items,
+            notificationAuthority: phase === 'running_approved' &&
+                currentAuthority().notificationAuthority === true, items,
             persistedObservationCount, persistedTriggerCount, updatedAt: now(),
             provider: { physicalUsage: null, globalOwnershipComplete: null, releaseProven: null, headroom: null },
             operations: { notificationDispatches: 0, brokerWrites: 0, productionTransitions: 0,
@@ -309,6 +356,10 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
         }
         const item = itemBySymbol.get(canonicalSymbol);
         if (!item) return { accepted: false, reason: 'first_kbar_symbol_unknown' };
+        const authority = currentAuthority();
+        if (!authority.current || !authority.dataPlaneAuthority) {
+            return { accepted: false, reason: authority.reason ?? 'current_session_unverified' };
+        }
         if (item.dataPlaneState === 'active') return { accepted: true, duplicate: true };
         const prefixPending = requiredBootstrapEndBySymbol.has(canonicalSymbol);
         Object.assign(item, {
@@ -318,6 +369,12 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
             reason: prefixPending ? 'bootstrap_prefix_pending' : 'none',
             updatedAt: receivedAt,
         });
+        try { sessionAuthority?.recordFirstKbar?.({ canonicalSymbol, receivedAt }); }
+        catch {
+            Object.assign(item, { state: 'degraded', reason: 'current_session_update_failed', updatedAt: now() });
+            save();
+            return { accepted: false, reason: 'current_session_update_failed' };
+        }
         save();
         return { accepted: true, duplicate: false };
     }
@@ -335,6 +392,10 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
             observation.sourceVersion.length > 0 && observation.unit === 'common_lot' && validIdentity);
         if (closed || !validEnvelope) {
             return { accepted: false, reason: 'observation_envelope_invalid' };
+        }
+        const authority = currentAuthority();
+        if (!authority.current || !authority.dataPlaneAuthority) {
+            return { accepted: false, reason: authority.reason ?? 'current_session_unverified' };
         }
         try {
             const symbol = observation.contract.canonicalSymbol;
@@ -394,6 +455,16 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
                 const receipt = repository.appendObservation(canonicalObservation, repository.currentRevision());
                 if (receipt.inserted) persistedObservationCount += 1;
             }
+            try {
+                sessionAuthority?.recordObservation?.({ canonicalSymbol: symbol,
+                    receivedAt: observation.receivedTime,
+                    continuityComplete: continuityReady && observation.continuity === 'complete' });
+            } catch {
+                Object.assign(runtimeItem, { state: 'degraded', reason: 'current_session_update_failed',
+                    updatedAt: observation.receivedTime });
+                save();
+                return { accepted: false, reason: 'current_session_update_failed' };
+            }
             const previous = baselineBySymbol.get(symbol)?.get(observation.minuteKey);
             const configItem = configBySymbol.get(symbol);
             const threshold = configItem.thresholdOverride ?? config.globalThreshold;
@@ -404,7 +475,9 @@ export function createDirect160ProductSink({ manifest, baseline, config, tradeDa
                 currentCumulativeVolume: canonicalCumulativeVolume,
                 previousCumulativeVolume: previous ?? 0, todayCompleteness: 'complete',
                 baselineCompleteness: previous === undefined ? 'missing' : 'complete',
-                calendarCurrent: true, sessionCurrent: true, generationCurrent: true,
+                calendarCurrent: authority.current === true,
+                sessionCurrent: authority.dataPlaneAuthority === true,
+                generationCurrent: authority.current === true,
                 continuityComplete: continuityReady && observation.continuity === 'complete', unit: 'common_lot',
                 sourceVersion: observation.sourceVersion, observationMode: 'live',
                 revisionFirstComparable: observation.minuteKey === '09:01', createdAt: observation.receivedTime });
@@ -586,7 +659,6 @@ export function validateDirect160LiveAcceptanceCapture(capture) {
         firstMinuteCanary.receivedCount === 160 && firstMinuteCanary.missingCount === 0 &&
         firstMinuteCanary.liveAvailabilityComplete === true &&
         capture.runtime?.localEventReconnect?.recovered === true &&
-        HASH.test(capture.runtime?.passiveChartEvidenceHash ?? '') &&
         capture.session?.close?.accepted === true && Array.isArray(symbols) && symbols.length === 160 &&
         symbols.every((item) => item?.complete === true && item.nominalCloseMinute === '13:30' &&
             ['not_observed', 'observed_and_folded'].includes(item.delayedCloseState) &&

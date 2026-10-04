@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { projectDynamicDailyStatus } from './dynamic-daily-status-projection.mjs';
 
 export const INTRADAY_MONITOR_LOCAL_API_PREFIX = '/api/intraday-monitor/v1';
 export const INTRADAY_MONITOR_LOCAL_API_MAX_BODY_BYTES = 128 * 1024;
@@ -14,6 +15,10 @@ const CAPACITY_SCHEMA = 'intraday-monitor-capacity-response/1';
 const RESULTS_SCHEMA = 'intraday-monitor-results/1';
 const EVENTS_SCHEMA = 'intraday-monitor-events/1';
 const DIAGNOSTICS_SCHEMA = 'intraday-monitor-diagnostics/1';
+const APPROVAL_SCHEMA = 'intraday-monitor-capacity-approval-view/1';
+const SESSION_SCHEMA = 'intraday-monitor-session-view/1';
+const BASELINE_SUMMARY_SCHEMA = 'intraday-monitor-baseline-summary/1';
+const FRESHNESS_SCHEMA = 'intraday-monitor-freshness/1';
 const PILOT_COHORT_LIMIT = 20;
 const OPAQUE = /^[A-Za-z0-9_-]{16,128}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -149,6 +154,76 @@ function safeCapacity(value = {}) {
     };
 }
 
+function safeApproval(value = {}) {
+    value ??= {};
+    return {
+        schemaVersion: APPROVAL_SCHEMA,
+        approvedActiveLimit: [20, 50, 100, 160].includes(value.approvedActiveLimit)
+            ? value.approvedActiveLimit : 20,
+        stage: [20, 50, 100, 160].includes(value.stage) ? value.stage : null,
+        decision: ['go', 'no_go', 'rollback'].includes(value.decision) ? value.decision : null,
+        reviewerType: ['human', 'codex_delegated', 'system'].includes(value.reviewerType)
+            ? value.reviewerType : null,
+        reviewedAt: typeof value.reviewedAt === 'string' && Number.isFinite(Date.parse(value.reviewedAt))
+            ? value.reviewedAt : null,
+        evidenceTradeDate: validDate(value.evidenceTradeDate) ? value.evidenceTradeDate : null,
+        historical: true,
+    };
+}
+
+function safeSession(value = {}) {
+    value ??= {};
+    return {
+        schemaVersion: SESSION_SCHEMA,
+        authorityTradeDate: validDate(value.authorityTradeDate) ? value.authorityTradeDate : null,
+        sessionTradeDate: validDate(value.sessionTradeDate) ? value.sessionTradeDate : null,
+        phase: typeof value.phase === 'string' ? value.phase : null,
+        current: value.current === true,
+        configRevision: Number.isSafeInteger(value.configRevision) ? value.configRevision : null,
+        savedConfigRevision: Number.isSafeInteger(value.savedConfigRevision) ? value.savedConfigRevision : null,
+        startedAt: typeof value.startedAt === 'string' && Number.isFinite(Date.parse(value.startedAt))
+            ? value.startedAt : null,
+        updatedAt: typeof value.updatedAt === 'string' && Number.isFinite(Date.parse(value.updatedAt))
+            ? value.updatedAt : null,
+        staleReason: value.current === true ? null : safeReason(value.staleReason, 'current_session_missing'),
+        controlPlaneRequested: value.current === true && value.controlPlaneRequested === true,
+        controlPlaneAccepted: value.current === true && value.controlPlaneAccepted === true,
+        firstKbarAt: value.current === true && typeof value.firstKbarAt === 'string' &&
+            Number.isFinite(Date.parse(value.firstKbarAt)) ? value.firstKbarAt : null,
+        startupSource: value.startupSource === 'late_boot' || value.startupSource === 'scheduled'
+            ? value.startupSource : 'unknown',
+        coldStartRisk: value.coldStartRisk === true,
+        scheduled0820Success: value.scheduled0820Success === true
+            ? true : value.scheduled0820Success === false ? false : null,
+    };
+}
+
+function safeBaselineSummary(value = {}) {
+    value ??= {};
+    return {
+        schemaVersion: BASELINE_SUMMARY_SCHEMA,
+        complete: safeCount(value.complete),
+        missing: safeCount(value.missing),
+        stale: safeCount(value.stale),
+        unknown: safeCount(value.unknown),
+        tradeDates: Array.isArray(value.tradeDates)
+            ? [...new Set(value.tradeDates.filter(validDate))].sort() : [],
+    };
+}
+
+function safeFreshness(value = {}) {
+    value ??= {};
+    const evidenceAt = typeof value.evidenceAt === 'string' && Number.isFinite(Date.parse(value.evidenceAt))
+        ? value.evidenceAt : null;
+    return {
+        schemaVersion: FRESHNESS_SCHEMA,
+        evidenceAt,
+        ageMs: Number.isSafeInteger(value.ageMs) && value.ageMs >= 0 ? value.ageMs : null,
+        budgetMs: safeCount(value.budgetMs),
+        fresh: value.fresh === true,
+    };
+}
+
 const ITEM_STATES = new Set([
     'disabled', 'waiting_gate', 'waiting_pilot_limit', 'waiting_capacity', 'waiting_baseline',
     'awaiting_first_kbar', 'waiting_continuity', 'active', 'degraded',
@@ -275,6 +350,7 @@ export function createIntradayMonitorLocalApiService({
     generation,
     capacityProvider = () => ({}),
     diagnosticsProvider = () => ({}),
+    dailyStatusProvider = async () => ({}),
     now = () => new Date().toISOString(),
     cursorSecret = randomBytes(32),
 } = {}) {
@@ -282,6 +358,7 @@ export function createIntradayMonitorLocalApiService({
     if (!leaseCoordinator || !['acquire', 'renew', 'release', 'status'].every((name) => typeof leaseCoordinator[name] === 'function')) throw new TypeError('leaseCoordinator is invalid');
     if (!evidenceRepository || typeof evidenceRepository.currentRevision !== 'function' || typeof evidenceRepository.listTriggers !== 'function') throw new TypeError('evidenceRepository is invalid');
     if (!validOpaque(generation)) throw new TypeError('generation is invalid');
+    if (typeof dailyStatusProvider !== 'function') throw new TypeError('dailyStatusProvider is invalid');
     if (!Buffer.isBuffer(cursorSecret) || cursorSecret.length < 32) throw new TypeError('cursorSecret is invalid');
 
     const idempotency = new Map();
@@ -336,7 +413,10 @@ export function createIntradayMonitorLocalApiService({
         return idempotent('config_replace', request, () => {
             if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0 || request.config?.revision !== request.expectedRevision) return errorReply(400, 'invalid_revision');
             try {
-                const config = configForApi(configRepository.replace(request.config));
+                const correlationId = createHash('sha256').update(request.idempotencyKey)
+                    .digest('hex');
+                const config = configForApi(configRepository.replace(request.config,
+                    { sourceType: 'local_api', correlationId }));
                 return reply(200, { ok: true, schemaVersion: CONFIG_RESPONSE_SCHEMA, revision: config.revision, config });
             } catch (error) {
                 if (error?.code === 'revision_conflict') return errorReply(409, 'revision_conflict', error.details ?? undefined);
@@ -403,7 +483,11 @@ export function createIntradayMonitorLocalApiService({
             degraded,
             connectionGeneration: generation,
         });
-        const state = !capacity.gate0EvidenceCurrent ||
+        const approval = safeApproval(rawCapacity.approval);
+        const session = safeSession(rawCapacity.session);
+        const baselineSummary = safeBaselineSummary(rawCapacity.baselineSummary);
+        const freshness = safeFreshness(rawCapacity.freshness);
+        const state = !session.current || !capacity.gate0EvidenceCurrent ||
             (!capacity.globalOwnershipComplete && !capacity.boundedTransportReady &&
                 !capacity.controlPlaneSubscriptionRequested)
             ? 'feature_off'
@@ -412,8 +496,10 @@ export function createIntradayMonitorLocalApiService({
               : leases.acceptingEvents && active > 0
                 ? 'active'
                 : 'idle';
-        const reason = state === 'feature_off'
-            ? capacity.reason
+        const reason = !session.current
+            ? session.staleReason
+            : state === 'feature_off'
+              ? capacity.reason
             : state === 'degraded'
               ? itemStatuses.find((item) => item.state === 'degraded')?.reason ?? 'unavailable'
               : !leases.acceptingEvents
@@ -438,6 +524,10 @@ export function createIntradayMonitorLocalApiService({
             configRevision: config.revision,
             lease: { activeLeaseCount: safeCount(leases.activeLeaseCount), sessionState: safeReason(leases.sessionState, 'unavailable'), acceptingEvents: leases.acceptingEvents === true },
             capacity,
+            approval,
+            session,
+            baselineSummary,
+            freshness,
             itemStatuses,
             observedAt: now(),
         });
@@ -466,16 +556,34 @@ export function createIntradayMonitorLocalApiService({
         }) });
     }
 
+    async function readDailyStatus() {
+        let config;
+        try { config = configRepository.read(); }
+        catch { return errorReply(503, 'config_repository_unavailable'); }
+        try {
+            const observedAt = now();
+            const inputs = await dailyStatusProvider({ config, observedAt });
+            const daily = projectDynamicDailyStatus({ config, ...(inputs ?? {}), observedAt });
+            return reply(200, { ok: true, daily });
+        } catch { return errorReply(503, 'daily_plan_evidence_unavailable'); }
+    }
+
     function readPage({ tradeDate, limit = '50', cursor = null }, schemaVersion = RESULTS_SCHEMA) {
         if (!validDate(tradeDate) || !/^\d{1,3}$/.test(String(limit)) || Number(limit) < 1 || Number(limit) > INTRADAY_MONITOR_LOCAL_API_MAX_PAGE_SIZE) return errorReply(400, 'invalid_query');
         const offset = parseCursor(cursor, tradeDate);
         if (offset === null) return errorReply(409, 'invalid_cursor');
         try {
-            const all = typeof evidenceRepository.listTriggerResults === 'function'
+            const rawCapacity = capacityProvider() ?? {};
+            const session = safeSession(rawCapacity.session);
+            const historical = tradeDate !== session.authorityTradeDate;
+            const source = typeof evidenceRepository.listTriggerResults === 'function'
                 ? evidenceRepository.listTriggerResults(tradeDate)
                 : evidenceRepository.listTriggers(tradeDate);
+            const all = !historical && session.current !== true ? [] : source;
             if (offset > all.length) return errorReply(409, 'stale_cursor');
-            const items = all.slice(offset, offset + Number(limit)).map((event) => ({ ...event, notificationAuthority: false, brokerWriteAuthority: false }));
+            const items = all.slice(offset, offset + Number(limit)).map((event) => ({ ...event,
+                kind: historical ? 'historical' : event.kind,
+                notificationAuthority: false, brokerWriteAuthority: false }));
             const nextOffset = offset + items.length;
             return reply(200, {
                 ok: true,
@@ -486,6 +594,7 @@ export function createIntradayMonitorLocalApiService({
                 items,
                 cursor: cursorFor(nextOffset, tradeDate),
                 nextCursor: nextOffset < all.length ? cursorFor(nextOffset, tradeDate) : null,
+                authority: historical ? 'historical' : session.current ? 'current' : 'unverified',
                 replayNotificationAuthority: false,
             });
         } catch {
@@ -496,7 +605,14 @@ export function createIntradayMonitorLocalApiService({
     function readDiagnostics() {
         let evidenceRevision = null;
         try { evidenceRevision = evidenceRepository.currentRevision(); } catch {}
-        return reply(200, { ok: true, ...safeDiagnostics({ ...diagnosticsProvider(), evidenceRevision }) });
+        const rawCapacity = capacityProvider() ?? {};
+        return reply(200, { ok: true,
+            ...safeDiagnostics({ ...diagnosticsProvider(), evidenceRevision }),
+            approval: safeApproval(rawCapacity.approval),
+            session: safeSession(rawCapacity.session),
+            baselineSummary: safeBaselineSummary(rawCapacity.baselineSummary),
+            freshness: safeFreshness(rawCapacity.freshness),
+        });
     }
 
     function subscribe(listener) {
@@ -522,8 +638,11 @@ export function createIntradayMonitorLocalApiService({
     }
 
     function liveNotificationAuthority() {
-        const capacity = safeCapacity(capacityProvider() ?? {});
-        return capacity.notificationAuthority === true && capacity.evaluationState === 'go';
+        const raw = capacityProvider() ?? {};
+        const capacity = safeCapacity(raw);
+        const session = safeSession(raw.session);
+        return session.current === true && capacity.notificationAuthority === true &&
+            capacity.evaluationState === 'go';
     }
 
     function close() {
@@ -540,6 +659,7 @@ export function createIntradayMonitorLocalApiService({
         mutateLease,
         readStatus,
         readCapacity,
+        readDailyStatus,
         readResults: (query) => readPage(query, RESULTS_SCHEMA),
         readEvents: (query) => readPage(query, EVENTS_SCHEMA),
         readDiagnostics,

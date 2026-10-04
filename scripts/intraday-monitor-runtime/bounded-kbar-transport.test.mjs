@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createBoundedKbarTransport } from './bounded-kbar-transport.mjs';
 import { DIRECT_160_STORAGE } from './direct-160-storage.mjs';
+import { DYNAMIC_DAILY_STORAGE } from './dynamic-daily-storage.mjs';
 
 const contract = (code = '2330') => ({ securityType: 'STK', region: 'TW', exchange: 'TSE', code, targetCode: null, canonicalSymbol: `${code}.TW` });
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
@@ -81,6 +82,25 @@ describe('bounded realtime KBar transport', () => {
         expect(f.calls.filter((item) => item.path.endsWith('/unsubscribe/kbars'))).toHaveLength(1);
         expect(transport.status()).toMatchObject({ maximumBytes: DIRECT_160_STORAGE.streamTotalBytes,
             maximumFrameBytes: DIRECT_160_STORAGE.streamFrameBytes });
+    });
+
+    it('每日產品 profile 接受 1–160 檔單一 batch，不放寬歷史 Stage exact160', async () => {
+        const f = fixture();
+        const transport = createBoundedKbarTransport({ fetchImpl: f.fetchImpl,
+            storageProfile: DYNAMIC_DAILY_STORAGE, onEvent: () => ({ accepted: true }) });
+        const tooMany = Array.from({ length: 161 }, (_, index) => contract(String(1000 + index)));
+        await expect(transport.start({ contracts: tooMany,
+            connectionGeneration: 'daily_generation_0001' })).rejects.toThrow('start request is invalid');
+        expect(f.calls).toHaveLength(0);
+        const contracts = Array.from({ length: 159 }, (_, index) => contract(String(1000 + index)));
+        const started = await transport.start({ contracts,
+            connectionGeneration: 'daily_generation_0001' });
+        expect(started).toMatchObject({ cohortSize: 159,
+            storageProfile: DYNAMIC_DAILY_STORAGE.schemaVersion });
+        await transport.stop();
+        expect(f.calls.filter((item) => item.path.endsWith('/data/kbar'))).toHaveLength(1);
+        expect(f.calls.filter((item) => item.path.endsWith('/subscribe/kbars'))).toHaveLength(1);
+        expect(f.calls.filter((item) => item.path.endsWith('/unsubscribe/kbars'))).toHaveLength(1);
     });
 
     it('只允許同一 generation 與 cohort 執行一次 unsubscribe/resubscribe recovery', async () => {

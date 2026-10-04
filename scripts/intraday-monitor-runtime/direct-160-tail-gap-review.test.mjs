@@ -72,12 +72,13 @@ function captureFixture({ manifest, plan, baseline, affected = 1, missingCount =
             close: { accepted: false, sealedCount: 160 } },
         runtime: { firstMinuteCanary: { result: 'pass', expectedCount: 160, receivedCount: 160,
             missingCount: 0, liveAvailabilityComplete: true }, localEventReconnect: { recovered: true },
-        passiveChartEvidenceHash: 'c'.repeat(64) },
+            passiveChartEvidenceState: 'missing', passiveChartEvidenceHash: null,
+            chartFreshnessMeasurement: 'not_observed_optional' },
         transport: { startReceipt: { subscribeAccepted: true }, stopReceipt: { unsubscribeAccepted: true },
             status: { malformedFrames: 0 } },
         resources: { cpuBasisPoints: 100, maxRssBytes: 200_000_000, databaseGrowthBytes: 1_000_000,
             minimumAvailableDiskBytes: 10_000_000_000, maxEventToSealLatencyMs: 100,
-            maxChartFreshnessMs: 1_000 },
+            maxChartFreshnessMs: null },
         operations: { notificationDispatches: 0, brokerWrites: 0, productionTransitions: 0,
             serviceLifecycleMutations: 0, activeLimitMutations: 0 },
         assessment: { liveAvailabilityComplete: true, dataContinuityComplete: false,
@@ -105,6 +106,29 @@ async function review(options = {}) {
 }
 
 describe('direct 160 收盤尾端缺口 review', () => {
+    it('已發布且完整核實的同日基準可在零新增網路讀取下完成受限審閱', async () => {
+        const values = artifacts();
+        const capture = captureFixture(values);
+        const symbol = values.manifest.cohort[0].canonicalSymbol;
+        const derived = await reviewDirect160TailGapCapture({ ...values, capture,
+            sourceCaptureSha256: 'a'.repeat(64), reviewedAt: '2026-09-14T14:00:00+08:00',
+            fetchImpl: async () => { throw new Error('unexpected_network_request'); },
+            verifiedHistoricalBySymbol: { [symbol]: {
+                sourceVersion: 'shioaji-http/1.7.1',
+                firstHash: `sha256:${'b'.repeat(64)}`,
+                secondHash: `sha256:${'b'.repeat(64)}`,
+                rows: MINUTES.map((minuteKey, index) => ({ minuteKey,
+                    cumulativeVolume: index + 1 })),
+            } } });
+        expect(derived.tailGapReview).toMatchObject({
+            sourceAuthority: 'published_verified_baseline', affectedSymbolCount: 1,
+            notificationAuthority: false,
+        });
+        expect(derived.session.symbols[0].rows.at(-1)).toMatchObject({
+            minuteKey: '13:30', liveDelivered: false,
+        });
+    }, 30_000);
+
     it('1 檔少最後 2 分鐘可由穩定雙抓補齊，且歷史列沒有通知權限', async () => {
         const derived = await review();
         expect(derived.tailGapReview).toMatchObject({ affectedSymbolCount: 1,

@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 import {
     IntradayMonitorConfigRepository,
@@ -19,6 +21,14 @@ import {
     resolveDirect160ProductRuntimePath,
 } from './direct-160-product-runtime.mjs';
 import { createPassiveChartEvidenceRecorder } from './passive-chart-evidence-recorder.mjs';
+import { readDynamicDailyActivePlan } from './dynamic-daily-active-plan.mjs';
+import { readPostcloseTailRecoveryView } from './postclose-tail-recovery-view.mjs';
+import { IntradayMonitorSessionStateRepository } from './session-state-repository.mjs';
+import { resolveIntradayMonitorRuntimeArtifactBundleSync } from './runtime-artifact-bundle.mjs';
+import {
+    evaluateIntradayMonitorCurrentSession,
+    normalizeIntradayMonitorSessionItems,
+} from './current-session-authority.mjs';
 
 const MAX_URL_BYTES = 2_048;
 const MAX_RAW_HEADER_PAIRS = 64;
@@ -34,6 +44,17 @@ const JSON_HEADERS = Object.freeze({
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
 });
+
+function readPremarketCaptureFailure(appSupportRoot, tradeDate) {
+    const receiptPath = path.join(appSupportRoot, 'IntradayMonitor', 'premarket',
+        'receipts', `${tradeDate}-0850.json`);
+    let receipt;
+    try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
+    catch { return null; }
+    if (receipt?.schemaVersion !== 'intraday-monitor-premarket-orchestrator/1' ||
+        receipt.localDate !== tradeDate || receipt.step !== '08:50') return null;
+    return receipt.rolloverOutcome === 'failed' ? receipt.reason ?? 'unknown' : null;
+}
 
 function isLoopbackAddress(value) {
     return value === '127.0.0.1' || value === '::1' || value === '::ffff:127.0.0.1';
@@ -55,6 +76,8 @@ function routeFor(method, pathname) {
     if (method === 'GET') {
         if (pathname === '/config') return 'config';
         if (pathname === '/status') return 'status';
+        if (pathname === '/daily-status') return 'daily_status';
+        if (pathname === '/postclose-recovery') return 'postclose_recovery';
         if (pathname === '/capacity') return 'capacity';
         if (pathname === '/results') return 'results';
         if (pathname === '/events') return 'events';
@@ -69,12 +92,14 @@ function routeFor(method, pathname) {
 }
 
 function validQuery(route, url) {
-    const allowed = route === 'results' || route === 'events'
+    const allowed = route === 'results' || route === 'events' || route === 'postclose_recovery'
         ? new Set(['tradeDate', 'limit', 'cursor'])
         : new Set();
     for (const key of url.searchParams.keys()) {
         if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1) return false;
     }
+    if (route === 'postclose_recovery') return url.searchParams.size === 1 &&
+        /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('tradeDate') ?? '');
     if (route === 'results' || route === 'events') return url.searchParams.has('tradeDate');
     return url.search === '';
 }
@@ -205,13 +230,23 @@ function openEventStream(request, response, service, checked) {
     response.once('close', close);
 }
 
-export function createIntradayMonitorLocalApiGatewayMiddleware({ service, chartEvidenceRecorder = null } = {}) {
+export function createIntradayMonitorLocalApiGatewayMiddleware({ service, chartEvidenceRecorder = null,
+    postcloseRecoveryRoot = null } = {}) {
     if (!service) throw new TypeError('service is required');
     return async (request, response, next) => {
         const checked = authorizeIntradayMonitorGatewayRequest(request);
         if (!checked) return next();
         if (!checked.allowed) return sendJson(response, boundaryError(checked.status, checked.reason));
         if (checked.route === 'events') return openEventStream(request, response, service, checked);
+        if (checked.route === 'postclose_recovery') {
+            if (!postcloseRecoveryRoot) return sendJson(response,
+                boundaryError(503, 'postclose_recovery_unavailable'));
+            const recovery = readPostcloseTailRecoveryView(postcloseRecoveryRoot,
+                checked.url.searchParams.get('tradeDate'));
+            return sendJson(response, { status: 200, body: {
+                schemaVersion: 'intraday-monitor-postclose-recovery-response/1',
+                ok: true, recovery, brokerWriteAuthority: false } });
+        }
         let result;
         if (checked.mutation) {
             let body;
@@ -226,6 +261,7 @@ export function createIntradayMonitorLocalApiGatewayMiddleware({ service, chartE
             else result = service.mutateLease(checked.route.slice('lease_'.length), body);
         } else if (checked.route === 'config') result = service.readConfig();
         else if (checked.route === 'status') result = service.readStatus();
+        else if (checked.route === 'daily_status') result = await service.readDailyStatus();
         else if (checked.route === 'capacity') result = service.readCapacity();
         else if (checked.route === 'results') result = service.readResults(queryObject(checked.url));
         else result = service.readDiagnostics();
@@ -238,11 +274,65 @@ export function createStateBackedRuntime(appSupportRoot) {
     const evidenceRepository = new IntradayMonitorEvidenceRepository(resolveIntradayMonitorEvidenceDatabasePath(appSupportRoot));
     const statePath = resolveDirect160ProductRuntimePath(appSupportRoot);
     const state = () => readDirect160ProductRuntimeState(statePath);
+    const sessionRepository = new IntradayMonitorSessionStateRepository(appSupportRoot);
+    const taipeiDate = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei',
+        year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+    const runtimeGeneration = () => {
+        try { return readFileSync(path.join(appSupportRoot, 'runtime-api-generation'), 'utf8').trim(); }
+        catch { return null; }
+    };
+    const lateBootPrepared = (tradeDate, session) => {
+        if (!session) return null;
+        try {
+            const receipt = JSON.parse(readFileSync(path.join(appSupportRoot,
+                'IntradayMonitor', 'premarket', 'receipts',
+                `${tradeDate}-late-boot-prepared.json`), 'utf8'));
+            return receipt.schemaVersion === 'intraday-monitor-late-boot-catchup/1' &&
+                receipt.tradeDate === tradeDate && receipt.source === 'late_boot' &&
+                receipt.sessionId === session.sessionId &&
+                receipt.sessionIdentityHash === session.sessionIdentityHash &&
+                receipt.generation === session.connectionGeneration &&
+                receipt.baselineHash?.replace(/^sha256:/, '') === session.baselineHash
+                ? receipt : null;
+        } catch { return null; }
+    };
+    const currentProjection = () => {
+        const config = configRepository.read();
+        const authorityTradeDate = taipeiDate();
+        const session = sessionRepository.readSession(authorityTradeDate);
+        const approval = sessionRepository.readApproval();
+        const authority = session?.calendarAuthority?.tradeDate === authorityTradeDate
+            ? session.calendarAuthority
+            : { current: false, tradeDate: authorityTradeDate, previousTradeDate: null };
+        const bundle = approval
+            ? resolveIntradayMonitorRuntimeArtifactBundleSync({ appSupportRoot,
+                bundleHash: approval.artifactBundleHash })
+            : { valid: false, bundleHash: null };
+        const evaluated = evaluateIntradayMonitorCurrentSession({ authority, session, approval,
+            artifactBundle: bundle, savedConfigRevision: config.revision,
+            apiGeneration: runtimeGeneration(),
+            premarketCaptureFailure: readPremarketCaptureFailure(appSupportRoot, authorityTradeDate),
+            nowEpochMs: Date.now() });
+        const configuredItems = config.items.map((item) => ({
+            canonicalSymbol: `${item.contract.code}.${item.contract.exchange === 'TSE' ? 'TW' : 'TWO'}`,
+            enabled: item.enabled,
+            eligible: item.enabled && /^(?!00)\d{4}$/.test(item.contract.code),
+        }));
+        const normalized = normalizeIntradayMonitorSessionItems({ configuredItems,
+            sessionItems: session?.itemStates ?? [],
+            approvedActiveLimit: approval?.approvedActiveLimit ?? 20,
+            currentSession: evaluated });
+        const firstKbarAt = evaluated.current
+            ? session.itemStates.map((item) => item.firstKbarAt).filter(Boolean).sort()[0] ?? null
+            : null;
+        return { config, approval, session, evaluated, normalized, firstKbarAt,
+            lateBoot: lateBootPrepared(authorityTradeDate, session), bundle };
+    };
     const sessionController = Object.freeze({
         startIntradayDemands: () => {
-            const current = state();
-            return { allowed: Boolean(current),
-                reason: current ? 'product_runtime_available' : 'gate_evidence_missing',
+            const current = currentProjection();
+            return { allowed: current.evaluated.current,
+                reason: current.evaluated.reason ?? 'current_session_ready',
                 subscriptionTransportAuthority: false, brokerWriteAuthority: false };
         },
         flushMinuteEvidence: () => ({ allowed: true, persistedRevision: evidenceRepository.currentRevision(), subscriptionTransportAuthority: false, brokerWriteAuthority: false }),
@@ -255,52 +345,81 @@ export function createStateBackedRuntime(appSupportRoot) {
         evidenceRepository,
         leaseCoordinator,
         generation,
+        dailyStatusProvider: async () => {
+            const saved = await readDynamicDailyActivePlan(appSupportRoot, taipeiDate());
+            if (!saved) return {};
+            const { plan, baselineGate } = saved;
+            return { plan, expectedGeneration: runtimeGeneration(),
+                coverage: { planHash: plan.planHash, tradeDate: plan.tradeDate,
+                    previousTradeDate: plan.previousTradeDate,
+                    baselineReadyCount: baselineGate.baselineReadyCount,
+                    items: baselineGate.items.map((item) => ({
+                        canonicalSymbol: item.canonicalSymbol, state: item.state,
+                        reason: item.reason, manifestId: item.manifestId,
+                        sourceHash: item.sourceHash })) } };
+        },
         capacityProvider: () => {
-            const enabledItems = configRepository.read().items.filter((item) => item.enabled);
-            const eligible = enabledItems.filter((item) => /^(?!00)\d{4}$/.test(item.contract.code)).length;
-            const current = state();
-            if (!current) return { gate0EvidenceCurrent: false, globalOwnershipComplete: false, active: 0,
-                waiting: eligible, waitingGate: Math.min(eligible, 20), waitingPilotLimit: Math.max(0, eligible - 20),
-                degraded: enabledItems.length - eligible, confirmedPhysicalUsage: null, confirmedOtherPhysicalUsage: null,
-                availableForMonitor: 0, reason: 'gate_evidence_missing' };
-            const running = current.phase === 'running_evaluation' || current.phase === 'running_approved';
-            const usable = !['failed', 'complete_no_go'].includes(current.phase);
-            const dataActive = current.items.filter((item) => item.dataPlaneState === 'active').length;
-            const awaitingFirstKbar = current.items.filter((item) =>
-                item.dataPlaneState === 'awaiting_first_kbar').length;
-            return { gate0EvidenceCurrent: usable, globalOwnershipComplete: false,
-                boundedTransportReady: current.boundedTransportReady,
-                controlPlaneSubscriptionRequested: current.controlPlaneSubscriptionRequested === true,
-                awaitingFirstKbar, notificationAuthority: current.notificationAuthority,
-                approvedActiveLimit: current.approvedActiveLimit,
-                evaluationStageTarget: 160, evaluationState: current.evaluationState,
-                dataActive: running ? dataActive : 0,
-                active: running ? current.items.filter((item) => item.state === 'active').length : 0,
-                waiting: running ? awaitingFirstKbar : Math.min(eligible, current.approvedActiveLimit),
-                waitingGate: 0, waitingPilotLimit: Math.max(0, eligible - current.approvedActiveLimit),
-                degraded: current.items.filter((item) => item.state === 'degraded').length,
+            const current = currentProjection();
+            const { approval, session, evaluated, normalized, lateBoot } = current;
+            return { gate0EvidenceCurrent: evaluated.current, globalOwnershipComplete: false,
+                boundedTransportReady: evaluated.current && normalized.capacity.dataActive === normalized.capacity.admitted,
+                controlPlaneSubscriptionRequested: evaluated.current && session?.controlPlane?.requested === true,
+                awaitingFirstKbar: normalized.capacity.awaitingFirstKbar,
+                notificationAuthority: evaluated.notificationAuthority,
+                approvedActiveLimit: approval?.approvedActiveLimit ?? 20,
+                evaluationStageTarget: approval?.stage ?? null,
+                evaluationState: approval?.decision ?? 'not_scheduled',
+                dataActive: normalized.capacity.dataActive,
+                active: normalized.capacity.active,
+                waiting: normalized.capacity.waitingGate + normalized.capacity.waitingPilotLimit +
+                    normalized.capacity.waitingCapacity + normalized.capacity.waitingBaseline +
+                    normalized.capacity.awaitingFirstKbar + normalized.capacity.waitingContinuity,
+                waitingGate: normalized.capacity.waitingGate,
+                waitingPilotLimit: normalized.capacity.waitingPilotLimit,
+                waitingCapacity: normalized.capacity.waitingCapacity,
+                waitingBaseline: normalized.capacity.waitingBaseline,
+                degraded: normalized.capacity.degraded,
                 confirmedPhysicalUsage: null, confirmedOtherPhysicalUsage: null,
                 providerReleaseProven: null, confirmedHeadroom: null,
-                availableForMonitor: running ? dataActive : 0,
-                evidenceAt: current.updatedAt,
-                reason: running ? 'bounded_kbar_stage_running' : current.phase === 'complete_go'
-                    ? 'approved_160' : current.phase === 'pending_review' ? 'pending_review' : 'capture_failed',
-                items: current.items.map((item) => ({ ...item,
-                    state: running ? item.state : 'waiting_gate',
-                    reason: running ? item.reason : current.phase === 'complete_go' ? 'outside_session' : current.phase })) };
+                availableForMonitor: evaluated.current ? normalized.capacity.dataActive : 0,
+                evidenceAt: evaluated.evidenceAt,
+                reason: evaluated.reason ?? 'none',
+                approval,
+                session: { authorityTradeDate: evaluated.authorityTradeDate,
+                    sessionTradeDate: evaluated.sessionTradeDate, phase: evaluated.phase,
+                    current: evaluated.current, configRevision: evaluated.configRevision,
+                    savedConfigRevision: evaluated.savedConfigRevision,
+                    startedAt: session?.createdAt ?? null, updatedAt: session?.updatedAt ?? null,
+                    staleReason: evaluated.reason,
+                    controlPlaneRequested: session?.controlPlane?.requested === true,
+                    controlPlaneAccepted: session?.controlPlane?.accepted === true,
+                    firstKbarAt: current.firstKbarAt,
+                    startupSource: lateBoot ? 'late_boot' : session ? 'scheduled' : 'unknown',
+                    coldStartRisk: lateBoot !== null,
+                    scheduled0820Success: lateBoot?.scheduled0820Success ?? null },
+                baselineSummary: normalized.baselineSummary,
+                freshness: { evidenceAt: evaluated.evidenceAt, ageMs: evaluated.ageMs,
+                    budgetMs: evaluated.budgetMs, fresh: evaluated.fresh },
+                items: normalized.items.map((item) => ({ ...item,
+                    baselineState: item.baselineState,
+                    baselineTradeDate: item.baselineTradeDate,
+                    subscriptionState: item.subscriptionState })) };
         },
         diagnosticsProvider: () => {
-            const current = state();
-            if (!current) return { state: 'feature_off', reason: 'gate_evidence_missing',
-                baseline: { complete: false, itemCount: 0 }, completedMinute: {} };
-            const running = current.phase === 'running_evaluation' || current.phase === 'running_approved';
-            const minutes = current.items.map((item) => item.completedMinute).filter(Boolean).sort();
-            return { state: running ? 'active' : current.phase === 'failed' ? 'degraded' : 'idle',
-                reason: running ? 'none' : current.phase,
-                baseline: { complete: true, tradeDate: current.baselineTradeDate,
-                    sourceVersion: `direct-160/${current.baselineHash}`, itemCount: 160 },
-                completedMinute: { tradeDate: current.tradeDate, minuteKey: minutes.at(-1) ?? null,
-                    evidenceAt: current.updatedAt } };
+            const current = currentProjection();
+            const { session, evaluated, normalized } = current;
+            const legacy = state();
+            const minutes = evaluated.current && legacy?.tradeDate === session?.tradeDate
+                ? legacy.items.map((item) => item.completedMinute).filter(Boolean).sort() : [];
+            return { state: evaluated.current ? (normalized.capacity.degraded > 0 ? 'degraded' : 'active') : 'idle',
+                reason: evaluated.reason ?? 'none',
+                baseline: { complete: normalized.baselineSummary.complete === normalized.capacity.configured,
+                    tradeDate: normalized.baselineSummary.tradeDates.length === 1
+                        ? normalized.baselineSummary.tradeDates[0] : null,
+                    sourceVersion: session?.baselineHash ? `daily-session/${session.baselineHash}` : null,
+                    itemCount: normalized.baselineSummary.complete },
+                completedMinute: { tradeDate: evaluated.current ? session.tradeDate : null,
+                    minuteKey: minutes.at(-1) ?? null, evidenceAt: evaluated.evidenceAt } };
         },
     });
     return {
@@ -323,6 +442,7 @@ export function intradayMonitorLocalApiGateway({ appSupportRoot, runtimeFactory 
             const chartEvidenceRecorder = createPassiveChartEvidenceRecorder({ appSupportRoot });
             server.middlewares.use(createIntradayMonitorLocalApiGatewayMiddleware({
                 service: runtime.service, chartEvidenceRecorder,
+                postcloseRecoveryRoot: appSupportRoot,
             }));
             server.httpServer?.once('close', () => runtime.close());
         },

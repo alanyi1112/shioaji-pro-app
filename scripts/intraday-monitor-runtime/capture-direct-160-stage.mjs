@@ -1,5 +1,6 @@
 import { readFile, mkdir, stat, statfs } from 'node:fs/promises';
 import { statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import process from 'node:process';
 import { pathToFileURL } from 'node:url';
@@ -11,6 +12,9 @@ import { claimDirect160Run } from './direct-160-run-registry.mjs';
 import { issueIntradayMonitorKbarSessionCloseAuthority } from './kbar-stream-adapter.mjs';
 import { IntradayMonitorConfigRepository } from './config-repository.mjs';
 import { createDirect160ProductSink } from './direct-160-product-runtime.mjs';
+import { IntradayMonitorSessionStateRepository } from './session-state-repository.mjs';
+import { createIntradayMonitorDailySessionRuntimeAuthority,
+    INTRADAY_MONITOR_CLOSING_TRANSITION_TIME } from './daily-session-runtime-authority.mjs';
 import { validatePassiveChartFreshnessEvidence } from './passive-chart-freshness-evidence.mjs';
 import { resolveIntradayMonitorCapturePaths } from './kbar-capture-outcome-writer.mjs';
 import { createBoundedKbarRecoveryAuthority } from './first-minute-canary.mjs';
@@ -42,6 +46,21 @@ async function json(file) {
     return JSON.parse(await readFile(file, 'utf8'));
 }
 
+// Visible-chart evidence is a UI diagnostic, not a prerequisite for the
+// background session's market-data capture or closeout.
+export async function inspectOptionalPassiveChartEvidence({ chartEvidencePath, tradeDate }) {
+    try {
+        const evidence = await json(chartEvidencePath);
+        if (evidence.tradeDate === tradeDate &&
+            validatePassiveChartFreshnessEvidence(evidence).ready) {
+            return { state: 'valid', evidence };
+        }
+        return { state: 'invalid', evidence: null };
+    } catch (error) {
+        return { state: error?.code === 'ENOENT' ? 'missing' : 'unreadable', evidence: null };
+    }
+}
+
 export function inspectDirect160StageStart({ tradeDate, nowEpochMs, mode, durationMs = null } = {}) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate ?? '') || !Number.isSafeInteger(nowEpochMs) ||
         !['full-session', 'partial-rehearsal'].includes(mode)) return { allowed: false, reason: 'invalid_start_input' };
@@ -64,13 +83,110 @@ export function inspectDirect160StageStart({ tradeDate, nowEpochMs, mode, durati
 }
 
 export function validateFreshSimulationGeneration({ value, modifiedAtEpochMs, tradeDate, nowEpochMs,
-    anchoredGeneration = null, anchoredAtEpochMs = null } = {}) {
+    anchoredGeneration = null, anchoredAtEpochMs = null, manualRecoveryVerified = false,
+    lateBootVerified = false } = {}) {
+    const latestAnchor = lateBootVerified ? '08:59:00' :
+        manualRecoveryVerified ? '08:50:00' : '08:35:00';
     return Boolean(typeof value === 'string' && /^simulation:[A-Za-z0-9_-]{16,100}$/.test(value) &&
         /^\d{4}-\d{2}-\d{2}$/.test(tradeDate ?? '') && Number.isSafeInteger(modifiedAtEpochMs) &&
         modifiedAtEpochMs <= nowEpochMs && (anchoredGeneration === null ||
             (anchoredGeneration === value && Number.isSafeInteger(anchoredAtEpochMs) &&
                 anchoredAtEpochMs >= Date.parse(`${tradeDate}T08:20:00+08:00`) &&
-                anchoredAtEpochMs <= Date.parse(`${tradeDate}T08:35:00+08:00`))));
+                (lateBootVerified
+                    ? anchoredAtEpochMs < Date.parse(`${tradeDate}T${latestAnchor}+08:00`)
+                    : anchoredAtEpochMs <= Date.parse(`${tradeDate}T${latestAnchor}+08:00`)) &&
+                anchoredAtEpochMs <= nowEpochMs)));
+}
+
+export async function verifyLateBootCatchup({ appSupportRoot, tradeDate, anchor,
+    generationValue, baseline } = {}) {
+    if (!path.isAbsolute(appSupportRoot ?? '') ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate ?? '') ||
+        anchor?.tradeDate !== tradeDate ||
+        !/^late-boot-\d{4}-\d{2}-\d{2}-[0-9a-f-]{36}$/.test(anchor.lateBootId ?? '') ||
+        anchor.generation !== generationValue) return false;
+    try {
+        const receiptPath = path.join(appSupportRoot, 'IntradayMonitor', 'premarket',
+            'receipts', `${tradeDate}-late-boot-prepared.json`);
+        const text = await readFile(receiptPath, 'utf8');
+        const receipt = JSON.parse(text);
+        const session = new IntradayMonitorSessionStateRepository(appSupportRoot)
+            .readSession(tradeDate);
+        const anchorAt = Date.parse(anchor.anchoredAt);
+        return anchor.preparedReceiptSha256 ===
+                `sha256:${createHash('sha256').update(text).digest('hex')}` &&
+            receipt.schemaVersion === 'intraday-monitor-late-boot-catchup/1' &&
+            receipt.lateBootId === anchor.lateBootId && receipt.tradeDate === tradeDate &&
+            receipt.anchoredAt === anchor.anchoredAt &&
+            receipt.generation === generationValue &&
+            receipt.baselineHash === baseline?.baselineHash &&
+            receipt.authority?.current === true &&
+            receipt.authority?.isTradingDate === true &&
+            receipt.authority?.tradeDate === tradeDate &&
+            receipt.gates?.simulation === true && receipt.gates?.businessSession === true &&
+            receipt.gates?.snapshot2330 === true &&
+            receipt.gates?.artifacts === true && receipt.gates?.baseline === true &&
+            receipt.gates?.configuredCohort === true &&
+            session?.sessionId === receipt.sessionId &&
+            session.sessionIdentityHash === receipt.sessionIdentityHash &&
+            session.connectionGeneration === generationValue &&
+            session.baselineHash === String(baseline?.baselineHash ?? '').replace(/^sha256:/, '') &&
+            Number.isFinite(anchorAt) &&
+            anchorAt >= Date.parse(`${tradeDate}T08:20:00+08:00`) &&
+            anchorAt < Date.parse(`${tradeDate}T08:59:00+08:00`);
+    } catch { return false; }
+}
+
+export async function verifyLateBootPreparedCapture({ appSupportRoot, tradeDate,
+    generationValue, baseline } = {}) {
+    if (!path.isAbsolute(appSupportRoot ?? '') ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate ?? '')) return false;
+    try {
+        const receipt = await json(path.join(appSupportRoot, 'IntradayMonitor',
+            'premarket', 'receipts', `${tradeDate}-late-boot-prepared.json`));
+        const session = new IntradayMonitorSessionStateRepository(appSupportRoot)
+            .readSession(tradeDate);
+        return receipt.schemaVersion === 'intraday-monitor-late-boot-catchup/1' &&
+            receipt.tradeDate === tradeDate && receipt.source === 'late_boot' &&
+            receipt.generation === generationValue &&
+            receipt.baselineHash === baseline?.baselineHash &&
+            receipt.authority?.current === true &&
+            receipt.authority?.isTradingDate === true &&
+            receipt.authority?.tradeDate === tradeDate &&
+            receipt.gates && Object.values(receipt.gates).every((value) => value === true) &&
+            session?.sessionId === receipt.sessionId &&
+            session.sessionIdentityHash === receipt.sessionIdentityHash &&
+            session.connectionGeneration === generationValue &&
+            session.baselineHash === String(baseline?.baselineHash ?? '').replace(/^sha256:/, '');
+    } catch { return false; }
+}
+
+export async function verifyManual0820Recovery({ appSupportRoot, tradeDate, anchor,
+    generationValue, baseline } = {}) {
+    if (!appSupportRoot || !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate ?? '') ||
+        anchor?.tradeDate !== tradeDate ||
+        !/^manual-recovery-\d{4}-\d{2}-\d{2}-[0-9a-f-]{36}$/.test(anchor.manualRecoveryId ?? '') ||
+        anchor.generation !== generationValue) return false;
+    try {
+        const directory = path.join(appSupportRoot, 'IntradayMonitor', 'premarket', 'receipts');
+        const originalText = await readFile(path.join(directory, `${tradeDate}-0820.json`), 'utf8');
+        const original = JSON.parse(originalText);
+        const receipt = await json(path.join(directory, `${tradeDate}-0820-manual-recovery.json`));
+        const session = new IntradayMonitorSessionStateRepository(appSupportRoot).readSession(tradeDate);
+        const anchorTime = Date.parse(anchor.anchoredAt);
+        return original.localDate === tradeDate && original.rolloverOutcome === 'failed' &&
+            original.reason === 'calendar_authority_unavailable' && original.sessionId === null &&
+            receipt.schemaVersion === 'intraday-monitor-manual-0820-recovery/1' &&
+            receipt.recoveryId === anchor.manualRecoveryId && receipt.tradeDate === tradeDate &&
+            receipt.outcome === 'session_created' && receipt.scheduledSuccess === false &&
+            receipt.originalReceiptSha256 === `sha256:${createHash('sha256').update(originalText).digest('hex')}` &&
+            receipt.authority?.current === true && receipt.authority?.isTradingDate === true &&
+            receipt.authority?.tradeDate === tradeDate && receipt.baselineHash === baseline?.baselineHash &&
+            session?.sessionId === receipt.sessionId && session.connectionGeneration === generationValue &&
+            session.baselineHash === baseline.baselineHash &&
+            Number.isFinite(anchorTime) && anchorTime >= Date.parse(receipt.startedAt) &&
+            anchorTime <= Date.parse(receipt.endedAt);
+    } catch { return false; }
 }
 
 async function runtimeProbe(fetchImpl = fetch) {
@@ -178,17 +294,21 @@ function databaseWorkingBytes(databasePath) {
 }
 
 async function waitUntil(endEpochMs, interrupted, observe, checkpoint = null) {
-    let checkpointCompleted = false;
+    const checkpoints = Array.isArray(checkpoint) ? checkpoint : checkpoint ? [checkpoint] : [];
+    const completed = new Set();
     while (!interrupted()) {
         const currentEpochMs = Date.now();
-        if (!checkpointCompleted && checkpoint && currentEpochMs >= checkpoint.atEpochMs) {
-            checkpointCompleted = true;
-            await checkpoint.onReached(new Date(currentEpochMs).toISOString());
+        for (const [index, item] of checkpoints.entries()) {
+            if (completed.has(index) || currentEpochMs < item.atEpochMs) continue;
+            completed.add(index);
+            await item.onReached(new Date(currentEpochMs).toISOString());
         }
         const remaining = endEpochMs - currentEpochMs;
         if (remaining <= 0) break;
-        const untilCheckpoint = !checkpointCompleted && checkpoint
-            ? Math.max(0, checkpoint.atEpochMs - currentEpochMs) : 30_000;
+        const nextCheckpoint = checkpoints.reduce((next, item, index) => completed.has(index)
+            ? next : Math.min(next, item.atEpochMs), Infinity);
+        const untilCheckpoint = Number.isFinite(nextCheckpoint)
+            ? Math.max(0, nextCheckpoint - currentEpochMs) : 30_000;
         await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, remaining, untilCheckpoint)));
         observe();
     }
@@ -228,10 +348,25 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
     const generationStat = await stat(generationPath);
     const generationAnchor = generationAnchorPath
         ? JSON.parse(await readFile(generationAnchorPath, 'utf8')) : null;
+    const manualRecoveryVerified = generationAnchor?.manualRecoveryId && productRuntime?.appSupportRoot
+        ? await verifyManual0820Recovery({ appSupportRoot: productRuntime.appSupportRoot,
+            tradeDate, anchor: generationAnchor, generationValue, baseline }) : false;
+    const lateBootVerified = generationAnchor?.lateBootId && productRuntime?.appSupportRoot
+        ? await verifyLateBootCatchup({ appSupportRoot: productRuntime.appSupportRoot,
+            tradeDate, anchor: generationAnchor, generationValue, baseline }) : false;
+    const lateBootCaptureVerified = productRuntime?.lateBootCatchup === true &&
+        productRuntime?.appSupportRoot
+        ? await verifyLateBootPreparedCapture({ appSupportRoot: productRuntime.appSupportRoot,
+            tradeDate, generationValue, baseline }) : false;
+    if (productRuntime?.lateBootCatchup === true && !lateBootCaptureVerified) {
+        throw new Error('REFUSED: late_boot_prepared_receipt_invalid');
+    }
+    const lateBootSource = lateBootVerified || lateBootCaptureVerified;
     if (!validateFreshSimulationGeneration({ value: generationValue,
         modifiedAtEpochMs: Math.trunc(generationStat.mtimeMs), tradeDate, nowEpochMs,
         anchoredGeneration: generationAnchor?.generation ?? null,
-        anchoredAtEpochMs: generationAnchor ? Date.parse(generationAnchor.anchoredAt) : null })) {
+        anchoredAtEpochMs: generationAnchor ? Date.parse(generationAnchor.anchoredAt) : null,
+        manualRecoveryVerified, lateBootVerified })) {
         throw new Error('REFUSED: fresh_simulation_generation_required');
     }
     const before = await runtimeProbe(fetchImpl);
@@ -348,11 +483,23 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
     try {
         if (productRuntime) {
             if (mode !== 'full-session') throw new Error('REFUSED: product_runtime_requires_full_session');
+            const sessionAuthority = productRuntime.sessionAuthority ??
+                createIntradayMonitorDailySessionRuntimeAuthority({
+                    appSupportRoot: productRuntime.appSupportRoot,
+                    tradeDate,
+                    connectionGeneration: generationValue,
+                    configDatabasePath: productRuntime.configDatabasePath,
+                    now: () => new Date().toISOString(),
+                });
             productSink = createDirect160ProductSink({ manifest, baseline, config: productRuntime.config,
                 tradeDate, connectionGeneration: generationValue,
                 evidenceDatabasePath: productRuntime.evidenceDatabasePath,
                 statePath: productRuntime.statePath, approvedActiveLimit: productRuntime.approvedActiveLimit ?? 20,
+                capacityApproval: new IntradayMonitorSessionStateRepository(
+                    productRuntime.appSupportRoot).readApproval(),
+                sessionAuthority, requireCurrentSessionAuthority: true,
                 now: () => new Date().toISOString() });
+            productRuntime.sessionAuthority = sessionAuthority;
             productSink.installBaselines();
         }
         components = createDirect160StageComponents({ manifest, plan, baseline, tradeDate,
@@ -372,6 +519,13 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             } });
         startReceipt = await components.transport.start({ contracts: components.contracts,
             connectionGeneration: generationValue });
+        if (productRuntime?.sessionAuthority) {
+            const authority = productRuntime.sessionAuthority.markControlPlane({
+                requested: true,
+                accepted: startReceipt.subscribeAccepted === true,
+            });
+            if (!authority.current) throw new Error('REFUSED: current_session_authority_invalid');
+        }
         await logEvent('subscription_requested', { cohortSize: startReceipt.cohortSize,
             cohortHash: startReceipt.cohortHash, subscribeAccepted: startReceipt.subscribeAccepted,
             generation: generationValue });
@@ -388,7 +542,7 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             maximumHeapUsedBytes = Math.max(maximumHeapUsedBytes, current.heapUsedBytes);
             maximumDatabaseBytes = Math.max(maximumDatabaseBytes,
                 databaseWorkingBytes(productRuntime?.evidenceDatabasePath));
-        }, productSink ? {
+        }, productSink ? [{
             atEpochMs: Date.parse(`${tradeDate}T09:02:15+08:00`),
             onReached: async (evaluatedAt) => {
                 const transportStatus = components.transport.status();
@@ -424,7 +578,17 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
                         { severity: 'incident', alertEligible: true });
                 }
             },
-        } : null);
+        }, {
+            atEpochMs: Date.parse(`${tradeDate}T${INTRADAY_MONITOR_CLOSING_TRANSITION_TIME}+08:00`),
+            onReached: async () => {
+                const authority = productRuntime.sessionAuthority.beginClosing();
+                await logEvent('session_closing', {
+                    phase: authority.phase, current: authority.current,
+                    evidenceAt: authority.evidenceAt, ageMs: authority.ageMs,
+                    budgetMs: authority.budgetMs,
+                }, { severity: 'milestone' });
+            },
+        }] : null);
         if (delayedBootstrapTimer) dispatchDelayedBootstrap();
         await delayedBootstrapChain;
         if (!interrupted && mode === 'full-session') {
@@ -452,13 +616,13 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
     const endedAt = new Date().toISOString();
     const after = await runtimeProbe(fetchImpl);
     let passiveChartEvidence = null;
+    let passiveChartEvidenceState = 'not_requested';
     let localEventReconnect = null;
     if (productSink) {
-        passiveChartEvidence = await json(productRuntime.chartEvidencePath);
-        const chartValidation = validatePassiveChartFreshnessEvidence(passiveChartEvidence);
-        if (!chartValidation.ready || passiveChartEvidence.tradeDate !== tradeDate) {
-            throw new Error('REFUSED: same_day_passive_chart_evidence_required');
-        }
+        const chart = await inspectOptionalPassiveChartEvidence({
+            chartEvidencePath: productRuntime.chartEvidencePath, tradeDate });
+        passiveChartEvidence = chart.evidence;
+        passiveChartEvidenceState = chart.state;
         localEventReconnect = await probeLocalEventStreamReconnect({ tradeDate, fetchImpl });
         if (!localEventReconnect.recovered) {
             throw new Error('REFUSED: local_event_stream_reconnect_failed');
@@ -478,8 +642,7 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
         maxChartFreshnessMs: passiveChartEvidence ? Math.max(
             passiveChartEvidence.firstObservation.freshnessMs,
             passiveChartEvidence.secondObservation.freshnessMs,
-        ) : Math.max(before.probes.web.latencyMs, before.probes.multiView.latencyMs,
-            after.probes.web.latencyMs, after.probes.multiView.latencyMs) };
+        ) : null };
     let replay = null;
     let tieredSession = null;
     if (mode === 'full-session' && session.assessment.fullSession) {
@@ -488,8 +651,7 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             replay, transport: { startReceipt, stopReceipt }, resources,
             assurances: { reconnectVerified: productSink ? localEventReconnect.recovered :
                 before.businessSession && after.businessSession,
-                existingFeaturesHealthy: before.web && before.multiView && after.web && after.multiView &&
-                    (!productSink || Boolean(passiveChartEvidence)) } });
+                existingFeaturesHealthy: before.web && before.multiView && after.web && after.multiView } });
     }
     let productRuntimeState = null;
     if (productSink) productRuntimeState = tieredSession
@@ -507,10 +669,13 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             recoveryReceipt,
             gapBootstrap,
             localEventReconnect,
+            passiveChartEvidenceState,
             passiveChartEvidenceHash: passiveChartEvidence?.evidenceHash ?? null,
             freshSimulationGeneration: true, generationModifiedAt: new Date(generationStat.mtimeMs).toISOString(),
+            startupSource: lateBootSource ? 'late_boot' : 'scheduled_or_manual',
+            coldStartRisk: lateBootSource,
             chartFreshnessMeasurement: passiveChartEvidence ? 'same_day_passive_dom_visual_commit' :
-                'bounded_existing_service_response_latency' },
+                'not_observed_optional' },
         productRuntime: productRuntimeState ? { phase: productRuntimeState.phase,
             evaluationState: productRuntimeState.evaluationState,
             approvedActiveLimit: productRuntimeState.approvedActiveLimit,
@@ -520,10 +685,11 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             liveAvailabilityComplete: productRuntimeState.liveAvailabilityComplete } : null,
         operations: { notificationDispatches: 0, brokerWrites: 0, productionTransitions: 0,
             serviceLifecycleMutations: 0, activeLimitMutations: 0 },
-        assessment: { formalAcceptanceEvidence: mode === 'full-session' && Boolean(tieredSession) &&
+        assessment: { formalAcceptanceEvidence: !lateBootSource && mode === 'full-session' && Boolean(tieredSession) &&
                 liveAvailabilityComplete === true,
-            readyForBundle: Boolean(tieredSession) && liveAvailabilityComplete === true,
+            readyForBundle: !lateBootSource && Boolean(tieredSession) && liveAvailabilityComplete === true,
             dataContinuityComplete: Boolean(tieredSession), liveAvailabilityComplete,
+            lateBootCatchup: lateBootSource,
             providerCapacityProven: false } };
     await writeDirect160Artifact(outputPath, result, 'capture');
     await logEvent('capture_close_sealed', {
@@ -557,13 +723,15 @@ async function main() {
     const productMode = process.argv.includes('--product-mode');
     let productRuntime = null;
     if (productMode) {
+        const appSupportRoot = absolute('app-support-root');
         const configDatabasePath = absolute('config-database');
         const evidenceDatabasePath = absolute('evidence-database');
         const statePath = absolute('product-state');
         const chartEvidencePath = absolute('chart-evidence');
         const repository = new IntradayMonitorConfigRepository(configDatabasePath);
-        try { productRuntime = { config: repository.read(), evidenceDatabasePath, statePath,
-            chartEvidencePath,
+        try { productRuntime = { appSupportRoot, configDatabasePath,
+            config: repository.read(), evidenceDatabasePath, statePath,
+            chartEvidencePath, lateBootCatchup: process.argv.includes('--late-boot-catchup'),
             approvedActiveLimit: Number(argument('approved-active-limit') ?? 20) }; }
         finally { repository.close(); }
     }

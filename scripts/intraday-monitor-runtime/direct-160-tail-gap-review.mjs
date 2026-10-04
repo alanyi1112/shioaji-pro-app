@@ -85,7 +85,6 @@ function validateCaptureEnvelope(capture, manifest, plan, baseline) {
         capture.assessment?.dataContinuityComplete === false && canary?.result === 'pass' &&
         canary.expectedCount === 160 && canary.receivedCount === 160 && canary.missingCount === 0 &&
         canary.liveAvailabilityComplete === true && capture.runtime?.localEventReconnect?.recovered === true &&
-        HASH.test(capture.runtime?.passiveChartEvidenceHash ?? '') &&
         capture.transport?.startReceipt?.subscribeAccepted === true &&
         capture.transport?.stopReceipt?.unsubscribeAccepted === true &&
         capture.transport?.status?.malformedFrames === 0 &&
@@ -185,15 +184,16 @@ function repairedSymbol(item, historicalRows, hashes, reviewedAt, sourceVersion)
 
 export async function reviewDirect160TailGapCapture({ capture, manifest, plan, baseline,
     sourceCaptureSha256, fetchImpl = fetch, api = 'http://127.0.0.1:8080',
-    reviewedAt = new Date().toISOString() } = {}) {
+    reviewedAt = new Date().toISOString(), verifiedHistoricalBySymbol = null } = {}) {
     validateCaptureEnvelope(capture, manifest, plan, baseline);
     if (!HASH.test(sourceCaptureSha256 ?? '') || !Number.isFinite(Date.parse(reviewedAt)) ||
         !/^http:\/\/127\.0\.0\.1:\d+$/.test(api) || typeof fetchImpl !== 'function') {
         throw new Error('tail_gap_review_input_invalid');
     }
     const candidates = tailGapCandidates(capture);
-    const info = await requestJson(fetchImpl, `${api}/api/v1/info`);
-    if (info?.simulation !== true || typeof info.version !== 'string') {
+    const info = verifiedHistoricalBySymbol ? null :
+        await requestJson(fetchImpl, `${api}/api/v1/info`);
+    if (!verifiedHistoricalBySymbol && (info?.simulation !== true || typeof info.version !== 'string')) {
         throw new Error('tail_gap_simulation_preflight_failed');
     }
     const repairedBySymbol = new Map();
@@ -201,21 +201,41 @@ export async function reviewDirect160TailGapCapture({ capture, manifest, plan, b
     for (const { item, missing } of candidates) {
         const entry = manifest.cohort.find((candidate) => candidate.canonicalSymbol === item.canonicalSymbol);
         if (!entry) throw new Error('tail_gap_contract_missing');
-        const body = JSON.stringify({ contract: entry.contractIdentity,
-            start: capture.tradeDate, end: capture.tradeDate });
-        const first = await requestJson(fetchImpl, `${api}/api/v1/data/kbars`, { method: 'POST',
-            headers: { accept: 'application/json', 'content-type': 'application/json' }, body });
-        const second = await requestJson(fetchImpl, `${api}/api/v1/data/kbars`, { method: 'POST',
-            headers: { accept: 'application/json', 'content-type': 'application/json' }, body });
-        const firstHash = hash(first);
-        const secondHash = hash(second);
-        if (firstHash !== secondHash) throw new Error('tail_gap_historical_refetch_drift');
-        const firstRows = canonicalHistoricalPayload(first, capture.tradeDate);
-        const secondRows = canonicalHistoricalPayload(second, capture.tradeDate);
-        if (JSON.stringify(firstRows) !== JSON.stringify(secondRows)) {
-            throw new Error('tail_gap_historical_refetch_drift');
+        let firstRows;
+        let firstHash;
+        let secondHash;
+        let sourceVersion;
+        if (verifiedHistoricalBySymbol) {
+            const source = verifiedHistoricalBySymbol[item.canonicalSymbol];
+            if (!source || !Array.isArray(source.rows) || source.rows.length !== 270 ||
+                !HASH.test(source.firstHash ?? '') || source.firstHash !== source.secondHash ||
+                typeof source.sourceVersion !== 'string' ||
+                source.rows.some((row, index) => row?.minuteKey !== EXPECTED_MINUTES[index] ||
+                    !Number.isSafeInteger(row.cumulativeVolume) || row.cumulativeVolume < 0 ||
+                    (index > 0 && row.cumulativeVolume < source.rows[index - 1].cumulativeVolume))) {
+                throw new Error('tail_gap_verified_source_invalid');
+            }
+            firstRows = source.rows;
+            firstHash = source.firstHash;
+            secondHash = source.secondHash;
+            sourceVersion = source.sourceVersion;
+        } else {
+            const body = JSON.stringify({ contract: entry.contractIdentity,
+                start: capture.tradeDate, end: capture.tradeDate });
+            const first = await requestJson(fetchImpl, `${api}/api/v1/data/kbars`, { method: 'POST',
+                headers: { accept: 'application/json', 'content-type': 'application/json' }, body });
+            const second = await requestJson(fetchImpl, `${api}/api/v1/data/kbars`, { method: 'POST',
+                headers: { accept: 'application/json', 'content-type': 'application/json' }, body });
+            firstHash = hash(first);
+            secondHash = hash(second);
+            if (firstHash !== secondHash) throw new Error('tail_gap_historical_refetch_drift');
+            firstRows = canonicalHistoricalPayload(first, capture.tradeDate);
+            const secondRows = canonicalHistoricalPayload(second, capture.tradeDate);
+            if (JSON.stringify(firstRows) !== JSON.stringify(secondRows)) {
+                throw new Error('tail_gap_historical_refetch_drift');
+            }
+            sourceVersion = `shioaji-http-${info.version}`;
         }
-        const sourceVersion = `shioaji-http-${info.version}`;
         repairedBySymbol.set(item.canonicalSymbol,
             repairedSymbol(item, firstRows, { firstHash, secondHash }, reviewedAt, sourceVersion));
         repairs.push({ canonicalSymbol: item.canonicalSymbol, missingMinutes: missing,
@@ -249,6 +269,8 @@ export async function reviewDirect160TailGapCapture({ capture, manifest, plan, b
         affectedSymbolCount: repairs.length,
         repairs,
         stableRefetch: true,
+        sourceAuthority: verifiedHistoricalBySymbol ? 'published_verified_baseline' :
+            'stable_post_close_kbar_double_read',
         fullHistoricalMinuteCount: 270,
         postCloseDataContinuityComplete: true,
         tailLiveCompletenessException: true,

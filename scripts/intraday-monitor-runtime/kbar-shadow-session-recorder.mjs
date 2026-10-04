@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { canonicalJson } from '../smart-order-runtime/canonical-json.mjs';
 import { createIntradayMonitorKbarStreamAdapter } from './kbar-stream-adapter.mjs';
 import { DIRECT_160_STORAGE } from './direct-160-storage.mjs';
+import { DYNAMIC_DAILY_STORAGE } from './dynamic-daily-storage.mjs';
 
 export const INTRADAY_MONITOR_KBAR_SHADOW_SESSION_SCHEMA = 'intraday-monitor-kbar-shadow-session/1';
 export const INTRADAY_MONITOR_KBAR_SHADOW_EVIDENCE_MAXIMUM_BYTES = 4 * 1024 * 1024;
@@ -26,10 +27,14 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
     nowEpochMs = () => Date.now(), storageProfile = null, onObservation = null } = {}) {
     const direct160 = storageProfile?.schemaVersion === DIRECT_160_STORAGE.schemaVersion &&
         Object.entries(DIRECT_160_STORAGE).every(([key, expected]) => storageProfile[key] === expected);
-    if (storageProfile !== null && !direct160) throw new TypeError('shadow session storage profile is invalid');
-    const maximumCohortSize = direct160 ? DIRECT_160_STORAGE.targetCount : 20;
-    const maximumEvidenceBytes = direct160
-        ? DIRECT_160_STORAGE.sessionCanonicalBytes
+    const dynamicDaily = storageProfile?.schemaVersion === DYNAMIC_DAILY_STORAGE.schemaVersion &&
+        Object.keys(storageProfile).length === Object.keys(DYNAMIC_DAILY_STORAGE).length &&
+        Object.entries(DYNAMIC_DAILY_STORAGE).every(([key, expected]) => storageProfile[key] === expected);
+    if (storageProfile !== null && !direct160 && !dynamicDaily) throw new TypeError('shadow session storage profile is invalid');
+    const maximumCohortSize = direct160 ? DIRECT_160_STORAGE.targetCount :
+        dynamicDaily ? DYNAMIC_DAILY_STORAGE.maximumCohortSize : 20;
+    const maximumEvidenceBytes = direct160 || dynamicDaily
+        ? storageProfile.sessionCanonicalBytes
         : INTRADAY_MONITOR_KBAR_SHADOW_EVIDENCE_MAXIMUM_BYTES;
     if (!Array.isArray(cohort) || cohort.length < 1 || cohort.length > maximumCohortSize ||
         (direct160 && cohort.length !== DIRECT_160_STORAGE.targetCount) ||
@@ -40,11 +45,22 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
     let closeAttempted = false;
     let closeResult = null;
     let sinkRejections = 0;
+    const sinkRejectionReasons = new Map();
+    const safeSinkReasons = new Set(['evidence_stale', 'generation_mismatch',
+        'config_revision_mismatch', 'session_trade_date_stale', 'current_session_missing',
+        'current_session_update_failed', 'observation_envelope_invalid',
+        'rest_sse_overlap_conflict', 'evidence_persistence_failed']);
+    function rejectSink(reason) {
+        sinkRejections += 1;
+        const safeReason = safeSinkReasons.has(reason) ? reason : 'other';
+        sinkRejectionReasons.set(safeReason, (sinkRejectionReasons.get(safeReason) ?? 0) + 1);
+        return { accepted: false };
+    }
     const adapter = createIntradayMonitorKbarStreamAdapter({
         cohort, tradeDate, connectionGeneration, nowEpochMs, maximumCohortSize,
         observationSink(observation) {
             const rows = rowsBySymbol.get(observation.contract.canonicalSymbol);
-            if (!rows || rows.has(observation.minuteKey)) { sinkRejections += 1; return { accepted: false }; }
+            if (!rows || rows.has(observation.minuteKey)) return rejectSink('duplicate_sealed_minute');
             const row = Object.freeze({
                 canonicalSymbol: observation.contract.canonicalSymbol,
                 minuteKey: observation.minuteKey,
@@ -60,11 +76,12 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
             });
             rows.set(observation.minuteKey, row);
             if (typeof onObservation === 'function') {
-                const result = onObservation(observation);
+                let result;
+                try { result = onObservation(observation); }
+                catch { result = { accepted: false, reason: 'observation_sink_exception' }; }
                 if (result?.accepted !== true) {
                     rows.delete(observation.minuteKey);
-                    sinkRejections += 1;
-                    return { accepted: false };
+                    return rejectSink(result?.reason);
                 }
             }
             return { accepted: true };
@@ -98,7 +115,7 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
                 actualMinutes.every((minute, index) => minute === EXPECTED_MINUTES[index]) &&
                 rows.every((row, index) => row.sequence === index + 1);
             const rowsByMinute = new Map(rows.map((row) => [row.minuteKey, row]));
-            const slots = direct160 ? EXPECTED_MINUTES.map((minuteKey) => rowsByMinute.get(minuteKey) ?? Object.freeze({
+            const slots = direct160 || dynamicDaily ? EXPECTED_MINUTES.map((minuteKey) => rowsByMinute.get(minuteKey) ?? Object.freeze({
                 canonicalSymbol: contract.canonicalSymbol,
                 minuteKey,
                 cumulativeVolume: null,
@@ -114,7 +131,7 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
                 closeMode: adapterStateBySymbol.get(contract.canonicalSymbol)?.closeMode ?? 'pending', complete,
                 minuteCount: rows.length, firstMinute: actualMinutes[0] ?? null,
                 lastMinute: actualMinutes.at(-1) ?? null, rows,
-                ...(direct160 ? {
+                ...(direct160 || dynamicDaily ? {
                     nominalCloseMinute: '13:30',
                     delayedCloseState: adapterStateBySymbol.get(contract.canonicalSymbol)?.closeMode ===
                         'delayed_13_33' ? 'observed_and_folded' : 'not_observed',
@@ -153,9 +170,10 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
                 delayedCloseMinute: closeResult?.delayedCloseMinute ?? null,
                 finalizedAt: closeResult?.finalizedAt ?? null },
             adapter: { rejectionCounts: adapterStatus.rejectionCounts, sinkRejections,
+                sinkRejectionReasons: Object.fromEntries([...sinkRejectionReasons.entries()].sort()),
                 providerPhysicalUsage: null },
             assessment: { fullSession, baselineEligible: fullSession, notificationEligible: false,
-                unknownSlotCount: direct160 ? symbols.reduce((count, item) => count +
+                unknownSlotCount: direct160 || dynamicDaily ? symbols.reduce((count, item) => count +
                     item.slots.filter((slot) => slot.completeness === 'unknown').length, 0) : null,
                 note: fullSession ? '完整日只可成為下一適用交易日 baseline；本 session 不具通知權限。' :
                     'partial evidence 不得成為 baseline 或觸發通知。' },
@@ -164,9 +182,9 @@ export function createIntradayMonitorKbarShadowSession({ cohort, tradeDate, conn
                 pollingFallback: false, rawPayloadSaved: false },
         };
         return Object.freeze({ ...seed,
-            storageProfile: direct160 ? DIRECT_160_STORAGE.schemaVersion : null,
+            storageProfile: storageProfile?.schemaVersion ?? null,
             evidenceHash: hash({ ...seed,
-                storageProfile: direct160 ? DIRECT_160_STORAGE.schemaVersion : null,
+                storageProfile: storageProfile?.schemaVersion ?? null,
             }, maximumEvidenceBytes) });
     }
 

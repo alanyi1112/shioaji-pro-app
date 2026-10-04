@@ -51,7 +51,7 @@ afterEach(() => {
 });
 
 describe('盤中監控設定 repository', () => {
-    it('在本機 Application Support 子目錄建立 v1 schema 與空白 revision 0', () => {
+    it('在本機 Application Support 子目錄建立 v2 schema 與空白 revision 0', () => {
         const target = databasePath();
         const repository = new IntradayMonitorConfigRepository(target, {
             clock: () => '2026-09-04T05:30:00.000Z',
@@ -211,5 +211,57 @@ describe('盤中監控設定 repository', () => {
         expect(() => new IntradayMonitorConfigRepository('relative.sqlite3')).toThrow(
             IntradayMonitorConfigRepositoryError,
         );
+    });
+
+    it('成功 mutation 與衝突均留下去敏 append-only 稽核，設定仍維持 CAS', () => {
+        const target = databasePath();
+        const repository = new IntradayMonitorConfigRepository(target,
+            { clock: () => '2026-09-29T08:00:00+08:00' });
+        repository.replace(draft(0, [item('2330'), item('2317')]),
+            { sourceType: 'local_api', correlationId: 'correlation_applied_123456' });
+        expect(() => repository.replace(draft(0, [item('2454')]),
+            { sourceType: 'local_api', correlationId: 'correlation_conflict_123456' }))
+            .toThrowError(expect.objectContaining({ code: 'revision_conflict' }));
+        expect(repository.read()).toMatchObject({ revision: 1, items: [
+            expect.objectContaining({ contract: expect.objectContaining({ canonicalSymbol: '2330.TW' }) }),
+            expect.objectContaining({ contract: expect.objectContaining({ canonicalSymbol: '2317.TW' }) }),
+        ] });
+        expect(repository.readAudit()).toEqual([
+            expect.objectContaining({ sourceType: 'local_api', outcome: 'revision_conflict',
+                previousRevision: 1, requestedRevision: 0, nextRevision: null,
+                diff: {} }),
+            expect.objectContaining({ sourceType: 'local_api', outcome: 'applied',
+                previousRevision: 0, nextRevision: 1,
+                diff: expect.objectContaining({ added: ['2330.TW', '2317.TW'] }) }),
+            expect.objectContaining({ sourceType: 'unknown', outcome: 'legacy_state_observed',
+                previousRevision: 0 }),
+        ]);
+        expect(JSON.stringify(repository.readAudit())).not.toMatch(/password|token|api.key/i);
+        repository.close();
+        const database = new DatabaseSync(target);
+        expect(() => database.exec('DELETE FROM intraday_monitor_config_audit;'))
+            .toThrow(/config_audit_append_only/);
+        expect(() => database.exec("UPDATE intraday_monitor_config_audit SET source_type='ui';"))
+            .toThrow(/config_audit_append_only/);
+        database.close();
+    });
+
+    it('既有 v1 設定升級時只觀測目前狀態，舊操作者維持 unknown', () => {
+        const target = databasePath();
+        let repository = new IntradayMonitorConfigRepository(target);
+        repository.replace(draft(0, [item('2330')]));
+        repository.close();
+        const database = new DatabaseSync(target);
+        database.exec('DROP TRIGGER intraday_monitor_config_audit_no_update;');
+        database.exec('DROP TRIGGER intraday_monitor_config_audit_no_delete;');
+        database.exec('DROP TABLE intraday_monitor_config_audit;');
+        database.exec('PRAGMA user_version = 1;');
+        database.close();
+        repository = new IntradayMonitorConfigRepository(target);
+        expect(repository.read()).toMatchObject({ revision: 1 });
+        expect(repository.readAudit()).toEqual([expect.objectContaining({
+            sourceType: 'unknown', outcome: 'legacy_state_observed',
+            previousRevision: 1, requestedRevision: null, nextRevision: null })]);
+        repository.close();
     });
 });

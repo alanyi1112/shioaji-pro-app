@@ -34,4 +34,21 @@ describe('160 檔可信 1 分 K 基準', () => {
         const late = input(); late.ticks.datetime[269] = '2026-09-11T14:30:00';
         expect(() => verifyDirect160HistoricalSymbol(late)).toThrow(/outside_regular/);
     });
+    it('只在逐筆該分鐘零量且整日總量相符時補足無成交分鐘', () => {
+        const b = fixtureBaseline(manifest);
+        const input = symbolFixture(manifest.cohort[0], manifest.manifestHash, b.calendar);
+        for (const source of [input.first, input.second]) {
+            for (const values of Object.values(source.data)) values.splice(10, 1);
+        }
+        input.ticks.volume[10] = 0;
+        const verified = verifyDirect160HistoricalSymbol(input);
+        expect(verified.cumulativeSeries).toHaveLength(270);
+        expect(verified.cumulativeSeries[10].cumulativeVolume)
+            .toBe(verified.cumulativeSeries[9].cumulativeVolume);
+        const invalid = symbolFixture(manifest.cohort[0], manifest.manifestHash, b.calendar);
+        for (const source of [invalid.first, invalid.second]) {
+            for (const values of Object.values(source.data)) values.splice(10, 1);
+        }
+        expect(() => verifyDirect160HistoricalSymbol(invalid)).toThrow(/missing_minute/);
+    });
 });

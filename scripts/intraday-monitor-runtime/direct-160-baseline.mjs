@@ -46,13 +46,18 @@ export function verifyDirect160HistoricalSymbol({ entry, cohortHash, contract, f
         tickVolumes.set(key, tickVolumes.get(key) + ticks.volume[i]);
     }
     const make = input => {
+        const presentMinutes = new Set(input.data.datetime.map(time =>
+            time.slice(11, 16) === '13:33' ? '13:30' : time.slice(11, 16)));
+        // 只有逐筆來源明確顯示零量，且稍後整日總量核對一致，才可補無成交分鐘。
+        const knownZeroMinutes = expectedTaiwanRegularSessionMinutes().filter(minute =>
+            !presentMinutes.has(minute) && tickVolumes.get(minute) === 0);
         const candidate = { schemaVersion: HISTORICAL_KBAR_BASELINE_CANDIDATE_SCHEMA,
             symbol, exchange: contract.exchange, securityType: 'STK', tradeDate, timeZone: 'Asia/Taipei',
             source: 'shioaji-http-historical-kbars', sourceVersion, fetchedAt: input.fetchedAt,
             sourceUnit: 'common_lot', canonicalUnit: 'common_lot', volumeSemantics: 'minute_delta',
             closeEncoding: input.data.datetime.some(t => t.slice(11, 16) === '13:33') ? 'delayed_13_33' : 'normal_13_30',
             arrays: { ...input.data, datetime: input.data.datetime.map(t => `${t}+08:00`) },
-            knownZeroMinutes: [], previousClose: contract.reference };
+            knownZeroMinutes, previousClose: contract.reference };
         return { ...candidate, payloadHash: computeHistoricalKbarPayloadHash(candidate) };
     };
     const authority = { officialTradingDay: true, identityVerified: true, instrumentStatus: 'normal',

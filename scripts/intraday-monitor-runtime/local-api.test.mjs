@@ -57,7 +57,8 @@ function trigger(index, kind = 'live') {
     };
 }
 
-async function fixture({ triggers = [], configRepo, counters = {}, capacity = null } = {}) {
+async function fixture({ triggers = [], configRepo, counters = {}, capacity = null,
+    dailyStatusProvider } = {}) {
     const repository = configRepo ?? await configRepository();
     const leaseCoordinator = createIntradayMonitorPageLeaseCoordinator({
         sessionController: {
@@ -87,6 +88,7 @@ async function fixture({ triggers = [], configRepo, counters = {}, capacity = nu
         leaseCoordinator,
         evidenceRepository,
         generation: GENERATION,
+        ...(dailyStatusProvider ? { dailyStatusProvider } : {}),
         capacityProvider() {
             counters.capacityRead = (counters.capacityRead ?? 0) + 1;
             return capacity ?? { gate0EvidenceCurrent: false, globalOwnershipComplete: false, active: 0, waiting: 1, degraded: 0, confirmedPhysicalUsage: null, confirmedOtherPhysicalUsage: null, availableForMonitor: 0, reason: 'gate_evidence_missing' };
@@ -246,8 +248,21 @@ function readSseTriggerFrames(port, { triggers, expected = 2 } = {}) {
 }
 
 describe('intraday monitor local API service', () => {
-    it('atomically replaces config with revision and idempotency protection', async () => {
+    it('每日名單獨立唯讀狀態缺證據時 feature-off，讀取失敗不冒充零缺口', async () => {
         const { service } = await fixture();
+        expect(await service.readDailyStatus()).toMatchObject({ status: 200,
+            body: { ok: true, daily: { mode: 'feature_off', configured: 0,
+                planned: 0, baselineReady: 0, subscriptionRequested: 0,
+                dataActive: 0, notificationAuthority: false } } });
+        const unavailable = await fixture({ dailyStatusProvider: async () => {
+            throw new Error('fixture_missing');
+        } });
+        expect(await unavailable.service.readDailyStatus()).toMatchObject({
+            status: 503, body: { reason: 'daily_plan_evidence_unavailable' } });
+    });
+
+    it('atomically replaces config with revision and idempotency protection', async () => {
+        const { service, repository } = await fixture();
         const first = service.replaceConfig(configRequest());
         expect(first).toMatchObject({ status: 200, body: { ok: true, revision: 1, config: { globalThreshold: '2', items: [{ contract: { code: '2330' } }] } } });
         expect(service.replaceConfig(configRequest())).toEqual(first);
@@ -257,6 +272,12 @@ describe('intraday monitor local API service', () => {
 
         const conflict = configRequest({ idempotencyKey: `${KEY}_new`, expectedRevision: 0 });
         expect(service.replaceConfig(conflict)).toMatchObject({ status: 409, body: { reason: 'revision_conflict' } });
+        expect(repository.readAudit().slice(0, 2)).toEqual([
+            expect.objectContaining({ sourceType: 'local_api', outcome: 'revision_conflict',
+                correlationId: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+            expect.objectContaining({ sourceType: 'local_api', outcome: 'applied',
+                correlationId: expect.stringMatching(/^[a-f0-9]{64}$/) }),
+        ]);
     });
 
     it('returns itemized config errors and rejects unknown or trading fields', async () => {
@@ -296,7 +317,9 @@ describe('intraday monitor local API service', () => {
         const { service } = await fixture();
         expect(service.replaceConfig(configRequest())).toMatchObject({ status: 200, body: { revision: 1 } });
         expect(service.readStatus()).toMatchObject({ status: 200, body: {
-            state: 'feature_off', reason: 'gate_evidence_missing', generation: GENERATION,
+            state: 'feature_off', reason: 'current_session_missing', generation: GENERATION,
+            session: { current: false, staleReason: 'current_session_missing',
+                controlPlaneRequested: false },
             capacity: { configured: 1, eligible: 1, pilotCohort: 1, dataActive: 0, active: 0, waiting: 1, waitingGate: 1, waitingPilotLimit: 0, waitingCapacity: 0, waitingBaseline: 0, availableForMonitor: 0, subscriptionTransportAuthority: false },
             itemStatuses: [{ canonicalSymbol: '2330.TW', state: 'waiting_gate', reason: 'gate_evidence_missing', effectiveThreshold: '2', baseline: { state: 'unknown' }, subscription: { state: 'none' } }],
         } });
@@ -371,8 +394,16 @@ describe('intraday monitor local API service', () => {
             gate0EvidenceCurrent: true, globalOwnershipComplete: false, boundedTransportReady: true,
             approvedActiveLimit: 20, evaluationStageTarget: 160, evaluationState: 'running',
             active: 25, availableForMonitor: 25, items: rawItems, reason: 'bounded_kbar_stage_running',
+            session: { authorityTradeDate: '2026-09-15', sessionTradeDate: '2026-09-15',
+                phase: 'running', current: true, configRevision: 1, savedConfigRevision: 1,
+                startedAt: '2026-09-15T08:50:00+08:00', updatedAt: '2026-09-15T09:02:00+08:00',
+                staleReason: null, controlPlaneRequested: true, controlPlaneAccepted: true,
+                firstKbarAt: '2026-09-15T09:01:01+08:00', startupSource: 'late_boot',
+                coldStartRisk: true, scheduled0820Success: false },
         } });
-        expect(service.readStatus()).toMatchObject({ status: 200, body: { state: 'idle', capacity: {
+        expect(service.readStatus()).toMatchObject({ status: 200, body: { state: 'idle',
+            session: { startupSource: 'late_boot', coldStartRisk: true,
+                scheduled0820Success: false }, capacity: {
             approvedActiveLimit: 20, evaluationStageTarget: 160, boundedTransportReady: true,
             globalOwnershipComplete: false, dataActive: 25, waitingPilotLimit: 0,
         } } });
@@ -385,6 +416,10 @@ describe('intraday monitor loopback gateway', () => {
         const { service } = await fixture({ counters });
         const port = await startServer(service);
         expect(await request(port)).toMatchObject({ status: 200, body: { state: 'feature_off', brokerWriteAuthority: false } });
+        expect(await request(port, { pathname:
+            `${INTRADAY_MONITOR_LOCAL_API_PREFIX}/daily-status` }))
+            .toMatchObject({ status: 200, body: { daily: { mode: 'feature_off',
+                subscriptionRequested: 0, dataActive: 0 } } });
         expect(counters.start ?? 0).toBe(0);
         expect(counters.flush ?? 0).toBe(0);
         expect(counters.release ?? 0).toBe(0);

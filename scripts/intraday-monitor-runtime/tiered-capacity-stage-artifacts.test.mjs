@@ -165,6 +165,10 @@ describe('分級 cohort、plan 與 preflight artifacts', () => {
             },
         });
         const first = evidence('2026-09-14', 'generation_stage160_day1');
+        const backgroundOnly = createTieredStageSessionEvidence({ plan, manifest, evidence: {
+            ...first, resources: { ...first.resources, maxChartFreshnessMs: null },
+        } });
+        expect(backgroundOnly.resources.maxChartFreshnessMs).toBeNull();
         const pending = createTieredStageEvidenceBundle({ plan, manifest, sessions: [first], createdAt });
         expect(validateTieredStageEvidenceBundle(pending)).toMatchObject({
             valid: true, readyForHumanReview: false,

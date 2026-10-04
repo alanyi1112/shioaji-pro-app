@@ -243,11 +243,11 @@ describe('完整日 capture 到 pilot bundle', () => {
         );
         const builderPath = path.resolve(
             import.meta.dirname,
-            '../../openspec/changes/add-configurable-intraday-relative-volume-monitor/acceptance/build-pilot-evidence-bundle.mjs',
+            '../../openspec/changes/archive/2026-09-16-add-configurable-intraday-relative-volume-monitor/acceptance/build-pilot-evidence-bundle.mjs',
         );
         const verifierPath = path.resolve(
             import.meta.dirname,
-            '../../openspec/changes/add-configurable-intraday-relative-volume-monitor/acceptance/verify-pilot-evidence.mjs',
+            '../../openspec/changes/archive/2026-09-16-add-configurable-intraday-relative-volume-monitor/acceptance/verify-pilot-evidence.mjs',
         );
         const paths = Object.fromEntries(
             ['plan', 'baseline', 'capture', 'assurance', 'output'].map((name) => [

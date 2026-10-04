@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { INTRADAY_MONITOR_KBAR_EVENT_SCHEMA, INTRADAY_MONITOR_KBAR_PILOT_LIMIT } from './kbar-stream-adapter.mjs';
 import { DIRECT_160_STORAGE } from './direct-160-storage.mjs';
+import { DYNAMIC_DAILY_STORAGE } from './dynamic-daily-storage.mjs';
 
 export const INTRADAY_MONITOR_BOUNDED_KBAR_TRANSPORT_SCHEMA = 'intraday-monitor-bounded-kbar-transport/1';
 const MAX_BYTES = 16 * 1024 * 1024;
@@ -42,10 +43,18 @@ export function createBoundedKbarTransport({
 } = {}) {
     const direct160 = storageProfile?.schemaVersion === DIRECT_160_STORAGE.schemaVersion &&
         Object.entries(DIRECT_160_STORAGE).every(([key, expected]) => storageProfile[key] === expected);
-    const maximumCohortSize = direct160 ? DIRECT_160_STORAGE.targetCount : INTRADAY_MONITOR_KBAR_PILOT_LIMIT;
-    const maximumBytes = direct160 ? DIRECT_160_STORAGE.streamTotalBytes : MAX_BYTES;
-    const maximumFrameBytes = direct160 ? DIRECT_160_STORAGE.streamFrameBytes : MAX_FRAME_BYTES;
-    if (storageProfile !== null && !direct160) throw new TypeError('bounded kbar storage profile is invalid');
+    const dynamicDaily = storageProfile?.schemaVersion === DYNAMIC_DAILY_STORAGE.schemaVersion &&
+        Object.keys(storageProfile).length === Object.keys(DYNAMIC_DAILY_STORAGE).length &&
+        Object.entries(DYNAMIC_DAILY_STORAGE).every(([key, expected]) => storageProfile[key] === expected);
+    const maximumCohortSize = direct160 ? DIRECT_160_STORAGE.targetCount :
+        dynamicDaily ? DYNAMIC_DAILY_STORAGE.maximumCohortSize : INTRADAY_MONITOR_KBAR_PILOT_LIMIT;
+    const maximumBytes = direct160 ? DIRECT_160_STORAGE.streamTotalBytes :
+        dynamicDaily ? DYNAMIC_DAILY_STORAGE.streamTotalBytes : MAX_BYTES;
+    const maximumFrameBytes = direct160 ? DIRECT_160_STORAGE.streamFrameBytes :
+        dynamicDaily ? DYNAMIC_DAILY_STORAGE.streamFrameBytes : MAX_FRAME_BYTES;
+    if (storageProfile !== null && !direct160 && !dynamicDaily) {
+        throw new TypeError('bounded kbar storage profile is invalid');
+    }
     if (typeof fetchImpl !== 'function' || typeof onEvent !== 'function' || typeof onDisconnect !== 'function' ||
         typeof now !== 'function' || typeof api !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(api)) {
         throw new TypeError('bounded kbar transport options are invalid');
@@ -165,7 +174,7 @@ export function createBoundedKbarTransport({
         return Object.freeze({ started: true, cohortHash, cohortSize: cohort.length, subscribeAccepted: true,
             controlPlaneState: 'subscription_requested', dataPlaneReady: false,
             providerPhysicalUsage: null, brokerWriteAuthority: false, productionAuthority: false,
-            serviceLifecycleAuthority: false, storageProfile: direct160 ? DIRECT_160_STORAGE.schemaVersion : null });
+            serviceLifecycleAuthority: false, storageProfile: storageProfile?.schemaVersion ?? null });
     }
 
     async function stop() {
@@ -223,7 +232,7 @@ export function createBoundedKbarTransport({
             pollingFallbackAllowed: false, brokerWriteAuthority: false,
             productionAuthority: false, serviceLifecycleAuthority: false,
             maximumBytes, maximumFrameBytes,
-            storageProfile: direct160 ? DIRECT_160_STORAGE.schemaVersion : null });
+            storageProfile: storageProfile?.schemaVersion ?? null });
     }
 
     return Object.freeze({ start, recover, stop, status });

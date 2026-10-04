@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import { fixtureBaseline } from './fixtures/direct-160-baseline.mjs';
 import { activateDirect160ProductRuntime, createDirect160ProductSink,
-    readDirect160ProductRuntimeState } from './direct-160-product-runtime.mjs';
+    inspectDirect160ProductSinkInputs,
+    readDirect160ProductRuntimeState, validateDirect160LiveAcceptanceCapture } from './direct-160-product-runtime.mjs';
 import { DIRECT_160_STORAGE } from './direct-160-storage.mjs';
 import { IntradayMonitorEvidenceRepository } from './evidence-repository.mjs';
 import { IntradayMonitorConfigRepository } from './config-repository.mjs';
@@ -49,7 +50,7 @@ function acceptance({ manifest, baseline }) {
             outputHash: 'b'.repeat(64), triggerCount: 1 },
         resources: { cpuBasisPoints: 100, maxRssBytes: 200_000_000, databaseGrowthBytes: 1_000_000,
             minimumAvailableDiskBytes: 10_000_000_000, maxEventToSealLatencyMs: 100,
-            maxChartFreshnessMs: 1_000 },
+            maxChartFreshnessMs: null },
         provider: { physicalUsage: null, globalOwnershipComplete: null, releaseProven: null, headroom: null },
         operations: { networkWrites: 0, subscriptionMutations: 0, notificationDispatches: 0,
             brokerWrites: 0, productionTransitions: 0, serviceLifecycleMutations: 0,
@@ -73,7 +74,8 @@ function acceptance({ manifest, baseline }) {
         })) },
         runtime: { firstMinuteCanary: { result: 'pass', expectedCount: 160,
             receivedCount: 160, missingCount: 0, liveAvailabilityComplete: true },
-        localEventReconnect: { recovered: true }, passiveChartEvidenceHash: 'c'.repeat(64) },
+        localEventReconnect: { recovered: true }, passiveChartEvidenceState: 'missing',
+        passiveChartEvidenceHash: null, chartFreshnessMeasurement: 'not_observed_optional' },
         operations: { notificationDispatches: 0, brokerWrites: 0, productionTransitions: 0,
             serviceLifecycleMutations: 0, activeLimitMutations: 0 },
         assessment: { formalAcceptanceEvidence: true, readyForBundle: true,
@@ -82,6 +84,59 @@ function acceptance({ manifest, baseline }) {
 }
 
 describe('direct 160 product runtime', () => {
+    it('正式驗收依背景合法資料與重連，不依賴可見 K 棒證據', () => {
+        const { manifest, baseline } = input();
+        const { capture } = acceptance({ manifest, baseline });
+        expect(capture.runtime.passiveChartEvidenceHash).toBeNull();
+        expect(capture.tieredSession.resources.maxChartFreshnessMs).toBeNull();
+        expect(validateDirect160LiveAcceptanceCapture(capture)).toBe(true);
+        expect(validateDirect160LiveAcceptanceCapture({ ...capture, runtime: {
+            ...capture.runtime, firstMinuteCanary: { ...capture.runtime.firstMinuteCanary,
+                result: 'fail', receivedCount: 159, missingCount: 1,
+                liveAvailabilityComplete: false },
+        } })).toBe(false);
+        expect(validateDirect160LiveAcceptanceCapture({ ...capture, runtime: {
+            ...capture.runtime, localEventReconnect: { recovered: false },
+        } })).toBe(false);
+    });
+    it('current-session authority 失效後拒絕第一筆 KBar、observation 與 trigger', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'direct-160-current-session-gate-'));
+        const { manifest, baseline, config } = input();
+        const generation = 'simulation:product_generation_authority_0001';
+        let current = true;
+        const sessionAuthority = {
+            evaluate: () => ({ current, dataPlaneAuthority: current,
+                notificationAuthority: current, reason: current ? null : 'generation_mismatch' }),
+            recordFirstKbar: () => undefined,
+            recordObservation: () => undefined,
+        };
+        const sink = createDirect160ProductSink({ manifest, baseline, config,
+            tradeDate: '2026-09-14', connectionGeneration: generation,
+            evidenceDatabasePath: path.join(root, 'evidence.sqlite3'),
+            statePath: path.join(root, 'state.json'), sessionAuthority,
+            requireCurrentSessionAuthority: true,
+            now: () => '2026-09-14T09:02:00+08:00' });
+        sink.installBaselines();
+        current = false;
+        const entry = manifest.cohort[0];
+        expect(sink.recordFirstKbarEvidence({ canonicalSymbol: entry.canonicalSymbol,
+            minuteKey: '09:01', receivedAt: '2026-09-14T09:02:00+08:00' }))
+            .toEqual({ accepted: false, reason: 'generation_mismatch' });
+        expect(sink.persistObservation({ schemaVersion: 'intraday-monitor-observation/1',
+            contract: { securityType: 'STK', region: 'TW', exchange: entry.contractIdentity.exchange,
+                code: entry.contractIdentity.code, targetCode: null,
+                canonicalSymbol: entry.canonicalSymbol },
+            tradeDate: '2026-09-14', minuteKey: '09:01', exchangeTime: '09:01:00',
+            receivedTime: '2026-09-14T09:02:00+08:00', connectionGeneration: generation,
+            sequence: 1, cumulativeVolume: 999, unit: 'common_lot',
+            source: 'shioaji-kbar-stream', sourceVersion: 'shioaji-http-1.7.1',
+            simtrade: false, intradayOdd: false, continuity: 'complete' }))
+            .toEqual({ accepted: false, reason: 'generation_mismatch' });
+        expect(sink.state()).toMatchObject({ dataActive: 0, persistedObservationCount: 0,
+            persistedTriggerCount: 0, notificationAuthority: false });
+        sink.fail('test_complete');
+    });
+
     it('以 adapter 已接受的逐檔第一筆 09:01 KBar 通過 09:02:15 canary，不多等一根 KBar 才確認 data plane', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'direct-160-first-kbar-canary-'));
         const statePath = path.join(root, 'state.json');
@@ -283,6 +338,37 @@ describe('direct 160 product runtime', () => {
             .toThrow('inputs are invalid');
     });
 
+    it('正式 160 容量核准與當日 session 有效時，不被前次可變驗收結果阻擋', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'direct-160-approved-session-'));
+        const { manifest, baseline, config } = input();
+        const options = { manifest, baseline, config, tradeDate: '2026-09-14',
+            connectionGeneration: 'product_generation_20260914_approved',
+            evidenceDatabasePath: path.join(root, 'evidence.sqlite3'),
+            statePath: path.join(root, 'state.json'), approvedActiveLimit: 160,
+            requireCurrentSessionAuthority: true,
+            sessionAuthority: { evaluate: () => ({ current: true, notificationAuthority: true }) },
+            capacityApproval: { decision: 'go', approvedActiveLimit: 160, stage: 160,
+                approvalHash: 'a'.repeat(64) } };
+        const previous = createDirect160ProductSink({ ...options,
+            approvedActiveLimit: 20, capacityApproval: null,
+            requireCurrentSessionAuthority: false, sessionAuthority: null });
+        previous.installBaselines();
+        previous.fail('prior_capture_failed');
+        expect(inspectDirect160ProductSinkInputs({ ...options, sessionCurrent: true }))
+            .toEqual({ ready: true, reason: null });
+        expect(inspectDirect160ProductSinkInputs({ ...options,
+            capacityApproval: null, sessionCurrent: true }))
+            .toEqual({ ready: false, reason: 'capacity_approval_missing' });
+        expect(inspectDirect160ProductSinkInputs({ ...options,
+            sessionCurrent: false }))
+            .toEqual({ ready: false, reason: 'current_session_missing' });
+        const sink = createDirect160ProductSink(options);
+        expect(sink.installBaselines()).toMatchObject({ installed: 160, accepted: true });
+        expect(() => createDirect160ProductSink({ ...options,
+            sessionAuthority: { evaluate: () => ({ current: false }) } }))
+            .toThrow('inputs are invalid');
+    });
+
     it('只有同一份完整 bundle 與 GO review 可把正式上限原子啟用為 160', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'direct-160-product-activation-'));
         const statePath = path.join(root, 'state.json');
@@ -330,7 +416,7 @@ describe('direct 160 product runtime', () => {
         });
     });
 
-    it('state-backed gateway 在只有 control-plane receipt 時公開等待逐檔第一筆行情', async () => {
+    it('legacy product state 缺少 current session 時不得成為今日 control-plane authority', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'direct-160-state-backed-'));
         const monitorRoot = path.join(root, 'IntradayMonitor');
         const statePath = path.join(monitorRoot, 'direct-160-product-runtime.json');
@@ -353,11 +439,11 @@ describe('direct 160 product runtime', () => {
         const runtime = createStateBackedRuntime(root);
         try {
             expect(runtime.service.readStatus()).toMatchObject({ status: 200, body: { capacity: {
-                configured: 160, approvedActiveLimit: 20, evaluationStageTarget: 160,
-                evaluationState: 'running', boundedTransportReady: false,
-                controlPlaneSubscriptionRequested: true, awaitingFirstKbar: 160,
+                configured: 160, approvedActiveLimit: 20, evaluationStageTarget: null,
+                evaluationState: 'not_scheduled', boundedTransportReady: false,
+                controlPlaneSubscriptionRequested: false, awaitingFirstKbar: 0,
                 globalOwnershipComplete: false, dataActive: 0, waiting: 160,
-            } } });
+            }, session: { current: false, staleReason: 'current_session_missing' } } });
         } finally {
             runtime.close();
             sink.fail('test_complete');

@@ -264,12 +264,14 @@ function validResources(resources, budgets) {
         Number.isSafeInteger(resources.databaseGrowthBytes) && resources.databaseGrowthBytes >= 0 &&
         Number.isSafeInteger(resources.minimumAvailableDiskBytes) && resources.minimumAvailableDiskBytes >= 0 &&
         Number.isSafeInteger(resources.maxEventToSealLatencyMs) && resources.maxEventToSealLatencyMs >= 0 &&
-        Number.isSafeInteger(resources.maxChartFreshnessMs) && resources.maxChartFreshnessMs >= 0 &&
+        (resources.maxChartFreshnessMs === null ||
+            (Number.isSafeInteger(resources.maxChartFreshnessMs) && resources.maxChartFreshnessMs >= 0)) &&
         resources.cpuBasisPoints <= budgets.maxCpuBasisPoints && resources.maxRssBytes <= budgets.maxRssBytes &&
         resources.databaseGrowthBytes <= budgets.maxDatabaseGrowthBytes &&
         resources.minimumAvailableDiskBytes >= budgets.minimumAvailableDiskBytes &&
         resources.maxEventToSealLatencyMs <= budgets.maxEventToSealLatencyMs &&
-        resources.maxChartFreshnessMs <= budgets.maxChartFreshnessMs;
+        (resources.maxChartFreshnessMs === null ||
+            resources.maxChartFreshnessMs <= budgets.maxChartFreshnessMs);
 }
 
 function validStageSession(value, plan, manifest) {

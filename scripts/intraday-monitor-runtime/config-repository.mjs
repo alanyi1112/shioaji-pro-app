@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
@@ -8,7 +9,7 @@ import {
     validateIntradayMonitorConfig,
 } from '../../src/lib/intraday-relative-volume-monitor-domain.ts';
 
-export const INTRADAY_MONITOR_REPOSITORY_SCHEMA_VERSION = 1;
+export const INTRADAY_MONITOR_REPOSITORY_SCHEMA_VERSION = 2;
 export const INTRADAY_MONITOR_DATABASE_NAME = 'intraday-monitor.sqlite3';
 
 const CREATE_SCHEMA_V1 = `
@@ -34,6 +35,61 @@ CREATE TABLE IF NOT EXISTS intraday_monitor_config_items (
     UNIQUE (exchange, code)
 ) STRICT;
 `;
+
+const CREATE_SCHEMA_V2 = `
+CREATE TABLE IF NOT EXISTS intraday_monitor_config_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recorded_at TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type IN ('ui', 'local_api', 'maintenance', 'unknown')),
+    correlation_id TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN
+        ('applied', 'revision_conflict', 'invalid_config', 'legacy_state_observed')),
+    previous_revision INTEGER NOT NULL CHECK (previous_revision >= 0),
+    requested_revision INTEGER,
+    next_revision INTEGER,
+    previous_hash TEXT NOT NULL,
+    next_hash TEXT,
+    diff_json TEXT NOT NULL
+) STRICT;
+CREATE TRIGGER IF NOT EXISTS intraday_monitor_config_audit_no_update
+BEFORE UPDATE ON intraday_monitor_config_audit BEGIN
+    SELECT RAISE(ABORT, 'config_audit_append_only');
+END;
+CREATE TRIGGER IF NOT EXISTS intraday_monitor_config_audit_no_delete
+BEFORE DELETE ON intraday_monitor_config_audit BEGIN
+    SELECT RAISE(ABORT, 'config_audit_append_only');
+END;
+`;
+
+const AUDIT_SOURCE_TYPES = new Set(['ui', 'local_api', 'maintenance', 'unknown']);
+
+function auditConfigHash(config) {
+    const body = { revision: config.revision, globalThreshold: config.globalThreshold,
+        items: config.items.map((item) => ({ symbol: item.contract.canonicalSymbol,
+            enabled: item.enabled, thresholdOverride: item.thresholdOverride, source: item.source })) };
+    return createHash('sha256').update(JSON.stringify(body)).digest('hex');
+}
+
+function auditDiff(previous, next) {
+    const before = new Map(previous.items.map((item) => [item.contract.canonicalSymbol, item]));
+    const after = new Map(next.items.map((item) => [item.contract.canonicalSymbol, item]));
+    return {
+        added: next.items.filter((item) => !before.has(item.contract.canonicalSymbol))
+            .map((item) => item.contract.canonicalSymbol),
+        removed: previous.items.filter((item) => !after.has(item.contract.canonicalSymbol))
+            .map((item) => item.contract.canonicalSymbol),
+        enabledChanged: next.items.filter((item) => before.has(item.contract.canonicalSymbol) &&
+            before.get(item.contract.canonicalSymbol).enabled !== item.enabled)
+            .map((item) => item.contract.canonicalSymbol),
+        reordered: next.items.filter((item) => before.has(item.contract.canonicalSymbol) &&
+            before.get(item.contract.canonicalSymbol).position !== item.position)
+            .map((item) => item.contract.canonicalSymbol),
+        thresholdChanged: next.items.filter((item) => before.has(item.contract.canonicalSymbol) &&
+            before.get(item.contract.canonicalSymbol).thresholdOverride !== item.thresholdOverride)
+            .map((item) => item.contract.canonicalSymbol),
+        globalThresholdChanged: previous.globalThreshold !== next.globalThreshold,
+    };
+}
 
 export class IntradayMonitorConfigRepositoryError extends Error {
     constructor(code, details = null) {
@@ -139,15 +195,58 @@ export class IntradayMonitorConfigRepository {
                         now,
                         now,
                     );
-                this.database.exec(
-                    `PRAGMA user_version = ${INTRADAY_MONITOR_REPOSITORY_SCHEMA_VERSION};`,
-                );
+                this.database.exec('PRAGMA user_version = 1;');
                 this.database.exec('COMMIT;');
             } catch (error) {
                 this.database.exec('ROLLBACK;');
                 throw error;
             }
         }
+        if (version <= 1) {
+            this.database.exec('BEGIN IMMEDIATE;');
+            try {
+                this.database.exec(CREATE_SCHEMA_V2);
+                const observed = this.read();
+                this.insertAudit({ recordedAt: this.clock(), sourceType: 'unknown',
+                    correlationId: randomUUID(), outcome: 'legacy_state_observed',
+                    previousRevision: observed.revision, requestedRevision: null,
+                    nextRevision: null, previousHash: auditConfigHash(observed),
+                    nextHash: null, diff: {} });
+                this.database.exec('PRAGMA user_version = 2;');
+                this.database.exec('COMMIT;');
+            } catch (error) {
+                this.database.exec('ROLLBACK;');
+                throw error;
+            }
+        }
+    }
+
+    insertAudit({ recordedAt, sourceType, correlationId, outcome, previousRevision,
+        requestedRevision, nextRevision, previousHash, nextHash, diff }) {
+        this.database.prepare(
+            `INSERT INTO intraday_monitor_config_audit
+             (recorded_at, source_type, correlation_id, outcome, previous_revision,
+              requested_revision, next_revision, previous_hash, next_hash, diff_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).run(recordedAt, sourceType, correlationId, outcome, previousRevision,
+            requestedRevision, nextRevision, previousHash, nextHash, JSON.stringify(diff));
+    }
+
+    readAudit({ limit = 100 } = {}) {
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+            throw new IntradayMonitorConfigRepositoryError('invalid_audit_limit');
+        }
+        return this.database.prepare(
+            `SELECT id, recorded_at, source_type, correlation_id, outcome,
+                    previous_revision, requested_revision, next_revision,
+                    previous_hash, next_hash, diff_json
+             FROM intraday_monitor_config_audit ORDER BY id DESC LIMIT ?`,
+        ).all(limit).map((row) => Object.freeze({ id: row.id, recordedAt: row.recorded_at,
+            sourceType: row.source_type, correlationId: row.correlation_id,
+            outcome: row.outcome, previousRevision: row.previous_revision,
+            requestedRevision: row.requested_revision, nextRevision: row.next_revision,
+            previousHash: row.previous_hash, nextHash: row.next_hash,
+            diff: JSON.parse(row.diff_json) }));
     }
 
     read() {
@@ -182,10 +281,16 @@ export class IntradayMonitorConfigRepository {
         return validated.value;
     }
 
-    replace(input) {
+    replace(input, { sourceType = 'unknown', correlationId = randomUUID() } = {}) {
+        if (!AUDIT_SOURCE_TYPES.has(sourceType) ||
+            typeof correlationId !== 'string' ||
+            !/^[A-Za-z0-9_-]{16,128}$/.test(correlationId)) {
+            throw new IntradayMonitorConfigRepositoryError('invalid_audit_context');
+        }
+        let current = null;
         this.database.exec('BEGIN IMMEDIATE;');
         try {
-            const current = this.read();
+            current = this.read();
             const validated = validateIntradayMonitorConfig(
                 input,
                 current.revision,
@@ -202,7 +307,7 @@ export class IntradayMonitorConfigRepository {
 
             const nextRevision = current.revision + 1;
             const now = this.clock();
-            this.database
+            const update = this.database
                 .prepare(
                     `UPDATE intraday_monitor_config
                      SET schema_version = ?, revision = ?, global_threshold = ?, updated_at = ?
@@ -215,6 +320,10 @@ export class IntradayMonitorConfigRepository {
                     now,
                     current.revision,
                 );
+            if (update.changes !== 1) {
+                throw new IntradayMonitorConfigRepositoryError('revision_conflict',
+                    { currentRevision: current.revision });
+            }
             this.database.exec('DELETE FROM intraday_monitor_config_items;');
             const insert = this.database.prepare(
                 `INSERT INTO intraday_monitor_config_items
@@ -232,10 +341,31 @@ export class IntradayMonitorConfigRepository {
                     item.source,
                 );
             }
+            const next = this.read();
+            this.insertAudit({ recordedAt: now, sourceType, correlationId,
+                outcome: 'applied', previousRevision: current.revision,
+                requestedRevision: input?.revision ?? null,
+                nextRevision: next.revision, previousHash: auditConfigHash(current),
+                nextHash: auditConfigHash(next), diff: auditDiff(current, next) });
             this.database.exec('COMMIT;');
-            return this.read();
+            return next;
         } catch (error) {
             this.database.exec('ROLLBACK;');
+            if (current && ['revision_conflict', 'invalid_config'].includes(error?.code)) {
+                try {
+                    this.database.exec('BEGIN IMMEDIATE;');
+                    this.insertAudit({ recordedAt: this.clock(), sourceType, correlationId,
+                        outcome: error.code, previousRevision: current.revision,
+                        requestedRevision: Number.isSafeInteger(input?.revision) &&
+                            input.revision >= 0 ? input.revision : null,
+                        nextRevision: null, previousHash: auditConfigHash(current),
+                        nextHash: null, diff: {} });
+                    this.database.exec('COMMIT;');
+                } catch {
+                    this.database.exec('ROLLBACK;');
+                    throw new IntradayMonitorConfigRepositoryError('audit_unavailable');
+                }
+            }
             throw error;
         }
     }
