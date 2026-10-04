@@ -139,7 +139,14 @@ pnpm local-runtime status
 - `multiview_tdcc_pipeline_job`：週六 22:30 主同步與週日 22:30 隔日重試的 TDCC LaunchAgent 是否載入。
 - `multiview_tdcc_early_job`：週五 19:00／22:00 與週六 06:00／08:00／09:00／10:00／12:00 的最新週資料檢查是否載入；登入／載入時也立即檢查一次，以補晚開機。只核對 TDCC 官方 CSV／OpenAPI，沒有新週次就 noop，不執行歷史補建。若只需更新此工作而保留共用服務，使用 `pnpm local-runtime install-multiview-tdcc-early`；可用 `pnpm local-runtime multiview-tdcc-latest` 手動執行一次。
 - `multiview_tdcc_watcher_job`：登入即執行且每 300 秒 queue-only 檢查的 TDCC watcher 是否載入；無 runnable target 時不得連線 TDCC 歷史來源。
-- `multiview_after_hours_market／chip／tdcc／pe`：最近一次安全 seed report 的資料族群結果。
+- `multiview_seed_source`、`multiview_seed_market／chip／tdcc／pe`：最近一次安全 seed report 的匯入結果，不代表目前行情完整。
+- `multiview_after_hours_source`：目前資料摘要是否來自 `live_health`；無法取得時為 `unavailable`。
+- `multiview_after_hours_market／chip／tdcc／pe`：目前 health 的逐類驗證狀態；TDCC 全域 available 不等於逐商品完整，因此顯示 `available_not_verified`。
+- `multiview_market_expected_session`、`multiview_market_latest_coverage`、`multiview_market_unknown`：持久化歷史預期交易日、最新日涵蓋數／啟用商品數及未知數；不代表 Shioaji 即時圖表狀態。
+- `multiview_chip_ready`、`multiview_tdcc_source_date`、`multiview_pe_history_missing`、`multiview_pe_verified_date`：各資料族群的進度與日期；不以全域最大日期冒充逐商品驗收。
+- `multiview_after_hours=verification_required`：仍需依逐商品與資料集證據驗收；缺少 health 時為 `unknown`。不以舊 seed 成功顯示今日完成。
+
+盤後選股維護以 Node 24.15+ 的 `--use-system-ca` 使用 macOS 系統信任庫，保留 TLS 驗證，不再依賴 repo 內的 `scripts/certs/*.pem`。若作業環境仍有憑證錯誤，應修正該機的合法信任設定，不可關閉憑證驗證；使用者既有 `NODE_EXTRA_CA_CERTS` 設定仍由 Node 原生支援，憑證不得提交 repo。
 
 市場收盤只代表即時 SSE 不再出現新的成交，不應讓 5173 或 8080 listener 消失。Shioaji HTTP server 與外部行情 session 是兩層生命週期：8080 可能先完成監聽，Solace／paper session 才在背景登入。盤後維護、上游暫時不可用或登入尚在進行時可能回傳 `SessionNotEstablished`；此時不能只用 listener 或 health 取代業務判斷。
 
@@ -211,3 +218,23 @@ pnpm local-runtime uninstall
 ```
 
 移除只會停止並刪除本工具建立的 LaunchAgent；不會刪除 repo 或 `.env`。
+
+### 選股 invalid 的單次人工恢復
+
+官方回應曾違反 schema／日期契約時，自動排程保留 invalid，不自動解除。操作者確認來源已恢復後，可使用 Node 24.15+ 執行 `scripts/stock-screener-update.mjs --database=/absolute/local.sqlite --recover-invalid-session=YYYY-MM-DD --limit=1 --ohlcv-limit=1 --ohlcv-v4-limit=1`，並加上 Node `--use-system-ca`。
+
+日期必須同時等於台北今日與 expected session；原狀態須為 invalid、冷卻到期且探測預算未耗盡。不可與排程開關或 bootstrap 混用。執行前以唯一日期 receipt 保存原 readiness 與 SHA-256；即使失敗或中斷也不刪除 receipt、不重複執行。此操作僅解除當次 publication probe，仍須雙市場 exact date、schema 與母體覆蓋通過。技術或籌碼缺期仍回 pending，使用既有 bounded resume 工具處理；不得直接改 checkpoint、偽造 receipt 或標記完整。
+
+## 盤中監控隔日量比基準（simulation-only）
+
+`postclose-daily-baseline.mjs` 在台北時間 13:35 嘗試為下一適用交易日建立 160 檔同分鐘累積量基準。啟動預算不是固定剩餘流量值：它使用相同 cohort、近 30 日至少兩次完整驗證的 provider usage 增量，以最大實測成本三倍加上 provider 額度 25% 保留額計算。採集時每次資料請求前重新讀取剩餘額度；樣本不足、quota 欄位失真或額度不足都停止且不發布基準。8 GiB 磁碟保留、單次回應 16 MiB 上限、串行間隔與 30 分鐘總期限仍生效。
+
+首次失敗若屬可恢復原因，獨立 retry LaunchAgent 於 14:15 與 14:55 最多再試兩次；每次有不同 claim、budget、來源目錄和 receipt，均以 exclusive create 保存，不覆寫前次證據。已有完整基準、前次尚無 receipt、休市或已達三次上限時不會採集。只讀查詢：`node scripts/intraday-monitor-runtime/postclose-daily-baseline.mjs --status --date=YYYY-MM-DD`。安裝 retry 排程：`node scripts/intraday-monitor-runtime/postclose-daily-baseline.mjs --install-retries`；不會重啟既有 API、watchdog、Web 或 MultiView。正式基準只在 160 檔逐項驗證後由 staging 目錄發布，不能以部分來源或線圖快取補足。
+
+### 盤前晚開機接續
+
+固定 08:20／08:35／08:45／08:50 LaunchAgent 不要求使用者每日 08:20 前開機，但關機或未登入時可能沒有任何當日固定時點收據。另有獨立的 `com.alanyi.realtimestock.intraday-premarket-late-boot` LaunchAgent，以 `RunAtLoad` 及 08:25／08:40／08:55／08:58 少量補跑觸發。它只在台北時間 08:20:00–08:58:59 檢查，至 08:59:00 停止；早於窗口、休市、基準缺失或已啟動採集時不補造固定排程收據。服務暫未就緒只在當次進程做有界唯讀重查，不自行登入或重啟服務。
+
+盤前接續必須重驗前一交易日完整 160 檔基準、本機已驗證的 TWSE／TPEx 日曆、simulation business session、2330 Snapshot、cohort／revision／bundle、generation 與今日零資料活動。08:50 後如果原採集尚未開始，晚開機入口只可取得一次每日 capture-start claim；與固定 08:50 共用此 claim，既有 capture registry 再防重。晚開機準備與結果另存 append-only receipt，UI／API 標為「晚開機接續 · 冷啟動風險」，不能視為固定時點或完整日正式驗收成功。即使在開盤前幾分鐘開機，若前日盤後基準未建成或服務未能在截止前就緒，系統仍會 fail closed。
+
+新增 Agent 的安裝須在台北時間 08:59 後、已確認本次 `RunAtLoad` 只會 no-op 時執行 `node scripts/intraday-monitor-runtime/late-boot-catchup.mjs --install`，再以 `plutil -p ~/Library/LaunchAgents/com.alanyi.realtimestock.intraday-premarket-late-boot.plist` 及 `launchctl print gui/$(id -u)/com.alanyi.realtimestock.intraday-premarket-late-boot` 讀回設定。安裝不應停止或重啟既有 API、watchdog、Web、MultiView；`loaded` 只代表已註冊，真正接續仍須下個適用交易日的 claim、receipt、session、capture 與合法 KBar 證據。

@@ -15,6 +15,8 @@ const root = createRoot(rootElement);
 const isMultiViewLauncher =
     new URLSearchParams(window.location.search).get('popout') ===
     'multiview-launcher';
+const isStockScreener =
+    new URLSearchParams(window.location.search).get('popout') === 'screener';
 
 async function render() {
     if (isMultiViewLauncher) {
@@ -22,6 +24,11 @@ async function render() {
             './multiview-launcher-entry'
         );
         renderMultiViewLauncher(root);
+        return;
+    }
+    if (isStockScreener) {
+        const { renderStockScreener } = await import('./stock-screener-entry');
+        renderStockScreener(root);
         return;
     }
 

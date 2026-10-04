@@ -5,6 +5,7 @@ import type { LayoutItem } from 'react-grid-layout';
 export type BlockType =
     | 'watchlist'
     | 'screener'
+    | 'intraday'
     | 'movers'
     | 'dock'
     | 'chart'
@@ -76,6 +77,10 @@ export const BLOCK_META: Record<
     screener: {
         label: '選股', pinnable: false, singleton: true,
         defaultSize: { w: 7, h: 16, minW: 5, minH: 7 },
+    },
+    intraday: {
+        label: '盤中監控', pinnable: false, singleton: true,
+        defaultSize: { w: 8, h: 16, minW: 6, minH: 10 },
     },
     movers: {
         label: '排行榜',
@@ -235,6 +240,9 @@ export const BLOCK_META: Record<
     },
 };
 
+/** All block types remain available through the add-panel menu. */
+export const ADDABLE_BLOCK_TYPES = Object.keys(BLOCK_META) as BlockType[];
+
 export const DEFAULT_WORKSPACE: Workspace = {
     blocks: [
         { id: 'watchlist-0', type: 'watchlist', pin: null },
@@ -255,6 +263,9 @@ export const DEFAULT_WORKSPACE: Workspace = {
         { i: 'tape-0', x: 19, y: 19, w: 5, h: 6, minW: 3, minH: 4 },
     ],
 };
+
+export const STOCK_SCREENER_LAYOUT_ID = 'stock-screener';
+export const INTRADAY_STOCK_SELECTION_LAYOUT_ID = 'intraday-stock-selection';
 
 export interface WorkspaceStartupPolicy {
     blockForInitialWatchlist: boolean;
@@ -277,8 +288,8 @@ export function workspaceStartupPolicy(
     layoutId: string | null,
 ): WorkspaceStartupPolicy {
     if (
-        layoutId === 'stock-screener' ||
-        layoutId === 'intraday-stock-selection'
+        layoutId === STOCK_SCREENER_LAYOUT_ID ||
+        layoutId === INTRADAY_STOCK_SELECTION_LAYOUT_ID
     ) {
         return {
             blockForInitialWatchlist: false,
@@ -287,6 +298,129 @@ export function workspaceStartupPolicy(
         };
     }
     return DEFAULT_WORKSPACE_STARTUP_POLICY;
+}
+
+/** Full trading workspace opened from Layout > Stock Screener. */
+export const STOCK_SCREENER_WORKSPACE: Workspace = {
+    blocks: [
+        { id: 'screener-layout', type: 'screener', pin: null },
+        { id: 'chart-screener-layout', type: 'chart', pin: null },
+    ],
+    layout: [
+        {
+            i: 'screener-layout',
+            x: 0,
+            y: 0,
+            w: 5,
+            h: 29,
+            minW: 5,
+            minH: 7,
+        },
+        {
+            i: 'chart-screener-layout',
+            x: 5,
+            y: 0,
+            w: 19,
+            h: 29,
+            minW: 6,
+            minH: 7,
+        },
+    ],
+};
+
+/** Dedicated intraday-monitor workspace. Gate 0 may keep active capacity at zero. */
+export const INTRADAY_STOCK_SELECTION_WORKSPACE: Workspace = {
+    blocks: [
+        { id: 'intraday-monitor-layout', type: 'intraday', pin: null },
+        { id: 'chart-intraday-layout', type: 'chart', pin: null },
+    ],
+    layout: [
+        {
+            i: 'intraday-monitor-layout',
+            x: 0,
+            y: 0,
+            w: 8,
+            h: 29,
+            minW: 6,
+            minH: 10,
+        },
+        {
+            i: 'chart-intraday-layout',
+            x: 8,
+            y: 0,
+            w: 16,
+            h: 29,
+            minW: 6,
+            minH: 7,
+        },
+    ],
+};
+
+const STOCK_SCREENER_PRIMARY_BLOCK_IDS = new Set(
+    STOCK_SCREENER_WORKSPACE.blocks.map((block) => block.id),
+);
+const INTRADAY_PRIMARY_BLOCK_IDS = new Set(
+    INTRADAY_STOCK_SELECTION_WORKSPACE.blocks.map((block) => block.id),
+);
+
+/**
+ * RGL uses a 30 px row, 6 px row gap and 6 px top/bottom padding.
+ * Return the largest whole-row height that stays inside the visible grid.
+ */
+export function stockScreenerVisibleRows(containerHeight: number) {
+    if (!Number.isFinite(containerHeight)) return 7;
+    return Math.max(7, Math.floor((Math.max(0, containerHeight) - 6) / 36));
+}
+
+export function fitStockScreenerWorkspaceHeight(
+    workspace: Workspace,
+    containerHeight: number,
+    containerWidth = Number.POSITIVE_INFINITY,
+): Workspace {
+    const visibleRows = stockScreenerVisibleRows(containerHeight);
+    const narrow = Number.isFinite(containerWidth) && containerWidth < 840;
+    let changed = false;
+    const layout = workspace.layout.map((item) => {
+        if (!STOCK_SCREENER_PRIMARY_BLOCK_IDS.has(item.i)) return item;
+        const desired = narrow
+            ? item.i === 'screener-layout'
+                ? { x: 0, y: 0, w: 24, h: visibleRows }
+                : { x: 0, y: visibleRows, w: 24, h: Math.max(14, visibleRows) }
+            : item.i === 'screener-layout'
+              ? { x: 0, y: 0, w: 5, h: visibleRows }
+              : { x: 5, y: 0, w: 19, h: visibleRows };
+        if (item.x === desired.x && item.y === desired.y && item.w === desired.w && item.h === desired.h) return item;
+        changed = true;
+        return { ...item, ...desired };
+    });
+    return changed ? { ...workspace, layout } : workspace;
+}
+
+export function fitIntradayStockSelectionWorkspaceHeight(
+    workspace: Workspace,
+    containerHeight: number,
+    containerWidth = Number.POSITIVE_INFINITY,
+): Workspace {
+    const visibleRows = stockScreenerVisibleRows(containerHeight);
+    const narrow = Number.isFinite(containerWidth) && containerWidth < 840;
+    const monitorHeight = Math.max(12, visibleRows);
+    let changed = false;
+    const layout = workspace.layout.map((item) => {
+        if (!INTRADAY_PRIMARY_BLOCK_IDS.has(item.i)) {
+            return item;
+        }
+        const desired = narrow
+            ? item.i === 'intraday-monitor-layout'
+                ? { x: 0, y: 0, w: 24, h: monitorHeight }
+                : { x: 0, y: monitorHeight, w: 24, h: Math.max(14, visibleRows) }
+            : item.i === 'intraday-monitor-layout'
+              ? { x: 0, y: 0, w: 8, h: visibleRows }
+              : { x: 8, y: 0, w: 16, h: visibleRows };
+        if (item.x === desired.x && item.y === desired.y && item.w === desired.w && item.h === desired.h) return item;
+        changed = true;
+        return { ...item, ...desired };
+    });
+    return changed ? { ...workspace, layout } : workspace;
 }
 
 // built-in layout presets for common trading workflows
@@ -613,6 +747,21 @@ export function loadWorkspace(): Workspace {
         // fall through
     }
     return structuredClone(DEFAULT_WORKSPACE);
+}
+
+export function loadWorkspaceForLayout(layoutId: string | null): Workspace {
+    if (layoutId === STOCK_SCREENER_LAYOUT_ID) {
+        return structuredClone(STOCK_SCREENER_WORKSPACE);
+    }
+    if (layoutId === INTRADAY_STOCK_SELECTION_LAYOUT_ID) {
+        return structuredClone(INTRADAY_STOCK_SELECTION_WORKSPACE);
+    }
+    return loadWorkspace();
+}
+
+export function shouldPersistWorkspaceForLayout(layoutId: string | null) {
+    return layoutId !== STOCK_SCREENER_LAYOUT_ID &&
+        layoutId !== INTRADAY_STOCK_SELECTION_LAYOUT_ID;
 }
 
 export function saveWorkspace(w: Workspace) {

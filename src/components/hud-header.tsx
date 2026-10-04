@@ -413,7 +413,7 @@ function RiskMenu() {
     );
 }
 
-function AddBlockMenu({
+export function AddBlockMenu({
     addableTypes,
     onAddBlock,
 }: {

@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
+    ADDABLE_BLOCK_TYPES,
     BLOCK_META,
+    fitStockScreenerWorkspaceHeight,
+    fitIntradayStockSelectionWorkspaceHeight,
+    INTRADAY_STOCK_SELECTION_LAYOUT_ID,
+    INTRADAY_STOCK_SELECTION_WORKSPACE,
     LAYOUT_PRESETS,
+    STOCK_SCREENER_LAYOUT_ID,
+    STOCK_SCREENER_WORKSPACE,
     loadProfiles,
     loadWorkspace,
+    loadWorkspaceForLayout,
     saveProfiles,
     saveWorkspace,
+    shouldPersistWorkspaceForLayout,
     workspaceStartupPolicy,
+    stockScreenerVisibleRows,
     upsertProfile,
     type Profile,
     type Workspace,
@@ -117,15 +127,75 @@ describe('smart-order panel workspace contract', () => {
 });
 
 describe('workspace storage compatibility', () => {
-    it('選股為可保存的 singleton，不強制插入既有版面', () => {
+    it('選股保留可載入的 singleton 與新增面板選單位置', () => {
         expect(BLOCK_META.screener).toMatchObject({label:'選股',singleton:true,pinnable:false});
+        expect(ADDABLE_BLOCK_TYPES).toContain('screener');
         expect(LAYOUT_PRESETS.every(preset=>preset.workspace.blocks.every(block=>block.type!=='screener'))).toBe(true);
+    });
+
+    it('盤中選股新頁使用左側監控與右側 K 線的獨立工作區', () => {
+        expect(BLOCK_META.intraday).toMatchObject({
+            label: '盤中監控',
+            singleton: true,
+            pinnable: false,
+        });
+        expect(loadWorkspaceForLayout(INTRADAY_STOCK_SELECTION_LAYOUT_ID)).toEqual(
+            INTRADAY_STOCK_SELECTION_WORKSPACE,
+        );
+        expect(INTRADAY_STOCK_SELECTION_WORKSPACE.blocks).toEqual([
+            expect.objectContaining({ type: 'intraday' }),
+            expect.objectContaining({ type: 'chart', pin: null }),
+        ]);
+        expect(INTRADAY_STOCK_SELECTION_WORKSPACE.layout).toEqual([
+            expect.objectContaining({ x: 0, w: 8, h: 29 }),
+            expect.objectContaining({ x: 8, w: 16, h: 29 }),
+        ]);
+        expect(
+            shouldPersistWorkspaceForLayout(
+                INTRADAY_STOCK_SELECTION_LAYOUT_ID,
+            ),
+        ).toBe(false);
+        const compact = fitIntradayStockSelectionWorkspaceHeight(
+            structuredClone(INTRADAY_STOCK_SELECTION_WORKSPACE),
+            656,
+        );
+        expect(compact.layout).toEqual([
+            expect.objectContaining({ i: 'intraday-monitor-layout', h: 18 }),
+            expect.objectContaining({ i: 'chart-intraday-layout', h: 18 }),
+        ]);
+        const narrow = fitIntradayStockSelectionWorkspaceHeight(
+            structuredClone(INTRADAY_STOCK_SELECTION_WORKSPACE),
+            480,
+            600,
+        );
+        expect(narrow.layout).toEqual([
+            expect.objectContaining({ i: 'intraday-monitor-layout', x: 0, y: 0, w: 24, h: 13 }),
+            expect.objectContaining({ i: 'chart-intraday-layout', x: 0, y: 13, w: 24, h: 14 }),
+        ]);
+    });
+
+    it('選股篩選新頁使用左側篩選與右側 K 線的獨立工作區', () => {
+        expect(loadWorkspaceForLayout(STOCK_SCREENER_LAYOUT_ID)).toEqual(
+            STOCK_SCREENER_WORKSPACE,
+        );
+        expect(STOCK_SCREENER_WORKSPACE.blocks).toEqual([
+            expect.objectContaining({ type: 'screener' }),
+            expect.objectContaining({ type: 'chart' }),
+        ]);
+        expect(STOCK_SCREENER_WORKSPACE.layout).toEqual([
+            expect.objectContaining({ x: 0, w: 5, h: 29 }),
+            expect.objectContaining({ x: 5, w: 19, h: 29 }),
+        ]);
+        expect(
+            shouldPersistWorkspaceForLayout(STOCK_SCREENER_LAYOUT_ID),
+        ).toBe(false);
+        expect(shouldPersistWorkspaceForLayout(null)).toBe(true);
     });
 
     it('兩個專用選股新頁皆不阻塞且不訂閱作用中清單', () => {
         for (const layoutId of [
-            'stock-screener',
-            'intraday-stock-selection',
+            STOCK_SCREENER_LAYOUT_ID,
+            INTRADAY_STOCK_SELECTION_LAYOUT_ID,
         ]) {
             expect(workspaceStartupPolicy(layoutId)).toEqual({
                 blockForInitialWatchlist: false,
@@ -140,6 +210,27 @@ describe('workspace storage compatibility', () => {
                 subscribeActiveListQuotes: true,
             });
         }
+    });
+
+    it('依實際可視 grid 高度調整主選股與 K 線面板', () => {
+        expect(stockScreenerVisibleRows(1066)).toBe(29);
+        expect(stockScreenerVisibleRows(656)).toBe(18);
+        expect(stockScreenerVisibleRows(0)).toBe(7);
+        expect(stockScreenerVisibleRows(Number.NaN)).toBe(7);
+
+        const compact = fitStockScreenerWorkspaceHeight(
+            structuredClone(STOCK_SCREENER_WORKSPACE),
+            656,
+        );
+        expect(compact.layout).toEqual([
+            expect.objectContaining({ i: 'screener-layout', h: 18 }),
+            expect.objectContaining({ i: 'chart-screener-layout', h: 18 }),
+        ]);
+        expect(fitStockScreenerWorkspaceHeight(compact, 656)).toBe(compact);
+
+        const narrow = fitStockScreenerWorkspaceHeight(STOCK_SCREENER_WORKSPACE, 656, 600);
+        expect(narrow.layout.find((item) => item.i === 'screener-layout')).toMatchObject({ x: 0, y: 0, w: 24, h: 18 });
+        expect(narrow.layout.find((item) => item.i === 'chart-screener-layout')).toMatchObject({ x: 0, y: 18, w: 24, h: 18 });
     });
     it('round-trips current and named layouts through the existing storage keys', () => {
         const stored = new Map<string, string>();

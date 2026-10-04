@@ -2,6 +2,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LAYOUT_PRESETS } from '../lib/workspace';
+import { AddBlockMenu } from './hud-header';
 import { ProfilesMenu } from './workspace-layout-menu';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
@@ -29,6 +30,7 @@ describe('header layout menu browser interaction', () => {
         if (root) await act(async () => root?.unmount());
         root = null;
         document.body.replaceChildren();
+        vi.restoreAllMocks();
     });
 
     async function renderMenu(
@@ -81,11 +83,112 @@ describe('header layout menu browser interaction', () => {
             text.indexOf('預設版面'),
         );
         expect(text.indexOf('預設版面')).toBeLessThan(
+            text.indexOf('盤中選股'),
+        );
+        expect(text.indexOf('盤中選股')).toBeLessThan(
+            text.indexOf('選股篩選'),
+        );
+        expect(text).toContain('最多 200 檔盤中監控＋連動 K 線（開新分頁）');
+        expect(text).toContain('全市場收盤後條件篩選（開新分頁）');
+        expect(text.indexOf('預設版面')).toBeLessThan(
             text.indexOf('重設為預設版面'),
         );
         for (const preset of LAYOUT_PRESETS) {
             expect(text).toContain(preset.name);
         }
+    });
+
+    it('opens the intraday stock-selection workspace in a new tab', async () => {
+        const open = vi.spyOn(window, 'open').mockReturnValue({} as Window);
+        const onLoadPreset = vi.fn();
+        const { host } = await renderMenu([], vi.fn(), { onLoadPreset });
+        await act(async () =>
+            host
+                .querySelector<HTMLButtonElement>(
+                    'button[title="在新分頁開啟盤中監控與連動 K 線，不變更目前版面"]',
+                )
+                ?.click(),
+        );
+        expect(open).toHaveBeenCalledWith(
+            expect.stringContaining('layout=intraday-stock-selection'),
+            '_blank',
+            'noopener',
+        );
+        expect(onLoadPreset).not.toHaveBeenCalled();
+        expect(host.querySelector('[role="dialog"]')).toBeNull();
+    });
+
+    it('does not mistake a noopener null return for a blocked intraday popup or change the current layout', async () => {
+        const open = vi.spyOn(window, 'open').mockReturnValue(null);
+        const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+        const onLoadPreset = vi.fn();
+        const onResetWorkspace = vi.fn();
+        const { host } = await renderMenu([], vi.fn(), { onLoadPreset, onResetWorkspace });
+        await act(async () =>
+            host
+                .querySelector<HTMLButtonElement>(
+                    'button[title="在新分頁開啟盤中監控與連動 K 線，不變更目前版面"]',
+                )
+                ?.click(),
+        );
+        expect(open).toHaveBeenCalledWith(
+            expect.stringContaining('layout=intraday-stock-selection'),
+            '_blank',
+            'noopener',
+        );
+        expect(alert).not.toHaveBeenCalled();
+        expect(onLoadPreset).not.toHaveBeenCalled();
+        expect(onResetWorkspace).not.toHaveBeenCalled();
+        expect(host.querySelector('[role="dialog"]')).toBeNull();
+    });
+
+    it('opens the layout-menu screener as a full trading workspace tab without applying a preset in place', async () => {
+        const open = vi
+            .spyOn(window, 'open')
+            .mockReturnValue(null);
+        const alert = vi.spyOn(window, 'alert').mockImplementation(() => {});
+        const onLoadPreset = vi.fn();
+        const onResetWorkspace = vi.fn();
+        const { host } = await renderMenu([], vi.fn(), {
+            onLoadPreset,
+            onResetWorkspace,
+        });
+        await act(async () =>
+            host
+                .querySelector<HTMLButtonElement>(
+                    'button[title="在新分頁開啟選股篩選，不變更目前版面"]',
+                )
+                ?.click(),
+        );
+        expect(open).toHaveBeenCalledWith(
+            expect.stringContaining('layout=stock-screener'),
+            '_blank',
+            'noopener',
+        );
+        expect(alert).not.toHaveBeenCalled();
+        expect(onLoadPreset).not.toHaveBeenCalled();
+        expect(onResetWorkspace).not.toHaveBeenCalled();
+        expect(host.querySelector('[role="dialog"]')).toBeNull();
+    });
+
+    it('keeps add-panel screener as the normal singleton workspace block action', async () => {
+        const open = vi.spyOn(window, 'open').mockReturnValue(null);
+        const onAddBlock = vi.fn();
+        const host = document.createElement('div');
+        document.body.append(host);
+        root = createRoot(host);
+        await act(async () => root?.render(createElement(AddBlockMenu, {
+            addableTypes: [
+                { type: 'screener', label: '選股', disabled: false },
+                { type: 'chart', label: 'K 線圖', disabled: false },
+            ],
+            onAddBlock,
+        })));
+        await act(async () => buttonByText(host, '＋ 新增面板')?.click());
+        await act(async () => buttonByText(host, '選股')?.click());
+        expect(onAddBlock).toHaveBeenCalledWith('screener');
+        expect(open).not.toHaveBeenCalled();
+        expect(host.querySelector('[role="dialog"]')).toBeNull();
     });
 
     it('bounds long content to the viewport and keeps the last action keyboard-reachable', async () => {

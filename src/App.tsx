@@ -39,8 +39,12 @@ import { PanelChrome } from './components/panel-chrome';
 import { QuoteBoard } from './components/quote-board';
 import { ScannerPanel } from './components/scanner-panel';
 import { StockScreenerPanel, type StockScreenerPanelProps } from './components/stock-screener-panel';
-import { createScreenerChartSelection } from './lib/screener-chart-selection';
+import { IntradayMonitorPanel, type IntradayMonitorPanelProps } from './components/intraday-monitor-panel';
+import { startPassiveChartEvidenceCollection } from './lib/passive-chart-evidence-collection';
+import { createScreenerChartSelection, type ScreenerChartSelectionState } from './lib/screener-chart-selection';
+import { addStockToIntradayMonitorWatchlist } from './lib/intraday-monitor-watchlist';
 import { addStockToScreenerLists } from './lib/stock-screener-list-sync';
+import { createSourceWindowId, startScreenerBridgeHost } from './lib/stock-screener-window';
 import { SmartOrderPanel } from './components/smart-order-panel';
 import { TickTape } from './components/tick-tape';
 import { TrayPanel } from './components/tray-panel';
@@ -71,7 +75,6 @@ import {
     fetchPositions,
     fetchSnapshots,
     fetchTrades,
-    subscribeQuote,
 } from './lib/shioaji';
 import { ensureStream, onOrderEvent } from './lib/stream';
 import { notify } from './lib/trade';
@@ -82,13 +85,19 @@ import type { Trade } from './lib/types/order';
 import type { Position } from './lib/types/portfolio';
 import {
     BLOCK_META,
+    ADDABLE_BLOCK_TYPES,
     DEFAULT_WORKSPACE,
+    fitStockScreenerWorkspaceHeight,
+    fitIntradayStockSelectionWorkspaceHeight,
     LAYOUT_PRESETS,
     loadProfiles,
-    loadWorkspace,
+    loadWorkspaceForLayout,
     newBlockId,
     saveProfiles,
     saveWorkspace,
+    shouldPersistWorkspaceForLayout,
+    STOCK_SCREENER_LAYOUT_ID,
+    INTRADAY_STOCK_SELECTION_LAYOUT_ID,
     workspaceStartupPolicy,
     upsertProfile,
     type Block,
@@ -151,22 +160,28 @@ function BlockBody({
     block,
     contract,
     snapshot,
+    snapshotUnavailableReason,
     watchlistProps,
     dockProps,
     onSelectCode,
     screenerProps,
+    intradayProps,
     chartInitiallyDaily,
+    chartDailySelectionGeneration,
     onPulseConfigChange,
     refreshTrading,
 }: {
     block: Block;
     contract: ContractInfo | null;
     snapshot?: Snapshot;
+    snapshotUnavailableReason?: string;
     watchlistProps: React.ComponentProps<typeof Watchlist>;
     dockProps: React.ComponentProps<typeof BottomDock>;
     onSelectCode: QuotePickHandler;
     screenerProps: StockScreenerPanelProps;
+    intradayProps: IntradayMonitorPanelProps;
     chartInitiallyDaily?: boolean;
+    chartDailySelectionGeneration?: number;
     onPulseConfigChange: (
         id: string,
         sections: PulseSection[],
@@ -184,15 +199,18 @@ function BlockBody({
             return <ScannerPanel onPick={onSelectCode} />;
         case 'screener':
             return <StockScreenerPanel {...screenerProps} />;
+        case 'intraday':
+            return <IntradayMonitorPanel {...intradayProps} />;
         case 'dock':
             return <BottomDock {...dockProps} />;
         case 'chart':
             return contract ? (
                 <>
-                    <QuoteBoard contract={contract} snapshot={snapshot} />
+                    <QuoteBoard contract={contract} snapshot={snapshot} snapshotUnavailableReason={snapshotUnavailableReason} />
                     <CandleChart
                         contract={contract}
                         initialDaily={chartInitiallyDaily}
+                        dailySelectionGeneration={chartDailySelectionGeneration}
                         trades={dockProps.trades}
                         onOrdersChanged={dockProps.onTradesChanged}
                     />
@@ -371,9 +389,10 @@ function IndexBlockUnavailable({ type }: { type: BlockType }) {
 interface BlockViewProps {
     block: Block;
     selected: ContractInfo | null;
-    chartSelection?: ContractInfo;
+    chartSelection?: ScreenerChartSelectionState;
     chartInitiallyDaily?: boolean;
     screenerProps: StockScreenerPanelProps;
+    intradayProps: IntradayMonitorPanelProps;
     onPinChange: (id: string, pin: string | null) => void;
     onRemove: (id: string) => void;
     snapshot?: Snapshot;
@@ -390,7 +409,7 @@ interface BlockViewProps {
 
 function BlockView(props: BlockViewProps) {
     const { block, selected, chartSelection, onPinChange, onRemove, ...bodyProps } = props;
-    const contract = useBlockContract(block, block.type === 'chart' ? chartSelection ?? selected : selected);
+    const contract = useBlockContract(block, block.type === 'chart' ? chartSelection?.contract ?? selected : selected);
     const meta = BLOCK_META[block.type];
     const showSymbol =
         meta.pinnable && contract ? ` · ${contract.code}` : '';
@@ -418,7 +437,10 @@ function BlockView(props: BlockViewProps) {
                         : undefined
                 }
             />
-            <BlockBody {...bodyProps} block={block} contract={contract} />
+            <BlockBody {...bodyProps} block={block} contract={contract}
+                snapshot={chartSelection?.snapshot ?? bodyProps.snapshot}
+                snapshotUnavailableReason={chartSelection?.snapshotError}
+                chartDailySelectionGeneration={chartSelection?.generation} />
         </section>
     );
 }
@@ -437,9 +459,8 @@ function PopoutView({
     useEffect(() => {
         if (type !== 'tape' || !contract) return;
         ensureStream();
-        // A standalone tape has no quote board to start its stream. Keep the
-        // shared upstream subscription alive when this view is closed.
-        void subscribeQuote(contract, 'Tick').catch(error => console.warn('成交明細行情訂閱失敗', error));
+        // ensureContract above owns the quote subscription for this window;
+        // a second Tick subscribe here would duplicate the upstream request.
     }, [type, contract]);
     // popouts can run 8+ at once (閃電全開) — longer intervals with a
     // per-window jitter so they don't hammer the upstream accounting
@@ -559,6 +580,7 @@ function PopoutView({
 }
 
 function TradingApp() {
+    useEffect(() => startPassiveChartEvidenceCollection(), []);
     const startupPolicy = workspaceStartupPolicy(WORKSPACE_LAYOUT_ID);
     const {
         items,
@@ -587,15 +609,19 @@ function TradingApp() {
     } | null>(null);
     const selectionGenerationRef = useRef(0);
     const cachedSelected = useContract(selected?.code ?? null);
-    const [workspace, setWorkspace] = useState<Workspace>(loadWorkspace);
+    const [workspace, setWorkspace] = useState<Workspace>(() =>
+        loadWorkspaceForLayout(WORKSPACE_LAYOUT_ID),
+    );
+    const [screenerSourceWindowId] = useState(createSourceWindowId);
     const workspaceRef = useRef(workspace);
     workspaceRef.current = workspace;
-    const [chartSelections, setChartSelections] = useState<Record<string, ContractInfo>>({});
+    const [chartSelections, setChartSelections] = useState<Record<string, ScreenerChartSelectionState>>({});
     const [dailyChartIds, setDailyChartIds] = useState<Set<string>>(() => new Set());
     const [screenerSelection] = useState(() => createScreenerChartSelection(
         () => workspaceRef.current.blocks,
         ensureContract,
-        (id, contract) => setChartSelections((old) => ({ ...old, [id]: contract })),
+        async (contract) => (await fetchSnapshots([contract]))[0],
+        (id, selection) => setChartSelections((old) => ({ ...old, [id]: selection })),
     ));
     const clearChartSelections = useCallback(() => {
         screenerSelection.cancel();
@@ -604,6 +630,35 @@ function TradingApp() {
     useEffect(() => { clearChartSelections(); }, [selected?.code, clearChartSelections]);
     const [profiles, setProfiles] = useState<Profile[]>(loadProfiles);
     const { width, containerRef, mounted } = useContainerWidth();
+
+    useEffect(() => {
+        if (
+            WORKSPACE_LAYOUT_ID !== STOCK_SCREENER_LAYOUT_ID &&
+            WORKSPACE_LAYOUT_ID !== INTRADAY_STOCK_SELECTION_LAYOUT_ID ||
+            !mounted
+        ) {
+            return;
+        }
+        const container = containerRef.current;
+        if (!container) return;
+
+        const fitToVisibleArea = () => {
+            setWorkspace((current) => {
+                const fit = WORKSPACE_LAYOUT_ID === STOCK_SCREENER_LAYOUT_ID
+                    ? fitStockScreenerWorkspaceHeight
+                    : fitIntradayStockSelectionWorkspaceHeight;
+                return fit(current, container.clientHeight, container.clientWidth);
+            });
+        };
+        fitToVisibleArea();
+        window.addEventListener('resize', fitToVisibleArea);
+        const observer = new ResizeObserver(fitToVisibleArea);
+        observer.observe(container);
+        return () => {
+            window.removeEventListener('resize', fitToVisibleArea);
+            observer.disconnect();
+        };
+    }, [containerRef, mounted]);
 
     // first loaded watchlist item becomes the active symbol
     useEffect(() => {
@@ -814,7 +869,9 @@ function TradingApp() {
 
     const updateWorkspace = useCallback((w: Workspace) => {
         setWorkspace(w);
-        saveWorkspace(w);
+        if (shouldPersistWorkspaceForLayout(WORKSPACE_LAYOUT_ID)) {
+            saveWorkspace(w);
+        }
     }, []);
 
     const onLayoutChange = useCallback(
@@ -981,7 +1038,7 @@ function TradingApp() {
 
     const addableTypes = useMemo(
         () =>
-            (Object.keys(BLOCK_META) as BlockType[]).map((type) => ({
+            ADDABLE_BLOCK_TYPES.map((type) => ({
                 type,
                 label: BLOCK_META[type].label,
                 disabled:
@@ -990,6 +1047,30 @@ function TradingApp() {
             })),
         [workspace.blocks],
     );
+
+    const screenerTargets = useMemo(
+        () => workspace.blocks.filter((block) => block.type === 'chart' && !block.pin).map((block, index) => ({
+            id: block.id,
+            label: `K 線圖 ${index + 1} · ${chartSelections[block.id]?.contract.code ?? selected?.code ?? '等待商品'}`,
+        })),
+        [chartSelections, selected?.code, workspace.blocks],
+    );
+    const screenerTargetsRef = useRef(screenerTargets);
+    screenerTargetsRef.current = screenerTargets;
+    const addBlockRef = useRef(addBlock);
+    addBlockRef.current = addBlock;
+    useEffect(() => startScreenerBridgeHost({
+        sourceWindowId: screenerSourceWindowId,
+        getTargets: () => screenerTargetsRef.current,
+        getContextRevision: () => selectionGenerationRef.current,
+        pick: screenerSelection.pick,
+        openChart: () => {
+            screenerSelection.cancel();
+            const id = addBlockRef.current('chart');
+            if (id) setDailyChartIds((old) => new Set([...old, id]));
+            return id;
+        },
+    }), [screenerSelection, screenerSourceWindowId]);
 
     const booting =
         startupPolicy.blockForInitialWatchlist && initialLoading;
@@ -1039,10 +1120,14 @@ function TradingApp() {
         onTradesChanged: refreshTrading,
         onSelectCode: selectByCode,
     };
+    const snapshotVolumesByCode = Object.values(chartSelections).reduce<NonNullable<StockScreenerPanelProps['snapshotVolumesByCode']>>((volumes, selection) => {
+        const date = selection.snapshot?.datetime?.slice(0, 10) ?? null;
+        const lots = selection.snapshot?.total_volume;
+        if (date && typeof lots === 'number') volumes[selection.contract.code] = { date, lots };
+        return volumes;
+    }, {});
     const screenerProps: StockScreenerPanelProps = {
-        targets: workspace.blocks.filter((block) => block.type === 'chart' && !block.pin).map((block, index) => ({
-            id: block.id, label: `K 線圖 ${index + 1} · ${chartSelections[block.id]?.code ?? selected?.code ?? '等待商品'}`,
-        })),
+        targets: screenerTargets,
         onPick: screenerSelection.pick,
         onTargetChange: screenerSelection.cancel,
         onOpenChart: () => {
@@ -1052,6 +1137,20 @@ function TradingApp() {
             return id;
         },
         onAddToWatchlist: addStockToScreenerLists,
+        snapshotVolumesByCode,
+    };
+    const intradayProps: IntradayMonitorPanelProps = {
+        targets: screenerTargets,
+        onPick: screenerSelection.pick,
+        onTargetChange: screenerSelection.cancel,
+        onOpenChart: () => {
+            screenerSelection.cancel();
+            const id = addBlock('chart');
+            if (id) setDailyChartIds((old) => new Set([...old, id]));
+            return id;
+        },
+        onAddToWatchlist: addStockToIntradayMonitorWatchlist,
+        watchlists: serverLists,
     };
 
     return (
@@ -1127,6 +1226,7 @@ function TradingApp() {
                                     chartSelection={chartSelections[block.id]}
                                     chartInitiallyDaily={dailyChartIds.has(block.id)}
                                     screenerProps={screenerProps}
+                                    intradayProps={intradayProps}
                                     onPinChange={setBlockPin}
                                     onRemove={removeBlock}
                                     snapshot={

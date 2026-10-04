@@ -17,9 +17,11 @@ import * as styles from './quote-board.css';
 export function QuoteBoard({
     contract,
     snapshot,
+    snapshotUnavailableReason,
 }: {
     contract: ContractInfo;
     snapshot?: Snapshot;
+    snapshotUnavailableReason?: string;
 }) {
     const quote = useQuote(contract.code);
     const tick = quote?.tick;
@@ -101,6 +103,9 @@ export function QuoteBoard({
 
     return (
         <div className={`${styles.board} drag-handle`}>
+            {!tick && !index && !snapshot && snapshotUnavailableReason && (
+                <div role='status' data-quote-unavailable>{snapshotUnavailableReason}</div>
+            )}
             <div className={styles.boardLayout}>
                 <div
                     className={styles.hero}

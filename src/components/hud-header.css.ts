@@ -5,12 +5,14 @@ import { vars } from '../theme.css';
 
 export const header = style({
     display: 'flex',
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: vars.space.md,
     padding: `8px ${vars.space.md}`,
     background: vars.color.panel,
     borderBottom: `1px solid ${vars.color.border}`,
     flexShrink: 0,
+    minWidth: 0,
 });
 
 export const logoBlock = style({
@@ -41,7 +43,7 @@ export const versionWarn = style({
     cursor: 'help',
 });
 
-export const spacer = style({ flex: 1 });
+export const spacer = style({ flex: 1, minWidth: 0 });
 
 export const chip = style({
     display: 'flex',

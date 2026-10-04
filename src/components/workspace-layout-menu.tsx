@@ -1,6 +1,8 @@
 import { X } from 'lucide-react';
 import { useState } from 'react';
 import { openMultiViewWindow } from '../lib/multiview-window';
+import { openStockScreenerLayoutWindow } from '../lib/stock-screener-window';
+import { openIntradayStockSelectionWindow } from '../lib/intraday-stock-selection-window';
 import { LAYOUT_PRESETS } from '../lib/workspace';
 import { Menu } from './header-menu';
 import * as styles from './hud-header.css';
@@ -112,6 +114,32 @@ export function ProfilesMenu({
                     <span className={styles.settingLabel}>
                         預設版面 Presets
                     </span>
+                    <button
+                        className={styles.menuItem}
+                        title='在新分頁開啟盤中監控與連動 K 線，不變更目前版面'
+                        onClick={() => {
+                            openIntradayStockSelectionWindow();
+                            close();
+                        }}
+                    >
+                        盤中選股
+                        <span className={styles.presetDesc}>
+                            最多 200 檔盤中監控＋連動 K 線（開新分頁）
+                        </span>
+                    </button>
+                    <button
+                        className={styles.menuItem}
+                        title='在新分頁開啟選股篩選，不變更目前版面'
+                        onClick={() => {
+                            openStockScreenerLayoutWindow();
+                            close();
+                        }}
+                    >
+                        選股篩選
+                        <span className={styles.presetDesc}>
+                            全市場收盤後條件篩選（開新分頁）
+                        </span>
+                    </button>
                     {LAYOUT_PRESETS.map((preset) => (
                         <button
                             key={preset.name}
