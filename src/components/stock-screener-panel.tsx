@@ -39,6 +39,10 @@ import { BOLLINGER_PREFS, loadBollingerPreference, bollingerSearch, decodeBollin
 import { StockScreenerBollingerResults } from './stock-screener-bollinger-results';
 import { StockScreenerDailyBollinger } from './stock-screener-daily-bollinger';
 import { dailyBollingerSaveError } from '../lib/stock-screener-daily-bollinger-ui';
+import { DEFAULT_CANDLESTICK_REVERSAL, validateCriteriaV9, type CandlestickReversalCriteria } from '../lib/stock-screener-v9';
+import { CANDLESTICK_PREFS, loadCandlestickPreference, candlestickSearch, decodeCandlestickResponse,
+    type CandlestickResponse, type CandlestickUIQuery } from '../lib/stock-screener-candlestick-api';
+import { StockScreenerCandlestickResults } from './stock-screener-candlestick-results';
 
 const PREFS = 'sj-pro-stock-screener-v7';
 const V6_PREFS = 'sj-pro-stock-screener-v6';
@@ -229,6 +233,8 @@ function loadLegacyPreferences(): ScreenerQueryV7 {
 }
 function loadPreferences(): ScreenerQueryV7 {
     const legacy = loadLegacyPreferences();
+    const newest = loadCandlestickPreference(localStorage);
+    if (newest) { const { candlestickReversal: _, bollSqueezeStages: __, ...criteria } = newest.criteria; return { ...newest, criteria }; }
     try {
         const v8 = loadBollingerPreference(localStorage);
         if (v8) { const { bollSqueezeStages: _, ...criteria } = v8.criteria;
@@ -259,7 +265,10 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     const initialDraft = useRef<ScreenerQueryV7 | null>(null);
     if (initialDraft.current === null) initialDraft.current = loadPreferences();
     const [draft, setDraft] = useState(initialDraft.current);
-    const [bollinger, setBollinger] = useState<BollingerSqueezeCriteria>(() => loadBollingerPreference(localStorage)?.criteria.bollSqueezeStages ?? structuredClone(DEFAULT_BOLLINGER_SQUEEZE));
+    const [bollinger, setBollinger] = useState<BollingerSqueezeCriteria>(() => loadCandlestickPreference(localStorage)?.criteria.bollSqueezeStages ?? loadBollingerPreference(localStorage)?.criteria.bollSqueezeStages ?? structuredClone(DEFAULT_BOLLINGER_SQUEEZE));
+    const [candlestick, setCandlestick] = useState<CandlestickReversalCriteria>(() => loadCandlestickPreference(localStorage)?.criteria.candlestickReversal ?? structuredClone(DEFAULT_CANDLESTICK_REVERSAL));
+    const [candlestickResponse, setCandlestickResponse] = useState<CandlestickResponse | null>(null);
+    const [candlestickApplied, setCandlestickApplied] = useState<CandlestickUIQuery | null>(null);
     const [bollingerSort, setBollingerSort] = useState<BollingerQueryDraft['sort']>(() => loadBollingerPreference(localStorage)?.sort ?? 'code');
     const [bollingerResponse, setBollingerResponse] = useState<BollingerResponse | null>(null);
     const [bollingerApplied, setBollingerApplied] = useState<BollingerQueryDraft | null>(null);
@@ -267,7 +276,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     const [profileReady, setProfileReady] = useState(false);
     const [profileBusy, setProfileBusy] = useState(false);
     const [profileMessage, setProfileMessage] = useState('');
-    const [activeCondition, setActiveCondition] = useState<StockScreenerConditionId>(() => firstEnabledStockScreenerCondition({ ...initialDraft.current!.criteria, bollSqueezeStages: bollinger }));
+    const [activeCondition, setActiveCondition] = useState<StockScreenerConditionId>(() => firstEnabledStockScreenerCondition({ ...initialDraft.current!.criteria, bollSqueezeStages: bollinger, candlestickReversal: candlestick }));
     const [draftActionMessage, setDraftActionMessage] = useState('');
     const [applied, setApplied] = useState<ScreenerQueryV7 | null>(null);
     const [response, setResponse] = useState<ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 | ScreenerResponseV7 | null>(null);
@@ -284,8 +293,9 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     const pendingAdds = useRef(new Set<string>());
     const controller = useRef<AbortController | null>(null);
     const effectiveTarget = targets.some((target) => target.id === targetId) ? targetId : targets.length === 1 ? targets[0]!.id : '';
-    const uiCriteria = { ...draft.criteria, bollSqueezeStages: bollinger };
-    const valid = validateCriteriaV8(uiCriteria);
+    const legacyUICriteria = { ...draft.criteria, bollSqueezeStages: bollinger };
+    const uiCriteria = { ...legacyUICriteria, candlestickReversal: candlestick };
+    const valid = candlestick.enabled ? validateCriteriaV9(uiCriteria) : validateCriteriaV8(legacyUICriteria);
     const dirty = applied !== null && fingerprint(draft) !== fingerprint(applied);
     const enabledConditions = enabledStockScreenerConditions(uiCriteria);
     useEffect(() => {
@@ -313,7 +323,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         return () => { abort.abort(); clearTimeout(timer); };
     }, []);
 
-    const bollingerQuery = (): BollingerQueryDraft => ({ criteria: uiCriteria, sort: bollingerSort, direction: draft.direction,
+    const bollingerQuery = (): BollingerQueryDraft => ({ criteria: legacyUICriteria, sort: bollingerSort, direction: draft.direction,
         resultState: draft.resultState === 'pass' ? 'matched' : draft.resultState === 'fail' ? 'notMatched' : 'unknown' });
     async function runBollinger(query: BollingerQueryDraft, cursor?: string, pinnedSnapshot?: string) {
         if (!validateCriteriaV8(query.criteria) || !query.criteria.bollSqueezeStages.enabled) return;
@@ -325,13 +335,14 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                 { signal: abort.signal, credentials: 'same-origin' });
             const raw = await r.json(); if (!r.ok) throw new Error(r.status === 409 ? '快照或分頁設定已更新，請重新篩選' : '布林價量查詢尚未就緒');
             const result = decodeBollingerResponse(raw); if (generation.current !== ticket) return;
-            setBollingerResponse(result); setBollingerApplied(query); setResponse(null); setApplied(null);
+            setBollingerResponse(result); setBollingerApplied(query); setResponse(null); setApplied(null); setCandlestickResponse(null); setCandlestickApplied(null);
             try { localStorage.setItem(BOLLINGER_PREFS, JSON.stringify({ version: 8, query })); setStorageError(false); } catch { setStorageError(true); }
+            saveNewPreference({ ...draft, criteria: { ...query.criteria, candlestickReversal: candlestick } });
         } catch (e) { if (generation.current === ticket) setError(e instanceof Error ? e.message : '布林查詢失敗'); }
         finally { clearTimeout(timer); if (generation.current === ticket) setBusy(false); }
     }
     async function saveDailyProfile(enabled = true, criteria?: CriteriaV8) {
-        const profileCriteria = enabled ? criteria ?? uiCriteria : dailyProfile?.criteria;
+        const profileCriteria = enabled ? criteria ?? legacyUICriteria : dailyProfile?.criteria;
         if (!profileReady || profileBusy || !profileCriteria || !validateCriteriaV8(profileCriteria) || enabled && !profileCriteria.bollSqueezeStages.enabled) return;
         setProfileBusy(true); setProfileMessage('');
         const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 10000);
@@ -379,16 +390,38 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             if (!needsV7 && !needsV6 && needsV5 && result.version !== 5) throw new Error('v5 全市場籌碼資料尚未備齊');
             if (!needsV7 && !needsV6 && !needsV5 && needsV4 && result.version !== 4) throw new Error('v4 選股資料尚未備齊');
             if (ticket !== generation.current) return;
-            setResponse(result); setApplied(query); setPage(nextPage); setBollingerResponse(null); setBollingerApplied(null);
+            setResponse(result); setApplied(query); setPage(nextPage); setBollingerResponse(null); setBollingerApplied(null); setCandlestickResponse(null); setCandlestickApplied(null);
             if (!cursor) setCursors(['']);
             else setCursors((old) => [...old.slice(0, nextPage), cursor]);
             try { savePreferences(query);
                 localStorage.setItem(BOLLINGER_PREFS, JSON.stringify({ version: 8, query: { criteria: { ...query.criteria, bollSqueezeStages: bollinger }, sort: bollingerSort,
                     direction: query.direction, resultState: query.resultState === 'pass' ? 'matched' : query.resultState === 'fail' ? 'notMatched' : 'unknown' } })); setStorageError(false); }
             catch { setStorageError(true); }
+            saveNewPreference({ ...query, criteria: { ...query.criteria, bollSqueezeStages: bollinger, candlestickReversal: candlestick } });
         } catch (e) {
             if (ticket === generation.current) setError(abort.signal.aborted ? '查詢逾時，請稍後重試' : (e instanceof Error ? e.message : '查詢失敗'));
         } finally { clearTimeout(timer); if (ticket === generation.current) setBusy(false); }
+    }
+    function saveNewPreference(query: CandlestickUIQuery) {
+        if (!validateCriteriaV9(query.criteria)) return;
+        try {
+            if (!query.criteria.candlestickReversal.enabled && localStorage.getItem(CANDLESTICK_PREFS) === null) return;
+            localStorage.setItem(CANDLESTICK_PREFS, JSON.stringify({ version: 9, query }));
+        } catch { setStorageError(true); }
+    }
+    async function runCandlestick(query: CandlestickUIQuery, cursor?: string, snapshotId?: string) {
+        if (!validateCriteriaV9(query.criteria) || !query.criteria.candlestickReversal.enabled) return;
+        const ticket = ++generation.current; controller.current?.abort();
+        const abort = new AbortController(); controller.current = abort;
+        const timer = setTimeout(() => abort.abort(), 20000); setBusy(true); setError('');
+        try {
+            const r = await fetch(`/api/stock-screener/results?${candlestickSearch(query, cursor, snapshotId)}`, { signal: abort.signal, credentials: 'same-origin' });
+            const raw = await r.json(); if (!r.ok) throw new Error(r.status === 409 ? '快照或分頁設定已更新，請重新篩選' : '五型態查詢尚未就緒');
+            const result = await decodeCandlestickResponse(raw, query.criteria); if (ticket !== generation.current) return;
+            setCandlestickResponse(result); setCandlestickApplied(structuredClone(query)); setResponse(null); setApplied(null);
+            setBollingerResponse(null); setBollingerApplied(null); saveNewPreference(query);
+        } catch (e) { if (ticket === generation.current) setError(abort.signal.aborted ? '五型態查詢逾時，請稍後重試' : e instanceof Error ? e.message : '五型態查詢失敗'); }
+        finally { clearTimeout(timer); if (ticket === generation.current) setBusy(false); }
     }
     async function pick(stock: UniverseStock) {
         const ticket = ++pickingGeneration.current;
@@ -421,18 +454,18 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     return <div className={styles.root} data-testid='stock-screener-panel'>
         <p className={styles.note}>收盤後選股 · 全部上市／上櫃普通股（不限定自選清單）</p>
         <details className={styles.note}><summary>範圍與排除商品</summary>排除 ETF、ETN、權證、特別股、TDR、興櫃及海外股票；停牌但未下市櫃的普通股仍列入母體，缺比較資料時標示無法判定。</details>
-        <form onSubmit={(event) => { event.preventDefault(); if (bollinger.enabled) void runBollinger(bollingerQuery()); else void run(draft); }}>
+        <form onSubmit={(event) => { event.preventDefault(); if (candlestick.enabled) void runCandlestick({ ...draft, criteria: uiCriteria }); else if (bollinger.enabled) void runBollinger(bollingerQuery()); else void run(draft); }}>
             <div className={styles.draftToolbar}><div className={styles.controls}><button type='button' onClick={() => {
                 const criteria: CriteriaV7 = { ...migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(LONG_TERM_LAYOUT_PRESET)),
                     largeHolderTrend: { ...LONG_TERM_LAYOUT_PRESET.largeHolderTrend },
                     retailHolderDecline: { ...LONG_TERM_LAYOUT_PRESET.retailHolderDecline },
                     priceMargin: { ...LONG_TERM_LAYOUT_PRESET.priceMargin } };
-                setDraft({ ...draft, criteria }); setBollinger(current => ({ ...current, enabled: false })); setActiveCondition(firstEnabledStockScreenerCondition(criteria)); setDraftActionMessage('已套用「長線佈局」草稿；按「開始篩選」後才查詢。');
+                setDraft({ ...draft, criteria }); setBollinger(current => ({ ...current, enabled: false })); setCandlestick(current => ({ ...current, enabled: false })); setActiveCondition(firstEnabledStockScreenerCondition(criteria)); setDraftActionMessage('已套用「長線佈局」草稿；按「開始篩選」後才查詢。');
             }}>套用「長線佈局」草稿</button>
                 <button type='button' disabled={!enabledConditions.length} onClick={() => {
                     const cancelled = enabledConditions.length;
                     setDraft((current) => ({ ...current, criteria: disableAllStockScreenerConditions(current.criteria) }));
-                    setBollinger(current => ({ ...current, enabled: false }));
+                    setBollinger(current => ({ ...current, enabled: false })); setCandlestick(current => ({ ...current, enabled: false }));
                     setActiveCondition('volume');
                     setDraftActionMessage(`已取消 ${cancelled} 個草稿條件；目前結果尚未變更。`);
                 }}>全部取消</button>
@@ -442,10 +475,12 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             </div>
             {draftActionMessage && <p role='status' className={styles.note}>{draftActionMessage}</p>}
             <StockScreenerConditionAccordion criteria={uiCriteria} activeCondition={activeCondition}
-                onActiveConditionChange={setActiveCondition} onChange={(value) => { const { bollSqueezeStages, ...criteria } = value;
-                    if (bollSqueezeStages) setBollinger(bollSqueezeStages); setDraft((current) => ({ ...current, criteria })); setDraftActionMessage(''); }} />
+                onActiveConditionChange={setActiveCondition} onChange={(value) => { const { bollSqueezeStages, candlestickReversal, ...criteria } = value;
+                    if (bollSqueezeStages) setBollinger(bollSqueezeStages); if (candlestickReversal) setCandlestick(candlestickReversal);
+                    setDraft((current) => ({ ...current, criteria })); setDraftActionMessage(''); }} />
             <details className={styles.settingsDetails}>
-                <summary>結果設定 · {draft.criteria.mode === 'all' ? 'AND' : 'OR'} · {resultStateLabels[draft.resultState]} · {bollinger.enabled ? '布林排序' : sortLabels[draft.sort]} · {draft.direction === 'asc' ? '由小到大' : '由大到小'}</summary>
+                <summary>結果設定 · {draft.criteria.mode === 'all' ? 'AND' : 'OR'} · {resultStateLabels[draft.resultState]} · {candlestick.enabled ? '股票代碼' : bollinger.enabled ? '布林排序' : sortLabels[draft.sort]} · {draft.direction === 'asc' ? '由小到大' : '由大到小'}</summary>
+                {candlestick.enabled && <p>五型態固定股票代碼排序；舊排序偏好保留，不套用至本查詢。</p>}
             <div className={styles.controls}>
                 <select aria-label='條件組合' value={draft.criteria.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, mode: e.target.value as 'all' | 'any' } })}><option value='all'>全部符合（AND）</option><option value='any'>任一符合（OR）</option></select>
                 <select aria-label='結果種類' value={draft.resultState} onChange={(e) => setDraft({ ...draft, resultState: e.target.value as ScreenerQueryV4['resultState'] })}><option value='pass'>符合條件</option><option value='unknown'>無法判定</option><option value='fail'>不符合</option></select>
@@ -454,19 +489,20 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             </div>
             </details>
             <div className={styles.submitRow}><button type='submit' disabled={!valid || busy}>{busy ? '篩選中…' : '開始篩選'}</button></div>
-            {bollinger.enabled && <div className={styles.controls}>
+            {bollinger.enabled && !candlestick.enabled && <div className={styles.controls}>
                 <label>布林結果排序 <select aria-label='布林結果排序' value={bollingerSort} onChange={e => setBollingerSort(e.target.value as BollingerQueryDraft['sort'])}>
                     <option value='code'>股票代碼</option><option value='bbw'>帶寬 BBW</option><option value='percentilePosition'>前期百分位位置</option><option value='b'>上軌位置 b</option><option value='breakoutVolumeRatio'>突破量倍數</option><option value='momentum'>動能</option></select></label>
                 <button type='button' disabled={!valid || !profileReady || profileBusy} onClick={() => void saveDailyProfile()}>套用至每日自動篩選</button>
             </div>}
             <StockScreenerDailyBollinger profile={dailyProfile} ready={profileReady} busy={profileBusy} onSave={saveDailyProfile} />
             {profileMessage && <p role='status' className={styles.note}>{profileMessage}</p>}
-            {bollingerApplied && (JSON.stringify(bollingerApplied.criteria) !== JSON.stringify(uiCriteria) || bollingerApplied.sort !== bollingerSort || bollingerApplied.direction !== draft.direction) && <p role='status'>布林條件尚未套用；下方保留上次查詢，每日設定未變。</p>}
+            {bollingerApplied && (JSON.stringify(bollingerApplied.criteria) !== JSON.stringify(legacyUICriteria) || candlestick.enabled || bollingerApplied.sort !== bollingerSort || bollingerApplied.direction !== draft.direction) && <p role='status'>布林條件尚未套用；下方保留上次查詢，每日設定未變。</p>}
+            {candlestickApplied && (JSON.stringify(candlestickApplied.criteria) !== JSON.stringify(uiCriteria) || candlestickApplied.direction !== draft.direction || candlestickApplied.resultState !== draft.resultState) && <p role='status'>反轉條件尚未套用；下方保留上次查詢與證據，每日策略未變。</p>}
             {!valid && <p role='alert'>手動選股：至少啟用一項條件且參數必須合法；籌碼比例最多兩位小數，連續週數 1–12，投信 5–10 日，價量／融資 1–20 日，新高 2–120 日。每日策略設定獨立，不受本項警告影響。</p>}
             {dirty && <p role='status'>條件尚未套用；下方仍是上次篩選結果。</p>}
         </form>
         <div className={styles.status} role='status' aria-live='polite'>
-            <strong>{error || (bollingerResponse ? '布林查詢已完成，日期與完整性詳見下方' : response ? states[response.state] : '尚未查詢資料')}</strong>
+            <strong>{error || (candlestickResponse ? '五型態查詢狀態與日期詳見下方' : bollingerResponse ? '布林查詢已完成，日期與完整性詳見下方' : response ? states[response.state] : '尚未查詢資料')}</strong>
             {applied && <div>已套用 {enabledStockScreenerConditions(applied.criteria).length} 項 · {applied.criteria.mode === 'all' ? '全部符合（AND）' : '任一符合（OR）'}</div>}
             {response && statusReasons[response.reason] && <div>{statusReasons[response.reason]}</div>}
             {response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current)
@@ -529,6 +565,11 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         </div>
         {!targets.length && <p className={styles.note}>{chartConnectionMessage ?? '目前沒有未鎖定圖表，請新增日 K 圖，或解鎖既有圖表。'}</p>}
         {selectionMessage && <p role='status'>{selectionMessage}</p>}
+        {candlestickResponse && <>
+            <StockScreenerCandlestickResults response={candlestickResponse} onPick={stock => void pick(stock)} onAdd={stock => void addToWatchlist(stock)}
+                targetAvailable={!!effectiveTarget} statuses={addStates} />
+            {candlestickResponse.nextCursor && <button type='button' disabled={busy} onClick={() => { if (candlestickApplied) void runCandlestick(candlestickApplied, candlestickResponse.nextCursor!, candlestickResponse.snapshotId ?? undefined); }}>反轉下一頁</button>}
+        </>}
         {bollingerResponse && <>
             <StockScreenerBollingerResults response={bollingerResponse} filter={bollingerApplied?.stage ?? 'all'}
                 onFilter={stage => { if (bollingerApplied) void runBollinger({ ...bollingerApplied,

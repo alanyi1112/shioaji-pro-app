@@ -482,7 +482,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         const chip = host.querySelector<HTMLButtonElement>('button[aria-controls="screener-condition-group-chip"]')!;
         expect(basic.getAttribute('aria-expanded')).toBe('true');
         expect(basic.textContent).toContain('2 / 2');
-        expect(technical.textContent).toContain('0 / 11');
+        expect(technical.textContent).toContain('0 / 12');
         expect(chip.textContent).toContain('0 / 8');
         expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
         expect(host.querySelector('fieldset[aria-label="成交量 ≥ 前一交易日設定"]')).not.toBeNull();
@@ -496,7 +496,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(host.querySelector('fieldset[aria-label="均線糾結與交叉設定"]')).not.toBeNull();
         expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用均線糾結與交叉"]')!.checked).toBe(true);
-        expect(technical.textContent).toContain('1 / 11');
+        expect(technical.textContent).toContain('1 / 12');
     });
 
     it('全部取消只改草稿，保留參數、已套用結果與查詢次數', async () => {

@@ -28,9 +28,13 @@ const keys = new Set(['version','mode','volume','volumeThreshold','volumeTurnove
         `${prefix}VolumeMinimumAverageVolumeEnabled`,`${prefix}VolumeMinimumAverageVolumeLots`]),
     'sort','direction','resultState','limit','cursor']);
 
-const requestedVersion = (url) => url.searchParams.get('version') === '8' ? 8 : url.searchParams.get('version') === '7' ? 7 : url.searchParams.get('version') === '6' ? 6 : url.searchParams.get('version') === '5' ? 5 : url.searchParams.get('version') === '4' ? 4 : url.searchParams.get('version') === '3' ? 3 : 2;
+const requestedVersion = (url) => url.searchParams.get('version') === '9' ? 9 : url.searchParams.get('version') === '8' ? 8 : url.searchParams.get('version') === '7' ? 7 : url.searchParams.get('version') === '6' ? 6 : url.searchParams.get('version') === '5' ? 5 : url.searchParams.get('version') === '4' ? 4 : url.searchParams.get('version') === '3' ? 3 : 2;
 
-const unavailablePayload = (version) => version === 8
+const unavailablePayload = (version) => version === 9
+    ? { version: 9, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null, canUseResults: false,
+        formulaVersion: 'candlestick-reversal-v1', capability: 'candlestick-ohlcv-history-v1',
+        expectedSessionDate: null, effectiveSessionDate: null, rows: [], nextCursor: null }
+    : version === 8
     ? { version: 8, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
         formulaVersion: 'bollinger-squeeze-stages-v1', sourceMappingVersion: 'official-daily-ohlcv-turnover-v1',
         expectedSessionDate: null, effectiveSessionDate: null, rows: [], nextCursor: null }
@@ -151,9 +155,10 @@ export function validateScreenerGatewayRequest(req) {
     if (profileWrite && (!isLoopbackAddress(req.socket?.remoteAddress) || !isLoopbackAddress(req.socket?.localAddress)
         || [...rejectedProxyHeaders].some(h => req.headers[h] !== undefined))) return { status: 403, reason: 'loopback_required' };
     if (profileWrite && String(req.headers['content-type'] ?? '').split(';')[0] !== 'application/json') return { status: 415, reason: 'json_required' };
-    const queryKeys = version === '8' ? new Set(['version', 'criteria', 'sort', 'direction', 'resultState', 'stage', 'limit', 'cursor', 'snapshotId']) : keys;
+    const queryKeys = version === '9' ? new Set(['version', 'criteria', 'sort', 'direction', 'resultState', 'limit', 'cursor', 'snapshotId'])
+        : version === '8' ? new Set(['version', 'criteria', 'sort', 'direction', 'resultState', 'stage', 'limit', 'cursor', 'snapshotId']) : keys;
     if (raw.length > 16384 || [...url.searchParams.keys()].some((key) => !queryKeys.has(key) || url.searchParams.getAll(key).length !== 1)
-        || version !== null && version !== '2' && version !== '3' && version !== '4' && version !== '5' && version !== '6' && version !== '7' && version !== '8'
+        || version !== null && version !== '2' && version !== '3' && version !== '4' && version !== '5' && version !== '6' && version !== '7' && version !== '8' && version !== '9'
         || url.pathname.endsWith('/daily-profile') && (version !== '8' || [...url.searchParams.keys()].some(k => k !== 'version'))
         || url.pathname.endsWith('/status') && [...url.searchParams.keys()].some((key) => key !== 'version')
         || url.searchParams.has('limit') && (!/^\d{1,3}$/.test(url.searchParams.get('limit')) || Number(url.searchParams.get('limit')) < 1 || Number(url.searchParams.get('limit')) > 100)) return { status: 400, reason: 'invalid_query' };
@@ -221,7 +226,7 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
                                 ...(checked.profileWrite ? { method: 'PUT', body: profileBody } : {}),
                                 headers: { accept: 'application/json', ...(checked.profileWrite ? { 'content-type': 'application/json' } : {}) } });
                             const body = await response.text();
-                            if (Buffer.byteLength(body) > (checked.version === 8 ? 8 : 1) * 1024 * 1024) throw new Error('response_too_large');
+                            if (Buffer.byteLength(body) > (checked.version >= 8 ? 8 : 1) * 1024 * 1024) throw new Error('response_too_large');
                             return { status: response.status, body: JSON.parse(body) };
                         })(),
                         new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),

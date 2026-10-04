@@ -1,6 +1,8 @@
 import type { CriteriaV7 } from './stock-screener-v7';
 import { DEFAULT_BOLLINGER_SQUEEZE, type BollingerSqueezeCriteria } from './stock-screener-v8';
-export type ScreenerUICriteria = CriteriaV7 & { bollSqueezeStages?: BollingerSqueezeCriteria };
+import { DEFAULT_CANDLESTICK_REVERSAL, type CandlestickReversalCriteria } from './stock-screener-v9';
+import { CANDLESTICK_CATALOG } from './stock-screener-candlestick-catalog';
+export type ScreenerUICriteria = CriteriaV7 & { bollSqueezeStages?: BollingerSqueezeCriteria; candlestickReversal?: CandlestickReversalCriteria };
 
 export const STOCK_SCREENER_CONDITION_GROUPS = [
     { id: 'basic', label: '基本條件' },
@@ -14,6 +16,7 @@ export const STOCK_SCREENER_CONDITIONS = [
     { id: 'volume', group: 'basic', label: '成交量 ≥ 前一交易日' },
     { id: 'holder', group: 'basic', label: '千張大戶' },
     { id: 'fractal', group: 'technical', label: 'K 棒分型' },
+    { id: 'candlestickReversal', group: 'technical', label: 'K 線反轉型態' },
     { id: 'bollReversal', group: 'technical', label: '布林通道反轉 K' },
     { id: 'ma', group: 'technical', label: '均線糾結與交叉' },
     { id: 'divergence', group: 'technical', label: '價與指標背離' },
@@ -66,6 +69,8 @@ export function stockScreenerConditionSummary(criteria: ScreenerUICriteria, id: 
             return `前 ${c.lookbackDays} 日 Q${c.percentile} · 放量 > ${c.breakoutVolumeRatio}×`; }
         case 'holder': return `${holderModes[criteria.holder.mode]}${criteria.holder.mode === 'weekly-increase' ? '' : ` ${criteria.holder.streakWeeks} 週`} · ${criteria.holder.threshold} 百分點${criteria.holder.turnover.enabled ? ` · 成交值 ${criteria.holder.turnover.minimumWan} 萬` : ''}`;
         case 'fractal': return `${fractalAlgorithms[criteria.fractal.algorithm]} · ${fractalDirections[criteria.fractal.direction]}`;
+        case 'candlestickReversal': { const c = criteria.candlestickReversal ?? DEFAULT_CANDLESTICK_REVERSAL;
+            return `${c.patterns.map(p => CANDLESTICK_CATALOG[p].name).join('／') || '尚未選型態'} · ${c.mode === 'pattern-complete' ? '形態成立' : '次日突破確認'}`; }
         case 'bollReversal': return bollModes[criteria.bollReversal.mode];
         case 'ma': return `${maModes[criteria.ma.mode]} · ${criteria.ma.compressionDays} 日 · ${criteria.ma.maxSpreadPct}%`;
         case 'divergence': return `${divergenceSources[criteria.divergence.source]} · ${divergenceDirections[criteria.divergence.direction]}${criteria.divergence.source === 'macd-histogram' && criteria.divergence.requireZeroReset ? ' · 零軸重置' : ''}`;
@@ -101,7 +106,8 @@ export function enabledStockScreenerConditions(criteria: ScreenerUICriteria) {
 }
 
 export function setStockScreenerConditionEnabled<T extends ScreenerUICriteria>(criteria: T, id: StockScreenerConditionId, enabled: boolean): T {
-    return { ...criteria, [id]: { ...(id === 'bollSqueezeStages' ? criteria.bollSqueezeStages ?? DEFAULT_BOLLINGER_SQUEEZE : criteria[id]), enabled } } as T;
+    return { ...criteria, [id]: { ...(id === 'candlestickReversal' ? criteria.candlestickReversal ?? structuredClone(DEFAULT_CANDLESTICK_REVERSAL)
+        : id === 'bollSqueezeStages' ? criteria.bollSqueezeStages ?? DEFAULT_BOLLINGER_SQUEEZE : criteria[id]), enabled } } as T;
 }
 
 export function disableAllStockScreenerConditions<T extends ScreenerUICriteria>(criteria: T): T {
@@ -128,5 +134,6 @@ export function disableAllStockScreenerConditions<T extends ScreenerUICriteria>(
         foreignReversal: { ...criteria.foreignReversal, enabled: false },
         trustReversal: { ...criteria.trustReversal, enabled: false },
         ...(criteria.bollSqueezeStages ? { bollSqueezeStages: { ...criteria.bollSqueezeStages, enabled: false, stages: [...criteria.bollSqueezeStages.stages] } } : {}),
+        ...(criteria.candlestickReversal ? { candlestickReversal: { ...structuredClone(criteria.candlestickReversal), enabled: false } } : {}),
     } as T;
 }

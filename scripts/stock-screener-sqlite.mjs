@@ -10,7 +10,9 @@ const OPTIONAL_TABLES = new Set(['screener_bollinger_batches', 'screener_bolling
     'screener_bollinger_profiles', 'screener_bollinger_publications', 'screener_bollinger_rows', 'screener_bollinger_head', 'screener_bollinger_state',
     'screener_daily_quotes_cache', 'screener_daily_quotes_receipts', 'screener_source_universes', 'screener_source_reviews',
     'screener_source_selections', 'screener_source_selected_rows', 'screener_source_comparisons',
-    'broker_bandwidth_observations', 'broker_bandwidth_reservations', 'broker_bandwidth_receipts']);
+    'broker_bandwidth_observations', 'broker_bandwidth_reservations', 'broker_bandwidth_receipts',
+    'screener_candlestick_publications', 'screener_candlestick_rows', 'screener_candlestick_head',
+    'screener_candlestick_receipts', 'screener_candlestick_state']);
 class Statement {
     constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
     bind(...args) { this.args = args; return this; }

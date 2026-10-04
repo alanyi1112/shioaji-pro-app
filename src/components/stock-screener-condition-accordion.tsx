@@ -13,11 +13,14 @@ import {
 import * as styles from './stock-screener-panel.css';
 import { DEFAULT_BOLLINGER_SQUEEZE } from '../lib/stock-screener-v8';
 import { StockScreenerBollingerEditor } from './stock-screener-bollinger-editor';
+import { StockScreenerCandlestickEditor } from './stock-screener-candlestick-editor';
+import { DEFAULT_CANDLESTICK_REVERSAL } from '../lib/stock-screener-v9';
 
 const enableLabels: Record<StockScreenerConditionId, string> = {
     volume: '啟用成交量條件',
     holder: '啟用千張大戶條件',
     fractal: '啟用 K 棒分型',
+    candlestickReversal: '啟用 K 線反轉型態',
     bollReversal: '啟用布林通道反轉 K',
     ma: '啟用均線糾結與交叉',
     divergence: '啟用價與指標背離',
@@ -278,6 +281,8 @@ export function StockScreenerConditionAccordion({ criteria, activeCondition, onA
             </select></label>;
             case 'foreignReversal': return reversalEditor('foreignReversal');
             case 'trustReversal': return reversalEditor('trustReversal');
+            case 'candlestickReversal': return <StockScreenerCandlestickEditor value={criteria.candlestickReversal ?? DEFAULT_CANDLESTICK_REVERSAL}
+                onChange={candlestickReversal => onChange({ ...criteria, candlestickReversal })} />;
         }
     };
 

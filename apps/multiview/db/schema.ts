@@ -132,6 +132,23 @@ export const screenerBollingerState = sqliteTable('screener_bollinger_state', {
   name: text('name').primaryKey().notNull(), payload: text('payload').notNull(), updatedAt: text('updated_at').notNull(),
 }, table => [check('screener_bollinger_state_v8', sql`${table.name}='v8'`)]);
 
+export const screenerCandlestickPublications = sqliteTable('screener_candlestick_publications', {
+  id: text('id').primaryKey().notNull(), publicationKey: text('publication_key').notNull(),
+  status: text('status', { enum: ['staging', 'published', 'failed'] }).notNull(), metadata: text('metadata').notNull(), createdAt: text('created_at').notNull(),
+}, table => [index('screener_candlestick_key_idx').on(table.publicationKey, table.status)]);
+export const screenerCandlestickRows = sqliteTable('screener_candlestick_rows', {
+  snapshotId: text('snapshot_id').notNull().references(() => screenerCandlestickPublications.id), symbol: text('symbol').notNull(), payload: text('payload').notNull(),
+}, table => [primaryKey({ columns: [table.snapshotId, table.symbol] })]);
+export const screenerCandlestickHead = sqliteTable('screener_candlestick_head', {
+  name: text('name').primaryKey().notNull(), snapshotId: text('snapshot_id').notNull().references(() => screenerCandlestickPublications.id), updatedAt: text('updated_at').notNull(),
+}, table => [check('screener_candlestick_head_v9', sql`${table.name}='v9'`)]);
+export const screenerCandlestickReceipts = sqliteTable('screener_candlestick_receipts', {
+  id: text('id').primaryKey().notNull(), runId: text('run_id').notNull(), status: text('status').notNull(), payload: text('payload').notNull(), createdAt: text('created_at').notNull(),
+});
+export const screenerCandlestickState = sqliteTable('screener_candlestick_state', {
+  name: text('name').primaryKey().notNull(), payload: text('payload').notNull(), updatedAt: text('updated_at').notNull(),
+}, table => [check('screener_candlestick_state_v9', sql`${table.name}='v9'`)]);
+
 export const screenerChipRuns = sqliteTable("screener_chip_runs", {
   id: text("id").primaryKey(), targetSessionDate: text("target_session_date").notNull(),
   universeRevision: text("universe_revision").notNull(), status: text("status").notNull(),

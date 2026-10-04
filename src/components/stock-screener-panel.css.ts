@@ -43,6 +43,13 @@ export const conditionCard = style({ display: 'flex', flexWrap: 'wrap', gap: 8, 
 export const note = style({ color: vars.color.mutedForeground, lineHeight: 1.5, margin: 0, overflowWrap: 'anywhere' });
 export const status = style({ border: `1px solid ${vars.color.border}`, borderRadius: 4, padding: 8, lineHeight: 1.6, flexShrink: 0 });
 export const results = style({ display: 'flex', flexDirection: 'column', gap: 4 });
+export const candlestickDirection = styleVariants({
+    bullish: { dark: '#ff8585', light: '#b32d2d' },
+    bearish: { dark: '#58d6a8', light: '#00734e' },
+}, colors => ({
+    color: colors.dark, fontWeight: 700,
+    selectors: { [`.${themeClasses['light-tw']} &, .${themeClasses['light-intl']} &`]: { color: colors.light } },
+}));
 export const bollingerResultStage = styleVariants({
     compressing: { dark: '#75bdff', light: '#075fae' },
     preparing: { dark: '#ffd166', light: '#935700' },

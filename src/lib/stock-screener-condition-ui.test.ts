@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_CRITERIA_V5, LONG_TERM_LAYOUT_PRESET } from './stock-screener-v5';
 import { migrateCriteriaV5ToV6 } from './stock-screener-v6';
 import { migrateCriteriaV6ToV7 } from './stock-screener-v7';
+import { DEFAULT_CANDLESTICK_REVERSAL } from './stock-screener-v9';
 import {
     STOCK_SCREENER_CONDITIONS, STOCK_SCREENER_CONDITION_GROUPS,
     disableAllStockScreenerConditions, enabledStockScreenerConditions,
@@ -10,14 +11,15 @@ import {
 } from './stock-screener-condition-ui';
 
 describe('stock screener condition UI model', () => {
-    it('固定涵蓋 21 個條件與三個群組，新分支位於技術型態', () => {
+    it('固定涵蓋 22 個條件與三個群組，五型態緊接 K 棒分型', () => {
         expect(STOCK_SCREENER_CONDITIONS.map(({ id }) => id)).toEqual([
-            'volume', 'holder', 'fractal', 'bollReversal', 'ma', 'divergence', 'bollPosition', 'bollSqueezeStages', 'rsiCross', 'kdCross', 'macdSignal', 'closeHigh', 'closeSmaBreakout',
+            'volume', 'holder', 'fractal', 'candlestickReversal', 'bollReversal', 'ma', 'divergence', 'bollPosition', 'bollSqueezeStages', 'rsiCross', 'kdCross', 'macdSignal', 'closeHigh', 'closeSmaBreakout',
             'largeHolderTrend', 'largeHolderConcentration', 'retailHolderDecline', 'trustOwnership', 'priceMargin', 'shortMarginRatio',
             'foreignReversal', 'trustReversal',
         ]);
         expect(STOCK_SCREENER_CONDITION_GROUPS.map(({ id }) => id)).toEqual(['basic', 'technical', 'chip']);
-        expect(new Set(STOCK_SCREENER_CONDITIONS.map(({ id }) => id)).size).toBe(21);
+        expect(new Set(STOCK_SCREENER_CONDITIONS.map(({ id }) => id)).size).toBe(22);
+        expect(stockScreenerConditionGroup('candlestickReversal')).toBe('technical');
     });
 
     it('選擇第一個啟用條件，全部停用時回到成交量', () => {
@@ -43,6 +45,7 @@ describe('stock screener condition UI model', () => {
             ...migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(LONG_TERM_LAYOUT_PRESET)),
             volume: { ...LONG_TERM_LAYOUT_PRESET.volume, enabled: true, threshold: '6', turnover: { enabled: true, minimumWan: '321' } },
             divergence: { ...LONG_TERM_LAYOUT_PRESET.divergence, enabled: true, requireZeroReset: true },
+            candlestickReversal: { ...structuredClone(DEFAULT_CANDLESTICK_REVERSAL), enabled: true, piercingRecoveryPct: '65', volume: { ...DEFAULT_CANDLESTICK_REVERSAL.volume, enabled: true } },
         };
         const cleared = disableAllStockScreenerConditions(original);
         expect(enabledStockScreenerConditions(cleared)).toHaveLength(0);
@@ -52,6 +55,8 @@ describe('stock screener condition UI model', () => {
         expect(original.divergence.enabled).toBe(true);
         expect(cleared.volume).not.toBe(original.volume);
         expect(cleared.volume.turnover).not.toBe(original.volume.turnover);
+        expect(cleared.candlestickReversal).toEqual({ ...original.candlestickReversal, enabled: false });
+        expect(cleared.candlestickReversal?.volume).not.toBe(original.candlestickReversal.volume);
     });
 
     it('單一 enabled 更新不會改寫其他參數', () => {

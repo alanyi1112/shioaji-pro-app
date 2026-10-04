@@ -239,7 +239,8 @@ const installContext = async f => {
       review: 'verified', revision: f.options.universeRevision, sourceDate: sessions.at(-1),
       provenance: { source: s.market, payloadHash: 'e'.repeat(64) } })).run();
 };
-test('新能力沒有來源review fail closed；v5 schedule disabled不遮蔽v8pending', async () => {
+test('新能力沒有來源review fail closed；v5 schedule disabled不遮蔽v8pending', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: now() }); // updateScreener 使用實際 Date；固定隔離 fixture 時鐘。
   const f = await fixture({ complete: false });
   try { await installContext(f);
     const result = await updateBollingerScheduled(f.db, { now, fetchReport: async () => { throw new Error('unexpected_network'); } });
@@ -336,7 +337,8 @@ test('官方日曆連線重設保留傳輸分類與原收據，冷卻期間不�
     assert.equal(await f.db.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-bollinger-calendar'").first(), null);
   } finally { f.db.close(); }
 });
-test('v8-only早期入口不執行v5 writer；repo watcher在TDCC前檢查且沒有更改頻率', async () => {
+test('v8-only早期入口不執行v5 writer；repo watcher在TDCC前檢查且沒有更改頻率', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: now() });
   const f = await fixture({ complete: false });
   try { await installContext(f);
     const result = await updateScreener(f.db, { scheduled: true, bollingerOnly: true });

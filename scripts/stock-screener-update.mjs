@@ -15,6 +15,7 @@ import { publishPreparedScreenerV4 } from '../apps/multiview/worker/stock-screen
 import { updateScreenerChip } from './stock-screener-chip-update.mjs';
 import { screenerIdleGate } from './screener-idle-gate.mjs';
 import { updateBollingerScheduled } from './stock-screener-bollinger-schedule.ts';
+import { updateCandlestickScheduled } from './stock-screener-candlestick-schedule.ts';
 import { consumeInvalidSessionRecovery } from './screener-session-recovery.mjs';
 import {
     normalizeScreenerSessionReadiness, parseScreenerSessionReadiness, publicationProbeDecision,
@@ -219,6 +220,11 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
     if (scheduled) {
         try { bollinger = await updateBollingerScheduled(db); }
         catch (error) { bollinger = { state: 'pending', reason: safeError(error) }; }
+        // 舊路徑的 profile disabled／160 日 pending 都不能阻斷獨立 64 日能力。
+        try {
+            const candlestick = await updateCandlestickScheduled(db);
+            if (candlestick.reason !== 'v9_schema_pending') log({ event: 'screener-candlestick-independent', ...candlestick });
+        } catch (error) { log({ event: 'screener-candlestick-independent', state: 'pending', reason: safeError(error) }); }
         if (bollingerOnly) return bollinger;
         if (bollinger.reason !== 'profile_disabled' && bollinger.reason !== 'schema_pending') log({ event: 'screener-bollinger-independent', ...bollinger });
         else bollinger = undefined; // 未啟用新能力時維持舊版回應契約。
