@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import { StockScreenerPanel } from './stock-screener-panel';
-import type { ScreenerResponseV3, ScreenerResponseV4, ScreenerResponseV5 } from '../lib/stock-screener-api';
+import type { ScreenerResponseV3, ScreenerResponseV4, ScreenerResponseV5, ScreenerResponseV7 } from '../lib/stock-screener-api';
 import { DEFAULT_CRITERIA as DEFAULT_V2 } from '../lib/stock-screener-domain';
 import type { ScreenerListSyncResult } from '../lib/stock-screener-list-sync';
 import { darkTwClass } from '../theme.css';
@@ -86,6 +86,28 @@ const readyV5: ScreenerResponseV5 = {
         closeHigh: chipOutcome, closeSmaBreakout: chipOutcome,
     } } })),
 };
+const v7Outcome = {
+    verdict: 'pass', reason: 'none', formulaVersion: 'after-market-v7-boll-rsi-kd-macd-1',
+    signal: { verdict: 'pass', reason: 'none', actual: { p2: { dif: -0.5 }, previous: { dif: -0.3 }, current: { dif: -0.1 } }, threshold: '0.25' },
+    volumeConfirmation: { enabled: true, sessionDate: '2026-08-28', baselineDates: ['2026-08-26', '2026-08-27'],
+        currentVolumeShares: '300000', averageVolumeShares: 200000, ratio: 1.5, minimumAverageVolumeShares: '1000000', verdict: 'pass', reason: 'none' },
+    evidence: { previous: { sessionDate: '2026-08-27' }, current: { sessionDate: '2026-08-28' } },
+} as const;
+const readyV7 = {
+    ...readyV5, version: 7, formulaVersion: 'after-market-v7-boll-rsi-kd-macd-1', sourceMappingVersion: 'official-daily-ohlcv-v2',
+    institutionalCoverage: { TWSE: { targetDates: 21, verifiedDates: 21, targetRows: 1, verifiedRows: 1, missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: '2026-08-28' },
+        TPEx: { targetDates: 21, verifiedDates: 21, targetRows: 0, verifiedRows: 0, missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: '2026-08-28' } },
+    technicalCoverage: { TWSE: { target: 1, covered: 1, complete130: 1, indicatorReady: 1, indicatorWarmupUnknown: 0, continuityUnknown: 0 },
+        TPEx: { target: 0, covered: 0, complete130: 0, indicatorReady: 0, indicatorWarmupUnknown: 0, continuityUnknown: 0 } },
+    counts: { ...readyV5.counts!, missingByCondition: { ...readyV5.counts!.missingByCondition,
+        foreignReversal: 0, trustReversal: 0, bollPosition: 0, rsiCross: 0, kdCross: 0, macdSignal: 0 } },
+    rows: readyV5.rows.map((row) => ({ ...row,
+        institutionalV6: { outcomes: {}, evidenceHash: 'c'.repeat(64), dailyThrough: '2026-08-28' },
+        technicalV7: { evidenceHash: 'd'.repeat(64), through: '2026-08-28', outcomes: {
+            bollPosition: v7Outcome, rsiCross: v7Outcome, kdCross: v7Outcome, macdSignal: v7Outcome,
+        } },
+    })),
+} as unknown as ScreenerResponseV7;
 let root: Root | null = null;
 const originalRootFont = document.documentElement.style.fontSize;
 afterEach(async () => {
@@ -100,6 +122,8 @@ afterEach(async () => {
     localStorage.removeItem('sj-pro-stock-screener-v4');
     localStorage.removeItem('sj-pro-stock-screener-v5');
     localStorage.removeItem('sj-pro-stock-screener-v6');
+    localStorage.removeItem('sj-pro-stock-screener-v7');
+    localStorage.removeItem('sj-pro-stock-screener-v8');
 });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent === text)!;
 async function openCondition(host: HTMLElement, group: 'basic' | 'technical' | 'chip', condition: string) {
@@ -125,12 +149,12 @@ async function mount(
         multiview: { status: 'added' as const, result: { status: 'added' as const, symbol: '3008.TW', tabId: 'stock-screener-filtered', tabLabel: '選股篩選' } },
         message: '已加入 Shioaji「選股」與 MultiView「選股篩選」',
     }));
-    const fetcher = vi.fn(async (url: string) => url.includes('/status?') && initialStatus ? initialStatus
-        : Response.json(url.includes('version=5') ? readyV5 : url.includes('version=4') ? readyV4 : ready)); vi.stubGlobal('fetch', fetcher);
+    const fetcher = vi.fn(async (url: string) => url.includes('/daily-profile?') ? Response.json({ version: 8, profile: null }) : url.includes('/status?') && initialStatus ? initialStatus
+        : Response.json(url.includes('version=7') ? readyV7 : url.includes('version=5') ? readyV5 : url.includes('version=4') ? readyV4 : ready)); vi.stubGlobal('fetch', fetcher);
     await act(async () => {
         root?.render(createElement(StockScreenerPanel, { targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, snapshotVolumesByCode }));
-        await new Promise((resolve) => setTimeout(resolve, 0));
     });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
     return { host, onPick, onOpenChart, onTargetChange, onAddToWatchlist, fetcher };
 }
 describe('收盤後選股面板（fixture 驗收）', () => {
@@ -431,7 +455,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(host.textContent).toContain('均線糾結 P／D 證據'); expect(host.textContent).toContain('背離 pivot／指標證據');
         expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v4')!).query.criteria.divergence.requireZeroReset).toBe(true);
     });
-    it('長線佈局只更新草稿，提交 v5 後呈現籌碼覆蓋並保存 v6 偏好', async () => {
+    it('長線佈局只更新草稿，提交 v5 後呈現籌碼覆蓋並保存 v7 偏好', async () => {
         const { host, fetcher } = await mount();
         await act(async () => button(host, '套用「長線佈局」草稿').click());
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用千張大戶比例趨勢"]')!.checked).toBe(true);
@@ -445,7 +469,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(host.textContent).toContain('籌碼覆蓋：TDCC 1/1');
         expect(host.textContent).toContain('千張大戶比例趨勢：符合');
         expect(host.textContent).toContain('千張大戶比例趨勢證據');
-        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v6')!).version).toBe(6);
+        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v7')!).version).toBe(7);
         button(host, '開始篩選').focus(); expect(document.activeElement).toBe(button(host, '開始篩選'));
         const pane = host.querySelector<HTMLElement>('[data-testid="stock-screener-panel"]')!;
         expect(pane.scrollWidth).toBeLessThanOrEqual(pane.clientWidth + 1);
@@ -458,7 +482,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         const chip = host.querySelector<HTMLButtonElement>('button[aria-controls="screener-condition-group-chip"]')!;
         expect(basic.getAttribute('aria-expanded')).toBe('true');
         expect(basic.textContent).toContain('2 / 2');
-        expect(technical.textContent).toContain('0 / 6');
+        expect(technical.textContent).toContain('0 / 11');
         expect(chip.textContent).toContain('0 / 8');
         expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
         expect(host.querySelector('fieldset[aria-label="成交量 ≥ 前一交易日設定"]')).not.toBeNull();
@@ -472,7 +496,7 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         expect(host.querySelector('fieldset[aria-label="均線糾結與交叉設定"]')).not.toBeNull();
         expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用均線糾結與交叉"]')!.checked).toBe(true);
-        expect(technical.textContent).toContain('1 / 6');
+        expect(technical.textContent).toContain('1 / 11');
     });
 
     it('全部取消只改草稿，保留參數、已套用結果與查詢次數', async () => {
@@ -525,6 +549,53 @@ describe('收盤後選股面板（fixture 驗收）', () => {
         await openCondition(host, 'chip', 'trustReversal');
         expect(host.querySelector<HTMLInputElement>('[aria-label="啟用投信連賣後轉買與爆量換手"]')!.checked).toBe(false);
         expect(host.querySelector<HTMLInputElement>('[aria-label="投信最低回補強度百分比"]')!.value).toBe('50');
+    });
+
+    it('v7 技術條件維持 compact editor、驗證模式欄位、條件內量能與 evidence', async () => {
+        const { host, fetcher } = await mount();
+        await act(async () => button(host, '全部取消').click());
+        await openCondition(host, 'technical', 'bollPosition');
+        expect(host.querySelectorAll('fieldset[id^="screener-condition-"]')).toHaveLength(1);
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用布林通道位置"]')!.click());
+        const bollMode = host.querySelector<HTMLSelectElement>('[aria-label="布林通道位置模式"]')!;
+        await act(async () => { bollMode.value = 'middle-near'; bollMode.dispatchEvent(new Event('change', { bubbles: true })); });
+        const tolerance = host.querySelector<HTMLInputElement>('[aria-label="布林中軌附近容許百分比"]')!;
+        await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(tolerance, '0'); tolerance.dispatchEvent(new Event('input', { bubbles: true })); });
+        expect(button(host, '開始篩選').disabled).toBe(true);
+        await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(tolerance, '10'); tolerance.dispatchEvent(new Event('input', { bubbles: true })); });
+        const volumeDetails = host.querySelector<HTMLDetailsElement>('[data-condition-id="bollPosition"] details')!;
+        const volumeSummary = volumeDetails.querySelector<HTMLElement>('summary')!;
+        volumeSummary.focus();
+        await userEvent.keyboard('{Enter}');
+        expect(volumeDetails.open).toBe(true);
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="bollPosition啟用量能確認"]')!.click());
+        expect(host.textContent).toContain('基準只取 D 以前的完整官方交易日，不含當日');
+
+        await openCondition(host, 'technical', 'macdSignal');
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用 MACD 零軸與交叉"]')!.click());
+        const macdMode = host.querySelector<HTMLSelectElement>('[aria-label="MACD 訊號模式"]')!;
+        expect(host.querySelector<HTMLInputElement>('[aria-label="MACD 接近零軸百分比"]')!.value).toBe('0.25');
+        await act(async () => { macdMode.value = 'below-zero-golden-cross'; macdMode.dispatchEvent(new Event('change', { bubbles: true })); });
+        expect(host.querySelector('[aria-label="MACD 接近零軸百分比"]')).toBeNull();
+        await act(async () => button(host, '開始篩選').click());
+        const request = new URL(String(fetcher.mock.calls.at(-1)?.[0]), location.href);
+        expect(request.searchParams.get('version')).toBe('7');
+        expect(request.searchParams.get('bollPositionMode')).toBe('middle-near');
+        expect(request.searchParams.get('bollPositionVolumeEnabled')).toBe('true');
+        expect(request.searchParams.get('bollPositionVolumeBaselineDays')).toBe('20');
+        expect(request.searchParams.get('bollPositionVolumeRatio')).toBe('1.2');
+        expect(request.searchParams.get('macdSignalMode')).toBe('below-zero-golden-cross');
+        expect(JSON.parse(localStorage.getItem('sj-pro-stock-screener-v7')!).version).toBe(7);
+        expect(host.textContent).toContain('布林位置：符合 · 量能 符合');
+        expect(host.textContent).toContain('MACD 訊號：符合');
+        expect(host.textContent).toContain('布林位置 P／D／量能證據');
+        expect(host.textContent).toContain('after-market-v7-boll-rsi-kd-macd-1');
+
+        await act(async () => button(host, '全部取消').click());
+        await openCondition(host, 'technical', 'bollPosition');
+        expect(host.querySelector<HTMLInputElement>('[aria-label="啟用布林通道位置"]')!.checked).toBe(false);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="bollPosition啟用量能確認"]')!.checked).toBe(true);
+        expect(host.querySelector<HTMLInputElement>('[aria-label="布林中軌附近容許百分比"]')!.value).toBe('10');
     });
 
     it('資料警告常駐，完整證據預設收合且可由鍵盤展開', async () => {

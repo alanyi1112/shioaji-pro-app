@@ -418,16 +418,29 @@ export function selectStoredBoll(evidence: TechnicalSnapshotEvidence, criteria: 
         : orStoredOutcomes([evidence.lowerBullish, evidence.upperBearish]);
 }
 
-function stableJson(value: unknown): string {
+export function technicalEvidenceCanonicalJson(value: unknown): string {
     if (value === undefined) return 'null';
-    if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+    if (Array.isArray(value)) {
+        // 歷史底稿的數值／日期陣列直接序列化，避免逐元素配置中間字串。
+        // sparse／undefined／物件仍走原路徑，保持既有 canonical hash 位元一致。
+        let primitive = true;
+        for (let i = 0; i < value.length; i++) {
+            const item = value[i];
+            const type = typeof item;
+            if (item !== null && type !== 'string' && type !== 'number' && type !== 'boolean') {
+                primitive = false; break;
+            }
+        }
+        if (primitive && !('toJSON' in value)) return JSON.stringify(value);
+        return `[${value.map(technicalEvidenceCanonicalJson).join(',')}]`;
+    }
     if (value && typeof value === 'object') return `{${Object.entries(value as Record<string, unknown>)
-        .sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`;
+        .sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${technicalEvidenceCanonicalJson(item)}`).join(',')}}`;
     return JSON.stringify(value);
 }
 
 export async function technicalEvidenceHash(value: unknown): Promise<string> {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(stableJson(value)));
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(technicalEvidenceCanonicalJson(value)));
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 

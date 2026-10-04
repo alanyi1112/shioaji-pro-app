@@ -41,6 +41,97 @@ export const screenerTdccWeekly = sqliteTable("screener_tdcc_weekly", {
   payload: text("payload").notNull(), validation: text("validation").notNull(),
 }, (table) => [primaryKey({ columns: [table.dataDate, table.symbol] })]);
 
+// 布林歷史能力使用獨立 mapping，不修改既有 130 日價量契約。
+export const brokerBandwidthObservations = sqliteTable('broker_bandwidth_observations', {
+  scope: text('scope').notNull(), quotaEpoch: text('quota_epoch').notNull(), generation: text('generation').notNull(),
+  usedBytes: integer('used_bytes').notNull(), limitBytes: integer('limit_bytes').notNull(), observedAt: text('observed_at').notNull(),
+}, t => [primaryKey({ columns: [t.scope, t.quotaEpoch] })]);
+export const brokerBandwidthReservations = sqliteTable('broker_bandwidth_reservations', {
+  id: text('id').primaryKey().notNull(), scope: text('scope').notNull(), quotaEpoch: text('quota_epoch').notNull(),
+  generation: text('generation').notNull(), jobKey: text('job_key').notNull(), owner: text('owner').notNull(), status: text('status').notNull(),
+  estimatedBytes: integer('estimated_bytes').notNull(), usageBefore: integer('usage_before').notNull(), responseBytes: integer('response_bytes'),
+  usageAfter: integer('usage_after'), policyHash: text('policy_hash').notNull(), createdAt: text('created_at').notNull(),
+  leaseUntil: text('lease_until').notNull(), updatedAt: text('updated_at').notNull(),
+}, t => [index('broker_bandwidth_reserved_idx').on(t.scope, t.quotaEpoch, t.status)]);
+export const brokerBandwidthReceipts = sqliteTable('broker_bandwidth_receipts', {
+  id: text('id').primaryKey().notNull(), reservationId: text('reservation_id'), status: text('status').notNull(),
+  payload: text('payload').notNull(), createdAt: text('created_at').notNull(),
+});
+
+export const screenerDailyQuotesCache = sqliteTable('screener_daily_quotes_cache', {
+  cacheKey: text('cache_key').primaryKey().notNull(), sessionDate: text('session_date').notNull(), reviewHash: text('review_hash').notNull(),
+  status: text('status', { enum: ['pending', 'complete', 'invalid'] }).notNull(), attempts: integer('attempts').notNull().default(0),
+  leaseOwner: text('lease_owner'), leaseUntil: text('lease_until'), nextAttemptAt: text('next_attempt_at'), reason: text('reason'),
+  responseText: text('response_text'), payloadHash: text('payload_hash'), fetchedAt: text('fetched_at'), updatedAt: text('updated_at').notNull(),
+}, table => [check('screener_daily_quotes_attempts_bound', sql`${table.attempts}>=0 AND ${table.attempts}<=18`)]);
+export const screenerDailyQuotesReceipts = sqliteTable('screener_daily_quotes_receipts', {
+  id: text('id').primaryKey().notNull(), cacheKey: text('cache_key').notNull(), status: text('status').notNull(),
+  payload: text('payload').notNull(), createdAt: text('created_at').notNull(),
+}, table => [index('screener_daily_quotes_receipts_cache_idx').on(table.cacheKey, table.createdAt)]);
+
+export const screenerSourceUniverses = sqliteTable('screener_source_universes', {
+  universeRevision: text('universe_revision').primaryKey().notNull(), universeHash: text('universe_hash').notNull(),
+  createdAt: text('created_at').notNull(),
+});
+export const screenerSourceReviews = sqliteTable('screener_source_reviews', {
+  id: text('id').primaryKey().notNull(), provider: text('provider', { enum: ['official-twse', 'official-tpex', 'shioaji-daily-quotes'] }).notNull(),
+  evidenceHash: text('evidence_hash').notNull(), status: text('status', { enum: ['verified', 'pending', 'invalid'] }).notNull(),
+  payload: text('payload').notNull(), createdAt: text('created_at').notNull(),
+}, table => [uniqueIndex('screener_source_reviews_evidence_idx').on(table.provider, table.evidenceHash)]);
+export const screenerSourceSelections = sqliteTable('screener_source_selections', {
+  selectionKey: text('selection_key').primaryKey().notNull(), manifestHash: text('manifest_hash').notNull().unique(),
+  universeRevision: text('universe_revision').notNull(), market: text('market', { enum: ['TWSE', 'TPEx'] }).notNull(),
+  sessionDate: text('session_date').notNull(), status: text('status', { enum: ['staging', 'complete'] }).notNull(),
+  manifest: text('manifest').notNull(), createdAt: text('created_at').notNull(),
+});
+export const screenerSourceSelectedRows = sqliteTable('screener_source_selected_rows', {
+  selectionKey: text('selection_key').notNull().references(() => screenerSourceSelections.selectionKey),
+  symbol: text('symbol').notNull(), payload: text('payload').notNull(),
+}, table => [primaryKey({ columns: [table.selectionKey, table.symbol] })]);
+export const screenerSourceComparisons = sqliteTable('screener_source_comparisons', {
+  id: text('id').primaryKey().notNull(), selectionKey: text('selection_key').notNull().references(() => screenerSourceSelections.selectionKey),
+  status: text('status', { enum: ['matched', 'conflict'] }).notNull(), payload: text('payload').notNull(), createdAt: text('created_at').notNull(),
+});
+
+export const screenerBollingerBatches = sqliteTable("screener_bollinger_batches", {
+  targetKey: text("target_key").primaryKey(),
+  market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
+  sessionDate: text("session_date").notNull(),
+  status: text("status", { enum: ["pending", "running", "complete", "invalid", "exhausted"] }).notNull(),
+  attempts: integer("attempts").notNull().default(0), nextAttemptAt: text("next_attempt_at"),
+  reason: text("reason"), report: text("report"), updatedAt: text("updated_at").notNull(),
+}, (table) => [check("screener_bollinger_attempts_bound", sql`${table.attempts}>=0 AND ${table.attempts}<=18`)]);
+
+export const screenerBollingerReceipts = sqliteTable("screener_bollinger_receipts", {
+  id: text("id").primaryKey(), targetKey: text("target_key"), runId: text("run_id").notNull(),
+  status: text("status").notNull(), payload: text("payload").notNull(), createdAt: text("created_at").notNull(),
+}, (table) => [index("screener_bollinger_receipts_target_idx").on(table.targetKey, table.createdAt)]);
+
+export const screenerBollingerDaily = sqliteTable("screener_bollinger_daily", {
+  universeRevision: text("universe_revision").notNull(), symbol: text("symbol").notNull(),
+  sessionDate: text("session_date").notNull(), market: text("market", { enum: ["TWSE", "TPEx"] }).notNull(),
+  readiness: text("readiness").notNull(), payload: text("payload").notNull(),
+}, (table) => [primaryKey({ columns: [table.universeRevision, table.sessionDate, table.symbol] }),
+  index("screener_bollinger_daily_market_idx").on(table.universeRevision, table.market, table.sessionDate)]);
+
+export const screenerBollingerProfiles = sqliteTable('screener_bollinger_profiles', {
+  revision: integer('revision').primaryKey().notNull(), payload: text('payload').notNull(), createdAt: text('created_at').notNull(),
+}, table => [check('screener_bollinger_profile_positive', sql`${table.revision}>0`)]);
+export const screenerBollingerPublications = sqliteTable('screener_bollinger_publications', {
+  id: text('id').primaryKey().notNull(), publicationKey: text('publication_key').notNull().unique(),
+  status: text('status', { enum: ['staging', 'published', 'failed'] }).notNull(), metadata: text('metadata').notNull(), createdAt: text('created_at').notNull(),
+});
+export const screenerBollingerRows = sqliteTable('screener_bollinger_rows', {
+  snapshotId: text('snapshot_id').notNull().references(() => screenerBollingerPublications.id),
+  symbol: text('symbol').notNull(), payload: text('payload').notNull(),
+}, table => [primaryKey({ columns: [table.snapshotId, table.symbol] })]);
+export const screenerBollingerHead = sqliteTable('screener_bollinger_head', {
+  name: text('name').primaryKey().notNull(), snapshotId: text('snapshot_id').notNull().references(() => screenerBollingerPublications.id), updatedAt: text('updated_at').notNull(),
+}, table => [check('screener_bollinger_head_v8', sql`${table.name}='v8'`)]);
+export const screenerBollingerState = sqliteTable('screener_bollinger_state', {
+  name: text('name').primaryKey().notNull(), payload: text('payload').notNull(), updatedAt: text('updated_at').notNull(),
+}, table => [check('screener_bollinger_state_v8', sql`${table.name}='v8'`)]);
+
 export const screenerChipRuns = sqliteTable("screener_chip_runs", {
   id: text("id").primaryKey(), targetSessionDate: text("target_session_date").notNull(),
   universeRevision: text("universe_revision").notNull(), status: text("status").notNull(),
@@ -163,6 +254,33 @@ export const cacheMaintenanceState = sqliteTable("cache_maintenance_state", {
   reasonCode: text("reason_code"),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+// System-tab membership is keyed by the stable system tab id, not the legacy empty tab_id.
+export const userSystemTabInstruments = sqliteTable("user_system_tab_instruments", {
+  userId: text("user_id").notNull(),
+  systemTabId: text("system_tab_id").notNull(),
+  symbol: text("symbol").notNull(),
+  itemId: text("item_id"),
+  name: text("name").notNull(),
+  provider: text("provider").notNull(),
+  groupName: text("group_name").notNull(),
+  market: text("market").notNull(),
+  enabled: integer("enabled").notNull().default(1),
+  sortOrder: integer("sort_order"),
+  addedAt: text("added_at"),
+  dateStatus: text("date_status").notNull().default("legacy_unknown"),
+  dateSource: text("date_source"),
+  recommender: text("recommender").notNull().default(""),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.userId, table.systemTabId, table.symbol] }),
+  uniqueIndex("user_system_tab_instruments_item_idx").on(table.userId, table.itemId),
+]);
+
+export const userWatchlistMutationRevision = sqliteTable("user_watchlist_mutation_revision", {
+  userId: text("user_id").primaryKey(),
+  revision: integer("revision").notNull().default(0),
+}, (table) => [check("user_watchlist_mutation_revision_nonnegative", sql`${table.revision} >= 0`)]);
 
 export const runtimeMetadata = sqliteTable("runtime_metadata", {
   key: text("key").primaryKey(),

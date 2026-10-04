@@ -14,6 +14,7 @@ import { publishPreparedScreenerV3 } from '../apps/multiview/worker/stock-screen
 import { publishPreparedScreenerV4 } from '../apps/multiview/worker/stock-screener-v4-publisher.ts';
 import { updateScreenerChip } from './stock-screener-chip-update.mjs';
 import { screenerIdleGate } from './screener-idle-gate.mjs';
+import { updateBollingerScheduled } from './stock-screener-bollinger-schedule.ts';
 import { consumeInvalidSessionRecovery } from './screener-session-recovery.mjs';
 import {
     normalizeScreenerSessionReadiness, parseScreenerSessionReadiness, publicationProbeDecision,
@@ -203,19 +204,29 @@ export async function collectOfficialDailyPeriods(db, { sessions, expectedSessio
     return { outcomes: candidateOutcomes, retryAfterMs };
 }
 
-export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchive = false, scheduled = false, limit = 64,
+export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchive = false, scheduled = false, bollingerOnly = false, limit = 64,
     ohlcvLimit = 8, ohlcvV4Limit = 4, recoverInvalidSession = null, recoverBlockedSource = false, log = () => {}, fetcher = fetch } = {}) {
     if (recoverBlockedSource && scheduled) throw new Error('invalid_recovery_options');
+    if (bollingerOnly && (!scheduled || bootstrapWeek || bootstrapArchive || recoverBlockedSource || recoverInvalidSession !== null)) throw new Error('invalid_bollinger_options');
     if (recoverInvalidSession !== null && (scheduled || bootstrapWeek || bootstrapArchive
         || !/^\d{4}-\d{2}-\d{2}$/.test(recoverInvalidSession)
         || recoverInvalidSession !== new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10))) throw new Error('invalid_recovery_options');
     if (!Number.isInteger(limit) || limit < 1 || limit > 512) throw new Error('invalid_limit');
     if (!Number.isInteger(ohlcvLimit) || ohlcvLimit < 1 || ohlcvLimit > 120) throw new Error('invalid_ohlcv_options');
     if (!Number.isInteger(ohlcvV4Limit) || ohlcvV4Limit < 1 || ohlcvV4Limit > 260) throw new Error('invalid_ohlcv_v4_options');
-    if (scheduled && !await db.prepare("SELECT id FROM screener_runs WHERE id='screener-enabled' AND status='enabled'").first()) return { state:'skipped', reason:'schedule_disabled' };
+    // 獨立每日 profile，不讓 v5 的 disabled／complete／籌碼 cooldown 遮蔽新能力。
+    let bollinger;
+    if (scheduled) {
+        try { bollinger = await updateBollingerScheduled(db); }
+        catch (error) { bollinger = { state: 'pending', reason: safeError(error) }; }
+        if (bollingerOnly) return bollinger;
+        if (bollinger.reason !== 'profile_disabled' && bollinger.reason !== 'schema_pending') log({ event: 'screener-bollinger-independent', ...bollinger });
+        else bollinger = undefined; // 未啟用新能力時維持舊版回應契約。
+    }
+    if (scheduled && !await db.prepare("SELECT id FROM screener_runs WHERE id='screener-enabled' AND status='enabled'").first()) return { state:'skipped', reason:'schedule_disabled', ...(bollinger ? { bollinger } : {}) };
     if (scheduled) {
         // Older databases retain the existing maintenance path until migrations exist.
-        try { const idle = await screenerIdleGate(db); if (idle) return idle; }
+        try { const idle = await screenerIdleGate(db); if (idle) return { ...idle, ...(bollinger ? { bollinger } : {}) }; }
         catch (error) { if (!/no such (table|column)/i.test(String(error))) throw error; }
     }
     const started = Date.now(), deadline = started + 15 * 60000, owner = crypto.randomUUID();
@@ -460,9 +471,10 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     const args = process.argv.slice(2), database = args.find(arg => arg.startsWith('--database='))?.slice(11);
-    if (!database || args.some(arg => !/^(?:--database=\/.+|--bootstrap-week|--bootstrap-history|--scheduled|--enable-schedule|--disable-schedule|--recover-blocked-source|--limit=\d+|--ohlcv-limit=\d+|--ohlcv-v4-limit=\d+|--recover-invalid-session=\d{4}-\d{2}-\d{2})$/.test(arg))
+    if (!database || args.some(arg => !/^(?:--database=\/.+|--bootstrap-week|--bootstrap-history|--scheduled|--bollinger-only|--enable-schedule|--disable-schedule|--recover-blocked-source|--limit=\d+|--ohlcv-limit=\d+|--ohlcv-v4-limit=\d+|--recover-invalid-session=\d{4}-\d{2}-\d{2})$/.test(arg))
         || args.includes('--disable-schedule') && args.some(arg=>['--enable-schedule','--scheduled','--bootstrap-week','--bootstrap-history'].includes(arg))) throw new Error('使用方式：--database=/absolute/local.sqlite [--bootstrap-history] [--limit=64] [--ohlcv-limit=8] [--scheduled|--enable-schedule|--disable-schedule]');
     const recoveryArgs = args.filter(arg => arg.startsWith('--recover-invalid-session='));
+    if (args.includes('--bollinger-only') && (!args.includes('--scheduled') || args.some(arg => ['--enable-schedule','--disable-schedule','--bootstrap-week','--bootstrap-history','--recover-blocked-source'].includes(arg)) || recoveryArgs.length)) throw new Error('invalid_bollinger_options');
     if (recoveryArgs.length > 1 || recoveryArgs.length && args.some(arg => ['--enable-schedule','--disable-schedule','--scheduled','--bootstrap-week','--bootstrap-history'].includes(arg))) throw new Error('invalid_recovery_options');
     let db;
     try {
@@ -478,7 +490,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
                 || !(Date.parse(metadata.validThrough) > Date.now())) throw new Error('invalid_bootstrap_not_complete');
             await db.prepare(runSql).bind('screener-enabled','screener-configuration','enabled',JSON.stringify({version:2,bootstrapHistory:true}),stamp()).run();
         }
-        const result = await updateScreener(db, { bootstrapWeek: args.includes('--bootstrap-week') || args.includes('--bootstrap-history'), bootstrapArchive: args.includes('--bootstrap-history'), scheduled:args.includes('--scheduled'), recoverInvalidSession: recoveryArgs[0]?.split('=')[1] ?? null, recoverBlockedSource: args.includes('--recover-blocked-source'), limit: Number(args.find(arg => arg.startsWith('--limit='))?.slice(8) ?? 64), ohlcvLimit: Number(args.find(arg => arg.startsWith('--ohlcv-limit='))?.slice(14) ?? 8), ohlcvV4Limit: Number(args.find(arg => arg.startsWith('--ohlcv-v4-limit='))?.slice(17) ?? 4), log: value => console.log(JSON.stringify(value)) });
+        const result = await updateScreener(db, { bootstrapWeek: args.includes('--bootstrap-week') || args.includes('--bootstrap-history'), bootstrapArchive: args.includes('--bootstrap-history'), scheduled:args.includes('--scheduled'), bollingerOnly: args.includes('--bollinger-only'), recoverInvalidSession: recoveryArgs[0]?.split('=')[1] ?? null, recoverBlockedSource: args.includes('--recover-blocked-source'), limit: Number(args.find(arg => arg.startsWith('--limit='))?.slice(8) ?? 64), ohlcvLimit: Number(args.find(arg => arg.startsWith('--ohlcv-limit='))?.slice(14) ?? 8), ohlcvV4Limit: Number(args.find(arg => arg.startsWith('--ohlcv-v4-limit='))?.slice(17) ?? 4), log: value => console.log(JSON.stringify(value)) });
         console.log(JSON.stringify(result));
         if (result.state === 'pending') process.exitCode = 2;
         }

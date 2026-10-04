@@ -63,6 +63,9 @@ export const addError = style({ color: vars.color.danger, margin: '0 8px 6px', o
 globalStyle(`${row} details`, { margin: '0 8px 8px' });
 globalStyle(`${row} details span`, { display: 'block', overflowWrap: 'anywhere' });
 globalStyle(`${row} details pre`, { margin: '6px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', font: 'inherit' });
+globalStyle(`${results} > details pre, ${results} [role="status"] details pre`, {
+    margin: '6px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', font: 'inherit', maxWidth: '100%',
+});
 globalStyle(`${root} input[type="number"]`, { width: '5.5rem', maxWidth: '100%' });
 globalStyle(`${root} label`, { display: 'inline-flex', flexWrap: 'wrap', alignItems: 'center', gap: 4,
     minWidth: 0, maxWidth: '100%', overflowWrap: 'anywhere' });

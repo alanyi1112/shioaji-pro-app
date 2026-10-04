@@ -12,6 +12,9 @@ import { parseScreenerV6Query } from '../worker/stock-screener-v6-route.ts';
 import { publishScreenerV6Snapshot } from '../worker/stock-screener-v6-repository.ts';
 import { readScreenerV5Snapshot } from '../worker/stock-screener-v5-repository.ts';
 import { publishPreparedScreenerV6 } from '../worker/stock-screener-v6-publisher.ts';
+import { parseScreenerV7Query } from '../worker/stock-screener-v7-route.ts';
+import { publishPreparedScreenerV7 } from '../worker/stock-screener-v7-publisher.ts';
+import { publishScreenerV7Snapshot, readScreenerV7Snapshot } from '../worker/stock-screener-v7-repository.ts';
 
 const migrations = await Promise.all(['0027_pale_randall_flagg.sql', '0028_early_sir_ram.sql', '0029_plain_strong_guy.sql',
   '0031_screener_ohlcv_v4.sql', '0032_screener_chip_v5.sql', '0033_screener_institutional_reversal_v6.sql']
@@ -77,6 +80,39 @@ async function seedV5(db) {
     coverage: { daily: { TWSE: { target: 1, institutional: 1, margin: 1 }, TPEx: { target: 0, institutional: 0, margin: 0 } },
       tdcc: { target: 1, covered: 0 }, issuedShares: { target: 1, valid: 1, missing: 0 } } };
   return publishScreenerV5Snapshot(db, metadata, [input], new Date('2026-09-14T00:00:00Z'));
+}
+
+async function seedV6(db) {
+  await seedV5(db);
+  const base = await readScreenerV5Snapshot(db);
+  const required = base.metadata.dailySessions.slice(-21);
+  const daily = required.map((sessionDate, index) => ({ sessionDate,
+    foreignNetShares: index >= 17 && index <= 19 ? '-200000' : index === 20 ? '1500000' : '0',
+    investmentTrustNetShares: index >= 17 && index <= 19 ? '-200000' : index === 20 ? '600000' : '0',
+    close: index === 20 ? '20' : '10', volumeShares: index === 20 ? '5000000' : '1000000',
+    institutionalReceiptId: `receipt-v7-${index}`, institutionalMappingVersion: 'official-market-institutional-v2' }));
+  const raw = { dailySessions: required, daily, issuedCommonShares: { ...base.inputs[0].chipV5.issuedCommonShares },
+    dailyThrough: required.at(-1), mappingVersion: 'official-market-institutional-v2' };
+  const input = { ...base.inputs[0], institutionalV6: { ...raw, evidenceHash: await technicalEvidenceHash(raw) } };
+  const coverage = { targetDates: 21, verifiedDates: 21, targetRows: 21, verifiedRows: 21,
+    missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: required.at(-1) };
+  const metadata = { ...base.metadata, version: 6, schemaVersion: 6,
+    formulaVersion: 'after-market-v6-institutional-reversal-1', sourceMappingVersion: 'official-market-institutional-v2',
+    baseSnapshotId: base.id, receiptsHash: 'e'.repeat(64),
+    institutionalCoverage: { TWSE: coverage, TPEx: { ...coverage, targetRows: 0, verifiedRows: 0 } } };
+  const snapshotId = await publishScreenerV6Snapshot(db, metadata, [input], new Date('2026-09-14T00:00:01Z'));
+  return { snapshotId, metadata, input };
+}
+
+async function seedV7Ohlcv(db, omitIndex = -1) {
+  const statements = sessions.flatMap((sessionDate, index) => index === omitIndex ? [] : [db.prepare(`INSERT INTO screener_daily_ohlcv
+    (symbol,data_date,market,open,high,low,close,currency,price_basis,mapping_version,source_url,payload_hash,fetched_at,validation,
+      volume_shares,volume_unit,volume_field,volume_mapping_version) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind('2330.TW', sessionDate, 'TWSE', index === 129 ? '198' : '100', index === 129 ? '202' : '102',
+      '99', index === 129 ? '200' : '101', 'TWD', 'unadjusted', 'official-daily-ohlcv-v2', 'https://example.invalid',
+      'f'.repeat(64), '2026-09-14T00:00:00Z', 'canonical-complete-v2', index === 129 ? '2000000' : '1000000',
+      'shares', 'Trading_Volume', 'official-daily-ohlcv-v2')]);
+  for (let offset = 0; offset < statements.length; offset += 50) await db.batch(statements.slice(offset, offset + 50));
 }
 
 test('v5 migration is additive and keeps existing screener rows', async () => {
@@ -186,5 +222,86 @@ test('v6 publisher 不以單一商品或舊 v5 snapshot 代替兩市場 21 日 m
         TWSE: { targetDates: 21, verifiedDates: 0, targetRows: 0, verifiedRows: 0, missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: null },
         TPEx: { targetDates: 21, verifiedDates: 0, targetRows: 0, verifiedRows: 0, missingRows: 0, invalidRows: 0, lastVerifiedSourceDate: null },
       }, progress: { target: 42, processed: 0 } });
+  } finally { db.close(); }
+});
+
+test('v7 publisher 原子發布 canonical 技術證據，GET 唯讀且全關閉時投影 v6', async () => {
+  const db = setup();
+  try {
+    const v6 = await seedV6(db);
+    await seedV7Ohlcv(db);
+    const checkpoint = { version: 4, remaining: 0, failed: 0, overdue: 0, through: sessions.at(-1),
+      universeRevision: v6.metadata.universeRevision };
+    await db.prepare(`INSERT INTO screener_runs(id,scope,status,checkpoint,lease_until,updated_at)
+      VALUES('screener-ohlcv-v4-progress','ohlcv','complete',?,NULL,'2026-09-14T00:00:00Z')`)
+      .bind(JSON.stringify(checkpoint)).run();
+    const published = await publishPreparedScreenerV7(db, new Date('2026-09-14T00:00:02Z'));
+    assert.equal(published.state, 'published');
+    assert.equal(published.metadata.technicalCoverage.TWSE.covered, 1);
+    assert.equal(published.metadata.technicalCoverage.TWSE.indicatorReady, 1);
+    const stored = await readScreenerV7Snapshot(db);
+    assert.equal(stored.id, published.snapshotId);
+    assert.equal(stored.inputs[0].technicalV7.points.length, 3);
+    assert.equal(stored.inputs[0].technicalV7.readinessReason, 'none');
+
+    const criteria = 'version=7&volume=false&holder=false&fractal=false&bollReversal=false&ma=false&divergence=false'
+      + '&bollPositionEnabled=true&bollPositionMode=upper-outside&sort=code&direction=asc&resultState=pass&limit=50';
+    assert.equal(parseScreenerV7Query(new URLSearchParams(criteria)).criteria.bollPosition.enabled, true);
+    assert.throws(() => parseScreenerV7Query(new URLSearchParams(`${criteria}&evil=true`)), /invalid_query/);
+    const before = (await db.prepare('SELECT total_changes() AS n').first()).n;
+    const response = await handleStockScreener(new Request(`http://127.0.0.1/api/stock-screener/results?${criteria}`),
+      { DB: db, DEPLOYMENT_TARGET: 'local' }, new Date('2026-09-14T00:00:03Z'));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.version, 7);
+    assert.equal(body.rows.length, 1);
+    assert.equal(body.rows[0].technicalV7.outcomes.bollPosition.verdict, 'pass');
+    assert.equal(body.counts.matched + body.counts.notMatched + body.counts.unknown, body.counts.total);
+    assert.equal((await db.prepare('SELECT total_changes() AS n').first()).n, before);
+
+    const projected = await handleStockScreener(new Request('http://127.0.0.1/api/stock-screener/results?version=7&volume=false&foreignReversalEnabled=true&sort=code&direction=asc&resultState=pass&limit=50'),
+      { DB: db, DEPLOYMENT_TARGET: 'local' }, new Date('2026-09-14T00:00:03Z'));
+    assert.equal((await projected.json()).version, 6);
+
+    const oldHead = (await db.prepare("SELECT snapshot_id FROM screener_chip_publication_head WHERE name='v7'").first()).snapshot_id;
+    const failingDb = { prepare: db.prepare.bind(db), batch: async () => { throw new Error('simulated_write_failure'); } };
+    await assert.rejects(() => publishScreenerV7Snapshot(failingDb, { ...stored.metadata, receiptsHash: '2'.repeat(64) },
+      [stored.inputs[0]], new Date('2026-09-14T00:00:04Z')), /simulated_write_failure/);
+    assert.equal((await db.prepare("SELECT snapshot_id FROM screener_chip_publication_head WHERE name='v7'").first()).snapshot_id, oldHead);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM screener_snapshots WHERE schema_version=7 AND status='staging'").first()).n, 0);
+    const invalidInput = structuredClone(stored.inputs[0]);
+    invalidInput.technicalV7.evidenceHash = '0'.repeat(64);
+    await assert.rejects(() => publishScreenerV7Snapshot(db, { ...stored.metadata, receiptsHash: '1'.repeat(64) },
+      [invalidInput], new Date('2026-09-14T00:00:04Z')), /invalid_evidence_hash/);
+    assert.equal((await db.prepare("SELECT snapshot_id FROM screener_chip_publication_head WHERE name='v7'").first()).snapshot_id, oldHead);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM screener_snapshots WHERE schema_version=7 AND status='staging'").first()).n, 0);
+  } finally { db.close(); }
+});
+
+test('v7 publisher 遇到逐商品缺 session 時保留母體並發布 continuity unknown', async () => {
+  const db = setup();
+  try {
+    const v6 = await seedV6(db);
+    await seedV7Ohlcv(db, 64);
+    const checkpoint = { version: 4, remaining: 0, failed: 0, overdue: 0, through: sessions.at(-2),
+      universeRevision: v6.metadata.universeRevision };
+    await db.prepare(`INSERT INTO screener_runs(id,scope,status,checkpoint,lease_until,updated_at)
+      VALUES('screener-ohlcv-v4-progress','ohlcv','complete',?,NULL,'2026-09-14T00:00:00Z')`)
+      .bind(JSON.stringify(checkpoint)).run();
+    const lagging = await publishPreparedScreenerV7(db);
+    assert.equal(lagging.state, 'pending');
+    assert.equal(lagging.reason, 'ohlcv_v4_bootstrap_pending');
+    checkpoint.through = sessions.at(-1);
+    await db.prepare("UPDATE screener_runs SET checkpoint=? WHERE id='screener-ohlcv-v4-progress'")
+      .bind(JSON.stringify(checkpoint)).run();
+    const result = await publishPreparedScreenerV7(db);
+    assert.equal(result.state, 'published');
+    assert.equal(result.metadata.technicalCoverage.TWSE.target, 1);
+    assert.equal(result.metadata.technicalCoverage.TWSE.covered, 1);
+    assert.equal(result.metadata.technicalCoverage.TWSE.continuityUnknown, 1);
+    const snapshot = await readScreenerV7Snapshot(db);
+    assert.equal(snapshot.inputs[0].technicalV7.readinessReason, 'non_adjacent_sessions');
+    assert.equal(snapshot.inputs[0].technicalV7.missingSessions.length, 1);
+    assert.equal((await db.prepare("SELECT COUNT(*) AS n FROM screener_snapshots WHERE schema_version=6 AND status='published'").first()).n, 1);
   } finally { db.close(); }
 });

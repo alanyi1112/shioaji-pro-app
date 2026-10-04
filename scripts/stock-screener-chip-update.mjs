@@ -6,6 +6,7 @@ import { readScreenerV4Snapshot } from '../apps/multiview/worker/stock-screener-
 import { collectScreenerChipSession } from '../apps/multiview/worker/stock-screener-chip-collector.ts';
 import { publishPreparedScreenerV5 } from '../apps/multiview/worker/stock-screener-v5-publisher.ts';
 import { publishPreparedScreenerV6 } from '../apps/multiview/worker/stock-screener-v6-publisher.ts';
+import { publishPreparedScreenerV7 } from '../apps/multiview/worker/stock-screener-v7-publisher.ts';
 import { SCREENER_INSTITUTIONAL_MAPPING_VERSION } from '../src/lib/stock-screener-v6.ts';
 import { chipDownloadDecision } from '../apps/multiview/worker/stock-screener-chip-policy.ts';
 
@@ -59,8 +60,10 @@ export async function updateScreenerChip(db, { limit = 1, publishOnly = false, f
     .some(dataset => !afterVerified.has(`${date}|${market}|${dataset}`)))).length;
   const v5 = await publishPreparedScreenerV5(db);
   const v6 = await publishPreparedScreenerV6(db);
-  return { state: v6.state, requiredSessions: required.length, remainingSessions: remaining,
-    collected, publication: { v5, v6 } };
+  const v7 = ['published', 'unchanged'].includes(v6.state) ? await publishPreparedScreenerV7(db)
+    : { state: 'pending', reason: 'v6_snapshot_pending' };
+  return { state: v7.state, requiredSessions: required.length, remainingSessions: remaining,
+    collected, publication: { v5, v6, v7 } };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

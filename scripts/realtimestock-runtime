@@ -2217,7 +2217,7 @@ install_multiview_tdcc_early() {
 # This does not install/restart any service or activate TDCC historical backfill.
 service_multiview_screener_pipeline() {
     local screener_database
-    local -a screener_databases
+    local -a screener_databases screener_args
     screener_databases=("${(@f)$(find "${MULTIVIEW_STATE_DIR}/state/v3/d1" -type f -name '*.sqlite' ! -name 'metadata.sqlite' -print)}")
     if (( ${#screener_databases} != 1 )); then
         print -u2 '選股更新未執行：本機資料庫目標不唯一'
@@ -2225,13 +2225,18 @@ service_multiview_screener_pipeline() {
     fi
     screener_database="${screener_databases[1]}"
     [[ -f "${screener_database}" ]] || return 0
+    screener_args=(--database="${screener_database}" --scheduled)
+    # 新價量 capability 在 TDCC queue-probe／回補之前獨立檢查；不改原 watcher 頻率。
+    if [[ "${1:-}" == '--bollinger-only' ]]; then screener_args+=(--bollinger-only); fi
     "${NODE_BIN}" --use-system-ca "${REPO_DIR}/scripts/stock-screener-update.mjs" \
-        --database="${screener_database}" --scheduled \
+        "${screener_args[@]}" \
         || print -u2 '選股資料更新暫未就緒；既有維護工作不受影響'
 }
 
 service_multiview_tdcc_watcher() {
     local pipeline_secret probe lock_dir run_id exit_code
+    # 缺 TDCC secret／queue 失敗／既有 backfill 忙碌，都不能遮蔽已啟用的純價量能力。
+    service_multiview_screener_pipeline --bollinger-only
     pipeline_secret="$(read_multiview_pipeline_secret)"
     wait_multiview
     probe="$(curl -fsS --max-time 30 -X POST http://127.0.0.1:5174/api/internal/tdcc-continuous-backfill \

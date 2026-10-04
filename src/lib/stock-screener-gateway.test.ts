@@ -10,6 +10,30 @@ import {
 
 const req = { url: '/api/stock-screener/results', method: 'GET', headers: { host: '127.0.0.1:5173' } };
 describe('選股 allowlist 不接觸 broker', () => {
+    it('v8 profile 是獨立 local-only PUT；v1–v7 GET 與 broker 路徑不擴權', async () => {
+        const profile = { ...req, method: 'PUT', url: '/api/stock-screener/daily-profile?version=8',
+            socket: { localAddress: '127.0.0.1', remoteAddress: '127.0.0.1' },
+            headers: { host: '127.0.0.1:5173', origin: 'http://127.0.0.1:5173', 'content-type': 'application/json' } };
+        expect(validateScreenerGatewayRequest(profile)).toMatchObject({ profileWrite: true, version: 8 });
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=8' })).toMatchObject({ version: 8 });
+        for (const extra of [{ socket: { localAddress: '127.0.0.1', remoteAddress: '192.0.2.1' } },
+            { url: '/api/stock-screener/results?version=8' }, { url: '/api/stock-screener/daily-profile?version=7' },
+            { headers: { ...profile.headers, 'x-forwarded-for': '127.0.0.1' } },
+            { headers: { ...profile.headers, origin: 'https://evil.test' } }]) {
+            expect(validateScreenerGatewayRequest({ ...profile, ...extra })?.reason).toBeTruthy();
+        }
+        let middleware: Function = () => {};
+        const fetcher = vi.fn(async (_url: RequestInfo | URL, _options?: RequestInit) => Response.json({ version: 8, profile: { revision: 1 }, sourceRequests: 0 }));
+        (stockScreenerGateway(fetcher).configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+        const input = Object.assign(Readable.from([JSON.stringify({ expectedRevision: 0, enabled: false, criteria: {} })]), profile);
+        const res = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+        await middleware(input, res, vi.fn());
+        expect(res.statusCode).toBe(200);
+        expect(fetcher).toHaveBeenCalledOnce();
+        expect(fetcher.mock.calls[0]?.[0]).toBe('http://127.0.0.1:5174/api/stock-screener/daily-profile?version=8');
+        expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT', headers: { accept: 'application/json', 'content-type': 'application/json' } });
+        expect(fetcher.mock.calls[0]?.[1]?.headers).not.toHaveProperty('cookie');
+    });
     it('固定 loopback，不接受 URL／未知路徑／寫入／跨站／重複參數', () => {
         expect(validateScreenerGatewayRequest(req)?.url).toBe('http://127.0.0.1:5174/api/stock-screener/results');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=2&holderMode=decrease-to-increase&holderStreakWeeks=4&holderTurnover=true&holderTurnoverMinimumWan=1000' })?.url).toContain('holderStreakWeeks=4');
@@ -21,14 +45,25 @@ describe('選股 allowlist 不接觸 broker', () => {
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=4' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=4');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=5' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=5');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=6' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=6');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/status?version=7' })?.url).toBe('http://127.0.0.1:5174/api/stock-screener/status?version=7');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=6&foreignReversalEnabled=true&foreignReversalSellStreakDays=3&foreignReversalTodayNetBuyMinimumLots=1000' })?.url).toContain('foreignReversalEnabled=true');
+        expect(validateScreenerGatewayRequest({ ...req, url: '/api/stock-screener/results?version=7&bollPositionEnabled=true&bollPositionMode=middle-near&bollPositionTolerancePercent=10&bollPositionMiddleTrend=any&bollPositionVolumeEnabled=true&bollPositionVolumeBaselineDays=20&bollPositionVolumeRatio=1.2&bollPositionVolumeMinimumAverageVolumeEnabled=false&bollPositionVolumeMinimumAverageVolumeLots=1000' })?.url).toContain('bollPositionEnabled=true');
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/v1/contracts' })).toBeNull();
         for (const extra of [
             { method: 'POST' }, { url: '/api/stock-screener/delete' }, { url: '/api/stock-screener/results?url=http://evil' },
-            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=7' },
+            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=9' },
             { url: '/api/stock-screener/results?limit=101' }, { url: '/api/stock-screener/results?limit=1&limit=2' },
             { headers: { host: 'example.com' } }, { headers: { ...req.headers, origin: 'https://evil.example' } },
         ]) expect(validateScreenerGatewayRequest({ ...req, ...extra })?.reason).toBeTruthy();
+    });
+    it('v7 離線回應保留技術訊號 schema 與來源 mapping', async () => {
+        let middleware: Function = () => {};
+        const plugin = stockScreenerGateway(vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch, 10);
+        (plugin.configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+        const res = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+        await middleware({ ...req, url: '/api/stock-screener/status?version=7' }, res, vi.fn());
+        const body = JSON.parse(res.end.mock.calls[0]![0] as string);
+        expect(body).toMatchObject({ version: 7, state: 'unavailable', sourceMappingVersion: 'official-daily-ohlcv-v2', technicalCoverage: null });
     });
     it('離線與無回應 body 明確 503；不傳送 caller cookie', async () => {
         let middleware: Function = () => {};
@@ -72,6 +107,15 @@ describe('選股 allowlist 不接觸 broker', () => {
         await middleware({ ...req, url: '/api/stock-screener/status?version=5' }, res, vi.fn());
         const body = JSON.parse(res.end.mock.calls[0]![0] as string);
         expect(body).toMatchObject({ version: 5, state: 'unavailable', sourceMappingVersion: 'official-market-chip-v1', chipCoverage: null });
+    });
+    it('v6 離線回應保留法人反轉 schema 與 mapping', async () => {
+        let middleware: Function = () => {};
+        const plugin = stockScreenerGateway(vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch, 10);
+        (plugin.configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+        const res = { statusCode: 0, setHeader: vi.fn(), end: vi.fn() };
+        await middleware({ ...req, url: '/api/stock-screener/status?version=6' }, res, vi.fn());
+        const body = JSON.parse(res.end.mock.calls[0]![0] as string);
+        expect(body).toMatchObject({ version: 6, state: 'unavailable', sourceMappingVersion: 'official-market-institutional-v2', institutionalCoverage: null });
     });
 });
 

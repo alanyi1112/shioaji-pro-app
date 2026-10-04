@@ -1,4 +1,6 @@
-import type { CriteriaV6 } from './stock-screener-v6';
+import type { CriteriaV7 } from './stock-screener-v7';
+import { DEFAULT_BOLLINGER_SQUEEZE, type BollingerSqueezeCriteria } from './stock-screener-v8';
+export type ScreenerUICriteria = CriteriaV7 & { bollSqueezeStages?: BollingerSqueezeCriteria };
 
 export const STOCK_SCREENER_CONDITION_GROUPS = [
     { id: 'basic', label: '基本條件' },
@@ -15,6 +17,11 @@ export const STOCK_SCREENER_CONDITIONS = [
     { id: 'bollReversal', group: 'technical', label: '布林通道反轉 K' },
     { id: 'ma', group: 'technical', label: '均線糾結與交叉' },
     { id: 'divergence', group: 'technical', label: '價與指標背離' },
+    { id: 'bollPosition', group: 'technical', label: '布林通道位置' },
+    { id: 'bollSqueezeStages', group: 'technical', label: '布林壓縮與突破' },
+    { id: 'rsiCross', group: 'technical', label: 'RSI 極值區交叉' },
+    { id: 'kdCross', group: 'technical', label: 'KD 極值區交叉' },
+    { id: 'macdSignal', group: 'technical', label: 'MACD 零軸與交叉' },
     { id: 'closeHigh', group: 'technical', label: '收盤價創近期新高' },
     { id: 'closeSmaBreakout', group: 'technical', label: '收盤價向上突破 SMA' },
     { id: 'largeHolderTrend', group: 'chip', label: '千張大戶比例區間且連續上升' },
@@ -25,7 +32,7 @@ export const STOCK_SCREENER_CONDITIONS = [
     { id: 'shortMarginRatio', group: 'chip', label: '券資比達門檻' },
     { id: 'foreignReversal', group: 'chip', label: '外資連賣後轉買＋爆量換手' },
     { id: 'trustReversal', group: 'chip', label: '投信連賣後轉買＋爆量換手' },
-] as const satisfies readonly { id: Exclude<keyof CriteriaV6, 'mode'>; group: StockScreenerConditionGroupId; label: string }[];
+] as const satisfies readonly { id: Exclude<keyof ScreenerUICriteria, 'mode'>; group: StockScreenerConditionGroupId; label: string }[];
 
 export type StockScreenerConditionId = typeof STOCK_SCREENER_CONDITIONS[number]['id'];
 
@@ -48,18 +55,26 @@ const divergenceSources = {
 } as const;
 const divergenceDirections = { bullish: '底背離', bearish: '頂背離', any: '任一方向' } as const;
 
-export function isStockScreenerConditionEnabled(criteria: CriteriaV6, id: StockScreenerConditionId): boolean {
-    return criteria[id].enabled;
+export function isStockScreenerConditionEnabled(criteria: ScreenerUICriteria, id: StockScreenerConditionId): boolean {
+    return criteria[id]?.enabled ?? false;
 }
 
-export function stockScreenerConditionSummary(criteria: CriteriaV6, id: StockScreenerConditionId): string {
+export function stockScreenerConditionSummary(criteria: ScreenerUICriteria, id: StockScreenerConditionId): string {
     switch (id) {
         case 'volume': return `${criteria.volume.threshold} 倍${criteria.volume.turnover.enabled ? ` · 成交值 ${criteria.volume.turnover.minimumWan} 萬` : ''}`;
+        case 'bollSqueezeStages': { const c = criteria.bollSqueezeStages ?? DEFAULT_BOLLINGER_SQUEEZE;
+            return `前 ${c.lookbackDays} 日 Q${c.percentile} · 放量 > ${c.breakoutVolumeRatio}×`; }
         case 'holder': return `${holderModes[criteria.holder.mode]}${criteria.holder.mode === 'weekly-increase' ? '' : ` ${criteria.holder.streakWeeks} 週`} · ${criteria.holder.threshold} 百分點${criteria.holder.turnover.enabled ? ` · 成交值 ${criteria.holder.turnover.minimumWan} 萬` : ''}`;
         case 'fractal': return `${fractalAlgorithms[criteria.fractal.algorithm]} · ${fractalDirections[criteria.fractal.direction]}`;
         case 'bollReversal': return bollModes[criteria.bollReversal.mode];
         case 'ma': return `${maModes[criteria.ma.mode]} · ${criteria.ma.compressionDays} 日 · ${criteria.ma.maxSpreadPct}%`;
         case 'divergence': return `${divergenceSources[criteria.divergence.source]} · ${divergenceDirections[criteria.divergence.direction]}${criteria.divergence.source === 'macd-histogram' && criteria.divergence.requireZeroReset ? ' · 零軸重置' : ''}`;
+        case 'bollPosition': return criteria.bollPosition.mode === 'upper-outside' ? '收盤在上軌外'
+            : criteria.bollPosition.mode === 'lower-outside' ? '收盤在下軌外'
+            : `中軌附近 ${criteria.bollPosition.tolerancePercent}% · ${criteria.bollPosition.middleTrend === 'any' ? '不限方向' : criteria.bollPosition.middleTrend === 'rising' ? '中軌上升' : '中軌下降'}`;
+        case 'rsiCross': return `${criteria.rsiCross.mode === 'low-golden-cross' ? `低檔 ≤ ${criteria.rsiCross.lowThreshold} 黃金交叉` : `高檔 ≥ ${criteria.rsiCross.highThreshold} 死亡交叉`}${criteria.rsiCross.volumeConfirmation.enabled ? ' · 量能確認' : ''}`;
+        case 'kdCross': return `${criteria.kdCross.mode === 'low-golden-cross' ? `低檔 ≤ ${criteria.kdCross.lowThreshold} 黃金交叉` : `高檔 ≥ ${criteria.kdCross.highThreshold} 死亡交叉`}${criteria.kdCross.volumeConfirmation.enabled ? ' · 量能確認' : ''}`;
+        case 'macdSignal': return `${criteria.macdSignal.mode}${criteria.macdSignal.volumeConfirmation.enabled ? ' · 量能確認' : ''}`;
         case 'closeHigh': return `近 ${criteria.closeHigh.days} 日`;
         case 'closeSmaBreakout': return `SMA${criteria.closeSmaBreakout.period}`;
         case 'largeHolderTrend': return `${criteria.largeHolderTrend.minimumRatioPct}–${criteria.largeHolderTrend.maximumRatioPct}% · ${criteria.largeHolderTrend.weeks} 週`;
@@ -73,7 +88,7 @@ export function stockScreenerConditionSummary(criteria: CriteriaV6, id: StockScr
     }
 }
 
-export function firstEnabledStockScreenerCondition(criteria: CriteriaV6): StockScreenerConditionId {
+export function firstEnabledStockScreenerCondition(criteria: ScreenerUICriteria): StockScreenerConditionId {
     return STOCK_SCREENER_CONDITIONS.find(({ id }) => isStockScreenerConditionEnabled(criteria, id))?.id ?? 'volume';
 }
 
@@ -81,15 +96,15 @@ export function stockScreenerConditionGroup(id: StockScreenerConditionId): Stock
     return STOCK_SCREENER_CONDITIONS.find((condition) => condition.id === id)!.group;
 }
 
-export function enabledStockScreenerConditions(criteria: CriteriaV6) {
+export function enabledStockScreenerConditions(criteria: ScreenerUICriteria) {
     return STOCK_SCREENER_CONDITIONS.filter(({ id }) => isStockScreenerConditionEnabled(criteria, id));
 }
 
-export function setStockScreenerConditionEnabled(criteria: CriteriaV6, id: StockScreenerConditionId, enabled: boolean): CriteriaV6 {
-    return { ...criteria, [id]: { ...criteria[id], enabled } } as CriteriaV6;
+export function setStockScreenerConditionEnabled<T extends ScreenerUICriteria>(criteria: T, id: StockScreenerConditionId, enabled: boolean): T {
+    return { ...criteria, [id]: { ...(id === 'bollSqueezeStages' ? criteria.bollSqueezeStages ?? DEFAULT_BOLLINGER_SQUEEZE : criteria[id]), enabled } } as T;
 }
 
-export function disableAllStockScreenerConditions(criteria: CriteriaV6): CriteriaV6 {
+export function disableAllStockScreenerConditions<T extends ScreenerUICriteria>(criteria: T): T {
     return {
         ...criteria,
         volume: { ...criteria.volume, enabled: false, turnover: { ...criteria.volume.turnover } },
@@ -98,6 +113,10 @@ export function disableAllStockScreenerConditions(criteria: CriteriaV6): Criteri
         bollReversal: { ...criteria.bollReversal, enabled: false },
         ma: { ...criteria.ma, enabled: false },
         divergence: { ...criteria.divergence, enabled: false },
+        bollPosition: { ...criteria.bollPosition, enabled: false, volumeConfirmation: { ...criteria.bollPosition.volumeConfirmation } },
+        rsiCross: { ...criteria.rsiCross, enabled: false, volumeConfirmation: { ...criteria.rsiCross.volumeConfirmation } },
+        kdCross: { ...criteria.kdCross, enabled: false, volumeConfirmation: { ...criteria.kdCross.volumeConfirmation } },
+        macdSignal: { ...criteria.macdSignal, enabled: false, volumeConfirmation: { ...criteria.macdSignal.volumeConfirmation } },
         closeHigh: { ...criteria.closeHigh, enabled: false },
         closeSmaBreakout: { ...criteria.closeSmaBreakout, enabled: false },
         largeHolderTrend: { ...criteria.largeHolderTrend, enabled: false },
@@ -108,5 +127,6 @@ export function disableAllStockScreenerConditions(criteria: CriteriaV6): Criteri
         shortMarginRatio: { ...criteria.shortMarginRatio, enabled: false },
         foreignReversal: { ...criteria.foreignReversal, enabled: false },
         trustReversal: { ...criteria.trustReversal, enabled: false },
-    };
+        ...(criteria.bollSqueezeStages ? { bollSqueezeStages: { ...criteria.bollSqueezeStages, enabled: false, stages: [...criteria.bollSqueezeStages.stages] } } : {}),
+    } as T;
 }

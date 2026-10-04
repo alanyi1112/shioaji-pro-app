@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_CRITERIA, effectiveCriteria, validateCriteria, type Criteria, type HolderMode, type ReasonCode, type UniverseStock } from '../lib/stock-screener-domain';
-import { decodeScreenerResponse, screenerSearchV3, screenerSearchV4, screenerSearchV5, screenerSearchV6, type ScreenerQuery, type ScreenerQueryV3,
+import { decodeScreenerResponse, screenerSearchV3, screenerSearchV4, screenerSearchV5, screenerSearchV6, screenerSearchV7, type ScreenerQuery, type ScreenerQueryV3,
     type ScreenerQueryV4, type ScreenerQueryV5, type ScreenerQueryV6, type ScreenerResponseV3, type ScreenerResponseV4, type ScreenerResponseV5,
-    type ScreenerResponseV6, type ScreenerResultRowV4, type ScreenerResultRowV5, type ScreenerResultRowV6 } from '../lib/stock-screener-api';
+    type ScreenerQueryV7, type ScreenerResponseV6, type ScreenerResponseV7, type ScreenerResultRowV4, type ScreenerResultRowV5,
+    type ScreenerResultRowV6, type ScreenerResultRowV7 } from '../lib/stock-screener-api';
 import {
     DEFAULT_CRITERIA_V3, isV3Preference,
     type TechnicalUnknownReason,
@@ -19,6 +20,10 @@ import {
     criteriaFingerprintV6, effectiveCriteriaV6, isV6Preference, migrateCriteriaV5ToV6, validateCriteriaV6,
     type CriteriaV6, type V6Reason,
 } from '../lib/stock-screener-v6';
+import {
+    criteriaFingerprintV7, effectiveCriteriaV7, isV7Preference, migrateCriteriaV6ToV7, validateCriteriaV7,
+    type CriteriaV7, type V7Reason,
+} from '../lib/stock-screener-v7';
 import type { ScreenerListSyncResult } from '../lib/stock-screener-list-sync';
 import { stockScreenerVolumeComparison } from '../lib/stock-screener-volume-comparison';
 import {
@@ -28,14 +33,19 @@ import {
 } from '../lib/stock-screener-condition-ui';
 import { StockScreenerConditionAccordion } from './stock-screener-condition-accordion';
 import * as styles from './stock-screener-panel.css';
+import { DEFAULT_BOLLINGER_SQUEEZE, validateCriteriaV8, type BollingerSqueezeCriteria } from '../lib/stock-screener-v8';
+import { BOLLINGER_PREFS, loadBollingerPreference, bollingerSearch, decodeBollingerResponse,
+    type BollingerQueryDraft, type BollingerResponse, type BollingerDailyProfileView } from '../lib/stock-screener-bollinger-api';
+import { StockScreenerBollingerResults } from './stock-screener-bollinger-results';
 
-const PREFS = 'sj-pro-stock-screener-v6';
+const PREFS = 'sj-pro-stock-screener-v7';
+const V6_PREFS = 'sj-pro-stock-screener-v6';
 const V5_PREFS = 'sj-pro-stock-screener-v5';
 const V4_PREFS = 'sj-pro-stock-screener-v4';
 const V3_PREFS = 'sj-pro-stock-screener-v3';
 const V2_PREFS = 'sj-pro-stock-screener-v2';
 const V1_PREFS = 'sj-pro-stock-screener-v1';
-const INITIAL_QUERY: ScreenerQueryV6 = { criteria: migrateCriteriaV5ToV6(migrateCriteriaV4ToV5(DEFAULT_CRITERIA_V4)), sort: 'code', direction: 'asc', resultState: 'pass' };
+const INITIAL_QUERY: ScreenerQueryV7 = { criteria: migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(migrateCriteriaV4ToV5(DEFAULT_CRITERIA_V4))), sort: 'code', direction: 'asc', resultState: 'pass' };
 const reasonLabels: Record<ReasonCode, string> = {
     none: '', period_pending: '比較期尚未備齊', missing_current: '缺本期', missing_previous: '缺前期',
     date_mismatch: '期別不符', incompatible_source: '來源口徑不一致', invalid_volume: '成交量無效',
@@ -67,6 +77,7 @@ const statusReasons: Record<string, string> = {
     tdcc_universe_coverage_pending: 'TDCC 最新週期尚未涵蓋完整選股母體。',
     v6_preparation_pending: '外資／投信反轉所需的 21 個交易日新 mapping 尚在驗證；v5 結果仍保留可用。',
     institutional_v2_history_pending: 'TWSE／TPEx 外資與投信欄位的新 mapping 歷史尚未完整驗證。',
+    v7_preparation_pending: 'BOLL／RSI／KD／MACD 的 v7 全市場快照尚未發布；不會以舊版資料套用新公式。',
 };
 const publicationReasonLabels: Record<string, string> = {
     source_not_published: '官方尚未發布', invalid_report_date: '報表日期不符', invalid_report_schema: '報表欄位不符',
@@ -101,19 +112,26 @@ const v6ReasonLabels: Record<V6Reason, string> = {
     issued_shares_invalid: '已發行普通股數無效', invalid_ratio: '比率無效', invalid_volume: '成交量無效', invalid_close: '收盤價無效',
     mapping_unverified: '法人欄位 mapping 尚未驗證', mixed_session_dates: '資料日期不一致',
 };
+const v7ReasonLabels: Record<V7Reason, string> = {
+    none: '', missing_ohlcv: '缺少官方 OHLCV', invalid_ohlcv: '官方 OHLCV 驗證未通過',
+    non_adjacent_sessions: '官方交易日期序不相鄰', indicator_warmup: '指標暖機期不足',
+    zero_bollinger_width: '布林通道寬度為零', missing_volume: '量能基準日不足',
+    invalid_volume: '官方成交股數無效', zero_volume_baseline: '量能基準平均為零',
+};
 const chipConditionLabels: Record<ChipConditionKey, string> = {
     largeHolderTrend: '千張大戶比例趨勢', largeHolderConcentration: '千張大戶集中', retailHolderDecline: '10 張以下散戶下降',
     trustOwnership: '投信買超占股本', priceMargin: '價漲融資不增', shortMarginRatio: '券資比', closeHigh: '收盤新高', closeSmaBreakout: '收盤突破 SMA',
 };
 const chipConditionKeys = Object.keys(chipConditionLabels) as ChipConditionKey[];
-const resultStateLabels: Record<ScreenerQueryV6['resultState'], string> = { pass: '符合條件', unknown: '無法判定', fail: '不符合' };
-const sortLabels: Record<ScreenerQueryV6['sort'], string> = {
+const resultStateLabels: Record<ScreenerQueryV7['resultState'], string> = { pass: '符合條件', unknown: '無法判定', fail: '不符合' };
+const sortLabels: Record<ScreenerQueryV7['sort'], string> = {
     code: '股票代碼', volumeMultiple: '成交量倍數', turnover: '成交值', holderChange: '最新持股變化', holderStreak: '反轉前週數',
     confirmationDate: '型態確認日', algorithm: '分型算法', direction: '型態方向', outsideDistance: '通道外距離', maSpread: '最新均線 spread',
     pivotDate: '背離確認日', priceDifference: '背離價差', largeHolderRatio: '千張大戶比例', trustOwnershipPct: '投信買超占股本',
     shortMarginRatio: '券資比', closeHighDays: '新高期間', smaPeriod: '突破均線週期',
     foreignTodayNetBuy: '外資今日淨買超', trustTodayNetBuy: '投信今日淨買超', trustRecoveryPct: '投信回補強度',
     trustParticipationPct: '投信成交參與率',
+    bollDistance: '收盤與布林中軌距離', rsiFast: 'RSI5', kdFast: 'KD-K', macdDif: 'MACD DIF', volumeRatio: '條件內量能倍數',
 };
 const validV2Sort = (value: unknown): value is ScreenerQuery['sort'] => ['code', 'volumeMultiple', 'turnover', 'holderChange', 'holderStreak'].includes(String(value));
 function migrateV1Criteria(value: unknown): Criteria | null {
@@ -140,8 +158,8 @@ function toV4(query: ScreenerQueryV3): ScreenerQueryV4 {
 function toV5(query: ScreenerQueryV4): ScreenerQueryV5 {
     return { ...query, criteria: migrateCriteriaV4ToV5(query.criteria) };
 }
-function savePreferences(query: ScreenerQueryV6) {
-    localStorage.setItem(PREFS, JSON.stringify({ version: 6, query: { ...query, cursor: undefined } }));
+function savePreferences(query: ScreenerQueryV7) {
+    localStorage.setItem(PREFS, JSON.stringify({ version: 7, query: { ...query, cursor: undefined } }));
     const criteria: CriteriaV4 = {
         mode: query.criteria.mode, volume: query.criteria.volume, holder: query.criteria.holder,
         fractal: query.criteria.fractal, bollReversal: query.criteria.bollReversal,
@@ -152,23 +170,30 @@ function savePreferences(query: ScreenerQueryV6) {
     localStorage.setItem(V4_PREFS, JSON.stringify({ version: 4, query: { criteria,
         sort: allowed.includes(query.sort) ? query.sort : 'code', direction: query.direction, resultState: query.resultState } }));
 }
-function loadPreferences(): ScreenerQueryV6 {
+function loadLegacyPreferences(): ScreenerQueryV7 {
     try {
         const saved = JSON.parse(localStorage.getItem(PREFS) ?? 'null');
-        if (isV6Preference(saved)) {
-            return { criteria: effectiveCriteriaV6(saved.query.criteria), sort: saved.query.sort, direction: saved.query.direction, resultState: saved.query.resultState };
+        if (isV7Preference(saved)) {
+            return { criteria: effectiveCriteriaV7(saved.query.criteria), sort: saved.query.sort, direction: saved.query.direction, resultState: saved.query.resultState };
+        }
+        const v6 = JSON.parse(localStorage.getItem(V6_PREFS) ?? 'null');
+        if (isV6Preference(v6)) {
+            const query: ScreenerQueryV7 = { criteria: migrateCriteriaV6ToV7(effectiveCriteriaV6(v6.query.criteria)),
+                sort: v6.query.sort, direction: v6.query.direction, resultState: v6.query.resultState };
+            try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
+            return query;
         }
         const v5 = JSON.parse(localStorage.getItem(V5_PREFS) ?? 'null');
         if (isV5Preference(v5)) {
-            const query: ScreenerQueryV6 = { criteria: migrateCriteriaV5ToV6(effectiveCriteriaV5(v5.query.criteria)),
-                sort: v5.query.sort as ScreenerQueryV6['sort'], direction: v5.query.direction, resultState: v5.query.resultState };
+            const query: ScreenerQueryV7 = { criteria: migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(effectiveCriteriaV5(v5.query.criteria))),
+                sort: v5.query.sort as ScreenerQueryV7['sort'], direction: v5.query.direction, resultState: v5.query.resultState };
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
         const v4 = JSON.parse(localStorage.getItem(V4_PREFS) ?? 'null');
         if (isV4Preference(v4)) {
             const query = { ...toV5({ criteria: effectiveCriteriaV4(v4.query.criteria), sort: v4.query.sort, direction: v4.query.direction, resultState: v4.query.resultState }),
-                criteria: migrateCriteriaV5ToV6(toV5({ criteria: effectiveCriteriaV4(v4.query.criteria), sort: v4.query.sort, direction: v4.query.direction, resultState: v4.query.resultState }).criteria) } as ScreenerQueryV6;
+                criteria: migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(toV5({ criteria: effectiveCriteriaV4(v4.query.criteria), sort: v4.query.sort, direction: v4.query.direction, resultState: v4.query.resultState }).criteria)) } as ScreenerQueryV7;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
@@ -176,7 +201,7 @@ function loadPreferences(): ScreenerQueryV6 {
         if (isV3Preference(v3)) {
             const legacy = toV5(toV4({ criteria: effectiveCriteria(v3.query.criteria) as typeof v3.query.criteria,
                 sort: v3.query.sort, direction: v3.query.direction, resultState: v3.query.resultState }));
-            const query = { ...legacy, criteria: migrateCriteriaV5ToV6(legacy.criteria) } as ScreenerQueryV6;
+            const query = { ...legacy, criteria: migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(legacy.criteria)) } as ScreenerQueryV7;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
@@ -184,7 +209,7 @@ function loadPreferences(): ScreenerQueryV6 {
         if (v2?.version === 2 && validateCriteria(v2.query?.criteria) && validV2Sort(v2.query?.sort)
             && ['asc', 'desc'].includes(v2.query.direction) && ['pass', 'unknown', 'fail'].includes(v2.query.resultState)) {
             const legacy = toV5(toV4(toV3({ criteria: v2.query.criteria, sort: v2.query.sort, direction: v2.query.direction, resultState: v2.query.resultState })));
-            const query = { ...legacy, criteria: migrateCriteriaV5ToV6(legacy.criteria) } as ScreenerQueryV6;
+            const query = { ...legacy, criteria: migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(legacy.criteria)) } as ScreenerQueryV7;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
@@ -193,16 +218,28 @@ function loadPreferences(): ScreenerQueryV6 {
         if (migrated && validV2Sort(v1.query?.sort) && ['asc', 'desc'].includes(v1.query.direction)
             && ['pass', 'unknown', 'fail'].includes(v1.query.resultState)) {
             const legacy = toV5(toV4(toV3({ criteria: migrated, sort: v1.query.sort, direction: v1.query.direction, resultState: v1.query.resultState })));
-            const query = { ...legacy, criteria: migrateCriteriaV5ToV6(legacy.criteria) } as ScreenerQueryV6;
+            const query = { ...legacy, criteria: migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(legacy.criteria)) } as ScreenerQueryV7;
             try { savePreferences(query); } catch { /* Migration remains usable in memory. */ }
             return query;
         }
     } catch { /* Device-local preferences never prevent opening the panel. */ }
     return INITIAL_QUERY;
 }
-const fingerprint = (query: ScreenerQueryV6) => validateCriteriaV6(query.criteria)
-    ? `${criteriaFingerprintV6(query.criteria)}|${query.sort}|${query.direction}|${query.resultState}` : 'invalid';
+function loadPreferences(): ScreenerQueryV7 {
+    const legacy = loadLegacyPreferences();
+    try {
+        const v8 = loadBollingerPreference(localStorage);
+        if (v8) { const { bollSqueezeStages: _, ...criteria } = v8.criteria;
+            return { ...legacy, criteria, direction: v8.direction,
+                resultState: v8.resultState === 'unknown' ? 'unknown' : v8.resultState === 'notMatched' ? 'fail' : 'pass' }; }
+    } catch { /* Device-local storage may be unavailable. */ }
+    return legacy;
+}
+const fingerprint = (query: ScreenerQueryV7) => validateCriteriaV7(query.criteria)
+    ? `${criteriaFingerprintV7(query.criteria)}|${query.sort}|${query.direction}|${query.resultState}` : 'invalid';
 const shares = (value: string | null) => value === null ? '—' : `${value.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} 股`;
+const missingCount = (value: { missingByCondition: object }, key: string) =>
+    Number((value.missingByCondition as Record<string, number>)[key] ?? 0);
 
 export interface StockScreenerPanelProps {
     targets: { id: string; label: string }[];
@@ -217,13 +254,21 @@ export interface StockScreenerPanelProps {
 type AddState = { status: 'pending' | ScreenerListSyncResult['status']; message: string };
 
 export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChange, onAddToWatchlist, chartConnectionMessage, snapshotVolumesByCode }: StockScreenerPanelProps) {
-    const initialDraft = useRef<ScreenerQueryV6 | null>(null);
+    const initialDraft = useRef<ScreenerQueryV7 | null>(null);
     if (initialDraft.current === null) initialDraft.current = loadPreferences();
     const [draft, setDraft] = useState(initialDraft.current);
-    const [activeCondition, setActiveCondition] = useState<StockScreenerConditionId>(() => firstEnabledStockScreenerCondition(initialDraft.current!.criteria));
+    const [bollinger, setBollinger] = useState<BollingerSqueezeCriteria>(() => loadBollingerPreference(localStorage)?.criteria.bollSqueezeStages ?? structuredClone(DEFAULT_BOLLINGER_SQUEEZE));
+    const [bollingerSort, setBollingerSort] = useState<BollingerQueryDraft['sort']>(() => loadBollingerPreference(localStorage)?.sort ?? 'code');
+    const [bollingerResponse, setBollingerResponse] = useState<BollingerResponse | null>(null);
+    const [bollingerApplied, setBollingerApplied] = useState<BollingerQueryDraft | null>(null);
+    const [dailyProfile, setDailyProfile] = useState<BollingerDailyProfileView | null>(null);
+    const [profileReady, setProfileReady] = useState(false);
+    const [profileBusy, setProfileBusy] = useState(false);
+    const [profileMessage, setProfileMessage] = useState('');
+    const [activeCondition, setActiveCondition] = useState<StockScreenerConditionId>(() => firstEnabledStockScreenerCondition({ ...initialDraft.current!.criteria, bollSqueezeStages: bollinger }));
     const [draftActionMessage, setDraftActionMessage] = useState('');
-    const [applied, setApplied] = useState<ScreenerQueryV6 | null>(null);
-    const [response, setResponse] = useState<ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 | null>(null);
+    const [applied, setApplied] = useState<ScreenerQueryV7 | null>(null);
+    const [response, setResponse] = useState<ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 | ScreenerResponseV7 | null>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const [storageError, setStorageError] = useState(false);
@@ -237,9 +282,20 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     const pendingAdds = useRef(new Set<string>());
     const controller = useRef<AbortController | null>(null);
     const effectiveTarget = targets.some((target) => target.id === targetId) ? targetId : targets.length === 1 ? targets[0]!.id : '';
-    const valid = validateCriteriaV6(draft.criteria);
+    const uiCriteria = { ...draft.criteria, bollSqueezeStages: bollinger };
+    const valid = validateCriteriaV8(uiCriteria);
     const dirty = applied !== null && fingerprint(draft) !== fingerprint(applied);
-    const enabledConditions = enabledStockScreenerConditions(draft.criteria);
+    const enabledConditions = enabledStockScreenerConditions(uiCriteria);
+    useEffect(() => {
+        const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 10000);
+        fetch('/api/stock-screener/daily-profile?version=8', { signal: abort.signal, credentials: 'same-origin' })
+            .then(async r => { if (!r.ok) throw new Error(); const value = await r.json();
+                if (value.version !== 8 || value.profile !== null && (!Number.isSafeInteger(value.profile?.revision) || !validateCriteriaV8(value.profile.criteria))) throw new Error();
+                if (!abort.signal.aborted) { setDailyProfile(value.profile); setProfileReady(true); } })
+            .catch(() => { if (!abort.signal.aborted) setProfileMessage('每日設定接口尚未就緒；不影響舊版選股。'); })
+            .finally(() => clearTimeout(timer));
+        return () => { abort.abort(); clearTimeout(timer); };
+    }, []);
 
     useEffect(() => () => { generation.current++; pickingGeneration.current++; controller.current?.abort(); }, []);
     useEffect(() => {
@@ -247,7 +303,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         const abort = new AbortController();
         const ticket = ++generation.current;
         const timer = setTimeout(() => abort.abort(), 10000);
-        fetch('/api/stock-screener/status?version=6', { signal: abort.signal, credentials: 'same-origin' })
+        fetch('/api/stock-screener/status?version=7', { signal: abort.signal, credentials: 'same-origin' })
             .then(async (res) => { if (!res.ok) throw new Error(); return decodeScreenerResponse(await res.json()); })
             .then((result) => { if (generation.current === ticket) setResponse(result); })
             .catch(() => { if (generation.current === ticket) setError(abort.signal.aborted ? '本機選股資料服務查詢逾時' : '無法連線本機選股資料服務'); })
@@ -255,14 +311,48 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         return () => { abort.abort(); clearTimeout(timer); };
     }, []);
 
-    async function run(query: ScreenerQueryV6, cursor = '', nextPage = 0) {
-        if (!validateCriteriaV6(query.criteria)) return;
+    const bollingerQuery = (): BollingerQueryDraft => ({ criteria: uiCriteria, sort: bollingerSort, direction: draft.direction,
+        resultState: draft.resultState === 'pass' ? 'matched' : draft.resultState === 'fail' ? 'notMatched' : 'unknown' });
+    async function runBollinger(query: BollingerQueryDraft, cursor?: string, pinnedSnapshot?: string) {
+        if (!validateCriteriaV8(query.criteria) || !query.criteria.bollSqueezeStages.enabled) return;
+        const ticket = ++generation.current; controller.current?.abort();
+        const abort = new AbortController(); controller.current = abort; const timer = setTimeout(() => abort.abort(), 12000);
+        setBusy(true); setError('');
+        try {
+            const r = await fetch(`/api/stock-screener/results?${bollingerSearch(query, cursor, pinnedSnapshot ?? (cursor ? bollingerResponse?.snapshotId ?? undefined : undefined))}`,
+                { signal: abort.signal, credentials: 'same-origin' });
+            const raw = await r.json(); if (!r.ok) throw new Error(r.status === 409 ? '快照或分頁設定已更新，請重新篩選' : '布林價量查詢尚未就緒');
+            const result = decodeBollingerResponse(raw); if (generation.current !== ticket) return;
+            setBollingerResponse(result); setBollingerApplied(query); setResponse(null); setApplied(null);
+            try { localStorage.setItem(BOLLINGER_PREFS, JSON.stringify({ version: 8, query })); setStorageError(false); } catch { setStorageError(true); }
+        } catch (e) { if (generation.current === ticket) setError(e instanceof Error ? e.message : '布林查詢失敗'); }
+        finally { clearTimeout(timer); if (generation.current === ticket) setBusy(false); }
+    }
+    async function saveDailyProfile(enabled = true) {
+        const profileCriteria = enabled ? uiCriteria : dailyProfile?.criteria;
+        if (!profileReady || profileBusy || !profileCriteria || !validateCriteriaV8(profileCriteria) || enabled && !bollinger.enabled) return;
+        setProfileBusy(true); setProfileMessage('');
+        const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 10000);
+        try {
+            const r = await fetch('/api/stock-screener/daily-profile?version=8', { method: 'PUT', signal: abort.signal, credentials: 'same-origin',
+                headers: { 'content-type': 'application/json' }, body: JSON.stringify({ expectedRevision: dailyProfile?.revision ?? 0, enabled, criteria: profileCriteria }) });
+            const value = await r.json(); if (!r.ok) throw new Error(r.status === 409 ? '每日設定已被其他視窗更新，請重新載入後確認' : '每日設定儲存失敗');
+            if (value.version !== 8 || !Number.isSafeInteger(value.profile?.revision) || !validateCriteriaV8(value.profile.criteria)) throw new Error('每日設定回應無效');
+            setDailyProfile(value.profile); setProfileMessage(`已儲存每日策略 revision ${value.profile.revision}；${enabled ? '背景依官方資料與有界預算準備' : '已停用'}。沒有立即下載。`);
+        } catch (e) { setProfileMessage(e instanceof Error ? e.message : '每日設定儲存失敗'); }
+        finally { clearTimeout(timer); setProfileBusy(false); }
+    }
+
+    async function run(query: ScreenerQueryV7, cursor = '', nextPage = 0) {
+        if (!validateCriteriaV7(query.criteria)) return;
         const requestedQuery = query;
-        query = { ...query, criteria: effectiveCriteriaV6(query.criteria) };
+        query = { ...query, criteria: effectiveCriteriaV7(query.criteria) };
+        const needsV7 = (['bollPosition', 'rsiCross', 'kdCross', 'macdSignal'] as const).some((key) => query.criteria[key].enabled);
         const needsV6 = query.criteria.foreignReversal.enabled || query.criteria.trustReversal.enabled;
         const needsV5 = (['largeHolderTrend', 'largeHolderConcentration', 'retailHolderDecline', 'trustOwnership',
             'priceMargin', 'shortMarginRatio', 'closeHigh', 'closeSmaBreakout'] as ChipConditionKey[]).some((key) => query.criteria[key].enabled);
         const needsV4 = query.criteria.ma.enabled || query.criteria.divergence.enabled;
+        if (!needsV7 && ['bollDistance', 'rsiFast', 'kdFast', 'macdDif', 'volumeRatio'].includes(query.sort)) query = { ...query, sort: 'code' };
         if (!needsV6 && ['foreignTodayNetBuy', 'trustTodayNetBuy', 'trustRecoveryPct', 'trustParticipationPct'].includes(query.sort)) query = { ...query, sort: 'code' };
         if (!needsV5 && ['largeHolderRatio', 'trustOwnershipPct', 'shortMarginRatio', 'closeHighDays', 'smaPeriod'].includes(query.sort)) query = { ...query, sort: 'code' };
         if (!needsV5 && !needsV4 && ['maSpread', 'pivotDate', 'priceDifference'].includes(query.sort)) query = { ...query, sort: 'code' };
@@ -273,7 +363,8 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         const timer = setTimeout(() => abort.abort(), 12000);
         setBusy(true); setError('');
         try {
-            const search = needsV6 ? screenerSearchV6({ ...query, cursor: cursor || undefined })
+            const search = needsV7 ? screenerSearchV7({ ...query, cursor: cursor || undefined })
+                : needsV6 ? screenerSearchV6({ ...query, cursor: cursor || undefined } as ScreenerQueryV6)
                 : needsV5 ? screenerSearchV5({ ...query, cursor: cursor || undefined } as ScreenerQueryV5)
                 : needsV4 ? screenerSearchV4({ ...query, sort: query.sort as ScreenerQueryV4['sort'], cursor: cursor || undefined })
                 : screenerSearchV3({ ...query, criteria: query.criteria, sort: query.sort as ScreenerQueryV3['sort'], cursor: cursor || undefined });
@@ -281,14 +372,17 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             const raw = await res.json();
             if (!res.ok) throw new Error(['snapshot_expired','snapshot_version_expired'].includes(raw.reason) ? '快照已更新，請重新開始篩選' : /^[a-z_]{1,64}$/.test(raw.reason ?? '') ? `選股查詢失敗（${raw.reason}）` : '本機資料服務無法使用，請稍後重試');
             const result = decodeScreenerResponse(raw);
-            if (needsV6 && result.version !== 6) throw new Error('v6 全市場法人反轉資料尚未備齊');
-            if (!needsV6 && needsV5 && result.version !== 5) throw new Error('v5 全市場籌碼資料尚未備齊');
-            if (!needsV5 && needsV4 && result.version !== 4) throw new Error('v4 選股資料尚未備齊');
+            if (needsV7 && result.version !== 7) throw new Error('v7 全市場技術訊號資料尚未備齊');
+            if (!needsV7 && needsV6 && result.version !== 6) throw new Error('v6 全市場法人反轉資料尚未備齊');
+            if (!needsV7 && !needsV6 && needsV5 && result.version !== 5) throw new Error('v5 全市場籌碼資料尚未備齊');
+            if (!needsV7 && !needsV6 && !needsV5 && needsV4 && result.version !== 4) throw new Error('v4 選股資料尚未備齊');
             if (ticket !== generation.current) return;
-            setResponse(result); setApplied(query); setPage(nextPage);
+            setResponse(result); setApplied(query); setPage(nextPage); setBollingerResponse(null); setBollingerApplied(null);
             if (!cursor) setCursors(['']);
             else setCursors((old) => [...old.slice(0, nextPage), cursor]);
-            try { savePreferences(query); setStorageError(false); }
+            try { savePreferences(query);
+                localStorage.setItem(BOLLINGER_PREFS, JSON.stringify({ version: 8, query: { criteria: { ...query.criteria, bollSqueezeStages: bollinger }, sort: bollingerSort,
+                    direction: query.direction, resultState: query.resultState === 'pass' ? 'matched' : query.resultState === 'fail' ? 'notMatched' : 'unknown' } })); setStorageError(false); }
             catch { setStorageError(true); }
         } catch (e) {
             if (ticket === generation.current) setError(abort.signal.aborted ? '查詢逾時，請稍後重試' : (e instanceof Error ? e.message : '查詢失敗'));
@@ -325,42 +419,53 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
     return <div className={styles.root} data-testid='stock-screener-panel'>
         <p className={styles.note}>收盤後選股 · 全部上市／上櫃普通股（不限定自選清單）</p>
         <details className={styles.note}><summary>範圍與排除商品</summary>排除 ETF、ETN、權證、特別股、TDR、興櫃及海外股票；停牌但未下市櫃的普通股仍列入母體，缺比較資料時標示無法判定。</details>
-        <form onSubmit={(event) => { event.preventDefault(); void run(draft); }}>
+        <form onSubmit={(event) => { event.preventDefault(); if (bollinger.enabled) void runBollinger(bollingerQuery()); else void run(draft); }}>
             <div className={styles.draftToolbar}><div className={styles.controls}><button type='button' onClick={() => {
-                const criteria: CriteriaV6 = { ...migrateCriteriaV5ToV6(LONG_TERM_LAYOUT_PRESET),
+                const criteria: CriteriaV7 = { ...migrateCriteriaV6ToV7(migrateCriteriaV5ToV6(LONG_TERM_LAYOUT_PRESET)),
                     largeHolderTrend: { ...LONG_TERM_LAYOUT_PRESET.largeHolderTrend },
                     retailHolderDecline: { ...LONG_TERM_LAYOUT_PRESET.retailHolderDecline },
                     priceMargin: { ...LONG_TERM_LAYOUT_PRESET.priceMargin } };
-                setDraft({ ...draft, criteria }); setActiveCondition(firstEnabledStockScreenerCondition(criteria)); setDraftActionMessage('已套用「長線佈局」草稿；按「開始篩選」後才查詢。');
+                setDraft({ ...draft, criteria }); setBollinger(current => ({ ...current, enabled: false })); setActiveCondition(firstEnabledStockScreenerCondition(criteria)); setDraftActionMessage('已套用「長線佈局」草稿；按「開始篩選」後才查詢。');
             }}>套用「長線佈局」草稿</button>
                 <button type='button' disabled={!enabledConditions.length} onClick={() => {
                     const cancelled = enabledConditions.length;
                     setDraft((current) => ({ ...current, criteria: disableAllStockScreenerConditions(current.criteria) }));
+                    setBollinger(current => ({ ...current, enabled: false }));
                     setActiveCondition('volume');
                     setDraftActionMessage(`已取消 ${cancelled} 個草稿條件；目前結果尚未變更。`);
                 }}>全部取消</button>
                 <strong aria-label='已選條件數'>已選 {enabledConditions.length} 項</strong></div>
                 {!!enabledConditions.length && <div className={styles.selectedConditions} aria-label='已選條件摘要'>{enabledConditions.map((condition) =>
-                    <span key={condition.id}>{condition.label} · {stockScreenerConditionSummary(draft.criteria, condition.id)}</span>)}</div>}
+                    <span key={condition.id}>{condition.label} · {stockScreenerConditionSummary(uiCriteria, condition.id)}</span>)}</div>}
             </div>
             {draftActionMessage && <p role='status' className={styles.note}>{draftActionMessage}</p>}
-            <StockScreenerConditionAccordion criteria={draft.criteria} activeCondition={activeCondition}
-                onActiveConditionChange={setActiveCondition} onChange={(criteria) => { setDraft((current) => ({ ...current, criteria })); setDraftActionMessage(''); }} />
+            <StockScreenerConditionAccordion criteria={uiCriteria} activeCondition={activeCondition}
+                onActiveConditionChange={setActiveCondition} onChange={(value) => { const { bollSqueezeStages, ...criteria } = value;
+                    if (bollSqueezeStages) setBollinger(bollSqueezeStages); setDraft((current) => ({ ...current, criteria })); setDraftActionMessage(''); }} />
             <details className={styles.settingsDetails}>
-                <summary>結果設定 · {draft.criteria.mode === 'all' ? 'AND' : 'OR'} · {resultStateLabels[draft.resultState]} · {sortLabels[draft.sort]} · {draft.direction === 'asc' ? '由小到大' : '由大到小'}</summary>
+                <summary>結果設定 · {draft.criteria.mode === 'all' ? 'AND' : 'OR'} · {resultStateLabels[draft.resultState]} · {bollinger.enabled ? '布林排序' : sortLabels[draft.sort]} · {draft.direction === 'asc' ? '由小到大' : '由大到小'}</summary>
             <div className={styles.controls}>
                 <select aria-label='條件組合' value={draft.criteria.mode} onChange={(e) => setDraft({ ...draft, criteria: { ...draft.criteria, mode: e.target.value as 'all' | 'any' } })}><option value='all'>全部符合（AND）</option><option value='any'>任一符合（OR）</option></select>
                 <select aria-label='結果種類' value={draft.resultState} onChange={(e) => setDraft({ ...draft, resultState: e.target.value as ScreenerQueryV4['resultState'] })}><option value='pass'>符合條件</option><option value='unknown'>無法判定</option><option value='fail'>不符合</option></select>
-                <select aria-label='選股排序' value={draft.sort} onChange={(e) => setDraft({ ...draft, sort: e.target.value as ScreenerQueryV6['sort'] })}><option value='code'>股票代碼</option><option value='volumeMultiple'>成交量倍數</option><option value='turnover'>成交值</option><option value='holderChange'>最新持股變化</option><option value='holderStreak'>反轉前週數</option><option value='confirmationDate'>型態確認日</option><option value='algorithm'>分型算法</option><option value='direction'>型態方向</option><option value='outsideDistance'>通道外距離</option><option value='maSpread'>最新均線 spread</option><option value='pivotDate'>背離確認日</option><option value='priceDifference'>背離價差</option><option value='largeHolderRatio'>千張大戶比例</option><option value='trustOwnershipPct'>投信買超占股本</option><option value='shortMarginRatio'>券資比</option><option value='closeHighDays'>新高期間</option><option value='smaPeriod'>突破均線週期</option><option value='foreignTodayNetBuy'>外資今日淨買超</option><option value='trustTodayNetBuy'>投信今日淨買超</option><option value='trustRecoveryPct'>投信回補強度</option><option value='trustParticipationPct'>投信成交參與率</option></select>
+                <select hidden={bollinger.enabled} aria-label='選股排序' value={draft.sort} onChange={(e) => setDraft({ ...draft, sort: e.target.value as ScreenerQueryV7['sort'] })}><option value='code'>股票代碼</option><option value='volumeMultiple'>成交量倍數</option><option value='turnover'>成交值</option><option value='holderChange'>最新持股變化</option><option value='holderStreak'>反轉前週數</option><option value='confirmationDate'>型態確認日</option><option value='algorithm'>分型算法</option><option value='direction'>型態方向</option><option value='outsideDistance'>通道外距離</option><option value='maSpread'>最新均線 spread</option><option value='pivotDate'>背離確認日</option><option value='priceDifference'>背離價差</option><option value='largeHolderRatio'>千張大戶比例</option><option value='trustOwnershipPct'>投信買超占股本</option><option value='shortMarginRatio'>券資比</option><option value='closeHighDays'>新高期間</option><option value='smaPeriod'>突破均線週期</option><option value='foreignTodayNetBuy'>外資今日淨買超</option><option value='trustTodayNetBuy'>投信今日淨買超</option><option value='trustRecoveryPct'>投信回補強度</option><option value='trustParticipationPct'>投信成交參與率</option><option value='bollDistance'>布林中軌距離</option><option value='rsiFast'>RSI5</option><option value='kdFast'>KD-K</option><option value='macdDif'>MACD DIF</option><option value='volumeRatio'>條件內量能倍數</option></select>
                 <select aria-label='排序方向' value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value as 'asc' | 'desc' })}><option value='asc'>由小到大</option><option value='desc'>由大到小</option></select>
             </div>
             </details>
             <div className={styles.submitRow}><button type='submit' disabled={!valid || busy}>{busy ? '篩選中…' : '開始篩選'}</button></div>
+            {bollinger.enabled && <div className={styles.controls}>
+                <label>布林結果排序 <select aria-label='布林結果排序' value={bollingerSort} onChange={e => setBollingerSort(e.target.value as BollingerQueryDraft['sort'])}>
+                    <option value='code'>股票代碼</option><option value='bbw'>帶寬 BBW</option><option value='percentilePosition'>前期百分位位置</option><option value='b'>上軌位置 b</option><option value='breakoutVolumeRatio'>突破量倍數</option><option value='momentum'>動能</option></select></label>
+                <button type='button' disabled={!valid || !profileReady || profileBusy} onClick={() => void saveDailyProfile()}>套用至每日自動篩選</button>
+            </div>}
+            {dailyProfile && <p className={styles.note}>每日策略 revision {dailyProfile.revision} · {dailyProfile.enabled ? '已啟用' : '已停用'}（獨立於本頁草稿）
+                {dailyProfile.enabled && <button type='button' disabled={profileBusy} onClick={() => void saveDailyProfile(false)}>停用每日布林策略</button>}</p>}
+            {profileMessage && <p role='status' className={styles.note}>{profileMessage}</p>}
+            {bollingerApplied && (JSON.stringify(bollingerApplied.criteria) !== JSON.stringify(uiCriteria) || bollingerApplied.sort !== bollingerSort || bollingerApplied.direction !== draft.direction) && <p role='status'>布林條件尚未套用；下方保留上次查詢，每日設定未變。</p>}
             {!valid && <p role='alert'>至少啟用一項條件且參數必須合法；籌碼比例最多兩位小數，連續週數 1–12，投信 5–10 日，價量／融資 1–20 日，新高 2–120 日。</p>}
             {dirty && <p role='status'>條件尚未套用；下方仍是上次篩選結果。</p>}
         </form>
         <div className={styles.status} role='status' aria-live='polite'>
-            <strong>{error || (response ? states[response.state] : '尚未查詢資料')}</strong>
+            <strong>{error || (bollingerResponse ? '布林查詢已完成，日期與完整性詳見下方' : response ? states[response.state] : '尚未查詢資料')}</strong>
             {applied && <div>已套用 {enabledStockScreenerConditions(applied.criteria).length} 項 · {applied.criteria.mode === 'all' ? '全部符合（AND）' : '任一符合（OR）'}</div>}
             {response && statusReasons[response.reason] && <div>{statusReasons[response.reason]}</div>}
             {response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current)
@@ -380,6 +485,10 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                 applied.criteria.bollReversal.enabled ? `布林反轉 K（${applied.criteria.bollReversal.mode === 'lower-bullish' ? '下軌陽 K＋下影' : applied.criteria.bollReversal.mode === 'upper-bearish' ? '上軌陰 K＋上影' : '任一型態'}）` : '',
                 applied.criteria.ma.enabled ? `${maModeLabels[applied.criteria.ma.mode]}（${applied.criteria.ma.compressionDays} 日／spread ≤ ${applied.criteria.ma.maxSpreadPct}%）` : '',
                 applied.criteria.divergence.enabled ? `${divergenceSourceLabels[applied.criteria.divergence.source]} ${divergenceDirectionLabels[applied.criteria.divergence.direction]}${applied.criteria.divergence.source === 'macd-histogram' && applied.criteria.divergence.requireZeroReset ? '＋零軸重置' : ''}` : '',
+                applied.criteria.bollPosition.enabled ? `布林位置（${stockScreenerConditionSummary(applied.criteria, 'bollPosition')}）` : '',
+                applied.criteria.rsiCross.enabled ? `RSI（${stockScreenerConditionSummary(applied.criteria, 'rsiCross')}）` : '',
+                applied.criteria.kdCross.enabled ? `KD（${stockScreenerConditionSummary(applied.criteria, 'kdCross')}）` : '',
+                applied.criteria.macdSignal.enabled ? `MACD（${stockScreenerConditionSummary(applied.criteria, 'macdSignal')}）` : '',
                 applied.criteria.largeHolderTrend.enabled ? `千張大戶 ${applied.criteria.largeHolderTrend.minimumRatioPct}–${applied.criteria.largeHolderTrend.maximumRatioPct}% 且連升 ${applied.criteria.largeHolderTrend.weeks} 週` : '',
                 applied.criteria.largeHolderConcentration.enabled ? `千張大戶人數減、持股增 ${applied.criteria.largeHolderConcentration.weeks} 週` : '',
                 applied.criteria.retailHolderDecline.enabled ? `10 張以下散戶比例下降 ${applied.criteria.retailHolderDecline.weeks} 週` : '',
@@ -397,14 +506,15 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             {response?.anchors.weekly && <div>持股：{response.anchors.weekly.previous} → {response.anchors.weekly.current}</div>}
             {!!response?.anchors.weeklyPeriods?.length && <div>TDCC 歷史窗：{response.anchors.weeklyPeriods.join('、')}</div>}
             {response?.technicalAnchors && <div>技術型態：{response.technicalAnchors.sessions[0]} → {response.technicalAnchors.through}（{response.technicalAnchors.sessions.length} 個交易日）</div>}
-            {response?.version === 5 && response.chipCoverage && <div>籌碼覆蓋：TDCC {response.chipCoverage.tdcc.covered}/{response.chipCoverage.tdcc.target} · 股本 {response.chipCoverage.issuedShares.valid}/{response.chipCoverage.issuedShares.target} · 上市投信／信用 {response.chipCoverage.daily.TWSE.institutional}/{response.chipCoverage.daily.TWSE.margin} · 上櫃投信／信用 {response.chipCoverage.daily.TPEx.institutional}/{response.chipCoverage.daily.TPEx.margin}</div>}
+            {response && 'chipCoverage' in response && response.chipCoverage && <div>籌碼覆蓋：TDCC {response.chipCoverage.tdcc.covered}/{response.chipCoverage.tdcc.target} · 股本 {response.chipCoverage.issuedShares.valid}/{response.chipCoverage.issuedShares.target} · 上市投信／信用 {response.chipCoverage.daily.TWSE.institutional}/{response.chipCoverage.daily.TWSE.margin} · 上櫃投信／信用 {response.chipCoverage.daily.TPEx.institutional}/{response.chipCoverage.daily.TPEx.margin}</div>}
+            {response?.version === 7 && response.technicalCoverage && <div>v7 技術覆蓋：上市 {response.technicalCoverage.TWSE.covered}/{response.technicalCoverage.TWSE.target}（缺交易日 {response.technicalCoverage.TWSE.continuityUnknown}、暖機不足 {response.technicalCoverage.TWSE.indicatorWarmupUnknown}）· 上櫃 {response.technicalCoverage.TPEx.covered}/{response.technicalCoverage.TPEx.target}（缺交易日 {response.technicalCoverage.TPEx.continuityUnknown}、暖機不足 {response.technicalCoverage.TPEx.indicatorWarmupUnknown}）</div>}
             {response && !response.anchors.daily && <div>日量比較期：未提供</div>}
             {response && !response.anchors.weekly && <div>持股比較期：未提供</div>}
             {response?.createdAt && <div>快照建置：{new Date(response.createdAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}</div>}
             {counts && <>
                 <div>母體 {counts.total} · 符合 {counts.matched} · 不符合 {counts.notMatched} · 無法判定 {counts.unknown}</div>
                 <div>可判定 {counts.evaluated} 檔（符合＋不符合）</div>
-                <div>欄位缺漏（可重疊）：日量 {counts.missingByCondition['volume-multiple']} · 持股 {counts.missingByCondition['large-holder-weekly-pp']} · 分型 {counts.missingByCondition.fractal} · 布林 {counts.missingByCondition['boll-reversal']}{'ma' in counts.missingByCondition && 'divergence' in counts.missingByCondition ? ` · 均線 ${counts.missingByCondition.ma} · 背離 ${counts.missingByCondition.divergence}` : ''}{response?.version === 5 ? ` · 千張趨勢 ${response.counts?.missingByCondition.largeHolderTrend} · 大戶集中 ${response.counts?.missingByCondition.largeHolderConcentration} · 散戶 ${response.counts?.missingByCondition.retailHolderDecline} · 投信 ${response.counts?.missingByCondition.trustOwnership} · 價融 ${response.counts?.missingByCondition.priceMargin} · 券資比 ${response.counts?.missingByCondition.shortMarginRatio} · 新高 ${response.counts?.missingByCondition.closeHigh} · 突破 SMA ${response.counts?.missingByCondition.closeSmaBreakout}` : ''}</div>
+                <div>欄位缺漏（可重疊）：日量 {counts.missingByCondition['volume-multiple']} · 持股 {counts.missingByCondition['large-holder-weekly-pp']} · 分型 {counts.missingByCondition.fractal} · 布林 {counts.missingByCondition['boll-reversal']}{'ma' in counts.missingByCondition && 'divergence' in counts.missingByCondition ? ` · 均線 ${counts.missingByCondition.ma} · 背離 ${counts.missingByCondition.divergence}` : ''}{'largeHolderTrend' in counts.missingByCondition ? ` · 千張趨勢 ${missingCount(counts, 'largeHolderTrend')} · 大戶集中 ${missingCount(counts, 'largeHolderConcentration')} · 散戶 ${missingCount(counts, 'retailHolderDecline')} · 投信 ${missingCount(counts, 'trustOwnership')} · 價融 ${missingCount(counts, 'priceMargin')} · 券資比 ${missingCount(counts, 'shortMarginRatio')} · 新高 ${missingCount(counts, 'closeHigh')} · 突破 SMA ${missingCount(counts, 'closeSmaBreakout')}` : ''}{response?.version === 7 ? ` · 布林位置 ${response.counts?.missingByCondition.bollPosition} · RSI ${response.counts?.missingByCondition.rsiCross} · KD ${response.counts?.missingByCondition.kdCross} · MACD ${response.counts?.missingByCondition.macdSignal}` : ''}</div>
                 {response?.byMarket && <div>上市 {response.byMarket.TWSE.total} · 上櫃 {response.byMarket.TPEx.total}</div>}
             </>}
             </details>}
@@ -418,12 +528,20 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
         </div>
         {!targets.length && <p className={styles.note}>{chartConnectionMessage ?? '目前沒有未鎖定圖表，請新增日 K 圖，或解鎖既有圖表。'}</p>}
         {selectionMessage && <p role='status'>{selectionMessage}</p>}
+        {bollingerResponse && <>
+            <StockScreenerBollingerResults response={bollingerResponse} filter={bollingerApplied?.stage ?? 'all'}
+                onFilter={stage => { if (bollingerApplied) void runBollinger({ ...bollingerApplied,
+                    stage: stage as BollingerQueryDraft['stage'], resultState: 'all' }, undefined, bollingerResponse.snapshotId ?? undefined); }}
+                onPick={stock => void pick(stock)} onAdd={stock => void addToWatchlist(stock)} targetAvailable={!!effectiveTarget} statuses={addStates} />
+            {bollingerResponse.nextCursor && <button type='button' disabled={busy} onClick={() => { if (bollingerApplied) void runBollinger(bollingerApplied, bollingerResponse.nextCursor!); }}>布林下一頁</button>}
+        </>}
         <div className={styles.results} aria-label='選股結果'>
             {rows.map((row) => {
                 const addState = addStates[row.symbol];
                 const technicalV4 = 'technicalV4' in row ? (row as ScreenerResultRowV4).technicalV4 : null;
                 const chipV5 = 'chipV5' in row ? (row as ScreenerResultRowV5).chipV5 : null;
                 const institutionalV6 = 'institutionalV6' in row ? (row as ScreenerResultRowV6).institutionalV6 : null;
+                const technicalV7 = 'technicalV7' in row ? (row as ScreenerResultRowV7).technicalV7 : null;
                 const snapshotVolume = snapshotVolumesByCode?.[row.code];
                 const volumeComparison = stockScreenerVolumeComparison({
                     officialShares: row.volume.current,
@@ -463,6 +581,12 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                         {key === 'trustReversal' && outcome.evidence.metrics.recoveryPct !== null ? ` · 回補 ${outcome.evidence.metrics.recoveryPct.toFixed(2)}%` : ''}
                         {key === 'trustReversal' && outcome.evidence.metrics.participationPct !== null ? ` · 成交參與 ${outcome.evidence.metrics.participationPct.toFixed(2)}%` : ''}</span>;
                 })}
+                {technicalV7 && (['bollPosition', 'rsiCross', 'kdCross', 'macdSignal'] as const).filter((key) => applied?.criteria[key].enabled).map((key) => {
+                    const outcome = technicalV7.outcomes[key];
+                    const label = key === 'bollPosition' ? '布林位置' : key === 'rsiCross' ? 'RSI 交叉' : key === 'kdCross' ? 'KD 交叉' : 'MACD 訊號';
+                    return <span key={key}>{label}：{outcome.verdict === 'pass' ? '符合' : outcome.verdict === 'fail' ? '不符合' : v7ReasonLabels[outcome.reason]}
+                        {outcome.volumeConfirmation.enabled ? ` · 量能 ${outcome.volumeConfirmation.verdict === 'pass' ? '符合' : outcome.volumeConfirmation.verdict === 'fail' ? '不符合' : v7ReasonLabels[outcome.volumeConfirmation.reason]}` : ''}</span>;
+                })}
                 <span className={styles.note}>{row.sources.join('、')}</span>
                 </button>
                 <button type='button' className={styles.addButton}
@@ -493,6 +617,11 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
                         <span>價量基準：{institutionalV6.outcomes[key].evidence.comparisonDates.join('、')}</span>
                         <pre>{JSON.stringify(institutionalV6.outcomes[key].evidence, null, 2)}</pre>
                     </details>)}
+                {technicalV7 && (['bollPosition', 'rsiCross', 'kdCross', 'macdSignal'] as const).filter((key) => applied?.criteria[key].enabled).map((key) =>
+                    <details key={key}><summary>{key === 'bollPosition' ? '布林位置' : key === 'rsiCross' ? 'RSI 交叉' : key === 'kdCross' ? 'KD 交叉' : 'MACD 訊號'} P／D／量能證據</summary>
+                        <pre>{JSON.stringify(technicalV7.outcomes[key], null, 2)}</pre>
+                        <span>公式 {technicalV7.outcomes[key].formulaVersion} · evidence {technicalV7.evidenceHash.slice(0, 12)} · through {technicalV7.through}</span>
+                    </details>)}
             </div>;})}
             {applied && !busy && !error && ['ready','partial'].includes(response?.state ?? '') && !rows.length && <p>此結果種類沒有商品。{response?.state === 'partial' ? '仍有欄位缺漏，請查看資料不足說明。' : ''}</p>}
         </div>
@@ -502,7 +631,7 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             <button type='button' disabled={!response?.nextCursor || busy || dirty} onClick={() => void run(applied, response?.nextCursor ?? '', page + 1)}>下一頁</button>
         </div>}
         <details className={styles.methodDetails}><summary>計算口徑與資料來源</summary>
-            <p className={styles.note}>千張大戶為 TDCC 第 15 級（1,000,001 股以上），10 張以下散戶為第 1–3 級合計；投信條件使用官方 signed 買賣超與同一 universe revision 的已發行普通股數，券資比使用同日融券餘額除以融資餘額。技術條件只使用官方未還原日 OHLCV。點選商品內容只更換指定圖表；只有明確按下「加入清單」才會同步加入 Shioaji「選股」與 MultiView「選股篩選」，不變更下單商品或目前圖表。</p>
+            <p className={styles.note}>千張大戶為 TDCC 第 15 級（1,000,001 股以上），10 張以下散戶為第 1–3 級合計；投信條件使用官方 signed 買賣超與同一 universe revision 的已發行普通股數，券資比使用同日融券餘額除以融資餘額。法人反轉的回補強度是今日淨買超相對前期累計淨賣超，成交參與率是今日投信淨買超除以今日成交量，不是投信持股比例。BOLL、RSI、KD、MACD 技術條件只使用官方未還原日 OHLCV；量能基準排除當日並以股計算。點選商品內容只更換指定圖表；只有明確按下「加入清單」才會同步加入 Shioaji「選股」與 MultiView「選股篩選」，不變更下單商品或目前圖表。</p>
             <p className={styles.note}>來源：<a href='https://openapi.twse.com.tw/' target='_blank' rel='noopener noreferrer'>臺灣證券交易所</a>、<a href='https://www.tpex.org.tw/openapi/' target='_blank' rel='noopener noreferrer'>證券櫃檯買賣中心</a>、<a href='https://data.gov.tw/en/datasets/11452' target='_blank' rel='noopener noreferrer'>臺灣集中保管結算所</a>。僅供資料篩選。</p>
         </details>
     </div>;

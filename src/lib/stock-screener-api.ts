@@ -11,6 +11,8 @@ import { effectiveCriteriaV5, SCREENER_CHIP_MAPPING_VERSION, SCREENER_V5_FORMULA
     type ChipOutcomesV5, type CriteriaV5 } from './stock-screener-v5.ts';
 import { effectiveCriteriaV6, SCREENER_INSTITUTIONAL_MAPPING_VERSION, SCREENER_V6_FORMULA_VERSION,
     type CriteriaV6, type InstitutionalOutcomesV6, type ScreenerSortV6 } from './stock-screener-v6.ts';
+import { effectiveCriteriaV7, SCREENER_V7_FORMULA_VERSION,
+    type CriteriaV7, type ScreenerSortV7, type TechnicalOutcomesV7 } from './stock-screener-v7.ts';
 import { parseScreenerSessionReadiness, type ScreenerSessionReadiness } from './stock-screener-session-readiness.ts';
 
 export type ScreenerSort = 'code' | 'volumeMultiple' | 'turnover' | 'holderChange' | 'holderStreak';
@@ -133,6 +135,23 @@ export interface ScreenerResponseV6 extends Omit<ScreenerResponseV5, 'version' |
         verifiedRows: number; missingRows: number; invalidRows: number; lastVerifiedSourceDate: string | null }> | null;
     rows: ScreenerResultRowV6[];
 }
+export interface ScreenerV7Counts extends Omit<ScreenerV5Counts, 'missingByCondition'> {
+    missingByCondition: ScreenerV5Counts['missingByCondition'] & Record<'foreignReversal' | 'trustReversal'
+        | 'bollPosition' | 'rsiCross' | 'kdCross' | 'macdSignal', number>;
+}
+export interface ScreenerResultRowV7 extends ScreenerResultRowV6 {
+    technicalV7: { outcomes: TechnicalOutcomesV7; evidenceHash: string; through: string };
+}
+export interface ScreenerResponseV7 extends Omit<ScreenerResponseV6, 'version' | 'rows' | 'sourceMappingVersion' | 'formulaVersion' | 'counts' | 'byMarket'> {
+    version: 7;
+    sourceMappingVersion: typeof SCREENER_OHLCV_V4_MAPPING_VERSION;
+    formulaVersion: typeof SCREENER_V7_FORMULA_VERSION;
+    technicalCoverage: Record<'TWSE' | 'TPEx', { target: number; covered: number; complete130: number;
+        indicatorReady: number; indicatorWarmupUnknown: number; continuityUnknown: number }> | null;
+    rows: ScreenerResultRowV7[];
+    counts: ScreenerV7Counts | null;
+    byMarket: Record<ScreenerMarket, ScreenerV7Counts> | null;
+}
 export interface ScreenerQuery {
     criteria: Criteria;
     sort: ScreenerSort;
@@ -164,6 +183,13 @@ export interface ScreenerQueryV5 {
 export interface ScreenerQueryV6 {
     criteria: CriteriaV6;
     sort: ScreenerSortV6;
+    direction: 'asc' | 'desc';
+    resultState: Verdict;
+    cursor?: string;
+}
+export interface ScreenerQueryV7 {
+    criteria: CriteriaV7;
+    sort: ScreenerSortV7;
     direction: 'asc' | 'desc';
     resultState: Verdict;
     cursor?: string;
@@ -248,6 +274,37 @@ export function screenerSearchV6(query: ScreenerQueryV6): string {
     return base.toString();
 }
 
+export function screenerSearchV7(query: ScreenerQueryV7): string {
+    const criteria = effectiveCriteriaV7(query.criteria);
+    const base = new URLSearchParams(screenerSearchV6({ ...query, criteria, sort: query.sort as ScreenerSortV6 }));
+    base.set('version', '7');
+    const setVolume = (prefix: string, row: CriteriaV7['bollPosition']['volumeConfirmation']) => {
+        base.set(`${prefix}VolumeEnabled`, String(row.enabled));
+        base.set(`${prefix}VolumeBaselineDays`, String(row.baselineDays));
+        base.set(`${prefix}VolumeRatio`, row.ratio);
+        base.set(`${prefix}VolumeMinimumAverageVolumeEnabled`, String(row.minimumAverageVolumeEnabled));
+        base.set(`${prefix}VolumeMinimumAverageVolumeLots`, row.minimumAverageVolumeLots);
+    };
+    base.set('bollPositionEnabled', String(criteria.bollPosition.enabled));
+    base.set('bollPositionMode', criteria.bollPosition.mode);
+    base.set('bollPositionTolerancePercent', criteria.bollPosition.tolerancePercent);
+    base.set('bollPositionMiddleTrend', criteria.bollPosition.middleTrend);
+    setVolume('bollPosition', criteria.bollPosition.volumeConfirmation);
+    for (const key of ['rsiCross', 'kdCross'] as const) {
+        base.set(`${key}Enabled`, String(criteria[key].enabled));
+        base.set(`${key}Mode`, criteria[key].mode);
+        base.set(`${key}HighThreshold`, criteria[key].highThreshold);
+        base.set(`${key}LowThreshold`, criteria[key].lowThreshold);
+        setVolume(key, criteria[key].volumeConfirmation);
+    }
+    base.set('macdSignalEnabled', String(criteria.macdSignal.enabled));
+    base.set('macdSignalMode', criteria.macdSignal.mode);
+    base.set('macdSignalApproachThresholdPct', criteria.macdSignal.approachThresholdPct);
+    setVolume('macdSignal', criteria.macdSignal.volumeConfirmation);
+    base.set('sort', query.sort);
+    return base.toString();
+}
+
 const formatWan = (ntd: string | null): string | null => {
     if (ntd === null || !/^(?:0|[1-9]\d*)$/.test(ntd)) return null;
     const amount = BigInt(ntd), whole = amount / BigInt(10000);
@@ -261,13 +318,17 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 const iso = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const verdict = (value: unknown): value is Verdict => ['pass', 'fail', 'unknown'].includes(String(value));
-function validCounts(value: unknown, version: 3 | 4 | 5 | 6): boolean {
+function validCounts(value: unknown, version: 3 | 4 | 5 | 6 | 7): boolean {
     if (!object(value)) return false;
     const total = value.total, evaluated = value.evaluated, matched = value.matched, notMatched = value.notMatched, unknown = value.unknown;
     if (![total, evaluated, matched, notMatched, unknown].every((item) => Number.isInteger(item) && Number(item) >= 0)
         || Number(matched) + Number(notMatched) + Number(unknown) !== Number(total)
         || Number(evaluated) !== Number(matched) + Number(notMatched) || !object(value.missingByCondition)) return false;
-    const keys = version === 6 ? ['volume-multiple', 'large-holder-weekly-pp', 'fractal', 'boll-reversal', 'ma', 'divergence',
+    const keys = version === 7 ? ['volume-multiple', 'large-holder-weekly-pp', 'fractal', 'boll-reversal', 'ma', 'divergence',
+        'largeHolderTrend', 'largeHolderConcentration', 'retailHolderDecline', 'trustOwnership', 'priceMargin',
+        'shortMarginRatio', 'closeHigh', 'closeSmaBreakout', 'foreignReversal', 'trustReversal',
+        'bollPosition', 'rsiCross', 'kdCross', 'macdSignal']
+        : version === 6 ? ['volume-multiple', 'large-holder-weekly-pp', 'fractal', 'boll-reversal', 'ma', 'divergence',
         'largeHolderTrend', 'largeHolderConcentration', 'retailHolderDecline', 'trustOwnership', 'priceMargin',
         'shortMarginRatio', 'closeHigh', 'closeSmaBreakout', 'foreignReversal', 'trustReversal']
         : version === 5 ? ['volume-multiple', 'large-holder-weekly-pp', 'fractal', 'boll-reversal', 'ma', 'divergence',
@@ -317,12 +378,12 @@ function validOutcome(value: unknown, kind: 'ma' | 'divergence'): boolean {
 }
 
 /** Browser trust boundary for immutable screener responses. Throws before stale/forged rows reach UI actions. */
-export function decodeScreenerResponse(value: unknown): ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 {
-    if (!object(value) || ![3, 4, 5, 6].includes(Number(value.version))
+export function decodeScreenerResponse(value: unknown): ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 | ScreenerResponseV7 {
+    if (!object(value) || ![3, 4, 5, 6, 7].includes(Number(value.version))
         || !['ready', 'partial', 'pending', 'stale', 'unavailable'].includes(String(value.state))
         || !Array.isArray(value.rows) || !(value.snapshotId === null || typeof value.snapshotId === 'string')
         || !(value.createdAt === null || Number.isFinite(Date.parse(String(value.createdAt))))) throw new Error('invalid_screener_response');
-    const version = value.version as 3 | 4 | 5 | 6;
+    const version = value.version as 3 | 4 | 5 | 6 | 7;
     if (value.sessionReadiness !== undefined && value.sessionReadiness !== null) {
         try { if (!parseScreenerSessionReadiness(value.sessionReadiness)) throw new Error('invalid'); }
         catch { throw new Error('invalid_screener_response'); }
@@ -336,6 +397,8 @@ export function decodeScreenerResponse(value: unknown): ScreenerResponseV3 | Scr
         || value.sourceMappingVersion !== SCREENER_CHIP_MAPPING_VERSION)) throw new Error('invalid_screener_response');
     if (version === 6 && (value.formulaVersion !== SCREENER_V6_FORMULA_VERSION
         || value.sourceMappingVersion !== SCREENER_INSTITUTIONAL_MAPPING_VERSION)) throw new Error('invalid_screener_response');
+    if (version === 7 && (value.formulaVersion !== SCREENER_V7_FORMULA_VERSION
+        || value.sourceMappingVersion !== SCREENER_OHLCV_V4_MAPPING_VERSION)) throw new Error('invalid_screener_response');
     if (version >= 4 && ['pending', 'unavailable', 'stale'].includes(String(value.state)) && value.rows.length !== 0) {
         throw new Error('invalid_screener_response');
     }
@@ -359,8 +422,17 @@ export function decodeScreenerResponse(value: unknown): ScreenerResponseV3 | Scr
         }
         if (version >= 5 && (!object(candidate.chipV5) || !object(candidate.chipV5.outcomes)
             || !/^[a-f0-9]{64}$/.test(String(candidate.chipV5.evidenceHash)))) throw new Error('invalid_screener_response');
-        if (version === 6 && (!object(candidate.institutionalV6) || !object(candidate.institutionalV6.outcomes)
+        if (version >= 6 && (!object(candidate.institutionalV6) || !object(candidate.institutionalV6.outcomes)
             || !/^[a-f0-9]{64}$/.test(String(candidate.institutionalV6.evidenceHash)))) throw new Error('invalid_screener_response');
+        if (version === 7 && (!object(candidate.technicalV7) || !object(candidate.technicalV7.outcomes)
+            || !iso(candidate.technicalV7.through) || !/^[a-f0-9]{64}$/.test(String(candidate.technicalV7.evidenceHash))
+            || !['bollPosition', 'rsiCross', 'kdCross', 'macdSignal'].every((key) => {
+                const outcome = (candidate.technicalV7 as Record<string, unknown>).outcomes as Record<string, unknown>;
+                const row = outcome[key];
+                return object(row) && verdict(row.verdict) && typeof row.reason === 'string'
+                    && object(row.signal) && verdict(row.signal.verdict) && object(row.volumeConfirmation)
+                    && verdict(row.volumeConfirmation.verdict);
+            }))) throw new Error('invalid_screener_response');
     }
-    return value as unknown as ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6;
+    return value as unknown as ScreenerResponseV3 | ScreenerResponseV4 | ScreenerResponseV5 | ScreenerResponseV6 | ScreenerResponseV7;
 }

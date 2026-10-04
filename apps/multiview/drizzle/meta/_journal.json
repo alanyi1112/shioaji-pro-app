@@ -239,6 +239,48 @@
       "when": 1790082000000,
       "tag": "0033_screener_institutional_reversal_v6",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1790388000000,
+      "tag": "0034_multiview_system_tab_memberships",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1790985600000,
+      "tag": "0035_screener_bollinger_history",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1790985600001,
+      "tag": "0036_screener_bollinger_publication",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1790985600002,
+      "tag": "0037_screener_daily_quotes_cache",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1790985600003,
+      "tag": "0038_screener_source_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1790985600004,
+      "tag": "0039_broker_bandwidth_reservations",
+      "breakpoints": true
     }
   ]
 }

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { parseHistoricalOhlcvReport, parseHistoricalOhlcvV4Report } from '../apps/multiview/worker/stock-screener-sources.ts';
 import { ohlcvUpsertStatement, ohlcvV4UpsertStatement } from '../apps/multiview/worker/stock-screener-ohlcv-repository.ts';
 import { boundedOfficialText } from './stock-screener-periods.mjs';
+import { readBollingerRetention } from '../src/lib/stock-screener-bollinger-history.ts';
 
 export const OHLCV_WINDOW = 60;
 export const OHLCV_PROGRESS_VERSION = 3;
@@ -206,6 +207,7 @@ export async function prepareScreenerOhlcv(db, {
 export async function pruneScreenerOhlcv(db, sessions) {
     if (!Array.isArray(sessions) || sessions.length !== OHLCV_WINDOW || sessions.some((date) => !isoDate(date))) throw new Error('invalid_ohlcv_retention');
     const keep = new Set(sessions);
+    for (const date of await readBollingerRetention(db)) keep.add(date);
     const snapshots = (await db.prepare("SELECT metadata FROM screener_snapshots WHERE status='published' AND schema_version=3 ORDER BY created_at DESC,id DESC LIMIT 2").all()).results ?? [];
     for (const row of snapshots) {
         let metadata;
@@ -408,6 +410,7 @@ export async function pruneScreenerOhlcvV4(db, sessions) {
     if (!Array.isArray(sessions) || sessions.length !== OHLCV_V4_WINDOW || sessions.some((date) => !isoDate(date)))
         throw new Error('invalid_ohlcv_v4_retention');
     const keep = new Set(sessions);
+    for (const date of await readBollingerRetention(db)) keep.add(date);
     const snapshots = (await db.prepare("SELECT metadata FROM screener_snapshots WHERE status='published' AND schema_version IN (3,4) ORDER BY created_at DESC,id DESC LIMIT 4").all()).results ?? [];
     for (const row of snapshots) {
         let metadata; try { metadata = JSON.parse(row.metadata); } catch { throw new Error('invalid_snapshot_metadata'); }

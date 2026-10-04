@@ -10,6 +10,8 @@ import { handleStockScreenerV3 } from "./stock-screener-v3-route.ts";
 import { handleStockScreenerV4 } from "./stock-screener-v4-route.ts";
 import { handleStockScreenerV5 } from "./stock-screener-v5-route.ts";
 import { handleStockScreenerV6 } from "./stock-screener-v6-route.ts";
+import { handleStockScreenerV7 } from "./stock-screener-v7-route.ts";
+import { handleStockScreenerV8 } from "./stock-screener-v8-route.ts";
 
 const prefix = "/api/stock-screener";
 const allowedKeys = new Set(["version", "mode", "volume", "volumeThreshold", "volumeTurnover", "volumeTurnoverMinimumWan",
@@ -78,8 +80,14 @@ export async function handleStockScreener(request: Request, env: { DB?: Screener
   const url = new URL(request.url);
   if (!url.pathname.startsWith(prefix)) return null;
   if (env.DEPLOYMENT_TARGET !== "local" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return response({ reason: "local_only" }, 404);
+  if (url.searchParams.get('version') === '8' && [`${prefix}/status`, `${prefix}/results`, `${prefix}/daily-profile`].includes(url.pathname)) {
+    if (request.method !== 'GET' && !(request.method === 'PUT' && url.pathname.endsWith('/daily-profile')))
+      return response({ reason: 'method_not_allowed' }, 405);
+    return handleStockScreenerV8(request, env, now);
+  }
   if (request.method !== "GET") return response({ reason: "method_not_allowed" }, 405);
   if (![`${prefix}/status`, `${prefix}/results`].includes(url.pathname)) return response({ reason: "route_not_allowed" }, 404);
+  if (url.searchParams.get("version") === "7") return handleStockScreenerV7(url, env, now);
   if (url.searchParams.get("version") === "6") return handleStockScreenerV6(url, env, now);
   if (url.searchParams.get("version") === "5") return handleStockScreenerV5(url, env, now);
   if (url.searchParams.get("version") === "4") return handleStockScreenerV4(url, env, now);

@@ -5,6 +5,12 @@ import { lstatSync, realpathSync } from 'node:fs';
 const TABLES = new Set(['screener_universe', 'screener_daily_volume', 'screener_daily_ohlcv', 'screener_tdcc_weekly',
     'screener_runs', 'screener_snapshots', 'screener_snapshot_rows', 'screener_chip_runs', 'screener_chip_receipts',
     'screener_chip_daily', 'screener_chip_publication_head', 'screener_institutional_mapping_verifications']);
+// 新能力尚未初始化的資料庫仍可處理舊版；使用時才驗證 optional schema。
+const OPTIONAL_TABLES = new Set(['screener_bollinger_batches', 'screener_bollinger_receipts', 'screener_bollinger_daily',
+    'screener_bollinger_profiles', 'screener_bollinger_publications', 'screener_bollinger_rows', 'screener_bollinger_head', 'screener_bollinger_state',
+    'screener_daily_quotes_cache', 'screener_daily_quotes_receipts', 'screener_source_universes', 'screener_source_reviews',
+    'screener_source_selections', 'screener_source_selected_rows', 'screener_source_comparisons',
+    'broker_bandwidth_observations', 'broker_bandwidth_reservations', 'broker_bandwidth_receipts']);
 class Statement {
     constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
     bind(...args) { this.args = args; return this; }
@@ -23,7 +29,7 @@ export class ScreenerSqlite {
     }
     prepare(sql) {
         const write = sql.match(/^(?:INSERT INTO|UPDATE|DELETE FROM)\s+(\w+)/i);
-        if (sql.includes(';') || (!/^SELECT\s/i.test(sql) && (!write || !TABLES.has(write[1])))) throw new Error('screener_sql_scope_denied');
+        if (sql.includes(';') || (!/^SELECT\s/i.test(sql) && (!write || !TABLES.has(write[1]) && !OPTIONAL_TABLES.has(write[1])))) throw new Error('screener_sql_scope_denied');
         return new Statement(this.database, sql);
     }
     batch(statements) {

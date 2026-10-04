@@ -5,7 +5,7 @@ const STOCK_SCREENER_MULTIVIEW_LIST_TARGET = 'http://127.0.0.1:5174/api/integrat
 const STOCK_SCREENER_MULTIVIEW_LIST_SCHEMA = 'multiview-stock-screener-list-sync/1';
 const STOCK_SCREENER_MULTIVIEW_LIST_MAX_BODY_BYTES = 512;
 const rejectedProxyHeaders = new Set(['forwarded', 'via', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-proto', 'x-real-ip', 'true-client-ip', 'cf-connecting-ip', 'cf-ray', 'cdn-loop']);
-const paths = new Set([`${PREFIX}/status`, `${PREFIX}/results`]);
+const paths = new Set([`${PREFIX}/status`, `${PREFIX}/results`, `${PREFIX}/daily-profile`]);
 const keys = new Set(['version','mode','volume','volumeThreshold','volumeTurnover','volumeTurnoverMinimumWan',
     'holder','holderThreshold','holderMode','holderStreakWeeks','holderTurnover','holderTurnoverMinimumWan',
     'fractal','fractalAlgorithm','fractalDirection','bollReversal','bollMode',
@@ -19,11 +19,28 @@ const keys = new Set(['version','mode','volume','volumeThreshold','volumeTurnove
     'trustReversalEnabled','trustReversalSellStreakDays','trustReversalTodayNetBuyMinimumLots','trustReversalMinimumTurnoverPct',
     'trustReversalComparisonDays','trustReversalTurnoverMultiple','trustReversalMaPeriod','trustReversalLiquidityDays','trustReversalMinimumAverageVolumeLots',
     'trustReversalMinimumRecoveryPct','trustReversalMinimumParticipationPct','trustReversalMaximumParticipationPct',
+    'bollPositionEnabled','bollPositionMode','bollPositionTolerancePercent','bollPositionMiddleTrend',
+    'rsiCrossEnabled','rsiCrossMode','rsiCrossHighThreshold','rsiCrossLowThreshold',
+    'kdCrossEnabled','kdCrossMode','kdCrossHighThreshold','kdCrossLowThreshold',
+    'macdSignalEnabled','macdSignalMode','macdSignalApproachThresholdPct',
+    ...['bollPosition','rsiCross','kdCross','macdSignal'].flatMap(prefix => [
+        `${prefix}VolumeEnabled`,`${prefix}VolumeBaselineDays`,`${prefix}VolumeRatio`,
+        `${prefix}VolumeMinimumAverageVolumeEnabled`,`${prefix}VolumeMinimumAverageVolumeLots`]),
     'sort','direction','resultState','limit','cursor']);
 
-const requestedVersion = (url) => url.searchParams.get('version') === '6' ? 6 : url.searchParams.get('version') === '5' ? 5 : url.searchParams.get('version') === '4' ? 4 : url.searchParams.get('version') === '3' ? 3 : 2;
+const requestedVersion = (url) => url.searchParams.get('version') === '8' ? 8 : url.searchParams.get('version') === '7' ? 7 : url.searchParams.get('version') === '6' ? 6 : url.searchParams.get('version') === '5' ? 5 : url.searchParams.get('version') === '4' ? 4 : url.searchParams.get('version') === '3' ? 3 : 2;
 
-const unavailablePayload = (version) => version === 6
+const unavailablePayload = (version) => version === 8
+    ? { version: 8, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
+        formulaVersion: 'bollinger-squeeze-stages-v1', sourceMappingVersion: 'official-daily-ohlcv-turnover-v1',
+        expectedSessionDate: null, effectiveSessionDate: null, rows: [], nextCursor: null }
+    : version === 7
+    ? { version: 7, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
+        universeRevision: null, formulaVersion: 'after-market-v7-boll-rsi-kd-macd-1', sourceMappingVersion: 'official-daily-ohlcv-v2', criteriaFingerprint: null,
+        expectedSessionDate: null, effectiveSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
+        technicalAnchors: null, counts: null, byMarket: null, preparation: null, chipCoverage: null, institutionalCoverage: null,
+        technicalCoverage: null, rows: [], nextCursor: null }
+    : version === 6
     ? { version: 6, state: 'unavailable', reason: 'local_data_service_unavailable', snapshotId: null,
         universeRevision: null, formulaVersion: 'after-market-v6-institutional-reversal-1', sourceMappingVersion: 'official-market-institutional-v2', criteriaFingerprint: null,
         expectedSessionDate: null, effectiveSessionDate: null, createdAt: null, anchors: { daily: null, weekly: null, weeklyPeriods: [] },
@@ -78,7 +95,7 @@ export function validateStockScreenerMultiViewListPayload(value) {
     return /^[0-9A-Z]{4,8}\.(TW|TWO)$/.test(symbol) ? { symbol } : null;
 }
 
-function readJsonBody(request, timeoutMs = 3000) {
+function readJsonBody(request, timeoutMs = 3000, maximumBytes = STOCK_SCREENER_MULTIVIEW_LIST_MAX_BODY_BYTES) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         let size = 0;
@@ -95,7 +112,7 @@ function readJsonBody(request, timeoutMs = 3000) {
             if (settled) return;
             const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             size += buffer.length;
-            if (size > STOCK_SCREENER_MULTIVIEW_LIST_MAX_BODY_BYTES) return finish(() => reject(new Error('payload_too_large')));
+            if (size > maximumBytes) return finish(() => reject(new Error('payload_too_large')));
             chunks.push(buffer);
         });
         request.once('end', () => finish(() => {
@@ -123,18 +140,24 @@ export function validateScreenerGatewayRequest(req) {
     try { url = new URL(raw, 'http://127.0.0.1'); } catch { return { status: 400, reason: 'invalid_url' }; }
     if (!url.pathname.startsWith(PREFIX)) return null;
     if (!raw.startsWith(`${PREFIX}/`) || raw.includes('%') && /%2f|%5c|%2e/i.test(raw)) return { status: 400, reason: 'invalid_url' };
-    if (req.method !== 'GET') return { status: 405, reason: 'method_not_allowed' };
+    const profileWrite = req.method === 'PUT' && url.pathname === `${PREFIX}/daily-profile` && url.searchParams.get('version') === '8';
+    if (req.method !== 'GET' && !profileWrite) return { status: 405, reason: 'method_not_allowed' };
     if (!paths.has(url.pathname)) return { status: 404, reason: 'route_not_allowed' };
     const host = req.headers.host ?? '';
     if (!/^(?:127\.0\.0\.1|localhost|\[::1\]):5173$/.test(host)) return { status: 403, reason: 'local_only' };
     if (req.headers.origin && req.headers.origin !== `http://${host}`) return { status: 403, reason: 'same_origin_required' };
     if (req.headers['sec-fetch-site'] === 'cross-site') return { status: 403, reason: 'same_origin_required' };
     const version = url.searchParams.get('version');
-    if (raw.length > 4096 || [...url.searchParams.keys()].some((key) => !keys.has(key) || url.searchParams.getAll(key).length !== 1)
-        || version !== null && version !== '2' && version !== '3' && version !== '4' && version !== '5' && version !== '6'
+    if (profileWrite && (!isLoopbackAddress(req.socket?.remoteAddress) || !isLoopbackAddress(req.socket?.localAddress)
+        || [...rejectedProxyHeaders].some(h => req.headers[h] !== undefined))) return { status: 403, reason: 'loopback_required' };
+    if (profileWrite && String(req.headers['content-type'] ?? '').split(';')[0] !== 'application/json') return { status: 415, reason: 'json_required' };
+    const queryKeys = version === '8' ? new Set(['version', 'criteria', 'sort', 'direction', 'resultState', 'stage', 'limit', 'cursor', 'snapshotId']) : keys;
+    if (raw.length > 16384 || [...url.searchParams.keys()].some((key) => !queryKeys.has(key) || url.searchParams.getAll(key).length !== 1)
+        || version !== null && version !== '2' && version !== '3' && version !== '4' && version !== '5' && version !== '6' && version !== '7' && version !== '8'
+        || url.pathname.endsWith('/daily-profile') && (version !== '8' || [...url.searchParams.keys()].some(k => k !== 'version'))
         || url.pathname.endsWith('/status') && [...url.searchParams.keys()].some((key) => key !== 'version')
         || url.searchParams.has('limit') && (!/^\d{1,3}$/.test(url.searchParams.get('limit')) || Number(url.searchParams.get('limit')) < 1 || Number(url.searchParams.get('limit')) > 100)) return { status: 400, reason: 'invalid_query' };
-    return { url: `${TARGET}${url.pathname}${url.search}`, version: requestedVersion(url) };
+    return { url: `${TARGET}${url.pathname}${url.search}`, version: requestedVersion(url), profileWrite };
 }
 
 export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
@@ -183,15 +206,22 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
                 res.setHeader('Cache-Control', 'no-store');
                 const reply = (status, body) => { res.statusCode = status; res.end(JSON.stringify(body)); };
                 if (checked.reason) return reply(checked.status, { reason: checked.reason });
+                let profileBody;
+                if (checked.profileWrite) {
+                    try { profileBody = JSON.stringify(await readJsonBody(req, 3000, 16384)); }
+                    catch (e) { return reply(e.message === 'payload_too_large' ? 413 : 400, { reason: e.message === 'payload_too_large' ? e.message : 'invalid_json' }); }
+                }
                 const controller = new AbortController();
                 let timer;
                 try {
                     const result = await Promise.race([
                         (async () => {
                             // Deliberately forward no credentials, cookies, caller headers, or body.
-                            const response = await fetcher(checked.url, { signal: controller.signal, redirect: 'error', headers: { accept: 'application/json' } });
+                            const response = await fetcher(checked.url, { signal: controller.signal, redirect: 'error',
+                                ...(checked.profileWrite ? { method: 'PUT', body: profileBody } : {}),
+                                headers: { accept: 'application/json', ...(checked.profileWrite ? { 'content-type': 'application/json' } : {}) } });
                             const body = await response.text();
-                            if (body.length > 1024 * 1024) throw new Error('response_too_large');
+                            if (Buffer.byteLength(body) > (checked.version === 8 ? 8 : 1) * 1024 * 1024) throw new Error('response_too_large');
                             return { status: response.status, body: JSON.parse(body) };
                         })(),
                         new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),

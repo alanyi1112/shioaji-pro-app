@@ -13,7 +13,7 @@
         "dev:multiview": "npm --prefix apps/multiview run dev:local",
         "build": "tsc -b && vite build",
         "build:multiview": "npm --prefix apps/multiview run build",
-        "test": "vitest run --exclude '**/*.browser.test.ts' --exclude 'apps/multiview/tests/**'",
+        "test": "vitest run --exclude '**/*.browser.test.ts' --exclude 'apps/multiview/tests/**' --exclude 'scripts/intraday-monitor-runtime/postclose-tail-recovery-core.test.mjs' && node --test scripts/intraday-monitor-runtime/postclose-tail-recovery-core.test.mjs",
         "test:multiview": "npm --prefix apps/multiview run test",
         "test:browser": "vitest run --config vitest.browser.config.ts",
         "lint:multiview": "npm --prefix apps/multiview run lint",
@@ -26,6 +26,7 @@
         "verify:smart-order-task13-2-evidence": "scripts/realtimestock-runtime task13-2-evidence",
         "multiview:state": "scripts/multiview-state",
         "local-runtime": "./scripts/realtimestock-runtime",
+        "stock-screener:chip-update": "node --use-system-ca scripts/stock-screener-chip-update.mjs",
         "preview": "vite preview"
     },
     "dependencies": {

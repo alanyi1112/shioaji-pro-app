@@ -194,6 +194,26 @@ describe('v3 criteria、版本、hash 與排序', () => {
         expect(first).toMatch(/^[a-f0-9]{64}$/);
     });
 
+    it('大型 primitive 陣列捷徑與原 canonical hash 相同，稀疏及非 JSON 邊界不改語意', async () => {
+        const original = (value: unknown): string => {
+            if (value === undefined) return 'null';
+            if (Array.isArray(value)) return `[${value.map(original).join(',')}]`;
+            if (value && typeof value === 'object') return `{${Object.entries(value)
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([key, item]) => `${JSON.stringify(key)}:${original(item)}`).join(',')}}`;
+            return JSON.stringify(value);
+        };
+        const sparse = Array(3); sparse[1] = 4;
+        for (const value of [[], Array.from({ length: 400 }, (_, i) => i / 10),
+            ['2026-10-02', null, true, -0, NaN, Infinity], [undefined, 1], sparse,
+            Object.assign([1, 2], { toJSON: () => ['must-not-change-canonical'] }),
+            { '10': ['中', '\\', '"'], '2': [{ z: 1, a: [null, false] }] }]) {
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(original(value)));
+            const expected = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+            expect(await technicalEvidenceHash(value)).toBe(expected);
+        }
+    });
+
     it('確認日、算法、方向、通道外距離排序 deterministic，unknown 永遠置底且代碼 tiebreak', () => {
         const rows: TechnicalSortableRow[] = [
             { code: '3008', verdict: 'pass', fractal: { algorithm: 'raw-three', direction: 'top', centerDate: '2026-08-28', confirmationDate: '2026-08-31', bars: [] } },
