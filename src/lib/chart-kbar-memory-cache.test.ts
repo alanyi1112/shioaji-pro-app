@@ -48,4 +48,17 @@ describe('chart K 線記憶體快取', () => {
         expect(recallChartKbars('key-0')).toBeNull();
         expect(recallChartKbars('key-12')).toHaveLength(1);
     });
+
+    it.each([
+        [candle(1), candle(1)],
+        [candle(2), candle(1)],
+        [candle(NaN)],
+    ])('污染目前 key 成為 miss，不清空其他商品也不合併數值', (...invalid) => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        rememberChartKbars('other', [candle(3)]);
+        rememberChartKbars('current', [candle(1)]);
+        rememberChartKbars('current', invalid);
+        expect(recallChartKbars('current')).toBeNull();
+        expect(recallChartKbars('other')).toEqual([candle(3)]);
+    });
 });

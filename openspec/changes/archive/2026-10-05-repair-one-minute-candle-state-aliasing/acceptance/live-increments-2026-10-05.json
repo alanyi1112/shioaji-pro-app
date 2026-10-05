@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "candle-live-increment-evidence/1",
+  "symbol": "2449",
+  "tradeDate": "2026-10-05",
+  "timezone": "Asia/Taipei",
+  "origin": "既有 Chrome 主頁實際 DOM 診斷及既有 SharedWorker 唯讀 SSE 觀察；不是 fixture",
+  "chartTimeEncoding": "Taipei wall-clock encoded as UTC seconds; actual instant = sourceTime - 28800",
+  "observations": [
+    {"at":"2026-10-05T04:49:09.417Z","count":495,"rawCount":495,"timeline":"valid","sequence":430,"sourceTime":1791204541,"volumeDelta":1,"turnoverDeltaTwd":295500,"rawBefore":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":23,"turnoverTwd":6787000},"rawAfter":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":24,"turnoverTwd":7082500},"displayBefore":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":23,"turnoverTwd":6787000},"displayAfter":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":24,"turnoverTwd":7082500}},
+    {"at":"2026-10-05T04:49:29.650Z","count":495,"rawCount":495,"timeline":"valid","sequence":432,"sourceTime":1791204561,"volumeDelta":1,"turnoverDeltaTwd":295500,"rawBefore":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":25,"turnoverTwd":7378000},"rawAfter":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":26,"turnoverTwd":7673500},"displayBefore":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":25,"turnoverTwd":7378000},"displayAfter":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295.5,"volume":26,"turnoverTwd":7673500}},
+    {"at":"2026-10-05T04:49:57.138Z","count":495,"rawCount":495,"timeline":"valid","sequence":436,"sourceTime":1791204594,"volumeDelta":1,"turnoverDeltaTwd":295000,"rawBefore":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295,"volume":29,"turnoverTwd":8559500},"rawAfter":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295,"volume":30,"turnoverTwd":8854500},"displayBefore":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295,"volume":29,"turnoverTwd":8559500},"displayAfter":{"time":1791204540,"open":295,"high":295.5,"low":295,"close":295,"volume":30,"turnoverTwd":8854500}},
+    {"at":"2026-10-05T04:50:31.073Z","count":496,"rawCount":496,"timeline":"valid","sequence":439,"sourceTime":1791204630,"volumeDelta":1,"turnoverDeltaTwd":295500,"rawBefore":{"time":1791204600,"open":295.5,"high":295.5,"low":295.5,"close":295.5,"volume":2,"turnoverTwd":591000},"rawAfter":{"time":1791204600,"open":295.5,"high":295.5,"low":295.5,"close":295.5,"volume":3,"turnoverTwd":886500},"displayBefore":{"time":1791204600,"open":295.5,"high":295.5,"low":295.5,"close":295.5,"volume":2,"turnoverTwd":591000},"displayAfter":{"time":1791204600,"open":295.5,"high":295.5,"low":295.5,"close":295.5,"volume":3,"turnoverTwd":886500}},
+    {"at":"2026-10-05T04:51:25.672Z","count":497,"rawCount":497,"timeline":"valid","sequence":450,"sourceTime":1791204685,"volumeDelta":1,"turnoverDeltaTwd":295000,"rawBefore":{"time":1791204660,"open":295,"high":295,"low":295,"close":295,"volume":6,"turnoverTwd":1770000},"rawAfter":{"time":1791204660,"open":295,"high":295,"low":295,"close":295,"volume":7,"turnoverTwd":2065000},"displayBefore":{"time":1791204660,"open":295,"high":295,"low":295,"close":295,"volume":6,"turnoverTwd":1770000},"displayAfter":{"time":1791204660,"open":295,"high":295,"low":295,"close":295,"volume":7,"turnoverTwd":2065000}},
+    {"at":"2026-10-05T04:52:18.956Z","count":498,"rawCount":498,"timeline":"valid","sequence":462,"sourceTime":1791204736,"volumeDelta":2,"turnoverDeltaTwd":590000,"rawBefore":{"time":1791204720,"open":295,"high":295.5,"low":295,"close":295.5,"volume":4,"turnoverTwd":1181500},"rawAfter":{"time":1791204720,"open":295,"high":295.5,"low":295,"close":295,"volume":6,"turnoverTwd":1771500},"displayBefore":{"time":1791204720,"open":295,"high":295.5,"low":295,"close":295.5,"volume":4,"turnoverTwd":1181500},"displayAfter":{"time":1791204720,"open":295,"high":295.5,"low":295,"close":295,"volume":6,"turnoverTwd":1771500}}
+  ],
+  "matchingSourceTicks": [
+    {"receivedAt":1791175741290,"code":"2449","date":"2026-10-05","time":"12:49:01.254275","close":"295.5","volume":1,"tickType":1},
+    {"receivedAt":1791175761465,"code":"2449","date":"2026-10-05","time":"12:49:21.436083","close":"295.5","volume":1,"tickType":1},
+    {"receivedAt":1791175794790,"code":"2449","date":"2026-10-05","time":"12:49:54.769256","close":"295","volume":1,"tickType":2},
+    {"receivedAt":1791175830794,"code":"2449","date":"2026-10-05","time":"12:50:30.762009","close":"295.5","volume":1,"tickType":1},
+    {"receivedAt":1791175885579,"code":"2449","date":"2026-10-05","time":"12:51:25.541572","close":"295","volume":1,"tickType":2},
+    {"receivedAt":1791175936431,"code":"2449","date":"2026-10-05","time":"12:52:16.395192","close":"295","volume":2,"tickType":2}
+  ],
+  "streamBefore": {"capturedAt":1791175696378,"sourceCreated":2,"sourceClosed":0,"dataPortCount":2,"dataReadyState":1,"dataCreatedAt":1791158985062,"dataOpenedAt":1791158985066,"dataOpenCount":1,"tickStkCount":225855,"watchdogRestarts":0,"acceptanceInterrupts":0},
+  "streamAfterThreeBoundaries": {"capturedAt":1791175977777,"sourceCreated":2,"sourceClosed":0,"dataPortCount":2,"dataReadyState":1,"dataCreatedAt":1791158985062,"dataOpenedAt":1791158985066,"dataOpenCount":1,"tickStkCount":228152,"watchdogRestarts":0,"acceptanceInterrupts":0},
+  "providerPhysicalUsage": "unknown",
+  "excludedStaleDiagnostic": {"at":"2026-10-05T04:48:45.651Z","displayedCode":"2449","sequence":166,"sourceTime":1791204495,"price":173,"reason":"前一檔3090的最後成交診斷尚未清除；不列作2449成功證據，已補清除與Chromium回歸"}
+}

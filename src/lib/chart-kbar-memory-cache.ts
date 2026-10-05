@@ -1,4 +1,5 @@
 import type { Candle } from './types/market';
+import { candleTimelineIssue } from './candle-series-integrity';
 
 const MAX_ENTRIES = 12;
 
@@ -28,6 +29,14 @@ function evictLeastRecentlyUsed() {
  */
 export function rememberChartKbars(key: string, bars: readonly Candle[]) {
     if (bars.length === 0) return;
+    const issue = candleTimelineIssue(bars);
+    if (issue) {
+        // Invalidate only this identity: never continue serving a polluted
+        // earlier snapshot or silently sum conflicting cumulative volumes.
+        cache.delete(key);
+        console.warn('K 線快取時間軸不合法', { key, ...issue });
+        return;
+    }
     cache.set(key, { bars: cloneBars(bars), usedAt: Date.now() });
     evictLeastRecentlyUsed();
 }
@@ -35,6 +44,12 @@ export function rememberChartKbars(key: string, bars: readonly Candle[]) {
 export function recallChartKbars(key: string): Candle[] | null {
     const hit = cache.get(key);
     if (!hit) return null;
+    const issue = candleTimelineIssue(hit.bars);
+    if (issue) {
+        cache.delete(key);
+        console.warn('K 線快取時間軸不合法', { key, ...issue });
+        return null;
+    }
     cache.set(key, { ...hit, usedAt: Date.now() });
     return cloneBars(hit.bars);
 }

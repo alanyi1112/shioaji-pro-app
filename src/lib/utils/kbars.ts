@@ -68,7 +68,9 @@ export function kbarsToTaiwanStockCandles(k: KBars): Candle[] {
 
 // Aggregate 1-minute candles into N-minute or daily bars.
 export function aggregate(candles: Candle[], minutes: number): Candle[] {
-    if (minutes <= 1) return candles;
+    // rawRef and barsRef are independently updated by the same accepted trade.
+    // Both the array and its Candle objects must have independent ownership.
+    if (minutes <= 1) return candles.map((bar) => ({ ...bar }));
     const out: Candle[] = [];
     let cur: Candle | null = null;
     const bucketSec = minutes * 60;

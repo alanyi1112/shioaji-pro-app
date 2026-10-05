@@ -181,6 +181,7 @@ import type { Candle } from '../lib/types/market';
 import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
 import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
 import { addKbarTurnoverTwd } from '../lib/kbar-turnover';
+import { commitCandleSeries, requireCandleTimeline } from '../lib/candle-series-integrity';
 import {
     recallChartKbars,
     rememberChartKbars,
@@ -311,6 +312,8 @@ export function CandleChart({
     }, [dailySelectionGeneration]);
     const [empty, setEmpty] = useState(false);
     const [loading, setLoading] = useState(false);
+    const [candleDataError, setCandleDataError] = useState<string | null>(null);
+    const committedBarsRef = useRef<Candle[]>([]);
     const loadingRef = useRef(loading);
     loadingRef.current = loading;
     // ticks must NOT touch the series until history for the current
@@ -366,6 +369,7 @@ export function CandleChart({
         delete node.dataset.chartLastReceivedSourceTime;
         delete node.dataset.chartLastVisualErrorAt;
         delete node.dataset.chartLastVisualError;
+        delete node.dataset.chartLastAcceptedTrade;
     }, [contract.code, tf.minutes]);
     const fibonacciIdentityValue = fibonacciIdentity({
         securityType: contract.security_type,
@@ -587,6 +591,27 @@ export function CandleChart({
     // raw 1-min candles backing the current view — history pages merge here
     // and re-aggregate so buckets spanning a page seam stay correct
     const rawRef = useRef<Candle[]>([]);
+    const reportCandleDataError = (error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn('K 線資料提交失敗', { symbol: contract.code, minutes: tf.minutes, reason });
+        setCandleDataError(reason);
+        markPassiveVisualError();
+        if (diagnosticRef.current) diagnosticRef.current.dataset.chartTimelineState = 'failed';
+    };
+    const updateCandleIntegrityDiagnostics = () => {
+        const node = diagnosticRef.current;
+        if (!node) return;
+        const rawTail = rawRef.current.at(-1);
+        const tail = barsRef.current.at(-1);
+        node.dataset.chartCandleCount = String(barsRef.current.length);
+        node.dataset.chartRawCount = String(rawRef.current.length);
+        node.dataset.chartTailTime = String(tail?.time ?? '');
+        node.dataset.chartTailVolume = String(tail?.volume ?? '');
+        node.dataset.chartTailTurnover = String(tail?.turnoverTwd ?? 'unknown');
+        node.dataset.chartRawTailTime = String(rawTail?.time ?? '');
+        node.dataset.chartRawTailVolume = String(rawTail?.volume ?? '');
+        node.dataset.chartRawTailTurnover = String(rawTail?.turnoverTwd ?? 'unknown');
+    };
     const liveVolumeCursorRef = useRef(new CommonLotVolumeCursor());
     const liveVolumeIdentityRef = useRef('');
     const supportResistanceAuthorityRef = useRef<{
@@ -1868,45 +1893,60 @@ export function CandleChart({
         loadMoreRef.current = null;
         setEmpty(false);
         setLoading(true);
+        setCandleDataError(null);
+        // A previous product/timeframe must never become a rollback target.
+        committedBarsRef.current = [];
         const clearSeries = (allowLive = true) => {
             // the series must never keep a stale timeframe's data — a later
             // tick bucketed for the new timeframe would be "older" than the
             // stale tail and crash the chart library
-            candleSeriesRef.current?.setData([]);
-            volSeriesRef.current?.setData([]);
+            const cleared = commitCandleSeries([], (rows) => {
+                candleSeriesRef.current?.setData(rows.map((b) => ({ time: b.time as UTCTimestamp, open: b.open, high: b.high, low: b.low, close: b.close })));
+                volSeriesRef.current?.setData([]);
+            }, [], reportCandleDataError);
             barsRef.current = [];
             rawRef.current = [];
+            committedBarsRef.current = [];
             historicalReferenceRef.current = new Map();
             rawIdentityRef.current = loadKey;
             invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars([]);
             setDataVersion((v) => v + 1);
-            loadedKeyRef.current = allowLive ? loadKey : '';
+            loadedKeyRef.current = allowLive && cleared ? loadKey : '';
+            updateCandleIntegrityDiagnostics();
         };
         const applyBars = (bars: Candle[]) => {
-            candleSeriesRef.current?.setData(
-                bars.map((b) => ({
-                    time: b.time as UTCTimestamp,
-                    open: b.open,
-                    high: b.high,
-                    low: b.low,
-                    close: b.close,
-                })),
-            );
-            volSeriesRef.current?.setData(
-                bars.map((b) => ({
-                    time: b.time as UTCTimestamp,
-                    value: b.volume,
-                    color: b.close >= b.open ? colors.upVol : colors.downVol,
-                })),
-            );
+            const accepted = commitCandleSeries(bars, (rows) => {
+                candleSeriesRef.current?.setData(
+                    rows.map((b) => ({
+                        time: b.time as UTCTimestamp,
+                        open: b.open,
+                        high: b.high,
+                        low: b.low,
+                        close: b.close,
+                    })),
+                );
+                volSeriesRef.current?.setData(
+                    rows.map((b) => ({
+                        time: b.time as UTCTimestamp,
+                        value: b.volume,
+                        color: b.close >= b.open ? colors.upVol : colors.downVol,
+                    })),
+                );
+            }, committedBarsRef.current, reportCandleDataError);
+            if (!accepted) return false;
             barsRef.current = bars;
+            committedBarsRef.current = bars.map((bar) => ({ ...bar }));
+            setCandleDataError(null);
             historicalReferenceRef.current =
                 buildPreviousSessionCloseIndex(rawRef.current);
             invalidateIndicatorRefreshRef.current();
             setCanonicalReadoutBars(bars);
             setDataVersion((v) => v + 1);
             markPassiveVisualCommit(bars.at(-1)?.time);
+            if (diagnosticRef.current) diagnosticRef.current.dataset.chartTimelineState = 'valid';
+            updateCandleIntegrityDiagnostics();
+            return true;
         };
 
         if (exactTargetObservation) {
@@ -1915,8 +1955,13 @@ export function CandleChart({
             }));
             rawRef.current = exactBars;
             rawIdentityRef.current = `${loadKey}|target-date|${exactTargetObservation.targetDate}`;
-            applyBars(exactBars);
-            lastBarRef.current = exactBars[exactBars.length - 1] ?? null;
+            const exactDisplayBars = aggregate(exactBars, 1);
+            if (!applyBars(exactDisplayBars)) {
+                clearSeries(false);
+                setLoading(false);
+                return () => { loadController.abort(); cancelled = true; };
+            }
+            lastBarRef.current = exactDisplayBars.at(-1) ?? null;
             loadedKeyRef.current = loadKey;
             loadMoreRef.current = null;
             setEmpty(false);
@@ -1936,6 +1981,7 @@ export function CandleChart({
             };
         }
         const cachedRaw = recallChartKbars(cacheKey);
+        let cacheRendered = false;
         if (cachedRaw?.length) {
             // Stale-while-revalidate: switching back to a recently viewed
             // symbol paints its own last canonical rows before the browser can
@@ -1944,10 +1990,14 @@ export function CandleChart({
             rawRef.current = cachedRaw;
             rawIdentityRef.current = loadKey;
             const cachedBars = aggregate(cachedRaw, tf.minutes);
-            applyBars(cachedBars);
-            lastBarRef.current = cachedBars.at(-1) ?? null;
-            loadedKeyRef.current = loadKey;
-            setLoading(false);
+            cacheRendered = applyBars(cachedBars);
+            if (cacheRendered) {
+                lastBarRef.current = cachedBars.at(-1) ?? null;
+                loadedKeyRef.current = loadKey;
+                setLoading(false);
+            } else {
+                clearSeries(false);
+            }
         } else {
             // Never label the previous symbol's drawing/readout as the new code
             // while its history request is still in flight.
@@ -1983,15 +2033,22 @@ export function CandleChart({
                         return;
                     }
                     dryPages = 0;
-                    rawRef.current = [...older, ...rawRef.current];
-                    rememberChartKbars(cacheKey, rawRef.current);
+                    const candidateRaw = [...older, ...rawRef.current];
+                    requireCandleTimeline(candidateRaw);
                     const bars = reattachLiveCandleTail(
-                        aggregate(rawRef.current, tf.minutes),
+                        aggregate(candidateRaw, tf.minutes),
                         barsRef.current,
                     );
-                    applyBars(bars);
+                    if (!applyBars(bars)) return;
+                    rawRef.current = candidateRaw;
+                    lastBarRef.current = bars.at(-1) ?? null;
+                    historicalReferenceRef.current = buildPreviousSessionCloseIndex(candidateRaw);
+                    rememberChartKbars(cacheKey, candidateRaw);
+                    updateCandleIntegrityDiagnostics();
                 })
-                .catch(() => {
+                .catch((error) => {
+                    if (!isCurrent()) return;
+                    reportCandleDataError(error);
                     dryPages += 1;
                 })
                 .finally(() => {
@@ -2008,6 +2065,7 @@ export function CandleChart({
             .then((k) => {
                 if (!isCurrent() || !candleSeriesRef.current) return;
                 const raw = canonicalKbarsForContract(contract, k);
+                requireCandleTimeline(raw);
                 const bars = aggregate(raw, tf.minutes);
                 if (bars.length === 0) {
                     clearSeries();
@@ -2015,8 +2073,11 @@ export function CandleChart({
                     loadMoreRef.current = loadMore; // history may still exist
                     return;
                 }
+                if (!applyBars(bars)) return;
                 rawRef.current = raw;
                 rawIdentityRef.current = loadKey;
+                historicalReferenceRef.current = buildPreviousSessionCloseIndex(raw);
+                updateCandleIntegrityDiagnostics();
                 rememberChartKbars(cacheKey, raw);
                 if (usesTaiwanStockCommonLots(contract)) {
                     const latestRaw = raw[raw.length - 1]!;
@@ -2050,7 +2111,6 @@ export function CandleChart({
                         totalTurnoverTwd,
                     });
                 }
-                applyBars(bars);
                 lastBarRef.current = bars[bars.length - 1] ?? null;
                 if (lastBarRef.current) {
                     markFormingBar(lastBarRef.current.time);
@@ -2069,9 +2129,9 @@ export function CandleChart({
             .catch((error) => {
                 if (!isCurrent()) return;
                 console.warn('K 線載入失敗', error);
-                if (!cachedRaw?.length) {
-                    clearSeries();
-                    setEmpty(true);
+                reportCandleDataError(error);
+                if (!cacheRendered) {
+                    clearSeries(false);
                 }
             })
             .finally(() => {
@@ -2174,7 +2234,11 @@ export function CandleChart({
         const tickTime = wallClockToUtc(
             `${liveQuote.date}T${liveQuote.time}`,
         );
+        if (!Number.isFinite(tickTime)) return;
         const rawMinuteTime = Math.floor(tickTime / 60) * 60;
+        // Reject stale raw minutes before advancing either cumulative cursor.
+        const rawTail = rawRef.current[rawRef.current.length - 1];
+        if (rawTail && rawMinuteTime < rawTail.time) return;
         let volumeDelta = quote?.tick?.volume ?? 0;
         let turnoverDeltaTwd: number | null = null;
         if (usesTaiwanStockCommonLots(contract)) {
@@ -2208,8 +2272,27 @@ export function CandleChart({
             turnoverDeltaTwd = cursor.turnoverDeltaTwd;
         }
         if (!Number.isFinite(volumeDelta) || volumeDelta < 0) return;
+        const rawBefore = rawTail ? { ...rawTail } : null;
+        const displayBefore = lastBarRef.current ? { ...lastBarRef.current } : null;
+        const recordAcceptedTrade = () => {
+            const node = diagnosticRef.current;
+            if (!node) return;
+            const raw = rawRef.current.at(-1);
+            const display = barsRef.current.at(-1);
+            // Fixed-size last-event diagnostics; no extra stream or history.
+            node.dataset.chartLastAcceptedTrade = JSON.stringify({
+                sequence: quote?.flashSeq ?? 0,
+                sourceTime: tickTime,
+                volumeDelta,
+                turnoverDeltaTwd,
+                rawBefore,
+                rawAfter: raw,
+                displayBefore,
+                displayAfter: display,
+            });
+            node.dataset.chartTimelineState = 'valid';
+        };
         markPassiveSourceReceipt(tickTime);
-        const rawTail = rawRef.current[rawRef.current.length - 1];
         if (!rawTail || rawMinuteTime > rawTail.time) {
             rawRef.current.push({
                 time: rawMinuteTime,
@@ -2287,26 +2370,44 @@ export function CandleChart({
             // bucket while genuine trades advance. Record the trade source
             // instant, not the display bucket's opening time.
             markPassiveVisualCommit(tickTime);
+            const committedTail = committedBarsRef.current.at(-1);
+            if (committedTail?.time === bar.time) {
+                committedBarsRef.current[committedBarsRef.current.length - 1] = { ...bar };
+            } else {
+                committedBarsRef.current.push({ ...bar });
+            }
+            updateCandleIntegrityDiagnostics();
+            recordAcceptedTrade();
         } catch {
             // Recover a rejected incremental update from the already-canonical
             // in-memory bars. Only record a visual commit after both series
             // accept the resynchronised data.
-            try {
-                series.setData(barsRef.current.map((item) => ({
+            const recovered = commitCandleSeries(barsRef.current, (rows) => {
+                series.setData(rows.map((item) => ({
                     time: item.time as UTCTimestamp,
                     open: item.open,
                     high: item.high,
                     low: item.low,
                     close: item.close,
                 })));
-                volSeriesRef.current?.setData(barsRef.current.map((item) => ({
+                volSeriesRef.current?.setData(rows.map((item) => ({
                     time: item.time as UTCTimestamp,
                     value: item.volume,
                     color: item.close >= item.open ? colors.upVol : colors.downVol,
                 })));
+            }, committedBarsRef.current, reportCandleDataError);
+            if (recovered) {
+                committedBarsRef.current = barsRef.current.map((item) => ({ ...item }));
                 markPassiveVisualCommit(tickTime);
-            } catch {
-                markPassiveVisualError();
+                updateCandleIntegrityDiagnostics();
+                recordAcceptedTrade();
+            } else {
+                // Freeze this generation until an explicit normal reload;
+                // do not repeatedly retry the rejected data on every tick.
+                barsRef.current = committedBarsRef.current.map((item) => ({ ...item }));
+                lastBarRef.current = barsRef.current.at(-1) ?? null;
+                loadedKeyRef.current = '';
+                setCanonicalReadoutBars(barsRef.current);
             }
         }
     }, [
@@ -4019,7 +4120,13 @@ export function CandleChart({
                         </span>
                     </div>
                 )}
-                {empty && !loading && (
+                {candleDataError && !loading && (
+                    <div role="alert" className={styles.modeHint}>
+                        K 線資料更新失敗；已保留可用資料，請切換週期重試。
+                        <span title={candleDataError}>（{candleDataError}）</span>
+                    </div>
+                )}
+                {empty && !loading && !candleDataError && (
                     <div className={styles.emptyMsg}>
                         <span className={panel.mono}>無 K 線資料</span>
                     </div>
