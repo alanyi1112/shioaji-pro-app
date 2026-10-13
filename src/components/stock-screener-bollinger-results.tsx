@@ -23,9 +23,9 @@ const reasonLabels: Record<string, string> = { source_contract_pending: '兩市�
     source_attempts_exhausted: '來源已達重試上限，停止自動重試；已取得資料保留，須排除缺口來源原因並以可稽核方式處理，尚未發布完整報告',
     broker_policy_pending: '集中額度政策與其他工作承諾尚未驗證',
     broker_intraday_reserved: '盤前／盤中不補建日行情歷史，保留行情額度，盤後再續跑', source_selection_pending: '逐市場／日期來源選擇尚未備齊' };
-export function StockScreenerBollingerResults({ response, filter, onFilter, onPick, onAdd, targetAvailable, statuses }: {
+export function StockScreenerBollingerResults({ response, filter, onFilter, onPick, onAdd, targetAvailable, statuses, interactionDisabled = false }: {
     response: BollingerResponse; filter: string; onFilter: (s: string) => void; onPick: (s: UniverseStock) => void;
-    onAdd: (s: UniverseStock) => void; targetAvailable: boolean; statuses: Record<string, { status: string; message: string }>; }) {
+    onAdd: (s: UniverseStock) => void; targetAvailable: boolean; statuses: Record<string, { status: string; message: string }>; interactionDisabled?: boolean; }) {
     const totals = response.counts?.total;
     const backup = response.sourceEvidence?.selections.filter(s => s.provider === 'shioaji-daily-quotes') ?? [];
     const amountPolicy = response.sourceVolumeTolerances?.some(c => c.turnoverToleranceNtd === 1);
@@ -59,13 +59,13 @@ export function StockScreenerBollingerResults({ response, filter, onFilter, onPi
             const volume = bollingerSortMetric(row.outcome, 'breakoutVolumeRatio'), ratio = volume && typeof volume === 'object'
                 ? (Number(volume.numerator) / Number(volume.denominator)).toFixed(2) : '—';
             return <article className={styles.row} key={row.symbol}>
-                <div className={styles.rowTop}><button type='button' className={styles.rowAction} disabled={!targetAvailable || !response.canUseResults || response.state !== 'ready'} onClick={() => onPick(stock)}>
+                <div className={styles.rowTop}><button type='button' className={styles.rowAction} disabled={interactionDisabled || !targetAvailable || !response.canUseResults || response.state !== 'ready'} onClick={() => onPick(stock)}>
                     <strong>{row.code} {row.name} · <span data-bollinger-stage={row.outcome.stage}
                         className={row.outcome.stage === 'compressing' || row.outcome.stage === 'preparing' || row.outcome.stage === 'breakout'
                             ? styles.bollingerResultStage[row.outcome.stage] : undefined}>{bollingerStageLabels[row.outcome.stage]}</span></strong><span>{row.outcome.date} · {row.market}</span>
                     <span>BBW {row.outcome.setup.bbw?.toFixed(4) ?? '—'} · 前期百分位位置 {percentile}% · b {row.outcome.setup.b?.toFixed(3) ?? '—'} · 突破量 {ratio}×</span>
                     {response.legacyJoin && <span>組合結果：{row.verdict === 'pass' ? '符合' : row.verdict === 'fail' ? '未符合' : '無法判定'}</span>}
-                </button><button type='button' className={styles.addButton} disabled={!response.canUseResults || response.state !== 'ready' || ['pending', 'complete'].includes(statuses[row.symbol]?.status ?? '')} onClick={() => onAdd(stock)}>
+                </button><button type='button' className={styles.addButton} disabled={interactionDisabled || !response.canUseResults || response.state !== 'ready' || ['pending', 'complete'].includes(statuses[row.symbol]?.status ?? '')} onClick={() => onAdd(stock)}>
                     {statuses[row.symbol]?.status === 'complete' ? '已加入' : statuses[row.symbol]?.status === 'pending' ? '加入中…' : ['partial', 'failed'].includes(statuses[row.symbol]?.status ?? '') ? '重試加入' : '加入清單'}</button></div>
                 {row.outcome.stage === 'unknown' && <p className={styles.criticalStatus}>無法判定，必要資料缺漏；不能視為未符合。請查逐條件證據。</p>}
                 {statuses[row.symbol] && <p role='status' className={styles.addStatus}>{statuses[row.symbol]!.message}</p>}

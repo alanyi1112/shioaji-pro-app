@@ -24,12 +24,13 @@ afterEach(async () => { if (root) await act(async () => root?.unmount()); root =
     for (let version = 1; version <= 9; version++) localStorage.removeItem(`sj-pro-stock-screener-v${version}`); });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === text)!;
 const click = async (el: HTMLElement) => { expect(el).toBeTruthy(); await act(async () => el.click()); };
-async function mount({ enabled = true, state = 'ready', theme = 'dark-tw' } = {}) {
+async function mount({ enabled = true, state = 'ready', theme = 'dark-tw', queryFailure = 0 } = {}) {
     if (enabled) localStorage.setItem(CANDLESTICK_PREFS, JSON.stringify({ version: 9, query }));
     document.documentElement.style.fontSize = '32px';
     const host = document.createElement('div'); host.className = themeClasses[theme]!;
     host.style.cssText = `width:320px;height:600px;display:flex;background:${vars.color.background};color:${vars.color.foreground};font-family:${vars.font.body}`;
     document.body.append(host); root = createRoot(host);
+    let failure = queryFailure;
     const onPick = vi.fn(async () => true), onAddToWatchlist = vi.fn(async () => ({ status: 'complete' as const, message: '隔離 fixture 雙清單',
         shioaji: { status: 'already_present' as const, result: { status: 'already_present' as const, listId: 'fixture' } },
         multiview: { status: 'already_present' as const, result: { status: 'already_present' as const, symbol: '1111.TW', tabId: 'fixture', tabLabel: '選股篩選' } } }));
@@ -37,6 +38,7 @@ async function mount({ enabled = true, state = 'ready', theme = 'dark-tw' } = {}
         const u = new URL(String(input), location.href); expect(init?.method ?? 'GET').toBe('GET');
         if (u.pathname.endsWith('/daily-profile')) return Response.json({ version: 8, profile: null, sourceRequests: 0 });
         if (u.pathname.endsWith('/status')) return Response.json(legacy);
+        if (u.pathname.endsWith('/results') && u.searchParams.get('version') === '9' && failure) return Response.json({ reason: 'query_timeout' }, { status: failure });
         if (u.pathname.endsWith('/results') && u.searchParams.get('version') === '9') return Response.json({ ...response, state,
             reason: state === 'stale' ? 'new_session_pending' : 'none', canUseResults: state === 'ready' });
         throw new Error('unexpected_fixture_network');
@@ -44,9 +46,23 @@ async function mount({ enabled = true, state = 'ready', theme = 'dark-tw' } = {}
     await act(async () => root?.render(createElement(StockScreenerPanel, { targets: [{ id: 'chart', label: '未鎖定日 K 圖' }],
         onPick, onOpenChart: vi.fn(() => 'chart'), onTargetChange: vi.fn(), onAddToWatchlist })));
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
-    return { host, fetcher, onPick, onAddToWatchlist };
+    return { host, fetcher, onPick, onAddToWatchlist, failQueries: (status: number) => { failure = status; } };
 }
 describe('五型態收合 UI（隔離 fixture，非 live）', () => {
+    it('重查五型態失敗保留原日期，禁止開圖／清單，恢復後解鎖', async () => {
+        const { host, fetcher, failQueries, onPick, onAddToWatchlist } = await mount();
+        await click(button(host, '開始篩選'));
+        const add = () => button(host, '加入清單');
+        expect(add().disabled).toBe(false);
+        failQueries(503); await click(button(host, '開始篩選'));
+        expect(host.textContent).toContain('五型態查詢逾時'); expect(host.textContent).toContain('上次合法查詢快照');
+        expect(host.textContent).toContain(`有效資料日 ${response.effectiveSessionDate}`);
+        expect(add().disabled).toBe(true);
+        expect(host.querySelector<HTMLButtonElement>('[aria-label="K 線反轉結果"] article button')!.disabled).toBe(true);
+        await click(add()); expect(onAddToWatchlist).not.toHaveBeenCalled(); expect(onPick).not.toHaveBeenCalled();
+        failQueries(0); await click(button(host, '開始篩選')); expect(add().disabled).toBe(false);
+        expect(fetcher.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+    });
     it('預設新分支停用／五種全選；選取才展開且只有一個設定', async () => {
         const { host, fetcher } = await mount({ enabled: false });
         await click([...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent?.includes('技術型態'))!);

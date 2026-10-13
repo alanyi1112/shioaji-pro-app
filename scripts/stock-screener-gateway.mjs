@@ -165,7 +165,12 @@ export function validateScreenerGatewayRequest(req) {
     return { url: `${TARGET}${url.pathname}${url.search}`, version: requestedVersion(url), profileWrite };
 }
 
-export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
+export function stockScreenerGatewayTimeout(checked, override) {
+    if (override !== undefined) return override;
+    return checked.version >= 8 && !checked.profileWrite && /\/(?:status|results)(?:\?|$)/.test(checked.url) ? 20000 : 8000;
+}
+
+export function stockScreenerGateway(fetcher = fetch, timeoutMs) {
     return {
         name: 'realtimestock-local-stock-screener',
         configureServer(server) {
@@ -198,7 +203,7 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
                                 if (Buffer.byteLength(rawBody) > 64 * 1024) throw new Error('response_too_large');
                                 return safeMultiViewListResponse(response.status, JSON.parse(rawBody));
                             })(),
-                            new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),
+                            new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs ?? 8000); }),
                         ]);
                         return reply(result.status, result.body);
                     } catch {
@@ -229,11 +234,13 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs = 8000) {
                             if (Buffer.byteLength(body) > (checked.version >= 8 ? 8 : 1) * 1024 * 1024) throw new Error('response_too_large');
                             return { status: response.status, body: JSON.parse(body) };
                         })(),
-                        new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, timeoutMs); }),
+                        new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('timeout')); }, stockScreenerGatewayTimeout(checked, timeoutMs)); }),
                     ]);
                     reply(result.status, result.body);
-                } catch {
-                    reply(503, unavailablePayload(checked.version));
+                } catch (error) {
+                    const reason = error?.message === 'timeout' ? 'query_timeout' : error?.message === 'response_too_large' ? 'response_too_large'
+                        : error instanceof SyntaxError ? 'invalid_service_response' : 'local_data_service_unavailable';
+                    reply(503, { ...unavailablePayload(checked.version), ...(checked.version >= 8 ? { reason } : {}) });
                 } finally { clearTimeout(timer); controller.abort(); }
             });
         },

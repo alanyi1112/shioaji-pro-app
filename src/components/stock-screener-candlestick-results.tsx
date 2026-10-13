@@ -8,11 +8,12 @@ const reasons: Record<string, string> = { v9_schema_pending: '五型態資料表
     calendar_authority_pending: '官方交易日與臨時休市證據尚待驗證。', new_session_pending: '新資料日尚未準備；以下為保留舊快照，禁止操作。',
     same_session_legacy_pending: '舊條件缺同日同母體資料，保留無法判定。', same_session_bollinger_pending: '布林條件缺同日同母體底稿，保留無法判定。' };
 export const candlestickVerdictLabel = { pass: '符合', fail: '不符合', unknown: '無法判定' };
-export function StockScreenerCandlestickResults({ response: r, onPick, onAdd, targetAvailable, statuses }: {
+export function StockScreenerCandlestickResults({ response: r, onPick, onAdd, targetAvailable, statuses, interactionDisabled = false }: {
     response: CandlestickResponse; onPick: (stock: UniverseStock) => void; onAdd: (stock: UniverseStock) => void;
-    targetAvailable: boolean; statuses: Record<string, { status: string; message: string }>;
+    targetAvailable: boolean; statuses: Record<string, { status: string; message: string }>; interactionDisabled?: boolean;
 }) {
     const available = r.state === 'ready' && r.canUseResults;
+    const operational = available && !interactionDisabled;
     return <section className={styles.results} aria-label='K 線反轉結果'>
         <div className={styles.status} role='status'><strong>五型態 · {available ? '完整日查詢完成' : r.state === 'stale' ? '資料已過期' : '等待完整資料'}</strong>
             <div>有效資料日 {r.effectiveSessionDate ?? '尚無'} · 預期 {r.expectedSessionDate ?? '未確認'}</div>
@@ -26,7 +27,7 @@ export function StockScreenerCandlestickResults({ response: r, onPick, onAdd, ta
         {r.rows.map(row => {
             const stock: UniverseStock = { symbol: row.symbol, code: row.code, name: row.name, market: row.market, kind: 'ordinary' };
             return <article key={row.symbol} className={styles.row}>
-                <div className={styles.rowTop}><button type='button' className={styles.rowAction} disabled={!targetAvailable || !available}
+                <div className={styles.rowTop}><button type='button' className={styles.rowAction} disabled={!targetAvailable || !operational}
                     onClick={() => onPick(stock)} aria-label={`在指定 K 線圖開啟 ${row.code} ${row.name}`}>
                     <strong>{row.code} {row.name} · {candlestickVerdictLabel[row.verdict]}</strong>
                     <span>{r.effectiveSessionDate} · {row.market}</span>
@@ -35,7 +36,7 @@ export function StockScreenerCandlestickResults({ response: r, onPick, onAdd, ta
                         {CANDLESTICK_CATALOG[hit.subtype ?? hit.pattern].name} · {hit.direction === 'bullish' ? '看多（紅陽）' : '看空（綠陰）'}
                         {hit.subtype === 'morning-doji-star' ? ' · 外部反轉率參考 76%（非本功能勝率）' : ''}
                     </strong>)}
-                </button><button type='button' className={styles.addButton} disabled={!available || ['pending', 'complete'].includes(statuses[row.symbol]?.status ?? '')} onClick={() => onAdd(stock)}>
+                </button><button type='button' className={styles.addButton} disabled={!operational || ['pending', 'complete'].includes(statuses[row.symbol]?.status ?? '')} onClick={() => onAdd(stock)}>
                     {statuses[row.symbol]?.status === 'complete' ? '已加入' : statuses[row.symbol]?.status === 'pending' ? '加入中…' : ['failed', 'partial'].includes(statuses[row.symbol]?.status ?? '') ? '重試加入' : '加入清單'}</button></div>
                 {statuses[row.symbol] && <p role='status' className={styles.addStatus}>{statuses[row.symbol]!.message}</p>}
                 <details><summary>五型態逐棒與條件證據（唯讀）</summary>

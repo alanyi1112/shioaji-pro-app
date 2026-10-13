@@ -64,16 +64,17 @@ let root: Root | null = null;
 const originalFont = document.documentElement.style.fontSize;
 afterEach(async () => { if (root) await act(async () => root?.unmount()); root = null; vi.unstubAllGlobals(); vi.restoreAllMocks();
     document.body.replaceChildren(); document.documentElement.style.fontSize = originalFont;
-    localStorage.removeItem(BOLLINGER_PREFS); localStorage.removeItem('sj-pro-stock-screener-v7'); });
+    localStorage.removeItem(BOLLINGER_PREFS); localStorage.removeItem('sj-pro-stock-screener-v7'); localStorage.removeItem('sj-pro-stock-screener-v9'); });
 const button = (host: HTMLElement, text: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(b => b.textContent === text)!;
 async function mount({ enabled = true, state = 'ready', width = 320, font = 32, backup = false, amount = false,
-    preparationReason = 'source_contract_pending', profileFailure = 0 } = {}) {
+    preparationReason = 'source_contract_pending', profileFailure = 0, queryFailure = 0, failureReason = 'query_timeout', legacyDateMismatch = false } = {}) {
     if (enabled) localStorage.setItem(BOLLINGER_PREFS, JSON.stringify({ version: 8, query }));
     document.documentElement.style.fontSize = `${font}px`;
     const host = document.createElement('div'); host.classList.add(darkTwClass);
     host.style.cssText = `width:${width}px;height:600px;display:flex;flex-direction:column;background:${vars.color.background};color:${vars.color.foreground};font-family:${vars.font.body}`;
     document.body.append(host); root = createRoot(host);
     let profile: { revision: number; enabled: boolean; criteria: typeof c; createdAt: string } | null = null;
+    let currentFailure = queryFailure;
     const onPick = vi.fn(async () => true), onOpenChart = vi.fn(() => 'chart'), onTargetChange = vi.fn();
     const onAddToWatchlist = vi.fn(async () => ({ status: 'complete' as const, message: '兩套清單已加入（fixture）',
         shioaji: { status: 'already_present' as const, result: { status: 'already_present' as const, listId: 'fixture' } },
@@ -87,8 +88,11 @@ async function mount({ enabled = true, state = 'ready', width = 320, font = 32, 
                 profile = { revision: saved.expectedRevision + 1, enabled: saved.enabled, criteria: saved.criteria, createdAt: '2026-10-03T04:00:00Z' }; }
             return Response.json({ version: 8, profile, sourceRequests: 0 });
         }
-        if (url.pathname.endsWith('/status')) return Response.json(legacy);
+        if (url.pathname.endsWith('/status')) return Response.json(legacyDateMismatch ? { ...legacy, reason: 'mixed_session_dates',
+            effectiveSessionDate: '2026-10-12', expectedSessionDate: '2026-10-13',
+            anchors: { ...legacy.anchors, daily: { current: '2026-10-12', previous: '2026-10-08' } } } : legacy);
         if (url.pathname.endsWith('/results') && url.searchParams.get('version') === '8') {
+            if (currentFailure) return Response.json({ reason: failureReason }, { status: currentFailure });
             const stage = url.searchParams.get('stage') ?? 'all';
             const selectedReport = amount ? amountReport : backup ? backupReport : report;
             return Response.json(state === 'ready' ? { ...selectedReport, rows: selectedReport.rows.filter(r => stage === 'all' || stage === r.outcome.stage) }
@@ -100,14 +104,64 @@ async function mount({ enabled = true, state = 'ready', width = 320, font = 32, 
                     ...(state === 'history_pending' ? { requiredDays:290,availableDays:160 } : {}),
                     ...(['pending', 'history_pending'].includes(state) ? { rows: [], nextCursor: null } : {}) });
         }
+        if (url.pathname.endsWith('/results') && url.searchParams.get('version') === '9') return Response.json({ reason: 'query_timeout' }, { status: 503 });
         throw new Error('測試不允許其他 network／broker 路徑');
     }); vi.stubGlobal('fetch', fetcher);
     await act(async () => { root?.render(createElement(StockScreenerPanel, { targets: [{ id: 'chart', label: '未鎖定圖表' }],
         onPick, onOpenChart, onTargetChange, onAddToWatchlist })); });
     await act(async () => { await new Promise(r => setTimeout(r, 10)); });
-    return { host, fetcher, onPick, onOpenChart, onAddToWatchlist, profile: () => profile };
+    return { host, fetcher, onPick, onOpenChart, onAddToWatchlist, profile: () => profile, failQueries: (status: number) => { currentFailure = status; } };
 }
 describe('布林三階段 UI（隔離 fixture）', () => {
+    it('從一般選股前日狀態改查布林失敗，不混用日期且可重查恢復', async () => {
+        const { host, fetcher, failQueries, onPick, onAddToWatchlist } = await mount({ enabled: false, legacyDateMismatch: true, queryFailure: 503 });
+        expect(host.textContent).toContain('有效 2026-10-12');
+        await act(async () => button(host, '全部取消').click());
+        await act(async () => host.querySelector<HTMLButtonElement>('[aria-controls="screener-condition-group-technical"]')!.click());
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用布林壓縮與突破"]')!.click());
+        await act(async () => button(host, '開始篩選').click());
+        expect(host.textContent).toContain('布林查詢逾時');
+        expect(host.textContent).not.toContain('2026-10-12');
+        expect(host.textContent).not.toContain('資料日期尚未同步');
+        expect(host.textContent).not.toContain('籌碼可能仍在更新');
+        failQueries(0);
+        await act(async () => button(host, '開始篩選').click());
+        expect(host.textContent).toContain('布林查詢已完成');
+        expect(host.textContent).toContain(`有效資料日 ${f.through}`);
+        expect(fetcher.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+        expect(onPick).not.toHaveBeenCalled(); expect(onAddToWatchlist).not.toHaveBeenCalled();
+    });
+    it.each([['response_too_large', '安全大小'], ['invalid_query', '參數無效'], ['invalid_service_response', '格式無效']])('HTTP 布林 %s 原因不混用舊日期', async (failureReason, message) => {
+        const { host, fetcher } = await mount({ queryFailure: 503, failureReason, legacyDateMismatch: true });
+        await act(async () => button(host, '開始篩選').click());
+        expect(host.textContent).toContain(message); expect(host.textContent).not.toContain('2026-10-12');
+        expect(fetcher.mock.calls.filter(([url]) => String(url).includes('/status?version=7'))).toHaveLength(0);
+    });
+    it('同類型重查失敗保留原快照、封鎖操作，成功後解鎖', async () => {
+        const { host, failQueries, onPick, onAddToWatchlist } = await mount();
+        await act(async () => button(host, '開始篩選').click());
+        expect(button(host, '加入清單').disabled).toBe(false);
+        failQueries(503); await act(async () => button(host, '開始篩選').click());
+        expect(host.textContent).toContain('上次合法查詢快照');
+        expect(host.textContent).toContain(`有效資料日 ${f.through}`);
+        expect(button(host, '加入清單').disabled).toBe(true);
+        expect(host.querySelector<HTMLButtonElement>('article button')).toHaveProperty('disabled', true);
+        await act(async () => { button(host, '加入清單').click(); host.querySelector<HTMLButtonElement>('article button')!.click(); });
+        expect(onPick).not.toHaveBeenCalled(); expect(onAddToWatchlist).not.toHaveBeenCalled();
+        failQueries(0); await act(async () => button(host, '開始篩選').click());
+        expect(button(host, '加入清單').disabled).toBe(false);
+    });
+    it('已有布林結果，改查五型態失敗不顯示布林結果或一般選股舊日期', async () => {
+        const { host, fetcher } = await mount({ legacyDateMismatch: true });
+        await act(async () => button(host, '開始篩選').click());
+        expect(host.querySelector('[aria-label="布林三階段結果"]')).not.toBeNull();
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用 K 線反轉型態"]')!.click());
+        await act(async () => button(host, '開始篩選').click());
+        expect(host.textContent).toContain('五型態查詢逾時');
+        expect(host.querySelector('[aria-label="布林三階段結果"]')).toBeNull();
+        expect(host.textContent).not.toContain('2026-10-12');
+        expect(fetcher.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+    });
     it.each(['dark-tw', 'dark-intl', 'midnight-tw', 'midnight-intl', 'light-tw', 'light-intl'])('%s 結果階段獨立著色，對比至少4.5且保留無法判定文字', async theme => {
         const { themeClasses } = await import('../theme.css');
         const host = document.createElement('div'); host.className = themeClasses[theme]!;

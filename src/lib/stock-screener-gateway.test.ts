@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
     STOCK_SCREENER_MULTIVIEW_LIST_PATH,
     stockScreenerGateway,
+    stockScreenerGatewayTimeout,
     validateScreenerGatewayRequest,
     validateStockScreenerMultiViewListPayload,
     validateStockScreenerMultiViewListRequest,
@@ -10,6 +11,57 @@ import {
 
 const req = { url: '/api/stock-screener/results', method: 'GET', headers: { host: '127.0.0.1:5173' } };
 describe('選股 allowlist 不接觸 broker', () => {
+    it('預設代理接收九秒的合法布林回應，不套用舊八秒上限', async () => {
+        vi.useFakeTimers();
+        try {
+            let middleware: Function = () => {};
+            const fetcher = vi.fn(() => new Promise<Response>(resolve => setTimeout(() => resolve(Response.json({ state: 'ready' })), 9000)));
+            (stockScreenerGateway(fetcher).configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+            const res = responseRecorder();
+            const done = middleware({ ...req, url: '/api/stock-screener/results?version=8' }, res, vi.fn());
+            await vi.advanceTimersByTimeAsync(9000); await done;
+            expect(res.statusCode).toBe(200); expect(fetcher).toHaveBeenCalledOnce();
+        } finally { vi.useRealTimers(); }
+    });
+    it.each([8, 9])('v%s 預設代理連 body 都有二十秒界限，不自動重試', async version => {
+        vi.useFakeTimers();
+        try {
+            let middleware: Function = () => {}; let signal: AbortSignal | undefined;
+            const fetcher = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => { signal = init?.signal ?? undefined;
+                return { text: () => new Promise(() => {}) }; });
+            (stockScreenerGateway(fetcher as unknown as typeof fetch).configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+            const res = responseRecorder();
+            const done = middleware({ ...req, url: `/api/stock-screener/status?version=${version}` }, res, vi.fn());
+            await vi.advanceTimersByTimeAsync(19999); expect(res.end).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1); await done;
+            expect(res.statusCode).toBe(503); expect(JSON.parse(res.end.mock.calls[0]![0] as string).reason).toBe('query_timeout');
+            expect(signal?.aborted).toBe(true); expect(fetcher).toHaveBeenCalledOnce();
+        } finally { vi.useRealTimers(); }
+    });
+    it('長窗口 GET 有界二十秒；profile／舊查詢維持八秒且可注入測試期限', () => {
+        for (const version of [8, 9]) for (const path of ['status', 'results']) {
+            expect(stockScreenerGatewayTimeout({ version, url: `http://127.0.0.1:5174/api/stock-screener/${path}?version=${version}` })).toBe(20000);
+        }
+        expect(stockScreenerGatewayTimeout({ version: 7, url: '/api/stock-screener/results' })).toBe(8000);
+        for (const profileWrite of [false, true]) expect(stockScreenerGatewayTimeout({ version: 8, profileWrite, url: '/api/stock-screener/daily-profile?version=8' })).toBe(8000);
+        expect(stockScreenerGatewayTimeout({ version: 8, url: '/api/stock-screener/results' }, 10)).toBe(10);
+    });
+    it.each([
+        ['timeout', async () => ({ text: () => new Promise(() => {}) }), 'query_timeout'],
+        ['oversized', async () => ({ text: async () => ' '.repeat(8 * 1024 * 1024 + 1) }), 'response_too_large'],
+        ['malformed', async () => ({ text: async () => '{private detail' }), 'invalid_service_response'],
+        ['offline', async () => { throw new Error('private detail'); }, 'local_data_service_unavailable'],
+    ] as const)('v8 %s 保存安全原因且取消讀取，不外洩細節', async (_name, fetcher, reason) => {
+        let middleware: Function = () => {};
+        const spy = vi.fn(fetcher);
+        (stockScreenerGateway(spy as unknown as typeof fetch, 10).configureServer as Function)({ middlewares: { use(fn: Function) { middleware = fn; } } });
+        const res = responseRecorder();
+        await middleware({ ...req, url: '/api/stock-screener/results?version=8' }, res, vi.fn());
+        expect(res.statusCode).toBe(503);
+        const raw = res.end.mock.calls[0]![0] as string;
+        expect(JSON.parse(raw)).toMatchObject({ version: 8, reason });
+        expect(raw).not.toContain('private detail'); expect(spy).toHaveBeenCalledOnce();
+    });
     it('v8 profile 是獨立 local-only PUT；v1–v7 GET 與 broker 路徑不擴權', async () => {
         const profile = { ...req, method: 'PUT', url: '/api/stock-screener/daily-profile?version=8',
             socket: { localAddress: '127.0.0.1', remoteAddress: '127.0.0.1' },
@@ -51,7 +103,7 @@ describe('選股 allowlist 不接觸 broker', () => {
         expect(validateScreenerGatewayRequest({ ...req, url: '/api/v1/contracts' })).toBeNull();
         for (const extra of [
             { method: 'POST' }, { url: '/api/stock-screener/delete' }, { url: '/api/stock-screener/results?url=http://evil' },
-            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=9' },
+            { url: '/api/stock-screener/status?fractal=true' }, { url: '/api/stock-screener/status?version=10' },
             { url: '/api/stock-screener/results?limit=101' }, { url: '/api/stock-screener/results?limit=1&limit=2' },
             { headers: { host: 'example.com' } }, { headers: { ...req.headers, origin: 'https://evil.example' } },
         ]) expect(validateScreenerGatewayRequest({ ...req, ...extra })?.reason).toBeTruthy();
