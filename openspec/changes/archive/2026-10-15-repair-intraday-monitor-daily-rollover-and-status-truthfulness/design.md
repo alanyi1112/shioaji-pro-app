@@ -1,3 +1,11 @@
+## 2026-10-15 現行契約與結案補充
+
+7.7 經使用者授權，以原生 scheduler 已載入的 label、entry／Node 路徑、calendar interval 與時區條件，連同真實系統觸發、不可變 claim／receipt、日期、原程序及正式 160 份基準構成驗證鏈，不再把未公開的 future-fire 欄位當唯一結案條件。loaded 或 CalendarInterval 文字單獨仍不足；原失敗與來源用量須保留，手動補件不得冒稱 scheduled。若系統日誌確有 `Rescheduling StartCalendarInterval`，保存其原文與真正下次時間，不將自行計算或 Codex heartbeat 時點當成原 LaunchAgent 的證據。本輪查到的系統觸發與來源核對另記於 `acceptance/scheduler-receipt-closeout-2026-10-15.md`，歷史查核紀錄保持原文。
+
+下文描述本案歷次設計演進；現行 daily 的來源與執行契約以已同步 `intraday-monitor-daily-runtime` 為準。v1 雙抓／ticks／完整 capture、Stage replay 與其資源報告只屬 legacy diagnostic；daily 使用獨立 v2 及官方日曆快取，不回到停更 v1 包。合法 threshold-only CAS 依 durable comparison receipt 生效，不因 saved revision 與原行情 revision 不同停止合法 observation 留存；名單結構、日期、來源／generation、owner、基準與通知 Gate 不放寬。較窄介面的完整資訊依已同步的收合詳情／換行契約呈現，title 不是唯一資訊來源。
+
+本次只驗證原件並更新規格與結案文件；不啟停、重載或重新安裝服務／排程，不手動啟動原生工作、不建立新 login／SSE／訂閱，不改原設定或收據。同步後仍須核實 immutable runtime bundle 可解析，來源 metadata 裡的舊 active-change 路徑只作 provenance，不可作執行期檔案位置。
+
 ## Context
 
 目前盤中監控把 Stage 160 容量核准、單日 capture 狀態與產品 current-session 狀態保存在同一份 `direct-160-product-runtime.json`。2026-09-16 驗收完成後檔案停在 `phase=complete_go`、`evaluationState=go`、`tradeDate=2026-09-16`；Vite gateway 仍將這份狀態投影成 `approvedActiveLimit=160`、`controlPlaneSubscriptionRequested=true`，再把非 running phase 的舊商品改成 `outside_session`。因此 2026-09-22 畫面同時顯示歷史 `GO`、訂閱已接受、`dataActive=0` 與部分 degraded。
@@ -116,6 +124,14 @@ Shioaji 歷史 KBar 可能省略當日零成交分鐘。補足缺口前須由同
 正式排程遇失敗時，將固定、不含帳號與錯誤原文的警示交給 macOS 通知中心，並以 append-only 本機收據分別記錄 `os_handoff`、`failed` 或 `unsupported`；`os_handoff` 只證明作業系統接手，不代表使用者已讀。通知失敗不得遮蔽原始擷取失敗，也不得觸發登入、訂閱或服務重啟。另設唯讀 LaunchAgent 在交易日 08:52 查 08:50 收據、13:40 查正式擷取結果；可於當天啟動時補查，但不得把檢查時間改寫為原事件時間。第一次通知交付失敗可於稽核時再試一次，原交付收據保留。關機、macOS 拒絕通知或無可靠交易日 authority 時仍可能無法即時提醒，需在驗收文件明示。
 
 2026-10-02 08:52 發現 full-session 擷取仍在執行時，08:50 的收尾 receipt 尚未存在，舊稽核卻以「receipt 缺席」直接送出失敗通知。修正為先核對同日 08:50 claim、同日 session 的新鮮 `starting`／`running` 狀態、control-plane accepted 與失敗 sidecar；在 claim 後五分鐘內且無失敗證據時視為 pending，不送失敗警示。五分鐘過後仍缺證據或已有明確失敗時維持警示，13:40 仍獨立核對最終正式結果。當天已送出的誤報收據保留，不改寫成成功或刪除。
+
+### 11. 收尾資源拒絕必須可歸因且不丟失擷取證據
+
+2026-10-05 的原正式擷取已將 160×270 筆 observation 寫入 SQLite，且事後逐筆與當日 verified 盤後基準的累積量一致。但 `createTieredStageSessionEvidence` 將資源欄位／門檻失敗折疊為 `tiered stage session is invalid`，在寫入主 capture 前拋出。LaunchAgent stdout／stderr 丟棄，原失敗 sidecar 不含資源量測，因此無法事後分辨 CPU、RSS、資料庫增量或處理延遲哪一項拒絕；不得用目前量測冒充原全日峰值。
+
+資源驗證改由同一純函式逐欄回報量測值、鎖定預算、比較方向與穩定 reason code，缺失／非整數與超標分開。門檻與原 plan hash 不变。啟動保存資料庫工作集大小與原預算；盤中每五分鐘及首次超標保存有界本機量測；收尾在驗證前保存最終量測。若完整擷取及 replay 已產生，但 Stage session 因資源拒絕，先以 exclusive writer 保存主 capture（含真正 session、replay、資源、拒絕原因，`tieredSession=null`、正式驗收為 false），再交回失敗流程與獨立通知。sidecar MUST 核對主檔 schema／日期／mode 並記 hash，不能繼續固定宣稱主檔不存在。
+
+原 10/5 失敗 sidecar、08:50 failed receipt 與 13:40 audit 不改寫；缺少原資源／transport 完整封存的事後 SQLite 對照只證明資料一致性，不能重建假正式 capture 或補造資源峰值。後續真正排程須用修正後流程保存可歸因的收尾；資源超標仍 fail closed，不以保存資料檔改判 GO。
 
 ## Risks / Trade-offs
 

@@ -1,3 +1,9 @@
+## 2026-10-15 結案契約增量
+
+使用者已明確授權 7.7 改以「已載入的原生排程條件＋真實觸發／claim／完成收據」驗證，再同步主規格並歸檔；不修改現行服務、排程或程式，不 commit／push。僅 loaded、設定的 13:35、手動重跑或自行推算下次時間均不足；日期、160 份逐檔基準、原流量、單一原程序與真實受控換代的條件仍須核實。可取得的 UserEventAgent `Running／Rescheduling StartCalendarInterval` 原文另保存，不把缺少 future timestamp 宣稱為已取得，也不把此次查核時間寫回原事件。
+
+本案原 v1 雙抓／ticks／完整 capture 與 Stage 收尾條件僅保留其歷史或選用 diagnostic 適用範圍；現行 daily 依已同步的 `intraday-monitor-daily-runtime`、v2 基準、盤中門檻熱切換與最多 10 檔且僅缺 13:30 的政策。同步不得讓舊 revision 規則停止合法門檻切換後的留存，也不得讓舊日曆接線覆蓋已驗證的獨立 daily 官方快取。歷史 failed／partial／unknown 不改判；完成本跨日／狀態修復不等於原 live 全日完整或全系統零故障。
+
 ## Why
 
 盤中監控雖已於 2026-09-16 完成 160 檔容量驗收，但 durable premarket 設定仍固定綁定該交易日與已歸檔 change 的舊路徑，之後的交易日只會回傳 `not_configured_trading_date`，畫面卻持續顯示歷史 `GO`／「訂閱已接受」，造成「容量曾通過」與「今日正在監控」混淆。2026-09-22 實查已確認當日 `dataActive=0`、結果為 0、最新 evidence 仍停在 2026-09-16，因此需要補上每日 session rollover 與狀態誠實性契約。

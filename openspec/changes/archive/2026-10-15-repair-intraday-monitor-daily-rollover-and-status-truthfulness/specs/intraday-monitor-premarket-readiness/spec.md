@@ -4,6 +4,8 @@
 
 系統 MUST 由 durable local scheduler 在每次 08:20 執行時，以 `Asia/Taipei`、前一適用交易日盤後已發布且完整驗證的本機 TWSE／TPEx 官方年度日曆判定當日與上一個適用交易日；盤前四步 MUST NOT 依賴當時再連官方網站。適用交易日 MUST 原子建立唯一 session manifest，綁定 trade date、previous trade date、config revision、cohort hash、baseline hash、artifact bundle hash、approval hash、API generation 與 scheduler receipt；08:35、08:45、08:50 MUST 讀取並驗證同一份 manifest。固定日期 config、過去交易日 claim 或昨日 successful state MUST NOT 取代當日 rollover。
 
+現行 daily MUST 優先驗證原盤後流程獨立保存的 `official-calendar-cache` 原文／來源 hash／實際時間及有界期限，不以停更 v1 baseline 包作唯一日曆來源；新版缺席才可沿用合法 legacy，新版存在但損壞或過期 MUST 拒絕。日曆 authority 與 160 檔量比基準 MUST 分別核對，日曆有效不代表基準完整。
+
 #### Scenario: 下一個適用交易日自動 rollover
 - **WHEN** 官方交易日 authority 判定今天為新的適用交易日，且上一日 approval 與所需 artifacts 有效
 - **THEN** 08:20 runner MUST 建立今天唯一的 current-session manifest，後續三個步驟 MUST 使用相同 session id 與 hashes
@@ -25,13 +27,18 @@
 
 #### Scenario: 盤前使用前一日已驗證的本機官方日曆
 - **WHEN** 08:20／08:35／08:45／08:50 需要判定當日是否為預排交易日
-- **THEN** runner MUST 唯讀驗證已發布 baseline 的 hash、官方雙來源 schema／年份／日期、source version、來源日與目標交易日，不向官方網站發起新請求
+- **THEN** runner MUST 唯讀驗證 daily 獨立日曆快取或合法 legacy artifact 的 hash、官方雙來源 schema／年份／日期、source version、來源日與目標交易日，不向官方網站發起新請求
 - **AND** 最新 artifact 缺失、篡改、來源不一致或超過有界期限時 MUST 保存 `calendar_authority_unavailable`，不得猜測交易日或回退至更舊 artifact
 
 #### Scenario: 08:20 失敗後後續盤前步驟有條件恢復
 - **WHEN** 08:20 留下同日 `calendar_authority_unavailable` 原始失敗收據且無 session，後續步驟重新取得合格的本機 authority 與完整基準、安全 Gate，並能證明今日無 capture／訂閱／observation／trigger
 - **THEN** 08:35／08:45 MAY 以自身 claim 建立 session 並重驗完整 Gate，收據 MUST 連結原 08:20 收據 SHA-256 且標為 `session_recovered_after_0820_failure`
-- **AND** MUST 保留原 08:20 失敗與 `scheduled0820Success=false` 語意；不得啟停服務、建立第二條訂閱或把恢復冒稱 08:20 自動驗收成功；08:50 不得補建
+- **AND** MUST 保留原 08:20 失敗與 `scheduled0820Success=false` 語意；不得啟停服務、建立第二條訂閱或把恢復冒稱 08:20 自動驗收成功；legacy 08:50 不得補建
+
+#### Scenario: daily 原 08:50 在開盤前依既有日曆規則安全補建
+- **WHEN** daily 的原盤前日曆失敗收據保留，尚無今日成功 claim／session／資料，且原 08:50 排程在 09:00 前取得合法本機官方日曆、完整 160 基準與全部安全 Gate
+- **THEN** 原 daily 流程 MAY 依現行有界日曆恢復契約補建並繼續原步驟，不得手動代跑、刪改原三張失敗或建立第二 owner
+- **AND** 此情境 MUST NOT 授權在 08:50 同時重綁已有 session 的 generation；generation recovery 仍只限首筆資料前、原 08:35／08:45 合法時窗
 
 ### Requirement: 盤前產品啟動輸入與失敗警示必須提早、獨立驗證
 
@@ -74,6 +81,8 @@
 
 ### Requirement: 下一交易日的分鐘量基準必須在前一交易日收盤後有界產出
 
+本 Requirement 下列 v1 雙抓、ticks、精確 bundle 路徑及三次外層重試的來源契約 MUST 僅適用於 legacy diagnostic。現行 daily MUST 依 `intraday-monitor-daily-runtime` 的獨立 v2、既有本機有界採集／續轉與逐檔發布規則；MUST NOT 因未產生 v1 capture、雙抓或 ticks 對帳而拒絕合法 v2，也不得把 v2 宣稱為已通過 v1。兩種模式均須保留原 claim／receipt、真實來源日期、固定 cohort 與未知品質，不互相追認成功。
+
 系統 MUST 在官方 authority 確認的適用交易日收盤後，使用既有 simulation business session 逐檔取得同日歷史 1 分 K，累計封閉分鐘成交量，並依既有雙抓、逐筆每分鐘、契約、`common_lot`、官方日曆與 cohort hash 驗證。啟動預算 MUST 由目前 provider 總額、同 cohort 近期至少兩次完整驗證的實測成本及有界安全係數計算，不得採用固定剩餘 bytes 起跑線；樣本或 usage 欄位不足 MUST fail closed。採集期間 MUST 在每個資料請求前重新查核 provider 剩餘額度與動態保留額，並持續估計剩餘 160 檔工作量。MUST 保留 8 GiB 磁碟保留、串行間隔與有界期限；MUST NOT 自行登入、訂閱、重啟服務或降低資料驗證條件。只有 160 檔完整合格時才可原子發布下一適用交易日精確日期路徑的 baseline bundle。
 
 #### Scenario: 歷史 1 分 K 與逐筆資料完整
@@ -105,3 +114,27 @@
 #### Scenario: 換代時已有合法 KBar 或訂閱
 - **WHEN** 任一 control-plane、逐檔 subscription、第一筆 KBar、結果或觸發已存在或不可證明為零
 - **THEN** runner MUST 保持 `generation_mismatch`，不得重綁 session 或重播結果
+
+### Requirement: 基準排程驗收必須核對已載入條件與真實觸發收據
+
+原生基準排程驗收 MUST 唯讀核對 scheduler 已載入的 label、程式及參數、受支援執行器路徑、calendar interval 與實際台北時間，並將原系統觸發、同次 claim／receipt、日期、原 owner／generation、完整 160 檔基準及原流量紀錄相互對照。單憑 plist、LaunchAgent loaded、runs／exit code、originTrigger 字串、HTTP 200 或自行推算的下次時間 MUST NOT 判定成功。
+
+UserEventAgent 等原系統提供的 `Running StartCalendarInterval` MUST 與 claim 時間及 job identity 對應；後續有限嘗試可於同一原程序內完成，前次 partial／failed、請求數及 bytes MUST 保留，不把最後 complete 冒稱首次即成功。原生完成與 operator 補件 MUST 分列。下一適用交易日的 160 份基準使用、simulation session、原盤前收據與首筆資料前受控換代 MUST 由各自原件核實，離線 fixture 不能取代。
+
+scheduler 若公開獨立的 future-fire 欄位或 `Rescheduling StartCalendarInterval` 日誌，MUST 保存可取得的原值、來源及觀測時間；未取得時 MUST 明列未知，不能以 Codex heartbeat next_run_at、程式 computedFireAt 或自行計算冒充。已載入條件與真實觸發／完成鏈齊備時，MAY 完成此排程驗收，而不要求不可讀的 future-fire 欄位。查核 MUST NOT 重載、重裝或代跑工作，不新增下載、broker login／SSE／訂閱、通知或交易，也不改寫原證據。
+
+#### Scenario: 已載入但缺少真實觸發或完成收據
+- **WHEN** 只讀到 13:35 CalendarInterval，或只有 claim 而無合法完成鏈
+- **THEN** MUST 保持未確認／進行中／失敗，不得僅因 job loaded 就通過驗收
+
+#### Scenario: 原程序在有限重試後完成完整基準
+- **WHEN** 原系統 13:35 trigger 可對應同次 claim，原程序第一次 partial 留存，後續同 owner 有界嘗試完成 160 份合法來源日／目標日基準
+- **THEN** MUST 以完整觸發鏈核實原生完成，保留第一次 partial 與全部 requests／bytes，不得重跑下載器製造收據
+
+#### Scenario: 原系統有實際重新排程時間
+- **WHEN** scheduler 日誌提供原 job 的 Rescheduling 事件與下一次台北時間
+- **THEN** MUST 原樣保存該來源；若只有自行計算值則 MUST 標示為推算，不能宣稱為 scheduler 獨立讀回
+
+#### Scenario: 人工補件與下一日受控換代
+- **WHEN** 前日基準曾由 operator 補足，而次日原盤前 session 首筆資料前另完成合法 generation transition
+- **THEN** MUST 各自保留 operator／scheduled／transition provenance，確認實際使用同一組合法 160 基準；不得把人工補件追認為前日排程或全日 live 成功

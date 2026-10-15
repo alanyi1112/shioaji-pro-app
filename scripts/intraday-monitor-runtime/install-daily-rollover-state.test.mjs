@@ -17,8 +17,8 @@ async function fixture() {
     const appSupport = path.join(root, 'app-support');
     const acceptance = path.join(repo, 'openspec', 'changes', 'archive',
         '2026-09-16-evaluate-tiered-intraday-monitor-expansion-to-160', 'acceptance');
-    const verifierDirectory = path.join(repo, 'openspec', 'changes',
-        'repair-intraday-monitor-daily-rollover-and-status-truthfulness', 'acceptance');
+    const verifierDirectory = path.join(repo, 'openspec', 'changes', 'archive',
+        '2026-10-15-repair-intraday-monitor-daily-rollover-and-status-truthfulness', 'acceptance');
     await mkdir(acceptance, { recursive: true });
     await mkdir(verifierDirectory, { recursive: true });
     const artifacts = [
@@ -50,6 +50,22 @@ async function fixture() {
 }
 
 describe('daily rollover state installer', () => {
+    it('歸檔後沒有 active change 目錄仍可驗證 verifier，且不安裝正式狀態', async () => {
+        const value = await fixture();
+        const before = await readFile(value.configPath, 'utf8');
+        await expect(access(path.join(value.repo, 'openspec', 'changes',
+            'repair-intraday-monitor-daily-rollover-and-status-truthfulness'))).rejects.toThrow();
+        const result = await installIntradayMonitorDailyRolloverState({
+            execute: false, appSupportRoot: value.appSupport, repoDirectory: value.repo,
+            now: new Date('2026-09-22T12:00:00+08:00'),
+            resolveNextTradingDay: value.resolveNextTradingDay,
+        });
+        expect(result).toMatchObject({ mode: 'dry_run', installed: false,
+            bundle: { valid: true, roles: ['baseline_prerequisite', 'cohort', 'plan', 'verifier'] },
+            serviceLifecycleMutations: 0, brokerWriteAuthority: false, productionAuthority: false });
+        expect(await readFile(value.configPath, 'utf8')).toBe(before);
+    });
+
     it('dry-run 驗證 bundle、歷史 migration 與四個 next trigger，但不修改正式狀態', async () => {
         const value = await fixture();
         const before = await readFile(value.configPath, 'utf8');

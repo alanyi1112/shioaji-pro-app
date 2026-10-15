@@ -16,6 +16,8 @@ export const INTRADAY_MONITOR_DAILY_ROLLOVER_INSTALL_SCHEMA =
 
 const ARCHIVE_IDENTITY =
     '2026-09-16-evaluate-tiered-intraday-monitor-expansion-to-160';
+const ROLLOVER_ARCHIVE_IDENTITY =
+    '2026-10-15-repair-intraday-monitor-daily-rollover-and-status-truthfulness';
 
 function argument(name) {
     return process.argv.find((value) => value.startsWith(`--${name}=`))?.slice(name.length + 3);
@@ -41,8 +43,8 @@ function artifactInputs(repoDirectory) {
             path: path.join(acceptance, 'direct-160-prerequisite-2026-09-11.json'),
             schema: 'legacy-unversioned-json', dependencies: ['cohort', 'plan'] },
         { role: 'verifier',
-            path: path.join(repoDirectory, 'openspec', 'changes',
-                'repair-intraday-monitor-daily-rollover-and-status-truthfulness',
+            path: path.join(repoDirectory, 'openspec', 'changes', 'archive',
+                ROLLOVER_ARCHIVE_IDENTITY,
                 'acceptance', 'runtime-verifier-metadata.json'),
             schema: 'intraday-monitor-runtime-verifier-metadata/1',
             dependencies: ['cohort', 'plan', 'baseline_prerequisite'] },

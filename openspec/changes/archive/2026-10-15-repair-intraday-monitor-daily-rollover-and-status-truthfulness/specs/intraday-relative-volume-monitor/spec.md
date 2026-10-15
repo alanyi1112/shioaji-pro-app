@@ -4,6 +4,8 @@
 
 盤中監控 MUST 只有在 current session 的 authority trade date、session trade date、config revision、cohort hash、baseline hash、artifact bundle hash與 API generation 全部一致時，才能接受 observation、推進 completed minute、比較量比或產生 trigger。歷史 `complete_go`、過去交易日 subscription receipt、舊 config revision 或舊 generation MUST 只能作稽核資料，不能取得今日 data-plane、result 或 notification authority。
 
+daily 的合法 threshold-only 切換 MUST 依 `intraday-monitor-daily-runtime` 將不可變行情 session 與 durable comparison revision 分開核實；已保存與啟動 revision 不同不能單獨停止合法 observation 留存。只有經原 owner 的身分／名單 proof、CAS 與不可變切換收據確認後才能套用新門檻；未確認或失敗須沿用上一有效比較版本，不得用歷史 revision 取得新權限。名單結構或其他 identity 不符仍 MUST fail closed。
+
 #### Scenario: 歷史 GO 存在但今天 session 未建立
 - **WHEN** durable approval 顯示 Stage 160 `GO`，但今天沒有符合完整 identity 的 current session
 - **THEN** `dataActive`、今日 subscription confirmation、今日 trigger 與 notification authority MUST 分別為 0、false、空集合與 false
@@ -14,7 +16,7 @@
 - **THEN** 系統 MUST 回報 `session_trade_date_stale`、停止新比較與觸發，並保留舊 session evidence 不變
 
 #### Scenario: 盤中設定 revision 前進
-- **WHEN** saved config revision 與已啟動 session 鎖定 revision 不同
+- **WHEN** saved config revision 與已啟動 session 鎖定 revision 不同，且不是已經 durable threshold-only 契約確認的合法比較版本切換
 - **THEN** 系統 MUST 顯示 `config_revision_mismatch` 並停止新觸發，不得把新增商品合併進固定 cohort或以第 161 檔後的商品補位
 
 ### Requirement: Status 計數必須區分 admission state 與資料完整度

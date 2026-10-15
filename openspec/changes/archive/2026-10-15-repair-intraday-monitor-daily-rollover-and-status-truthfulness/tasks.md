@@ -67,14 +67,15 @@
 - [x] 6.12 修正結果清單大量卡片受 flex 排版壓縮而不可讀，維持卡片高度與清單捲動；將即時觸發及歷史重播筆數分開標示，加入大量結果的瀏覽器回歸測試
 - [x] 6.13 修正新增「啟動來源」後 480px 面板的今日監控狀態欄水平溢出；保留完整 title 與狀態值、視覺裁切過長文字，更新 13 欄及無水平溢出的瀏覽器測試
 - [x] 6.14 修正正式擷取收盤等待仍使用 `running` 兩分鐘 freshness 的缺口；在新鮮且身分一致的收盤窗口轉入有界 `closing`，不刷新真實 evidenceAt，保持 13:30／13:33 來源與逐檔連續性驗證，安全彙總 sink 拒收原因，加入 13:34:30 及 fail-closed 回歸測試，保留 2026-10-02 失敗證據
+- [x] 6.15 修正 10/5 收尾資源拒絕只拋通用錯誤且主 capture 未保存的缺口；逐欄保存量測／原預算／reason、啟動及有界盤中樣本，失敗仍保存真實 session／replay 與核實主檔 hash，不放寬預算、不覆寫原失敗，補回歸與事後唯讀資料對照；原資源峰值未知及跨日驗收保持未完成
 
 ## 7. 安裝、驗證與跨交易日 live acceptance
 
 - [x] 7.1 先以 dry-run 驗證現有 approval migration、runtime bundle、下一適用交易日與四個 step manifests，不修改或刪除 2026-09-16 原始 evidence
 - [x] 7.2 更新 durable premarket 設定與 LaunchAgent 後，讀回 scheduler 計算的四個實際 next trigger，逐一換算並確認為 `Asia/Taipei` 08:20、08:35、08:45、08:50
 - [x] 7.3 執行相關 Node／Vitest 測試、TypeScript 檢查、build、OpenSpec strict validation 與 `git diff --check`，保存精確命令及結果
-- [ ] 7.4 在第一個適用交易日保存 official authority、baseline、session、scheduler receipts、逐檔 control-plane／data-plane 與 freshness evidence，不以人工改日期取代自動 rollover
-- [ ] 7.5 在下一個適用交易日確認 durable scheduler 自動建立新 session，並於 09:02 後驗證 current identity、第一筆合法 KBar、sealed-minute 同分鐘比較、results 與 notification Gate
-- [ ] 7.6 產出跨兩個適用交易日的 acceptance dossier，保留 partial／failed／unknown 證據；只有所有 current-session Gate 與 UI/API 語意通過時才標記 ready for archive
-- [ ] 7.7 唯讀核對基準建檔排程實際 next trigger、receipt 與原始流量保留，並在下一適用交易日以真實 simulation session 驗證 160 檔基準及受控換代政策；離線測試不得取代 live acceptance
+- [x] 7.4 在第一個適用交易日保存 official authority、baseline、session、scheduler receipts、逐檔 control-plane／data-plane 與 freshness evidence，不以人工改日期取代自動 rollover
+- [x] 7.5 在下一個適用交易日確認 durable scheduler 自動建立新 session，並於 09:02 後驗證 current identity、第一筆合法 KBar、sealed-minute 同分鐘比較、results 與 notification Gate
+- [x] 7.6 產出跨兩個適用交易日的 acceptance dossier，保留 partial／failed／unknown 證據；只有所有 current-session Gate 與 UI/API 語意通過時才標記 ready for archive（10/15 原跨日 dossier 保留；本輪依授權完成 7.7，現可依本案範圍結案，見 acceptance/scheduler-receipt-closeout-2026-10-15.md；不追認歷史 live partial）
+- [x] 7.7 依 2026-10-15 使用者授權，唯讀核對已載入的基準排程 label／entry／Node 路徑、calendar interval／台北時間與真實原系統觸發、claim／receipt、原程序、160 檔基準及原始流量；於下一適用交易日以真實 simulation session 驗證前日 160 基準與首筆資料前受控換代。可取得的 scheduler future-fire 原值另保存，不以自行推算、Codex heartbeat、僅 loaded 或離線測試取代真實證據（10/15 已核實；另取得 UserEventAgent Running／Rescheduling，實際下次 10/16 13:35 Asia/Taipei，見 acceptance/scheduler-receipt-closeout-2026-10-15.md）
 - [x] 7.8 於 2026-09-29 開盤前唯讀核對已發布歷史基準、官方交易日 authority、四個 scheduler 時點及 simulation 安全 Gate，記錄可證實與待實盤驗收項目，不補造排程或 live 證據
