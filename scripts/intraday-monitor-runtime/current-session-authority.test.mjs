@@ -31,6 +31,24 @@ function input(patch = {}) {
 }
 
 describe('current-session authority', () => {
+    it('only owner-bound threshold-only proof preserves source identity across a config revision', () => {
+        const base = input(); base.session.sessionId = 'fixture-current-session';
+        const config = { schemaVersion:'intraday-monitor-config/1',revision:8,globalThreshold:'1.5',
+            items:[{ contract:{security_type:'STK',region:'TW',exchange:'TSE',code:'2330',target_code:null},
+                enabled:true,thresholdOverride:null,source:'manual' }] };
+        const proof = { schemaVersion:'intraday-monitor-threshold-config-compatibility/1',
+            sessionId:base.session.sessionId,tradeDate:base.session.tradeDate,
+            connectionGeneration:base.session.connectionGeneration,ownerVerified:true,
+            startConfig:config,savedConfig:{...config,revision:9,globalThreshold:'3'} };
+        expect(evaluateIntradayMonitorCurrentSession({...base,savedConfigRevision:9,
+            thresholdConfigCompatibility:proof})).toMatchObject({current:true,configRevision:8,
+                savedConfigRevision:9,thresholdConfigCompatible:true});
+        for (const invalid of [{...proof,ownerVerified:false}, {...proof,sessionId:'other'},
+            {...proof,savedConfig:{...proof.savedConfig,items:[]}}]) {
+            expect(evaluateIntradayMonitorCurrentSession({...base,savedConfigRevision:9,
+                thresholdConfigCompatibility:invalid}).reason).toBe('config_revision_mismatch');
+        }
+    });
     it('只有完整 identity 與新鮮 evidence 才授予今日 data/results/notification authority', () => {
         expect(evaluateIntradayMonitorCurrentSession(input())).toMatchObject({
             current: true,
@@ -75,7 +93,7 @@ describe('current-session authority', () => {
             freshness: { evidenceAt: '2026-09-22T13:29:45+08:00' } };
         expect(evaluateIntradayMonitorCurrentSession(input({ session: closing,
             nowEpochMs: Date.parse('2026-09-22T13:39:45+08:00'),
-        }))).toMatchObject({ current: true, phase: 'closing', ageMs: 600_000,
+        }))).toMatchObject({ current: true, phase: 'closing', ageMs: 600_000, notificationAuthority:false,
             budgetMs: 600_000 });
         expect(evaluateIntradayMonitorCurrentSession(input({ session: closing,
             nowEpochMs: Date.parse('2026-09-22T13:39:45.001+08:00'),
@@ -132,5 +150,24 @@ describe('current-session authority', () => {
             degraded: 11,
         });
         expect(projected.baselineSummary).toMatchObject({ complete: 149, unknown: 51 });
+    });
+
+    it('只在 current session 投影持久化封閉分鐘水位，失效時不冒充今日 live', () => {
+        const item = { canonicalSymbol: '2330.TW', enabled: true, eligible: true };
+        const saved = { canonicalSymbol: '2330.TW', state: 'active', reason: 'none',
+            baselineState: 'complete', baselineTradeDate: '2026-10-05',
+            subscriptionState: 'confirmed', firstKbarAt: '2026-10-06T09:01:02+08:00',
+            completedMinute: '09:02', currentCumulativeVolume: 7983,
+            previousCumulativeVolume: 4833, updatedAt: '2026-10-06T09:02:59+08:00' };
+        const args = { configuredItems: [item], sessionItems: [saved], approvedActiveLimit: 1 };
+        expect(normalizeIntradayMonitorSessionItems({ ...args,
+            currentSession: { current: true } }).items[0]).toMatchObject({
+            completedMinute: '09:02', currentCumulativeVolume: 7983,
+            previousCumulativeVolume: 4833,
+        });
+        expect(normalizeIntradayMonitorSessionItems({ ...args,
+            currentSession: { current: false, reason: 'session_stale' } }).items[0])
+            .toMatchObject({ completedMinute: null, currentCumulativeVolume: null,
+                previousCumulativeVolume: null });
     });
 });

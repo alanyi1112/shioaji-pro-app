@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { validateBrokerBudgetPolicy } from './broker-bandwidth-reservations.mjs';
 import { readLocalConservativeIdentity } from './broker-local-conservative-ledger.mjs';
+import { readLocalVerifiedDailyIdentity } from './broker-local-verified-reset-ledger.mjs';
 
 const HASH = /^[a-f0-9]{64}$/;
 const JOB = /^[a-zA-Z0-9:_|.-]{1,100}$/;
@@ -51,8 +52,10 @@ export async function saveScreenerBrokerCommitment(db, record, proof, now = new 
     if (sha(actual) !== sha(record)) throw new Error('broker_policy_changed');
     const jobs = record?.budgetPolicy?.otherConsumerJobKeys;
     const e = { ...proof, evidenceHash: sha(proof) };
-    if (![2, 3].includes(record?.version) || !(record.version === 3
-        ? record.quotaEpochVerified === false && record.identityMode === 'local-conservative-v1' : record.quotaEpochVerified === true)
+    if (![2, 3, 4].includes(record?.version) || !(record.version === 3
+        ? record.quotaEpochVerified === false && record.identityMode === 'local-conservative-v1'
+        : record.version === 4 ? record.quotaEpochVerified === false && record.identityMode === 'local-verified-daily-reset-v1'
+            : record.quotaEpochVerified === true)
         || !HASH.test(record.scope ?? '')
         || typeof record.quotaEpoch !== 'string' || !JOB.test(record.quotaEpoch) || !HASH.test(record.quotaEpochEvidenceHash ?? '')
         || !Number.isFinite(Date.parse(record.validThrough)) || Date.parse(record.validThrough) <= now.getTime()
@@ -64,6 +67,12 @@ export async function saveScreenerBrokerCommitment(db, record, proof, now = new 
         const anchor = await readLocalConservativeIdentity(db);
         if (anchor.scope !== record.scope || anchor.quotaEpoch !== record.quotaEpoch
             || anchor.quotaEpochEvidenceHash !== record.quotaEpochEvidenceHash) fail();
+    }
+    if (record.version === 4) {
+        const head = await readLocalVerifiedDailyIdentity(db);
+        if (head.scope !== record.scope || head.quotaEpoch !== record.quotaEpoch ||
+            head.quotaEpochEvidenceHash !== record.quotaEpochEvidenceHash ||
+            head.identityHash !== record.dailyIdentityHash) fail();
     }
     const headId = `broker-consumer-commitment:${e.jobKey}`, receiptId = journalId(e.evidenceHash);
     const current = await db.prepare('SELECT status,checkpoint FROM screener_runs WHERE id=?').bind(headId).first();
@@ -101,7 +110,7 @@ export async function readScreenerBrokerCommitments(db, record, now = new Date()
     const configured = record?.budgetPolicy;
     const jobs = configured?.otherConsumerJobKeys;
     // 非參與中央 ledger 的工作必須完整登錄；空 roster 不能宣稱已盤點其他工作。
-    if (![2, 3].includes(record?.version) || !configured || !Array.isArray(jobs) || !jobs.length || jobs.length > 100
+    if (![2, 3, 4].includes(record?.version) || !configured || !Array.isArray(jobs) || !jobs.length || jobs.length > 100
         || jobs.some(job => typeof job !== 'string' || !JOB.test(job)) || new Set(jobs).size !== jobs.length
         || !HASH.test(configured.evidenceHash ?? '')
         || Object.hasOwn(configured, 'otherJobCommitments') || Object.hasOwn(configured, 'commitmentsObservedAt')) fail();

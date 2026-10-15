@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { projectDynamicDailyStatus } from './dynamic-daily-status-projection.mjs';
+import { isCloseTailExceptionArtifact, isRejectedCloseTailAssessment, CLOSE_TAIL_POLICY } from './daily-close-tail-exception.mjs';
 
 export const INTRADAY_MONITOR_LOCAL_API_PREFIX = '/api/intraday-monitor/v1';
 export const INTRADAY_MONITOR_LOCAL_API_MAX_BODY_BYTES = 128 * 1024;
@@ -11,6 +12,7 @@ const CONFIG_REPLACE_SCHEMA = 'intraday-monitor-config-replace-request/1';
 const LEASE_REQUEST_SCHEMA = 'intraday-monitor-lease-request/1';
 const LEASE_RESPONSE_SCHEMA = 'intraday-monitor-lease-response/1';
 const STATUS_SCHEMA = 'intraday-monitor-status/1';
+const DAILY_STATUS_SCHEMA = 'intraday-monitor-status/2';
 const CAPACITY_SCHEMA = 'intraday-monitor-capacity-response/1';
 const RESULTS_SCHEMA = 'intraday-monitor-results/1';
 const EVENTS_SCHEMA = 'intraday-monitor-events/1';
@@ -224,6 +226,119 @@ function safeFreshness(value = {}) {
     };
 }
 
+function safeDailyExecution(value, session) {
+    const rawQuality = value?.previousBaselineQuality;
+    const quality = rawQuality && validDate(rawQuality.sourceTradeDate) &&
+        validDate(rawQuality.targetTradeDate) &&
+        Number.isSafeInteger(rawQuality.expectedCount) && rawQuality.expectedCount > 0 &&
+        rawQuality.expectedCount <= 160 &&
+        ['unavailable', 'partial_unknown', 'repository_recorded'].includes(rawQuality.state) &&
+        [rawQuality.readyCount, rawQuality.independentMatchedCount,
+            rawQuality.independentNotObservedCount, rawQuality.missingCount,
+            rawQuality.unknownCount].every(number => Number.isSafeInteger(number) && number >= 0 &&
+                number <= rawQuality.expectedCount) &&
+        rawQuality.independentMatchedCount + rawQuality.independentNotObservedCount <=
+            rawQuality.readyCount &&
+        rawQuality.readyCount + rawQuality.missingCount + rawQuality.unknownCount >=
+            rawQuality.expectedCount
+        ? rawQuality : null;
+    const nextBaselineState = ['ready', 'partial', 'collecting', 'failed', 'unknown']
+        .includes(value?.nextBaselineState) ? value.nextBaselineState : 'unknown';
+    const nextBaselineTradeDate = validDate(value?.nextBaselineTradeDate)
+        ? value.nextBaselineTradeDate : null;
+    const nextBaselineReadyCount = Number.isSafeInteger(value?.nextBaselineReadyCount) &&
+        value.nextBaselineReadyCount >= 0 && value.nextBaselineReadyCount <= 160
+        ? value.nextBaselineReadyCount : null;
+    const nextBaselineReason = safeReason(value?.nextBaselineReason, 'unknown');
+    const coverage = Array.isArray(value?.liveCoverageBySymbol) &&
+        value.liveCoverageBySymbol.length <= 160 ? value.liveCoverageBySymbol : null;
+    const liveCoverageBySymbol = coverage ? coverage.map(item => ({
+        canonicalSymbol: typeof item?.canonicalSymbol === 'string' &&
+            /^\d{4,6}[A-Z]?\.TW(?:O)?$/.test(item.canonicalSymbol)
+            ? item.canonicalSymbol : null,
+        state: ['complete', 'partial'].includes(item?.state) ? item.state : 'unknown',
+        reason: safeReason(item?.reason, 'unknown'),
+        observationCount: Number.isSafeInteger(item?.observationCount) &&
+            item.observationCount >= 0 && item.observationCount <= 270
+            ? item.observationCount : null,
+        lastMinute: typeof item?.lastMinute === 'string' && /^\d{2}:\d{2}$/.test(item.lastMinute)
+            ? item.lastMinute : null,
+        lastComparableMinute: typeof item?.lastComparableMinute === 'string' &&
+            /^\d{2}:\d{2}$/.test(item.lastComparableMinute)
+            ? item.lastComparableMinute : null,
+    })) : null;
+    if (value?.state === 'failed' && ['summary_exists', 'summary_write_failed']
+        .includes(value.failureReason)) {
+        return { state: 'failed', failureReason: value.failureReason,
+            completedAt: typeof value.completedAt === 'string' &&
+                Number.isFinite(Date.parse(value.completedAt)) ? value.completedAt : null,
+            completeCount: null, partialCount: null,
+            lastSourceEventAt: null, lastAcceptedEventAt: null,
+            liveCoverageBySymbol: null, streamDisconnectReason: null,
+            resourceFault: null, nextBaselineState, nextBaselineReason,
+            nextBaselineTradeDate, nextBaselineReadyCount,
+            previousBaselineQuality: quality, diagnosticsState: 'unknown' };
+    }
+    const endedVerified = value?.state === 'ended' && liveCoverageBySymbol?.length > 0 &&
+        value.completeCount === liveCoverageBySymbol.length && value.partialCount === 0 &&
+        new Set(liveCoverageBySymbol.map(item => item.canonicalSymbol)).size ===
+            liveCoverageBySymbol.length &&
+        liveCoverageBySymbol.every(item => item.canonicalSymbol && item.state === 'complete' &&
+            item.observationCount === 270 && item.lastMinute === '13:30') &&
+        value.streamDisconnectReason == null && value.resourceFault == null;
+    if (!value || !['ended', 'partial'].includes(value.state) ||
+        value.state === 'ended' && !endedVerified) {
+        return { state: session.current && ['starting', 'running', 'closing']
+            .includes(session.phase) ? 'collecting' : 'unknown', completedAt: null,
+            completeCount: null, partialCount: null,
+            lastSourceEventAt: null, lastAcceptedEventAt: null,
+            liveCoverageBySymbol: null, streamDisconnectReason: null, resourceFault: null,
+            nextBaselineState, nextBaselineReason, nextBaselineTradeDate, nextBaselineReadyCount,
+            previousBaselineQuality: quality, diagnosticsState: 'unknown' };
+    }
+    const instant = input => typeof input === 'string' && Number.isFinite(Date.parse(input))
+        ? input : null;
+    const rawException = value.closeTailException;
+    const exceptionVerified = value.state === 'partial' &&
+        isCloseTailExceptionArtifact(rawException) &&
+        rawException.tradeDate === session.authorityTradeDate &&
+        rawException.liveCompleteCount === value.completeCount &&
+        rawException.livePartialCount === value.partialCount &&
+        liveCoverageBySymbol?.length === 160 &&
+        new Set(liveCoverageBySymbol.map(item => item.canonicalSymbol)).size === 160 &&
+        liveCoverageBySymbol.filter(item => item.state === 'partial').length === rawException.rows.length &&
+        liveCoverageBySymbol.every(item => item.canonicalSymbol &&
+            (item.state === 'complete' ? item.observationCount === 270 && item.lastMinute === '13:30'
+                : item.state === 'partial' && item.observationCount === 269 &&
+                    item.lastMinute === '13:29' && item.reason === 'close_minute_missing')) &&
+        rawException.rows.every(row => liveCoverageBySymbol.some(item =>
+            item.canonicalSymbol === row.canonicalSymbol && item.state === 'partial' &&
+            item.observationCount === 269 && item.lastMinute === '13:29'));
+    const rejectedVerified = value.state === 'partial' && isRejectedCloseTailAssessment(rawException) &&
+        rawException.tradeDate === session.authorityTradeDate &&
+        rawException.liveCompleteCount === value.completeCount && rawException.livePartialCount === value.partialCount;
+    const closeTailException = rawException ? exceptionVerified || rejectedVerified ? rawException : {
+        state: rawException.state === 'not_assessed' ? 'not_assessed' : 'invalid_evidence',
+        policyVersion: CLOSE_TAIL_POLICY, rows: [], liveAcceptance: false,
+        notificationAuthority: false, brokerWriteAuthority: false,
+        reason: rawException.state === 'not_assessed' ? 'awaiting_verified_postclose' : 'close_tail_assessment_invalid',
+    } : null;
+    return { state: value.state, completedAt: instant(value.completedAt),
+        closeTailException,
+        completeCount: Number.isSafeInteger(value.completeCount) ? value.completeCount : null,
+        partialCount: Number.isSafeInteger(value.partialCount) ? value.partialCount : null,
+        lastSourceEventAt: instant(value.lastSourceEventAt),
+        lastAcceptedEventAt: instant(value.lastAcceptedEventAt),
+        liveCoverageBySymbol,
+        streamDisconnectReason: value.streamDisconnectReason == null ? null :
+            safeReason(value.streamDisconnectReason, 'unknown'),
+        resourceFault: value.resourceFault == null ? null :
+            safeReason(value.resourceFault, 'unknown'),
+        nextBaselineState, nextBaselineReason, nextBaselineTradeDate, nextBaselineReadyCount,
+        previousBaselineQuality: quality,
+        diagnosticsState: safeReason(value.diagnosticsState, 'unknown') };
+}
+
 const ITEM_STATES = new Set([
     'disabled', 'waiting_gate', 'waiting_pilot_limit', 'waiting_capacity', 'waiting_baseline',
     'awaiting_first_kbar', 'waiting_continuity', 'active', 'degraded',
@@ -351,6 +466,7 @@ export function createIntradayMonitorLocalApiService({
     capacityProvider = () => ({}),
     diagnosticsProvider = () => ({}),
     dailyStatusProvider = async () => ({}),
+    thresholdSwitchProvider = () => null,
     now = () => new Date().toISOString(),
     cursorSecret = randomBytes(32),
 } = {}) {
@@ -426,6 +542,30 @@ export function createIntradayMonitorLocalApiService({
         });
     }
 
+    function replaceThreshold(request, { sourceType = 'local_api' } = {}) {
+        if (!exactRecord(request, ['schemaVersion', 'idempotencyKey', 'expectedRevision', 'threshold']) ||
+            request.schemaVersion !== 'intraday-monitor-threshold-request/1' ||
+            !['1.5', '2', '3'].includes(request.threshold) ||
+            !Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0)
+            return errorReply(400, 'invalid_threshold_request');
+        return idempotent('threshold_replace', request, () => {
+            try {
+                const current = configRepository.read();
+                if (current.revision !== request.expectedRevision) return errorReply(409, 'revision_conflict');
+                const candidate = { ...configForApi(current), globalThreshold: request.threshold };
+                const config = current.globalThreshold === request.threshold ? configForApi(current) :
+                    configForApi(configRepository.replace(candidate, { sourceType,
+                        correlationId: createHash('sha256').update(request.idempotencyKey).digest('hex'),
+                    }));
+                return reply(200, { ok: true, schemaVersion: CONFIG_RESPONSE_SCHEMA,
+                    revision: config.revision, config, thresholdSwitch: thresholdSwitchProvider() });
+            } catch (error) {
+                return errorReply(error?.code === 'revision_conflict' ? 409 : 503,
+                    error?.code === 'revision_conflict' ? 'revision_conflict' : 'threshold_save_failed');
+            }
+        });
+    }
+
     function validateLeaseRequest(request, action) {
         const keys = action === 'acquire'
             ? ['schemaVersion', 'idempotencyKey', 'clientId', 'generation']
@@ -485,24 +625,35 @@ export function createIntradayMonitorLocalApiService({
         });
         const approval = safeApproval(rawCapacity.approval);
         const session = safeSession(rawCapacity.session);
+        const runtimeMode = rawCapacity.runtimeMode === 'daily' ? 'daily' : 'legacy';
+        const dailyExecution = runtimeMode === 'daily' ?
+            safeDailyExecution(rawCapacity.dailyExecution, session) : null;
         const baselineSummary = safeBaselineSummary(rawCapacity.baselineSummary);
         const freshness = safeFreshness(rawCapacity.freshness);
-        const state = !session.current || !capacity.gate0EvidenceCurrent ||
+        const closedDaily = runtimeMode === 'daily' && !session.current &&
+            session.authorityTradeDate !== null && session.authorityTradeDate === session.sessionTradeDate &&
+            Number.isSafeInteger(session.configRevision) && session.configRevision === session.savedConfigRevision &&
+            session.savedConfigRevision === config.revision &&
+            ['evidence_stale', 'session_not_live', null].includes(session.staleReason) &&
+            ['ended', 'partial'].includes(dailyExecution?.state);
+        const state = closedDaily ? (dailyExecution.state === 'partial' ? 'degraded' : 'idle') :
+            !session.current || !capacity.gate0EvidenceCurrent ||
             (!capacity.globalOwnershipComplete && !capacity.boundedTransportReady &&
                 !capacity.controlPlaneSubscriptionRequested)
             ? 'feature_off'
             : degraded > 0
               ? 'degraded'
-              : leases.acceptingEvents && active > 0
+              : (runtimeMode === 'daily' || leases.acceptingEvents) && active > 0
                 ? 'active'
                 : 'idle';
-        const reason = !session.current
+        const reason = closedDaily ? (dailyExecution.state === 'partial' ? 'daily_close_partial' : 'session_closed') :
+            !session.current
             ? session.staleReason
             : state === 'feature_off'
               ? capacity.reason
             : state === 'degraded'
               ? itemStatuses.find((item) => item.state === 'degraded')?.reason ?? 'unavailable'
-              : !leases.acceptingEvents
+              : runtimeMode !== 'daily' && !leases.acceptingEvents
                 ? 'lease_missing'
                 : awaitingFirstKbar > 0
                   ? 'awaiting_first_kbar'
@@ -517,13 +668,17 @@ export function createIntradayMonitorLocalApiService({
                     : 'none';
         return reply(200, {
             ok: true,
-            schemaVersion: STATUS_SCHEMA,
+            schemaVersion: runtimeMode === 'daily' ? DAILY_STATUS_SCHEMA : STATUS_SCHEMA,
+            runtimeMode,
+            dailyExecution,
+            thresholdSwitch: thresholdSwitchProvider(),
             state,
             reason,
             generation,
             configRevision: config.revision,
             lease: { activeLeaseCount: safeCount(leases.activeLeaseCount), sessionState: safeReason(leases.sessionState, 'unavailable'), acceptingEvents: leases.acceptingEvents === true },
-            capacity,
+            capacity: closedDaily ? { ...capacity, active: 0, dataActive: 0,
+                controlPlaneSubscriptionRequested: false, notificationAuthority: false } : capacity,
             approval,
             session,
             baselineSummary,
@@ -575,14 +730,22 @@ export function createIntradayMonitorLocalApiService({
         try {
             const rawCapacity = capacityProvider() ?? {};
             const session = safeSession(rawCapacity.session);
-            const historical = tradeDate !== session.authorityTradeDate;
+            const closedDaily = rawCapacity.runtimeMode === 'daily' &&
+                session.sessionTradeDate === tradeDate &&
+                ['ended', 'partial', 'failed'].includes(
+                    safeDailyExecution(rawCapacity.dailyExecution, session).state);
+            const historical = tradeDate !== session.authorityTradeDate || closedDaily;
             const source = typeof evidenceRepository.listTriggerResults === 'function'
                 ? evidenceRepository.listTriggerResults(tradeDate)
                 : evidenceRepository.listTriggers(tradeDate);
             const all = !historical && session.current !== true ? [] : source;
             if (offset > all.length) return errorReply(409, 'stale_cursor');
+            const reclassifiedIds = new Set(thresholdSwitchProvider()?.reclassifiedEventIds ?? []);
             const items = all.slice(offset, offset + Number(limit)).map((event) => ({ ...event,
+                reclassified: reclassifiedIds.has(event.eventId),
                 kind: historical ? 'historical' : event.kind,
+                historicalSource: historical ? event.kind === 'live' ? 'closed_live' :
+                    'replay' : null,
                 notificationAuthority: false, brokerWriteAuthority: false }));
             const nextOffset = offset + items.length;
             return reply(200, {
@@ -656,6 +819,7 @@ export function createIntradayMonitorLocalApiService({
         generation,
         readConfig,
         replaceConfig,
+        replaceThreshold,
         mutateLease,
         readStatus,
         readCapacity,

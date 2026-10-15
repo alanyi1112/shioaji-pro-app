@@ -23,11 +23,30 @@ const result = (eventId: string, code: string, minuteKey: string, ratio: number)
 });
 
 describe('盤中監控 view model', () => {
+    it('盤後partial保留唯讀收尾分類，不回寫current或通知權限', () => {
+        const x = status({ runtimeMode: 'daily', state: 'degraded', reason: 'daily_close_partial',
+            session: { ...status().session, current: false, staleReason: 'evidence_stale' },
+            freshness: { ...status().freshness, fresh: false },
+            dailyExecution: { state: 'partial', completedAt: '2026-09-04T05:34:30Z',
+                completeCount: 1, partialCount: 1 } as IntradayMonitorStatusView['dailyExecution'] });
+        expect(normalizeIntradayMonitorStatus(x)).toMatchObject({ state: 'degraded',
+            reason: 'daily_close_partial', session: { current: false },
+            capacity: { active: 0, dataActive: 0, notificationAuthority: false } });
+        expect(normalizeIntradayMonitorStatus({ ...x,
+            session: { ...x.session, sessionTradeDate: '2026-09-03' } })).toMatchObject({
+            state: 'feature_off', session: { current: false } });
+        expect(normalizeIntradayMonitorStatus({ ...x, reason: 'premarket_capture_failed' })).toMatchObject({
+            state: 'feature_off', session: { current: false } });
+        expect(normalizeIntradayMonitorStatus({ ...x,
+            session: { ...x.session, staleReason: 'generation_mismatch' } })).toMatchObject({
+            state: 'feature_off', reason: 'generation_mismatch' });
+    });
     it('只有 lease、status 與 active evidence 同時成立才顯示監控中', () => {
         expect(overallMonitorLabel(status(), false, 'connected')).toBe('監控中');
         expect(overallMonitorLabel(status(), false, 'reconnecting')).toBe('重新連線中');
         expect(overallMonitorLabel(status({ capacity: { ...status().capacity, active: 0, waitingBaseline: 2, waiting: 2 } }), false, 'connected')).toBe('等待基準');
         expect(overallMonitorLabel(status({ state: 'idle', capacity: { ...status().capacity, active: 0, dataActive: 0, waitingPilotLimit: 3, waiting: 3 } }), false, 'connected')).toBe('等待 pilot limit');
+        expect(overallMonitorLabel(status({ state: 'degraded' }), false, 'connected')).toBe('部分 degraded');
         expect(overallMonitorLabel(status(), true, 'connected')).toBe('服務離線');
     });
 
@@ -62,6 +81,32 @@ describe('盤中監控 view model', () => {
         expect(emptyIntradayMonitorResultMessage(status({ lease: { ...status().lease, acceptingEvents: false } }), false, 'connected'))
             .not.toContain('監控已啟動');
         expect(emptyIntradayMonitorResultMessage(status(), false, 'reconnecting')).toContain('正在重新連線');
-        expect(emptyIntradayMonitorResultMessage(status(), false, 'paused')).toContain('監控已暫停');
+        expect(emptyIntradayMonitorResultMessage(status(), false, 'paused')).toContain('本頁即時連線暫停');
+    });
+
+    it('輕量監控收尾後保留真實收尾狀態，不因 session 不再 current 誤報今日未啟動', () => {
+        const closed = status({ runtimeMode: 'daily',
+            session: { ...status().session, current: false, phase: 'ended' },
+            dailyExecution: { state: 'ended', completedAt: '2026-09-04T05:35:00Z',
+                completeCount: 2, partialCount: 0, lastSourceEventAt: null,
+                lastAcceptedEventAt: null, liveCoverageBySymbol: null,
+                streamDisconnectReason: null, resourceFault: null,
+                nextBaselineState: 'collecting', nextBaselineReason: 'unknown',
+                nextBaselineTradeDate: null, nextBaselineReadyCount: null,
+                diagnosticsState: 'not_requested' } });
+        expect(overallMonitorLabel(closed, false, 'connected')).toBe('已完整收尾');
+        expect(emptyIntradayMonitorResultMessage(closed, false, 'connected'))
+            .toContain('收尾後不再發送盤中通知');
+        const partial = status({ ...closed, dailyExecution: {
+            ...closed.dailyExecution!, state: 'partial', completeCount: 1, partialCount: 1 } });
+        expect(overallMonitorLabel(partial, false, 'connected')).toBe('部分收尾');
+        expect(emptyIntradayMonitorResultMessage(partial, false, 'connected'))
+            .toContain('逐檔缺口');
+        const failed = status({ ...closed, dailyExecution: {
+            ...closed.dailyExecution!, state: 'failed', failureReason: 'summary_write_failed',
+            completeCount: null, partialCount: null } });
+        expect(overallMonitorLabel(failed, false, 'connected')).toBe('收尾失敗');
+        expect(emptyIntradayMonitorResultMessage(failed, false, 'connected'))
+            .toContain('已提交的逐分鐘資料與結果仍保留');
     });
 });

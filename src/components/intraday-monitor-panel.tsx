@@ -7,10 +7,11 @@ import {
     readIntradayMonitorDailyStatus,
     readIntradayMonitorPostcloseRecovery,
     readIntradayMonitorDiagnostics,
-    readIntradayMonitorResultsPage,
+    readIntradayMonitorResultsSnapshot,
     readIntradayMonitorStatus,
     releaseIntradayMonitorLease,
     replaceIntradayMonitorConfig,
+    replaceIntradayMonitorThreshold,
     renewIntradayMonitorLease,
     taipeiTradeDate,
     type IntradayMonitorConfigView,
@@ -92,6 +93,17 @@ function currentSystemNotificationPermission(): SystemNotificationPermission {
     return typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
 }
 
+const taipeiEvidenceTime = new Intl.DateTimeFormat('zh-TW', {
+    timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+});
+
+function displayEvidenceTime(value: string | null | undefined): string {
+    if (!value) return '未證實';
+    const time = Date.parse(value);
+    return Number.isFinite(time) ? taipeiEvidenceTime.format(time) : '未證實';
+}
+
 const emptyReport = (): IntradayMonitorImportReport => ({ accepted: [], duplicates: [], invalid: [], overLimit: [] });
 
 export function IntradayMonitorPanel({
@@ -138,6 +150,8 @@ export function IntradayMonitorPanel({
     const [editorMessage, setEditorMessage] = useState('');
     const [importing, setImporting] = useState(false);
     const [saving, setSaving] = useState(false);
+    const [thresholdSaving, setThresholdSaving] = useState(false);
+    const [thresholdMessage, setThresholdMessage] = useState('');
     const [conflict, setConflict] = useState(false);
     const leaseRef = useRef<IntradayMonitorLeaseView | null>(null);
     const configRef = useRef<IntradayMonitorConfigView | null>(null);
@@ -154,7 +168,7 @@ export function IntradayMonitorPanel({
     const connectionRef = useRef<IntradayMonitorConnectionState>('starting');
     const permissionRequestedRef = useRef(false);
     const namesByCodeRef = useRef<Record<string, string>>({});
-    const tradeDate = useMemo(() => taipeiTradeDate(), []);
+    const [tradeDate, setTradeDate] = useState(() => taipeiTradeDate());
     const clientId = useMemo(() => crypto.randomUUID(), []);
     const notificationAcknowledgements = useMemo(
         () => createIntradayNotificationAcknowledgements(tradeDate),
@@ -168,6 +182,20 @@ export function IntradayMonitorPanel({
     namesByCodeRef.current = namesByCode;
 
     useEffect(() => {
+        // Background tabs can suspend timers; resume must also re-check Taipei's date.
+        const refreshDate = () => setTradeDate(taipeiTradeDate());
+        const timer = window.setInterval(refreshDate, 10_000);
+        window.addEventListener('focus', refreshDate);
+        document.addEventListener('visibilitychange', refreshDate);
+        refreshDate();
+        return () => {
+            window.clearInterval(timer);
+            window.removeEventListener('focus', refreshDate);
+            document.removeEventListener('visibilitychange', refreshDate);
+        };
+    }, []);
+
+    useEffect(() => {
         mountedRef.current = true;
         return () => {
             mountedRef.current = false;
@@ -178,6 +206,7 @@ export function IntradayMonitorPanel({
 
     useEffect(() => {
         let stopped = false;
+        setPostcloseRecovery(null);
         const refresh = () => {
             if (Date.now() < Date.parse(`${tradeDate}T13:35:00+08:00`)) return;
             void readIntradayMonitorPostcloseRecovery(tradeDate)
@@ -322,10 +351,14 @@ export function IntradayMonitorPanel({
 
     useEffect(() => {
         let stopped = false;
+        // A cursor and visible results belong to one date, never to the next session.
+        cursorRef.current = null;
+        setResults(current => current.filter(item => item.tradeDate === tradeDate));
         let renewTimer: ReturnType<typeof setTimeout> | null = null;
         let statusTimer: ReturnType<typeof setInterval> | null = null;
         let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
         let events: EventSource | null = null;
+        let streamOpen = false;
         let reconnectAttempt = 0;
         let resultFrame: number | null = null;
         const pendingResultEvents = new Map<string, IntradayMonitorTriggerView>();
@@ -337,7 +370,7 @@ export function IntradayMonitorPanel({
         const mergeEvents = (incoming: IntradayMonitorTriggerView[]) => {
             setResults((current) => {
                 const byId = new Map(current.map((item) => [item.eventId, item]));
-                for (const item of incoming) {
+                for (const item of incoming.filter(item => item.tradeDate === tradeDate)) {
                     const previous = byId.get(item.eventId);
                     byId.set(item.eventId, {
                         ...previous,
@@ -435,7 +468,7 @@ export function IntradayMonitorPanel({
         };
         const refreshEvidence = async () => {
             const [page, detail] = await Promise.allSettled([
-                readIntradayMonitorResultsPage(tradeDate),
+                readIntradayMonitorResultsSnapshot(tradeDate),
                 readIntradayMonitorDiagnostics(),
             ]);
             if (stopped) return;
@@ -447,13 +480,16 @@ export function IntradayMonitorPanel({
         };
         const openEvents = (cursor: string | null) => {
             events?.close();
+            streamOpen = false;
             updateConnection('reconnecting');
-            events = new EventSource(intradayMonitorEventsUrl(tradeDate, cursor));
+            const source = new EventSource(intradayMonitorEventsUrl(tradeDate, cursor));
+            events = source;
             const rememberCursor = (event: Event) => {
                 const nextCursor = (event as MessageEvent<string>).lastEventId;
                 if (nextCursor) cursorRef.current = nextCursor;
             };
             events.addEventListener('replay', (event) => {
+                if (stopped || events !== source) return;
                 rememberCursor(event);
                 try {
                     const payload = JSON.parse((event as MessageEvent<string>).data) as { items?: IntradayMonitorTriggerView[] };
@@ -461,6 +497,7 @@ export function IntradayMonitorPanel({
                 } catch {}
             });
             events.addEventListener('trigger', (event) => {
+                if (stopped || events !== source || !streamOpen) return;
                 rememberCursor(event);
                 try {
                     const item = JSON.parse((event as MessageEvent<string>).data) as IntradayMonitorTriggerView;
@@ -470,9 +507,15 @@ export function IntradayMonitorPanel({
                 }
                 catch {}
             });
-            events.onerror = () => { if (!stopped) updateConnection('reconnecting'); };
-            events.onopen = () => {
-                if (!stopped) {
+            source.onerror = () => {
+                if (!stopped && events === source) {
+                    streamOpen = false;
+                    updateConnection('reconnecting');
+                }
+            };
+            source.onopen = () => {
+                if (!stopped && events === source && hasValidIntradayNotificationLease(leaseRef.current)) {
+                    streamOpen = true;
                     updateConnection('connected');
                     setLastStreamAt(new Date().toISOString());
                 }
@@ -480,15 +523,23 @@ export function IntradayMonitorPanel({
         };
         const scheduleRenew = () => {
             if (stopped || !leaseRef.current) return;
-            const delay = Math.max(1_000, Date.parse(leaseRef.current.expiresAt) - Date.now() - 5_000);
+            if (renewTimer) clearTimeout(renewTimer);
+            const delay = Math.min(2_147_483_647,
+                Math.max(1_000, Date.parse(leaseRef.current.expiresAt) - Date.now() - 5_000));
             renewTimer = setTimeout(async () => {
+                const lease = leaseRef.current;
+                if (!lease) return;
                 try {
-                    leaseRef.current = await renewIntradayMonitorLease(leaseRef.current!);
+                    const renewed = await renewIntradayMonitorLease(lease);
+                    if (stopped || leaseRef.current !== lease) return;
+                    leaseRef.current = renewed;
                     reconnectAttempt = 0;
                     scheduleRenew();
                 } catch {
+                    if (stopped || leaseRef.current !== lease) return;
                     leaseRef.current = null;
                     events?.close();
+                    streamOpen = false;
                     updateConnection('paused');
                     scheduleRecovery();
                 }
@@ -496,6 +547,10 @@ export function IntradayMonitorPanel({
         };
         const scheduleRecovery = () => {
             if (stopped || reconnectTimer) return;
+            if (hasValidIntradayNotificationLease(leaseRef.current)) {
+                if (streamOpen) updateConnection('connected');
+                return;
+            }
             const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4));
             reconnectAttempt += 1;
             reconnectTimer = setTimeout(async () => {
@@ -526,6 +581,29 @@ export function IntradayMonitorPanel({
                 }
             }, delay);
         };
+        const reconcilePageLease = (latest: IntradayMonitorStatusView | null) => {
+            if (!latest || stopped) return;
+            const lease = leaseRef.current;
+            if (!latest.session.current || (lease &&
+                (lease.generation !== latest.generation || !hasValidIntradayNotificationLease(lease)))) {
+                leaseRef.current = null;
+                events?.close();
+                streamOpen = false;
+                if (lease && hasValidIntradayNotificationLease(lease)) {
+                    void releaseIntradayMonitorLease(lease).catch(() => undefined);
+                }
+                updateConnection('paused');
+                scheduleRecovery();
+                return;
+            }
+            if (!lease) {
+                updateConnection('paused');
+                scheduleRecovery();
+                return;
+            }
+            // A transient status failure must not strand a still-valid page lease in paused.
+            if (streamOpen) updateConnection('connected');
+        };
         const start = async () => {
             const next = await refreshStatus();
             if (!next || stopped) {
@@ -534,7 +612,7 @@ export function IntradayMonitorPanel({
             }
             const [nextConfig, initialPage] = await Promise.all([
                 readIntradayMonitorConfig(),
-                readIntradayMonitorResultsPage(tradeDate),
+                readIntradayMonitorResultsSnapshot(tradeDate),
             ]);
             if (stopped) return;
             configRef.current = nextConfig;
@@ -560,29 +638,14 @@ export function IntradayMonitorPanel({
             statusTimer = setInterval(() => {
                 void refreshStatus().then((latest) => {
                     if (!latest || stopped) return;
-                    if (!latest.session.current) {
-                        const lease = leaseRef.current;
-                        leaseRef.current = null;
-                        events?.close();
-                        if (lease) void releaseIntradayMonitorLease(lease).catch(() => undefined);
-                        updateConnection('paused');
-                        scheduleRecovery();
-                        void refreshEvidence();
-                        return;
-                    }
-                    if (leaseRef.current && leaseRef.current.generation !== latest.generation) {
-                        leaseRef.current = null;
-                        events?.close();
-                        updateConnection('paused');
-                        scheduleRecovery();
-                    }
+                    reconcilePageLease(latest);
                     void refreshEvidence();
                 });
             }, 10_000);
         };
         const refreshWhenVisible = () => {
             if (document.visibilityState === 'visible') {
-                void refreshStatus();
+                void refreshStatus().then(reconcilePageLease);
                 void refreshEvidence();
             }
         };
@@ -604,6 +667,7 @@ export function IntradayMonitorPanel({
             window.removeEventListener('online', scheduleRecovery);
             document.removeEventListener('visibilitychange', refreshWhenVisible);
             events?.close();
+            streamOpen = false;
             const lease = leaseRef.current;
             leaseRef.current = null;
             if (lease) void releaseIntradayMonitorLease(lease).catch(() => undefined);
@@ -794,6 +858,54 @@ export function IntradayMonitorPanel({
         }
     };
 
+    const switchThreshold = async (threshold: '1.5' | '2' | '3') => {
+        const current = configRef.current;
+        if (!current || thresholdSaving || saving) return;
+        setThresholdSaving(true);
+        try {
+            const saved = await replaceIntradayMonitorThreshold(threshold, current.revision);
+            configRef.current = saved.config;
+            setConfig(saved.config);
+            // The quick control only changes saved threshold, never submits an unsaved list draft.
+            setDraft(value => dirty && value ? { ...value, revision: saved.config.revision }
+                : cloneIntradayMonitorConfig(saved.config));
+            setStatus(value => value ? { ...value, configRevision: saved.config.revision,
+                thresholdSwitch: saved.thresholdSwitch } : value);
+            setThresholdMessage('門檻已保存，等待監控程序確認；名單草稿保留。');
+            emitIntradayMonitorConfigInvalidation(saved.config.revision, clientId);
+        } catch (error) {
+            setThresholdMessage(error instanceof IntradayMonitorApiError && error.reason === 'revision_conflict'
+                ? '設定已被其他分頁更新；未覆寫，請重新載入設定。'
+                : '門檻保存失敗；原監控門檻與草稿保留。');
+        } finally { setThresholdSaving(false); }
+    };
+
+    useEffect(() => {
+        if (status?.thresholdSwitch?.state !== 'pending') {
+            if (status?.thresholdSwitch?.state === 'applied') setThresholdMessage('');
+            return;
+        }
+        let stopped = false, busy = false, attempts = 0;
+        const timer = setInterval(() => {
+            if (busy || attempts++ >= 20) { if (attempts >= 20) clearInterval(timer); return; }
+            busy = true;
+            void readIntradayMonitorStatus().then(value => {
+                if (!stopped) {
+                    setStatus(value);
+                    if (value.thresholdSwitch?.state === 'applied') {
+                        void readIntradayMonitorResultsSnapshot(tradeDate).then(page => {
+                            if (stopped) return;
+                            setResults(current => [...new Map([...current,...page.items]
+                                .filter(event => event.tradeDate === tradeDate).map(event=>
+                                [event.eventId,event])).values()]);
+                        }).catch(() => {});
+                    }
+                }
+            }).catch(() => {}).finally(() => { busy = false; });
+        }, 1000);
+        return () => { stopped = true; clearInterval(timer); };
+    }, [status?.thresholdSwitch?.state, tradeDate]);
+
     const reloadConfig = async () => {
         try {
             const next = await readIntradayMonitorConfig();
@@ -816,7 +928,12 @@ export function IntradayMonitorPanel({
         [resultSort, results],
     );
     const liveResultCount = results.filter((item) => item.kind === 'live').length;
-    const historicalResultCount = results.length - liveResultCount;
+    const closedLiveResultCount = results.filter((item) => item.historicalSource === 'closed_live').length;
+    const historicalResultCount = results.length - liveResultCount - closedLiveResultCount;
+    const dailyEnded = status?.runtimeMode === 'daily' &&
+        ['ended', 'partial', 'failed'].includes(status.dailyExecution?.state ?? '');
+    const closeTailException = status?.runtimeMode === 'daily'
+        ? status.dailyExecution?.closeTailException : null;
     const statusBySymbol = useMemo(
         () => new Map((status?.itemStatuses ?? []).map((item) => [item.canonicalSymbol, item])),
         [status?.itemStatuses],
@@ -825,15 +942,24 @@ export function IntradayMonitorPanel({
     const approval = status?.approval;
     const session = status?.session;
     const baselineSummary = status?.baselineSummary;
+    const previousBaselineQuality = status?.runtimeMode === 'daily'
+        ? status.dailyExecution?.previousBaselineQuality : null;
     const freshness = status?.freshness;
     const notice = offline
         ? `本機監控 API 離線；${results.length > 0 ? '既有結果僅供歷史檢視，' : ''}不代表目前仍在即時監控。`
+        : status?.runtimeMode === 'daily' &&
+          ['ended', 'partial', 'failed'].includes(status.dailyExecution?.state ?? '')
+          ? closeTailException?.state === 'passed_with_close_tail_exception'
+              ? `日常運作通過（收盤尾筆例外）；原 live 完整 ${status.dailyExecution?.completeCount ?? '—'}／160，盤後補算 ${closeTailException.rows.length} 檔，不補發即時通知。`
+              : status.dailyExecution?.state === 'failed'
+              ? '今日輕量監控收尾摘要寫入失敗；已提交結果保留供唯讀查看，但不能判定全日完整。'
+              : `今日輕量監控已${status.dailyExecution?.state === 'ended' ? '完整收尾' : '部分收尾'}；結果保留供唯讀查看，目前不再發送盤中通知。`
         : session && !session.current
           ? `容量核准仍保留為歷史紀錄；今日監控未啟動（${reasonLabels[session.staleReason ?? 'current_session_missing'] ?? session.staleReason ?? 'current_session_missing'}）。`
         : label === '等待 bounded Gate'
           ? '目前仍缺少可驗證的全域 subscription 計數與釋放證據；安全上限維持 0，不會啟動即時監控。'
           : connection === 'paused'
-          ? '頁面 lease 已失效或尚未恢復；監控與新結果已暫停，系統會以有界退避重新連線。'
+          ? '本頁即時連線的 lease 已失效或尚未恢復；頁內即時通知暫停，既有結果保留。背景監控是否運作以伺服器資料與證據為準，本頁會有界重連。'
           : connection === 'reconnecting'
             ? 'SSE 或 lease 正在重新連線；既有結果保留，完成恢復前不宣稱即時 ready。'
             : label === '等待首筆行情'
@@ -842,8 +968,8 @@ export function IntradayMonitorPanel({
                 ? 'subscription 可用，但上一交易日同分鐘基準尚未完整；不會產生達標事件。'
                 : label === '等待容量'
                   ? '共享 subscription 容量不足；等待商品不會輪替監控。'
-                  : label === '部分 degraded'
-                    ? '部分商品的串流、連續性或 subscription 證據不足；受影響商品不會新增觸發。'
+                    : label === '部分 degraded'
+                      ? '部分商品的串流、連續性或 subscription 證據不足；受影響商品不會新增觸發。'
                     : `可用容量 ${capacity?.availableForMonitor ?? 0}，保留 headroom ${capacity?.requiredHeadroom ?? 40}。`;
     const emptyResultMessage = emptyIntradayMonitorResultMessage(status, offline, connection);
     const systemNotificationLabel = systemNotificationPermission === 'unsupported'
@@ -905,24 +1031,34 @@ export function IntradayMonitorPanel({
                     </div>
                 </section>
                 <section className={styles.statusGroup} aria-label='今日監控'>
-                    <h3 className={styles.statusGroupTitle}>今日監控（current session）</h3>
+                    <h3 className={styles.statusGroupTitle}>今日監控（{status?.runtimeMode === 'daily' ? '輕量分鐘量' : '原有正式擷取'}）</h3>
                     <div className={styles.statusStrip}>
                         {[
                             ['狀態', label],
                             ['交易日', session?.authorityTradeDate ?? '未證實'],
-                            ['session', session?.current ? session.phase ?? 'running' : '未啟動'],
+                            ['session', dailyEnded ? status?.dailyExecution?.state === 'failed'
+                                ? '收尾未證實' : '已收尾（唯讀）'
+                                : session?.current ? session.phase ?? 'running' : '未啟動'],
                             ['啟動來源', session?.startupSource === 'late_boot'
                                 ? `晚開機接續 · 冷啟動風險${session.scheduled0820Success === false ? ' · 08:20 未完成' : ''}`
                                 : session?.startupSource === 'scheduled' ? '固定盤前排程' : '未證實'],
                             ['設定／admitted', `${capacity?.configured ?? visibleItems.length}／${capacity?.admitted ?? Math.min(capacity?.eligible ?? 0, approval?.approvedActiveLimit ?? 20)}`],
                             ['資料 active', String(capacity?.dataActive ?? 0)],
-                            ['訂閱／首筆', `${session?.controlPlaneAccepted === true ? '已接受' : '未接受'} · ${session?.firstKbarAt ?? '尚無首筆'}`],
+                            ['訂閱／首筆', dailyEnded ? '目前無即時權限 · 盤中紀錄見收尾收據'
+                                : `${session?.controlPlaneAccepted === true ? '已接受' : '未接受'} · ${session?.firstKbarAt ?? '尚無首筆'}`],
                             ['等待 pilot limit', String(capacity?.waitingPilotLimit ?? 0)],
                             ['等待容量', String(capacity?.waitingCapacity ?? 0)],
                             ['等待基準', String(capacity?.waitingBaseline ?? 0)],
                             ['降級', String(capacity?.degraded ?? 0)],
                             ['基準完整度', `完整 ${baselineSummary?.complete ?? 0} · 缺漏 ${baselineSummary?.missing ?? 0} · stale ${baselineSummary?.stale ?? 0} · 未知 ${baselineSummary?.unknown ?? 0}`],
                             ['evidence', freshness?.fresh ? `fresh · ${freshness.evidenceAt ?? '—'}` : `stale／未證實 · ${freshness?.evidenceAt ?? '—'}`],
+                            ...(status?.runtimeMode === 'daily' ? [
+                                ['當日收尾', status.dailyExecution?.state === 'ended' ? '完整' :
+                                    status.dailyExecution?.state === 'partial' ? '部分完成' :
+                                      status.dailyExecution?.state === 'collecting' ? '採集中' :
+                                        status.dailyExecution?.state === 'failed' ? '失敗' : '未證實'],
+                                ['逐檔完整／部分', `${status.dailyExecution?.completeCount ?? '—'}／${status.dailyExecution?.partialCount ?? '—'}`],
+                            ] : []),
                         ].map(([name, value]) => (
                             <div className={`${styles.metric} ${name === '狀態' ? styles.statusMetric : ''} ${name === '基準完整度' || name === 'evidence' ? styles.providerEvidenceMetric : ''}`} key={name} title={`${name}：${value}`}>
                                 <span className={styles.metricLabel}>{name}</span>
@@ -931,7 +1067,83 @@ export function IntradayMonitorPanel({
                         ))}
                     </div>
                 </section>
-                {postcloseRecovery && (
+                {status?.runtimeMode === 'daily' && (
+                    <section className={styles.statusGroup} aria-label='輕量監控基準與診斷'>
+                        <h3 className={styles.statusGroupTitle}>前日基準與下一交易日</h3>
+                        {dailyEnded && (
+                            <section aria-label='收盤尾筆例外與盤後補算'>
+                                <p>{closeTailException?.state === 'passed_with_close_tail_exception'
+                                    ? '日常運作通過（收盤尾筆例外）'
+                                    : closeTailException?.state === 'invalid_evidence'
+                                      ? '收盤尾筆例外未通過：補算證據無效'
+                                      : closeTailException?.state === 'rejected'
+                                        ? `收盤尾筆例外未通過：${closeTailException.reason ?? '安全條件不符'}`
+                                      : '收盤尾筆例外尚未通過／待盤後補算'}</p>
+                                {closeTailException?.state === 'passed_with_close_tail_exception' && (
+                                    <details>
+                                        <summary>盤後補算，不通知（{closeTailException.rows.length} 檔）</summary>
+                                        <div className={styles.dailyItems}>
+                                            {closeTailException.rows.map(row => (
+                                                <p key={row.canonicalSymbol}>
+                                                    {row.canonicalSymbol} · {row.minuteKey} · 盤後補算
+                                                    {' · '}今日 {row.currentCumulativeVolume}／前日 {row.previousCumulativeVolume} 張
+                                                    {' · '}量比 {row.ratio === null ? '不可比較（前日分母為零）' : `${row.ratio.toFixed(2)}×`}
+                                                    {' · '}門檻 {row.threshold}× · 比較版本 {row.comparisonRevision}
+                                                    {' · '}{row.comparison === 'matched' ? '符合' : row.comparison === 'not_matched' ? '不符合' : '不可比較'}
+                                                </p>
+                                            ))}
+                                        </div>
+                                    </details>
+                                )}
+                            </section>
+                        )}
+                        <div className={styles.statusStrip}>
+                            {[
+                                ['前日 v2 基準', previousBaselineQuality
+                                    ? `已記錄 ${previousBaselineQuality.readyCount}／${previousBaselineQuality.expectedCount} · 缺漏 ${previousBaselineQuality.missingCount} · 未知 ${previousBaselineQuality.unknownCount}`
+                                    : '未證實／尚未建檔'],
+                                ['基準日期', previousBaselineQuality?.sourceTradeDate ?? '未證實'],
+                                ['翌日基準', status.dailyExecution?.nextBaselineState === 'ready'
+                                    ? `${status.dailyExecution.nextBaselineTradeDate ?? '下一交易日'} · ${status.dailyExecution.nextBaselineReadyCount ?? '—'} 檔就緒`
+                                    : status.dailyExecution?.nextBaselineState === 'collecting' ? '盤後採集中'
+                                      : status.dailyExecution?.nextBaselineState === 'partial' ?
+                                        `部分就緒 ${status.dailyExecution.nextBaselineReadyCount ?? '—'} 檔`
+                                      : status.dailyExecution?.nextBaselineState === 'failed'
+                                        ? `採集失敗 · ${status.dailyExecution.nextBaselineReason ?? '原因未證實'}`
+                                        : status.dailyExecution?.nextBaselineReason === 'receipt_missing_after_deadline'
+                                          ? '採集收據缺失，狀態未證實'
+                                          : '未證實／尚未建檔'],
+                            ].map(([name, value]) => (
+                                <div className={styles.metric} key={name} title={`${name}：${value}`}>
+                                    <span className={styles.metricLabel}>{name}</span>
+                                    <span className={styles.metricValue}>{value}</span>
+                                </div>
+                            ))}
+                        </div>
+                        <details className={styles.importDetails}>
+                            <summary>來源品質與選用診斷</summary>
+                            <p>v2 基準以單次歷史分鐘 K 驗證；獨立收盤總量：已對帳 {previousBaselineQuality?.independentMatchedCount ?? '—'}、未觀測 {previousBaselineQuality?.independentNotObservedCount ?? '—'}、未知 {previousBaselineQuality?.unknownCount ?? '—'}。這是已保存 manifest 的品質紀錄，不把完整 270 分鐘等同已核對總量。</p>
+                            <p>歷史 v1 基準（唯讀）：完整 {baselineSummary?.complete ?? 0}、缺漏 {baselineSummary?.missing ?? 0}；不代表 v2 當日資格。</p>
+                            <p>全日側錄與雙重 replay 不屬日常監控；診斷狀態：{status.dailyExecution?.diagnosticsState ?? '未證實'}。</p>
+                            <p>串流中斷：{status.dailyExecution?.streamDisconnectReason ?? '未記錄'}；資源故障：{status.dailyExecution?.resourceFault ?? '未記錄'}。</p>
+                            {status.dailyExecution?.liveCoverageBySymbol ? (
+                                <details className={styles.importDetails}>
+                                    <summary>逐檔收尾水位（{status.dailyExecution.liveCoverageBySymbol.length} 檔）</summary>
+                                    <div className={styles.dailyItems}>{status.dailyExecution.liveCoverageBySymbol.map((item, index) => (
+                                        <p key={`${item.canonicalSymbol ?? 'unknown'}-${index}`}>
+                                            {item.canonicalSymbol ?? '商品身分未證實'} · {item.state === 'complete' ? '完整' : item.state === 'partial' ? '部分' : '未證實'}
+                                            {' · '}已收 {item.observationCount ?? '—'}／270 分鐘
+                                            {' · '}最後有效 {item.lastMinute ?? '—'}
+                                            {' · '}最後可比較 {item.lastComparableMinute ?? '—'}
+                                            {' · '}{item.reason}
+                                        </p>
+                                    ))}</div>
+                                </details>
+                            ) : <p>逐檔收尾摘要尚未取得，不能判定全日完整。</p>}
+                        </details>
+                    </section>
+                )}
+                {postcloseRecovery && status?.runtimeMode !== 'daily' && (
                     <section className={styles.statusGroup} aria-label='盤後尾端資料復原'>
                         <h3 className={styles.statusGroupTitle}>盤後尾端資料（與即時驗收分開）</h3>
                         <div className={styles.statusStrip}>
@@ -999,6 +1211,27 @@ export function IntradayMonitorPanel({
                     {notificationMessage}
                 </p>
             </section>
+            <section className={styles.thresholdControls} aria-label='盤中量比立即切換'>
+                <strong>量比門檻（全域，個別門檻優先）</strong>
+                <div className={styles.notificationButtons}>
+                    {(['1.5', '2', '3'] as const).map(value => <button key={value} type='button'
+                        className={styles.notificationButton} disabled={!config || thresholdSaving || saving}
+                        aria-pressed={status?.thresholdSwitch?.state === 'applied' && status.thresholdSwitch.activeThreshold === value}
+                        onClick={() => void switchThreshold(value)}>立即 {value} 倍</button>)}
+                </div>
+                <p className={styles.notificationMessage} role='status'>
+                    已保存 {config?.globalThreshold ?? '—'} 倍；
+                    {status?.thresholdSwitch?.state === 'applied'
+                        ? `已生效 ${status.thresholdSwitch.activeThreshold} 倍（${displayEvidenceTime(status.thresholdSwitch.effectiveAt)}），調整後符合不補發通知。`
+                        : status?.thresholdSwitch?.state === 'pending'
+                          ? `切換中，仍使用 ${status.thresholdSwitch.activeThreshold ?? '—'} 倍。`
+                          : status?.thresholdSwitch?.state === 'failed'
+                            ? `切換未完成，仍使用 ${status.thresholdSwitch.activeThreshold ?? '—'} 倍：${status.thresholdSwitch.reason ?? '原因未確認'}。`
+                            : '目前沒有支援即時切換的執行中程序；保存不代表當日已生效。'}
+                    {status?.thresholdSwitch?.state === 'applied'
+                        && thresholdMessage.startsWith('門檻已保存，等待') ? '' : thresholdMessage}
+                </p>
+            </section>
             <div className={styles.tabs} role='tablist' aria-label='盤中選股內容'>
                 <button className={styles.tab} role='tab' aria-selected={view === 'results'} onClick={() => setView('results')}>量比結果 {results.length}</button>
                 <button className={styles.tab} role='tab' aria-selected={view === 'monitor'} onClick={() => setView('monitor')}>監控名單 {visibleItems.length}</button>
@@ -1007,12 +1240,12 @@ export function IntradayMonitorPanel({
                 {view === 'results' && results.length > 0 && (
                     <div className={styles.resultControls}>
                         <div className={styles.resultToolbar}>
-                            <strong>已有結果 {results.length}（即時 {liveResultCount}／歷史重播 {historicalResultCount}）</strong>
+                            <strong>已有結果 {results.length}（即時 {liveResultCount}／收尾保留 {closedLiveResultCount}／歷史重播 {historicalResultCount}）</strong>
                             <label className={styles.resultSortLabel}>排序
                                 <select className={styles.sortSelect} aria-label='結果排序' value={resultSort}
                                     onChange={(event) => setResultSort(event.target.value as IntradayMonitorResultSort)}>
                                     <option value='trigger_time'>觸發時間</option>
-                                    <option value='ratio'>目前量比</option>
+                                    <option value='ratio'>{dailyEnded ? '最後有效量比' : '目前量比'}</option>
                                     <option value='code'>股票代碼</option>
                                 </select>
                             </label>
@@ -1061,11 +1294,13 @@ export function IntradayMonitorPanel({
                                     onClick={() => void pickStock(resultStock(item))}>
                                     <span>
                                         <span className={styles.rowTitle}>{item.canonicalSymbol}{namesByCode[code] ? ` · ${namesByCode[code]}` : ''}</span>
-                                        <span className={styles.rowMeta}>{item.exchange === 'TSE' ? '上市' : '上櫃'} · {item.kind === 'live' ? '即時觸發' : '歷史重播（不通知）'}</span>
+                                        <span className={styles.rowMeta}>{item.exchange === 'TSE' ? '上市' : '上櫃'} · {item.reclassified ? '門檻調整後符合（不補發通知）' : item.kind === 'live' ? '即時觸發' :
+                                            item.historicalSource === 'closed_live' ? '收尾保留的即時觸發（不通知）' : '歷史重播（不通知）'}</span>
                                         <span className={styles.rowMeta}>{item.tradeDate}／{item.baselineTradeDate} · 同分鐘 {item.minuteKey}</span>
                                     </span>
                                     <span className={styles.ratioBlock}>
                                         <span className={styles.ratio}>{current ? `${current}×` : '—'}</span>
+                                        {dailyEnded && <span className={styles.rowMeta}>最後有效量比</span>}
                                         <span className={styles.rowMeta}>觸發 {triggered ? `${triggered}×` : '不可比較'}</span>
                                     </span>
                                 </button>

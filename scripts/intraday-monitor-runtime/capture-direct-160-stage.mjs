@@ -20,6 +20,7 @@ import { resolveIntradayMonitorCapturePaths } from './kbar-capture-outcome-write
 import { createBoundedKbarRecoveryAuthority } from './first-minute-canary.mjs';
 import { createDirect160GapBootstrapWorker } from './direct-160-gap-bootstrap.mjs';
 import { appendIntradayMonitorOperationalEvent } from './operational-event-log.mjs';
+import { inspectTieredStageResources } from './tiered-capacity-stage-artifacts.mjs';
 
 export const DIRECT_160_CAPTURE_SCHEMA = 'intraday-monitor-direct-160-capture/1';
 export const DIRECT_160_CAPTURE_FAILURE_SCHEMA = 'intraday-monitor-direct-160-capture-failure/1';
@@ -310,24 +311,44 @@ async function waitUntil(endEpochMs, interrupted, observe, checkpoint = null) {
         const untilCheckpoint = Number.isFinite(nextCheckpoint)
             ? Math.max(0, nextCheckpoint - currentEpochMs) : 30_000;
         await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, remaining, untilCheckpoint)));
-        observe();
+        await observe();
     }
 }
 
 export async function writeDirect160CaptureFailure({ outputPath, tradeDate, mode, error,
     failedAt = new Date().toISOString() } = {}) {
     const paths = resolveIntradayMonitorCapturePaths(outputPath);
+    let mainEvidenceCreated = false;
+    let mainEvidenceSha256 = null;
+    try {
+        const info = await stat(paths.capturePath);
+        if (info.size <= DIRECT_160_STORAGE.captureOutputBytes) {
+            const text = await readFile(paths.capturePath, 'utf8');
+            const capture = JSON.parse(text);
+            mainEvidenceCreated = capture.schemaVersion === DIRECT_160_CAPTURE_SCHEMA &&
+                capture.tradeDate === tradeDate && capture.captureMode === mode;
+            if (mainEvidenceCreated) mainEvidenceSha256 = createHash('sha256').update(text).digest('hex');
+        }
+    } catch { /* 未核實的檔案不宣稱已保存。 */ }
     const failure = { schemaVersion: DIRECT_160_CAPTURE_FAILURE_SCHEMA,
         failedAt, tradeDate, captureMode: mode,
         error: { name: String(error?.name ?? 'Error').slice(0, 64),
             message: String(error?.message ?? 'capture failed').replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 256) },
         output: { capturePath: paths.capturePath, failurePath: paths.failurePath,
-            mainEvidenceCreated: false },
-        mainEvidenceCreated: false, notificationEligible: false, brokerWriteAuthority: false,
+            mainEvidenceCreated, mainEvidenceSha256 },
+        mainEvidenceCreated, notificationEligible: false, brokerWriteAuthority: false,
         productionAuthority: false, serviceLifecycleAuthority: false };
     await mkdir(path.dirname(outputPath), { recursive: true, mode: 0o700 });
     await writeDirect160Artifact(paths.failurePath, failure, 'session');
     return Object.freeze(failure);
+}
+
+// Publish the real capture before reporting a review failure. This never grants
+// acceptance authority and the exclusive writer cannot overwrite old evidence.
+export async function writeDirect160FinalizedCapture({ outputPath, capture, validationError = null }) {
+    await writeDirect160Artifact(outputPath, capture, 'capture');
+    if (validationError) throw validationError;
+    return capture;
 }
 
 export async function runDirect160Capture({ manifest, plan, baseline, prerequisite, tradeDate, mode,
@@ -388,6 +409,10 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
     const databaseBytesBefore = databaseWorkingBytes(productRuntime?.evidenceDatabasePath);
     let maximumDatabaseBytes = databaseBytesBefore;
     const cpuBefore = process.cpuUsage();
+    await logEvent('capture_resource_start', { databaseWorkingBytes: databaseBytesBefore,
+        rssBytes: resourceBefore.rssBytes, budgets: plan.budgets });
+    let lastResourceSampleAt = nowEpochMs;
+    let resourceBreachRecorded = false;
     let maximumRssBytes = resourceBefore.rssBytes;
     let maximumHeapUsedBytes = resourceBefore.heapUsedBytes;
     let interrupted = false;
@@ -536,12 +561,31 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
                 throw new Error('REFUSED: product_runtime_api_not_ready');
             }
         }
-        await waitUntil(window.endEpochMs, () => interrupted, () => {
+        await waitUntil(window.endEpochMs, () => interrupted, async () => {
             const current = resourceSnapshot();
             maximumRssBytes = Math.max(maximumRssBytes, current.rssBytes);
             maximumHeapUsedBytes = Math.max(maximumHeapUsedBytes, current.heapUsedBytes);
             maximumDatabaseBytes = Math.max(maximumDatabaseBytes,
                 databaseWorkingBytes(productRuntime?.evidenceDatabasePath));
+            const sampledAt = Date.now();
+            const cpu = process.cpuUsage(cpuBefore);
+            const diagnostics = inspectTieredStageResources({
+                cpuBasisPoints: Math.round(((cpu.user + cpu.system) /
+                    (Math.max(1, sampledAt - nowEpochMs) * 1000)) * 10_000),
+                maxRssBytes: maximumRssBytes,
+                databaseGrowthBytes: Math.max(0, maximumDatabaseBytes - databaseBytesBefore),
+                minimumAvailableDiskBytes: diskBefore,
+                maxEventToSealLatencyMs: maximumEventToSealLatencyMs,
+                maxChartFreshnessMs: null,
+            }, plan.budgets);
+            if (sampledAt - lastResourceSampleAt >= 300_000 ||
+                (!diagnostics.valid && !resourceBreachRecorded)) {
+                await logEvent('capture_resource_sample', {
+                    ...diagnostics, diskMeasurement: 'startup_only_final_checked_at_close',
+                }, diagnostics.valid ? {} : { severity: 'incident', alertEligible: true });
+                lastResourceSampleAt = sampledAt;
+                resourceBreachRecorded ||= !diagnostics.valid;
+            }
         }, productSink ? [{
             atEpochMs: Date.parse(`${tradeDate}T09:02:15+08:00`),
             onReached: async (evaluatedAt) => {
@@ -643,19 +687,29 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             passiveChartEvidence.firstObservation.freshnessMs,
             passiveChartEvidence.secondObservation.freshnessMs,
         ) : null };
+    const resourceDiagnostics = inspectTieredStageResources(resources, plan.budgets);
+    await logEvent('capture_resource_assessment', resourceDiagnostics,
+        resourceDiagnostics.valid ? {} : { severity: 'incident', alertEligible: true });
     let replay = null;
     let tieredSession = null;
+    let validationError = null;
     if (mode === 'full-session' && session.assessment.fullSession) {
         replay = runDirect160DeterministicReplay({ session, baseline, manifest });
-        tieredSession = buildDirect160TieredSessionEvidence({ plan, manifest, baseline, session,
-            replay, transport: { startReceipt, stopReceipt }, resources,
-            assurances: { reconnectVerified: productSink ? localEventReconnect.recovered :
-                before.businessSession && after.businessSession,
-                existingFeaturesHealthy: before.web && before.multiView && after.web && after.multiView } });
+        try {
+            tieredSession = buildDirect160TieredSessionEvidence({ plan, manifest, baseline, session,
+                replay, transport: { startReceipt, stopReceipt }, resources,
+                assurances: { reconnectVerified: productSink ? localEventReconnect.recovered :
+                    before.businessSession && after.businessSession,
+                    existingFeaturesHealthy: before.web && before.multiView && after.web && after.multiView } });
+        } catch (error) {
+            if (error?.code !== 'tiered_stage_session_invalid') throw error;
+            validationError = error;
+        }
     }
     let productRuntimeState = null;
     if (productSink) productRuntimeState = tieredSession
-        ? productSink.finishPendingReview() : productSink.fail('full_session_incomplete');
+        ? productSink.finishPendingReview() : productSink.fail(validationError
+            ? 'evidence_finalization_failed' : 'full_session_incomplete');
     const liveAvailabilityComplete = productSink ? firstMinuteCanary?.liveAvailabilityComplete === true : null;
     const result = { schemaVersion: DIRECT_160_CAPTURE_SCHEMA, evidenceClass: 'live_bounded_stage',
         captureMode: mode, tradeDate, startedAt, endedAt, interrupted,
@@ -676,6 +730,9 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             coldStartRisk: lateBootSource,
             chartFreshnessMeasurement: passiveChartEvidence ? 'same_day_passive_dom_visual_commit' :
                 'not_observed_optional' },
+        finalization: { valid: validationError === null,
+            reasonCodes: validationError?.reasonCodes ?? [], resourceDiagnostics,
+            rawDataContinuityComplete: session.assessment.fullSession === true },
         productRuntime: productRuntimeState ? { phase: productRuntimeState.phase,
             evaluationState: productRuntimeState.evaluationState,
             approvedActiveLimit: productRuntimeState.approvedActiveLimit,
@@ -691,7 +748,7 @@ export async function runDirect160Capture({ manifest, plan, baseline, prerequisi
             dataContinuityComplete: Boolean(tieredSession), liveAvailabilityComplete,
             lateBootCatchup: lateBootSource,
             providerCapacityProven: false } };
-    await writeDirect160Artifact(outputPath, result, 'capture');
+    await writeDirect160FinalizedCapture({ outputPath, capture: result, validationError });
     await logEvent('capture_close_sealed', {
         outputPath, formalAcceptanceEvidence: result.assessment.formalAcceptanceEvidence,
         dataContinuityComplete: result.assessment.dataContinuityComplete,

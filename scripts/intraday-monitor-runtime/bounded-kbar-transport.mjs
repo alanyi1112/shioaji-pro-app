@@ -38,6 +38,8 @@ export function createBoundedKbarTransport({
     api = 'http://127.0.0.1:8080',
     onEvent,
     onDisconnect = () => {},
+    onRecovered = () => {},
+    onSubscribeAccepted = () => {},
     now = () => new Date().toISOString(),
     storageProfile = null,
 } = {}) {
@@ -56,6 +58,7 @@ export function createBoundedKbarTransport({
         throw new TypeError('bounded kbar storage profile is invalid');
     }
     if (typeof fetchImpl !== 'function' || typeof onEvent !== 'function' || typeof onDisconnect !== 'function' ||
+        typeof onRecovered !== 'function' || typeof onSubscribeAccepted !== 'function' ||
         typeof now !== 'function' || typeof api !== 'string' || !/^http:\/\/127\.0\.0\.1:\d+$/.test(api)) {
         throw new TypeError('bounded kbar transport options are invalid');
     }
@@ -75,11 +78,130 @@ export function createBoundedKbarTransport({
     let unsubscribe = null;
     let recoveryAttempts = 0;
     let recoveryReceipt = null;
+    let apiVersion = null;
+    let streamActive = false;
+    let lastDisconnectReason = null;
+    const closeFramesByCode = new Map();
+    let sourceGapEvents = 0;
+    let sourceDroppedFrames = 0;
+    let sourceGapInvalid = false;
+    const sourceGapSamples = [];
+    const nonKbarEventCounts = new Map();
+    let nonKbarEventOverflow = 0;
 
     function notifyDisconnect(reason) {
         if (disconnectNotified || !generation) return;
         disconnectNotified = true;
+        lastDisconnectReason = reason;
         try { Reflect.apply(onDisconnect, undefined, [{ connectionGeneration: generation, reason }]); } catch {}
+    }
+
+    async function openSse() {
+        controller = new AbortController();
+        const currentController = controller;
+        // Header timeout only; the accepted SSE must survive the full session.
+        const headerTimer = setTimeout(() => currentController.abort(), 8_000);
+        let response;
+        try {
+            response = await fetchImpl(`${api}/api/v1/stream/data/kbar`, {
+                method: 'GET', headers: { accept: 'text/event-stream' },
+                redirect: 'error', signal: currentController.signal,
+            });
+        } finally { clearTimeout(headerTimer); }
+        if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream')) {
+            currentController.abort();
+            throw new Error('kbar_stream_invalid');
+        }
+        reader = response.body.getReader();
+        streamActive = true;
+        const currentReader = reader;
+        pumpPromise = (async () => {
+            const decoder = new TextDecoder();
+            let pending = '';
+            let disconnectReason = null;
+            try {
+                while (true) {
+                    const { done, value } = await currentReader.read();
+                    if (done) { disconnectReason = 'stream_ended'; break; }
+                    const chunk = decoder.decode(value, { stream: true });
+                    bytes += Buffer.byteLength(chunk);
+                    if (bytes > maximumBytes) throw new Error('stream_byte_limit');
+                    pending += chunk.replace(/\r/g, '');
+                    if (Buffer.byteLength(pending) > maximumFrameBytes) throw new Error('stream_frame_limit');
+                    let boundary;
+                    while ((boundary = pending.indexOf('\n\n')) >= 0) {
+                        const frame = pending.slice(0, boundary);
+                        pending = pending.slice(boundary + 2);
+                        const lines = frame.split('\n');
+                        const eventName = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
+                        const payload = lines.filter(line => line.startsWith('data:'))
+                            .map(line => line.slice(5).trimStart()).join('\n');
+                        if (eventName !== 'kbar') {
+                            // A live socket can lose frames in the server's broadcast
+                            // channel. Its kbar_gap notice is evidence, not a KBar or
+                            // a heartbeat, and must not disappear from the receipt.
+                            const name = /^[a-z_]{1,64}$/.test(eventName ?? '') ? eventName : 'unknown';
+                            if (nonKbarEventCounts.has(name) || nonKbarEventCounts.size < 16) {
+                                nonKbarEventCounts.set(name, (nonKbarEventCounts.get(name) ?? 0) + 1);
+                            } else nonKbarEventOverflow += 1;
+                            if (eventName === 'kbar_gap') {
+                                sourceGapEvents += 1;
+                                let notice;
+                                try { notice = JSON.parse(payload); } catch { notice = null; }
+                                const dropped = notice?.type === 'lagged' &&
+                                    Number.isSafeInteger(notice?.dropped) && notice.dropped > 0 ? notice.dropped : null;
+                                if (dropped === null || !Number.isSafeInteger(sourceDroppedFrames + dropped)) {
+                                    sourceGapInvalid = true;
+                                } else sourceDroppedFrames += dropped;
+                                if (sourceGapSamples.length < 8) sourceGapSamples.push({
+                                    observedAt: Reflect.apply(now, undefined, []), eventName: 'kbar_gap',
+                                    reason: dropped === null ? 'invalid_gap_notice' : 'server_subscriber_lagged',
+                                    dropped, payloadHash: createHash('sha256').update(payload).digest('hex'),
+                                });
+                            }
+                            continue;
+                        }
+                        if (!payload) { malformedFrames += 1; continue; }
+                        kbarFrames += 1;
+                        let raw;
+                        try { raw = JSON.parse(payload); } catch { malformedFrames += 1; continue; }
+                        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                            malformedFrames += 1; continue;
+                        }
+                        const receivedTime = Reflect.apply(now, undefined, []);
+                        if (cohort?.some(contract => contract.code === String(raw.code)) &&
+                            ['13:29', '13:30', '13:33'].includes(String(raw.time ?? '').slice(0, 5))) {
+                            const key = String(raw.code);
+                            const previous = closeFramesByCode.get(key) ?? {};
+                            const minute = String(raw.time).slice(0, 5);
+                            closeFramesByCode.set(key, { ...previous, [minute]: {
+                                frames: (previous[minute]?.frames ?? 0) + 1,
+                                lastReceivedAt: receivedTime,
+                                lastVolume: Number.isSafeInteger(raw.volume) ? raw.volume : null,
+                            } });
+                        }
+                        const shaped = Object.freeze({ schemaVersion: INTRADAY_MONITOR_KBAR_EVENT_SCHEMA,
+                            code: raw.code, date: raw.date, time: raw.time, volume: raw.volume,
+                            receivedTime, connectionGeneration: generation, unit: 'common_lot',
+                            sourceVersion: `shioaji-http-${apiVersion}` });
+                        try {
+                            const result = Reflect.apply(onEvent, undefined, [shaped]);
+                            if (result?.accepted === true) deliveredEvents += 1;
+                        } catch { malformedFrames += 1; }
+                    }
+                }
+            } catch (error) {
+                if (!currentController.signal.aborted) disconnectReason =
+                    ['stream_byte_limit', 'stream_frame_limit'].includes(error?.message) ?
+                        error.message : 'stream_read_failed';
+            } finally {
+                // An exhausted or failed reader must not leave its physical SSE
+                // socket open while the single-owner recovery decision is made.
+                streamActive = false;
+                currentController.abort();
+                if (disconnectReason) notifyDisconnect(disconnectReason);
+            }
+        })();
     }
 
     async function start({ contracts, connectionGeneration } = {}) {
@@ -102,64 +224,9 @@ export function createBoundedKbarTransport({
             phase = 'refused';
             throw new Error('REFUSED: simulation mode not confirmed');
         }
-        controller = new AbortController();
-        const response = await fetchImpl(`${api}/api/v1/stream/data/kbar`, {
-            method: 'GET', headers: { accept: 'text/event-stream' }, redirect: 'error', signal: controller.signal,
-        });
-        if (!response.ok || !response.headers.get('content-type')?.includes('text/event-stream')) {
-            controller.abort();
-            phase = 'failed';
-            throw new Error('kbar_stream_invalid');
-        }
-        reader = response.body.getReader();
-        pumpPromise = (async () => {
-            const decoder = new TextDecoder();
-            let pending = '';
-            try {
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    const text = decoder.decode(value, { stream: true });
-                    bytes += Buffer.byteLength(text);
-                    if (bytes > maximumBytes) throw new Error('stream_byte_limit');
-                    pending += text.replace(/\r/g, '');
-                    if (Buffer.byteLength(pending) > maximumFrameBytes) throw new Error('stream_frame_limit');
-                    let boundary;
-                    while ((boundary = pending.indexOf('\n\n')) >= 0) {
-                        const frame = pending.slice(0, boundary);
-                        pending = pending.slice(boundary + 2);
-                        const lines = frame.split('\n');
-                        const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim();
-                        const payload = lines.filter((line) => line.startsWith('data:'))
-                            .map((line) => line.slice(5).trimStart()).join('\n');
-                        if (eventName !== 'kbar' || !payload) continue;
-                        kbarFrames += 1;
-                        let raw;
-                        try { raw = JSON.parse(payload); } catch { malformedFrames += 1; continue; }
-                        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { malformedFrames += 1; continue; }
-                        const receivedTime = Reflect.apply(now, undefined, []);
-                        const shaped = Object.freeze({
-                            schemaVersion: INTRADAY_MONITOR_KBAR_EVENT_SCHEMA,
-                            code: raw.code,
-                            date: raw.date,
-                            time: raw.time,
-                            volume: raw.volume,
-                            receivedTime,
-                            connectionGeneration: generation,
-                            unit: 'common_lot',
-                            sourceVersion: `shioaji-http-${info.body.version}`,
-                        });
-                        try {
-                            const result = Reflect.apply(onEvent, undefined, [shaped]);
-                            if (result?.accepted === true) deliveredEvents += 1;
-                        } catch { malformedFrames += 1; }
-                    }
-                }
-                notifyDisconnect('stream_ended');
-            } catch (error) {
-                if (!controller.signal.aborted) notifyDisconnect(error.message);
-            }
-        })();
+        apiVersion = info.body.version;
+        try { await openSse(); }
+        catch (error) { phase = 'failed'; throw error; }
         subscribe = await requestJson(fetchImpl, `${api}/api/v1/stream/subscribe/kbars`, {
             method: 'POST', body: JSON.stringify({ stocks: cohort }),
         });
@@ -170,6 +237,14 @@ export function createBoundedKbarTransport({
             phase = 'failed';
             throw new Error('kbar_batch_subscribe_not_accepted');
         }
+        try { onSubscribeAccepted(); }
+        catch (error) {
+            controller.abort();
+            await reader.cancel().catch(() => {});
+            await pumpPromise.catch(() => {});
+            phase = 'failed';
+            throw error;
+        }
         phase = 'running';
         return Object.freeze({ started: true, cohortHash, cohortSize: cohort.length, subscribeAccepted: true,
             controlPlaneState: 'subscription_requested', dataPlaneReady: false,
@@ -177,19 +252,20 @@ export function createBoundedKbarTransport({
             serviceLifecycleAuthority: false, storageProfile: storageProfile?.schemaVersion ?? null });
     }
 
-    async function stop() {
+    async function stop({ unsubscribeAllowed = true } = {}) {
         if (!['running', 'failed'].includes(phase) || !cohort) {
             return Object.freeze({ stopped: false, reason: 'transport_not_running', brokerWriteAuthority: false });
         }
         phase = 'stopping';
-        unsubscribe = await requestJson(fetchImpl, `${api}/api/v1/stream/unsubscribe/kbars`, {
+        unsubscribe = unsubscribeAllowed ? await requestJson(fetchImpl, `${api}/api/v1/stream/unsubscribe/kbars`, {
             method: 'POST', body: JSON.stringify({ stocks: cohort }),
-        }).catch(() => ({ ok: false, status: null, body: null }));
+        }).catch(() => ({ ok: false, status: null, body: null })) : { ok: false, status: null, body: null };
         controller?.abort();
         await reader?.cancel().catch(() => {});
         await pumpPromise?.catch(() => {});
         phase = 'stopped';
         return Object.freeze({ stopped: true, unsubscribeAccepted: unsubscribe.ok && unsubscribe.body?.success === true,
+            unsubscribeSkipped: !unsubscribeAllowed,
             providerReleaseProven: false, cohortHash, brokerWriteAuthority: false,
             productionAuthority: false, serviceLifecycleAuthority: false });
     }
@@ -219,11 +295,70 @@ export function createBoundedKbarTransport({
         return recoveryReceipt;
     }
 
+    async function reconnectEndedStream({ connectionGeneration, requestedCohortHash } = {}) {
+        if (phase !== 'running' || streamActive || recoveryAttempts !== 0 ||
+            connectionGeneration !== generation || requestedCohortHash !== cohortHash) {
+            return Object.freeze({ recovered: false, reason: recoveryAttempts !== 0
+                ? 'recovery_already_attempted' : 'recovery_authority_mismatch' });
+        }
+        recoveryAttempts = 1;
+        // The old pump must have exited; no second physical reader may overlap it.
+        await pumpPromise?.catch(() => {});
+        controller?.abort();
+        const info = await requestJson(fetchImpl, `${api}/api/v1/info`).catch(() => null);
+        if (!info?.ok || info.body?.simulation !== true || info.body.version !== apiVersion) {
+            phase = 'failed';
+            recoveryReceipt = Object.freeze({ recovered: false, attempt: 1, cohortHash,
+                reason: 'recovery_source_identity_mismatch', secondStreamCreated: false });
+            return recoveryReceipt;
+        }
+        const released = await requestJson(fetchImpl, `${api}/api/v1/stream/unsubscribe/kbars`, {
+            method: 'POST', body: JSON.stringify({ stocks: cohort }),
+        }).catch(() => ({ ok: false, body: null }));
+        if (!released.ok || released.body?.success !== true) {
+            phase = 'failed';
+            recoveryReceipt = Object.freeze({ recovered: false, attempt: 1, cohortHash,
+                reason: 'recovery_unsubscribe_unverified', secondStreamCreated: false });
+            return recoveryReceipt;
+        }
+        try { await openSse(); }
+        catch {
+            phase = 'failed';
+            recoveryReceipt = Object.freeze({ recovered: false, attempt: 1, cohortHash,
+                reason: 'recovery_stream_invalid', secondStreamCreated: false });
+            return recoveryReceipt;
+        }
+        const accepted = await requestJson(fetchImpl, `${api}/api/v1/stream/subscribe/kbars`, {
+            method: 'POST', body: JSON.stringify({ stocks: cohort }),
+        }).catch(() => ({ ok: false, body: null }));
+        recoveryReceipt = Object.freeze({ recovered: accepted.ok && accepted.body?.success === true &&
+            streamActive, attempt: 1, cohortHash, unsubscribeAccepted: true,
+            subscribeAccepted: accepted.ok && accepted.body?.success === true,
+            secondStreamCreated: true, concurrentStreamCreated: false, symbolsRotated: false });
+        if (!recoveryReceipt.recovered) {
+            controller?.abort();
+            await reader?.cancel().catch(() => {});
+            await pumpPromise?.catch(() => {});
+            phase = 'failed';
+        } else {
+            disconnectNotified = false;
+            try { Reflect.apply(onRecovered, undefined, [{ connectionGeneration: generation,
+                cohortHash, sourceVersion: `shioaji-http-${apiVersion}` }]); } catch {}
+        }
+        return recoveryReceipt;
+    }
+
     function status() {
         return Object.freeze({ schemaVersion: INTRADAY_MONITOR_BOUNDED_KBAR_TRANSPORT_SCHEMA, phase,
             cohortHash, cohortSize: cohort?.length ?? 0, connectionGeneration: generation, bytes,
             kbarFrames, malformedFrames, deliveredEvents,
-            recoveryAttempts, recoveryReceipt,
+            sourceGapEvents, sourceDroppedFrames: sourceGapInvalid ? null : sourceDroppedFrames,
+            sourceGapInvalid, sourceGapSamples: sourceGapSamples.map(item => ({ ...item })),
+            nonKbarEventCounts: Object.fromEntries(nonKbarEventCounts), nonKbarEventOverflow,
+            closeFramesByCode: Object.fromEntries([...closeFramesByCode.entries()]
+                .sort(([a], [b]) => a.localeCompare(b))),
+            recoveryAttempts, recoveryReceipt, streamActive,
+            lastDisconnectReason,
             subscribeAccepted: subscribe?.body?.success === true,
             controlPlaneState: subscribe?.body?.success === true ? 'subscription_requested' : 'not_requested',
             dataPlaneReady: false,
@@ -235,5 +370,5 @@ export function createBoundedKbarTransport({
             storageProfile: storageProfile?.schemaVersion ?? null });
     }
 
-    return Object.freeze({ start, recover, stop, status });
+    return Object.freeze({ start, recover, reconnectEndedStream, stop, status });
 }

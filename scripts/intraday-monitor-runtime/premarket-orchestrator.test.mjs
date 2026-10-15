@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -25,7 +25,15 @@ const tradingDay = (tradeDate = '2026-09-16') => async () => ({
 });
 
 describe('durable 盤前 orchestrator', () => {
-    it('08:35 官方來源恢復後可用獨立證據補建 session，不覆寫 08:20 失敗', async () => {
+    it('08:50補建仍限開盤前，提早或09:00後不接觸Gate／session', async () => {
+        for (const time of ['08:49', '09:00', '09:05']) {
+            const result = await recoverMissingPremarketSession({ root: '/unused', step: '08:50',
+                now: new Date(`2026-09-22T${time}:00+08:00`), authority: await tradingDay('2026-09-22')(),
+                config: {}, inspectGates: async () => { throw new Error('must not inspect'); } });
+            expect(result).toMatchObject({ recovered: false, reason: 'rollover_recovery_not_authorized' });
+        }
+    });
+    it.each(['08:35', '08:45', '08:50'])('%s 官方來源恢復後可用獨立證據補建 session，不覆寫 08:20 失敗', async (step) => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'premarket-rollover-recovery-'));
         roots.push(root);
         const paths = resolvePremarketOrchestratorPaths(root);
@@ -35,8 +43,8 @@ describe('durable 盤前 orchestrator', () => {
         const originalText = `${JSON.stringify(original)}\n`;
         await writeFile(path.join(paths.receiptsDirectory, '2026-09-22-0820.json'), originalText);
         let prepared = 0;
-        const result = await recoverMissingPremarketSession({ root, step: '08:35',
-            now: new Date('2026-09-22T08:35:00+08:00'),
+        const result = await recoverMissingPremarketSession({ root, step,
+            now: new Date(`2026-09-22T${step}:00+08:00`),
             authority: await tradingDay('2026-09-22')(), config: {},
             readNoCurrentData: async () => true,
             inspectGates: async () => ({ ready: true,
@@ -45,7 +53,7 @@ describe('durable 盤前 orchestrator', () => {
                 observedAt: '2026-09-22T00:35:00.000Z' }),
             prepareDailySession: async ({ schedulerReceipt }) => {
                 prepared++;
-                expect(schedulerReceipt).toMatchObject({ step: '08:35', recoveryOf: '08:20',
+                expect(schedulerReceipt).toMatchObject({ step, recoveryOf: '08:20',
                     scheduledSuccess: false, originalReceiptSha256: expect.stringMatching(/^sha256:/) });
                 return { baselineCurrent: true, session: { sessionId: 'fixture-session',
                     phase: 'starting' } };
@@ -57,7 +65,7 @@ describe('durable 盤前 orchestrator', () => {
         expect(await readFile(path.join(paths.receiptsDirectory, '2026-09-22-0820.json'), 'utf8'))
             .toBe(originalText);
         expect(JSON.parse(await readFile(paths.generationAnchorPath, 'utf8')))
-            .toMatchObject({ rolloverRecoveryStep: '08:35', tradeDate: '2026-09-22' });
+            .toMatchObject({ rolloverRecoveryStep: step, tradeDate: '2026-09-22' });
     });
 
     it('08:35 不可在原 08:20 非日曆失敗或已有今日資料時補建', async () => {
@@ -142,6 +150,61 @@ describe('durable 盤前 orchestrator', () => {
         });
     });
 
+    it('daily mode 的 08:50 只啟動輕量 runner，不呼叫全日 capture', async () => {
+        const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'premarket-daily-execution-')));
+        roots.push(root);
+        const paths = resolvePremarketOrchestratorPaths(root);
+        await mkdir(paths.directory, { recursive: true, mode: 0o700 });
+        await writeFile(paths.configPath, JSON.stringify({ tradeDate: '2026-09-22' }),
+            { mode: 0o600 });
+        await writeFile(path.join(root, 'IntradayMonitor', 'daily-runtime-mode.json'),
+            JSON.stringify({ schemaVersion: 'intraday-minute-volume-runtime-mode/1',
+                mode: 'daily', screenerDatabasePath: path.join(root, 'screener.sqlite3'),
+                limits: { maxRequests: 320, maxResponseBytes: 2 * 1024 ** 2,
+                    requestTimeoutMs: 20_000, maxAttempts: 3,
+                    cooldownMs: 15 * 60_000, deadlineTime: '19:00:00' } }), { mode: 0o600 });
+        let command;
+        const result = await runPremarketStep({ root, step: '08:50',
+            now: new Date('2026-09-22T08:50:00+08:00'),
+            resolveTradingDay: tradingDay('2026-09-22'),
+            rolloverDailyBudget: async () => ({ state: 'current' }),
+            inspectGates: async () => ({ ready: true,
+                generation: 'simulation:test-daily-generation-001',
+                artifacts: { resolvedConfig: {} } }),
+            inspectDailySession: async () => ({ ready: true,
+                session: { sessionId: 'session-2026-09-22-fixture-daily' },
+                approval: { approvedActiveLimit: 160 } }),
+            runCapture: async (...args) => { command = args; return { exitCode: 0 }; },
+        });
+        expect(result.outcome.runtimeMode).toBe('daily');
+        expect(command[1]).toEqual([
+            expect.stringMatching(/daily-minute-volume-execute\.mjs$/), '--execute',
+            `--app-support-root=${root}`, '--trade-date=2026-09-22',
+        ]);
+        expect(command[1].join(' ')).not.toContain('capture-direct-160-stage.mjs');
+    });
+
+    it('08:50 跨日額度證據仍缺時拒絕啟動 runner，保留排程失敗收據', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'premarket-reset-waiting-'));
+        roots.push(root);
+        const paths = resolvePremarketOrchestratorPaths(root);
+        await mkdir(paths.directory, { recursive: true });
+        await writeFile(paths.configPath, '{}');
+        let captures = 0;
+        await expect(runPremarketStep({ root, step: '08:50',
+            now: new Date('2026-09-22T08:50:00+08:00'),
+            resolveTradingDay: tradingDay('2026-09-22'),
+            rolloverDailyBudget: async () => ({ state: 'waiting',
+                reason: 'counter_drop_not_observed' }),
+            runCapture: async () => { captures++; return { exitCode: 0 }; },
+        })).rejects.toThrow('broker_daily_reset_counter_drop_not_observed');
+        expect(captures).toBe(0);
+        expect(JSON.parse(await readFile(path.join(paths.receiptsDirectory,
+            '2026-09-22-0850.json'), 'utf8'))).toMatchObject({
+            rolloverOutcome: 'failed', reason: 'broker_daily_reset_counter_drop_not_observed',
+        });
+    });
+
     it('非交易時段 rehearsal 分別驗證 warm path 不重啟及 cold path 只啟動一次 simulation', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'premarket-warmup-rehearsal-'));
         roots.push(root);
@@ -202,6 +265,7 @@ describe('durable 盤前 orchestrator', () => {
             expect(value).toContain(`<key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer>`);
         }
         expect(value).toContain('com.alanyi.realtimestock.intraday-premarket');
+        expect(value).not.toContain('--dynamic-daily');
     });
 
     it('dry-run 產生台北時間 receipt，但不建立 claim 或執行服務', async () => {

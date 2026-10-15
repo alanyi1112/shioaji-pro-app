@@ -4,6 +4,10 @@ import { buildDirect160StageBundle } from './build-direct-160-stage-bundle.mjs';
 import { fixtureBaseline } from './fixtures/direct-160-baseline.mjs';
 import { issueIntradayMonitorKbarSessionCloseAuthority } from './kbar-stream-adapter.mjs';
 import { DIRECT_160_STORAGE } from './direct-160-storage.mjs';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { writeDirect160FinalizedCapture, writeDirect160CaptureFailure } from './capture-direct-160-stage.mjs';
 import {
     buildDirect160TieredSessionEvidence,
     createDirect160GenerationGuard,
@@ -41,7 +45,7 @@ function event(entry, minute) {
 }
 
 describe('direct 160 live stage', () => {
-    it('exact 160 × 270 可保存、重播兩次並建立正式 stage session', () => {
+    it('exact 160 × 270 可保存、重播兩次並建立正式 stage session', async () => {
         const { manifest, plan, baseline } = artifacts();
         expect(validateDirect160LiveInputs({ manifest, plan, baseline, tradeDate: '2026-09-14' }))
             .toEqual({ valid: true, reasons: [] });
@@ -106,6 +110,35 @@ describe('direct 160 live stage', () => {
         expect(validateTieredStageEvidenceBundle(bundle)).toMatchObject({
             valid: true, readyForHumanReview: true, completeTradingDays: 1,
         });
+        // Exercise the real full-day recorder/replay through a rejected resource
+        // budget. The fixture is not presented as today's live resource values.
+        let rejected;
+        try {
+            buildDirect160TieredSessionEvidence({ plan, manifest, baseline, session: raw, replay,
+                transport: { startReceipt: { subscribeAccepted: true },
+                    stopReceipt: { unsubscribeAccepted: true } },
+                resources: { ...tiered.resources, maxEventToSealLatencyMs: 10_001 },
+                assurances: { reconnectVerified: true, existingFeaturesHealthy: true } });
+            expect.unreachable();
+        } catch (error) { rejected = error; }
+        expect(rejected.code).toBe('tiered_stage_session_invalid');
+        expect(rejected.reasonCodes).toEqual(['resource_maxEventToSealLatencyMs_budget_exceeded']);
+        const root = await mkdtemp(path.join(os.tmpdir(), 'full160-resource-rejected-'));
+        const outputPath = path.join(root, 'capture.json');
+        const refusedCapture = { schemaVersion: 'intraday-monitor-direct-160-capture/1',
+            tradeDate: raw.tradeDate, captureMode: 'full-session', session: raw, replay, tieredSession: null,
+            finalization: { valid: false, resourceDiagnostics: rejected.resourceDiagnostics },
+            assessment: { formalAcceptanceEvidence: false, readyForBundle: false } };
+        await expect(writeDirect160FinalizedCapture({ outputPath, capture: refusedCapture,
+            validationError: rejected })).rejects.toBe(rejected);
+        const saved = JSON.parse(await readFile(outputPath, 'utf8'));
+        expect(saved.session.symbols.every((symbol) => symbol.rows.length === 270)).toBe(true);
+        expect(saved.replay.outputHash).toBe(replay.outputHash);
+        expect(saved.assessment).toEqual({ formalAcceptanceEvidence: false, readyForBundle: false });
+        expect((await writeDirect160CaptureFailure({ outputPath, tradeDate: raw.tradeDate,
+            mode: 'full-session', error: rejected })).mainEvidenceCreated).toBe(true);
+        expect(() => buildDirect160StageBundle({ plan, manifest, baseline, capture: refusedCapture,
+            createdAt: '2026-09-14T13:35:00+08:00' })).toThrow();
     }, 30_000);
 
     it('generation 只可 claim/release 一次且永不重用', () => {

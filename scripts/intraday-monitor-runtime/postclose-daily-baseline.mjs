@@ -1,3 +1,4 @@
+import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, statfs, writeFile } from 'node:fs/promises';
@@ -21,6 +22,13 @@ import { validateDirect160BaselineSet } from './direct-160-baseline.mjs';
 import { createBaselineBandwidthBudget,
     readVerifiedBaselineBandwidthSamples } from './baseline-bandwidth-budget.mjs';
 import { runPostcloseTailRecovery } from './postclose-tail-recovery.mjs';
+import { readDailyMinuteVolumeMode, runDailyMinuteVolumePostclose }
+    from './daily-minute-volume-postclose.mjs';
+import { recordBrokerResetObservation } from '../broker-reset-observation.mjs';
+import { DAILY_MINUTE_VOLUME_COLLECTION_SCHEMA }
+    from './daily-minute-volume-collector.mjs';
+import { inspectDailyMinuteVolumeSameKeyNoop } from './daily-minute-volume-noop-audit.mjs';
+import { publishCloseTailException } from './daily-close-tail-exception.mjs';
 
 export const POSTCLOSE_DAILY_BASELINE_SCHEMA = 'intraday-monitor-postclose-daily-baseline/1';
 export const POSTCLOSE_DAILY_BASELINE_LABEL = 'com.alanyi.realtimestock.intraday-postclose-baseline';
@@ -258,7 +266,15 @@ export async function runPostcloseDailyBaseline({ now = new Date(), root = appSu
     fetchImpl = fetch, execute = runChild, calendarResolver = resolvePostcloseBaselineCalendar,
     preflight = apiPreflight, sampleReader = readVerifiedBaselineBandwidthSamples,
     budgetBuilder = createBaselineBandwidthBudget, trigger = 'manual',
-    historicalTradeDate = null } = {}) {
+    historicalTradeDate = null,
+    dailyModeReader = readDailyMinuteVolumeMode,
+    dailyPostcloseRunner = runDailyMinuteVolumePostclose,
+    dailyNoopAuditor = inspectDailyMinuteVolumeSameKeyNoop,
+    dailyCloseTailAssessor = publishCloseTailException,
+    dailyProcessProbe = pid => {
+        try { process.kill(pid, 0); return true; }
+        catch { return false; }
+    } } = {}) {
     const historical = historicalTradeDate !== null;
     const tradeDate = historical ? historicalTradeDate : localDate(now);
     if (historical) {
@@ -271,6 +287,99 @@ export async function runPostcloseDailyBaseline({ now = new Date(), root = appSu
     }
     if (now.valueOf() < Date.parse(`${tradeDate}T13:35:00+08:00`)) {
         return Object.freeze({ executed: false, reason: 'postclose_baseline_window_not_open', tradeDate });
+    }
+    if (!historical) {
+        const mode = await dailyModeReader(root);
+        if (mode.mode === 'daily') {
+            const calendar = await calendarResolver({ now, fetchImpl, sourceTradeDate: tradeDate });
+            const collectionDirectory = path.join(root, 'IntradayMonitor',
+                'daily-minute-volume-collection', tradeDate);
+            let attempt = 1;
+            let previousReceipt = null;
+            while (attempt < mode.limits.maxAttempts) {
+                const prior = await readFile(path.join(collectionDirectory,
+                    `attempt-${String(attempt).padStart(2, '0')}-receipt.json`), 'utf8')
+                    .then(JSON.parse).catch(error => {
+                        if (error?.code === 'ENOENT') return null;
+                        throw error;
+                    });
+                if (!prior || prior.outcome === 'complete') break;
+                previousReceipt = prior;
+                attempt += 1;
+            }
+            const generation = (await readFile(path.join(root, 'runtime-api-generation'), 'utf8')).trim();
+            const claim = await readFile(path.join(collectionDirectory,
+                `attempt-${String(attempt).padStart(2, '0')}-claim.json`), 'utf8')
+                .then(JSON.parse).catch(error => {
+                    if (error?.code === 'ENOENT') return null;
+                    throw error;
+                });
+            const existingReceipt = await readFile(path.join(collectionDirectory,
+                `attempt-${String(attempt).padStart(2, '0')}-receipt.json`), 'utf8')
+                .then(JSON.parse).catch(error => {
+                    if (error?.code === 'ENOENT') return null;
+                    throw error;
+                });
+            if (claim && !existingReceipt) {
+                if (claim.schemaVersion !== DAILY_MINUTE_VOLUME_COLLECTION_SCHEMA ||
+                    claim.sourceDate !== tradeDate || claim.targetDate !== calendar.targetTradeDate ||
+                    claim.connectionGeneration !== generation || claim.attempt !== attempt ||
+                    !Number.isSafeInteger(claim.ownerPid) || claim.ownerPid < 1) {
+                    throw new Error('daily_collection_claim_identity_conflict');
+                }
+                const beforeDeadline = !mode.limits.deadlineTime ||
+                    now.valueOf() < Date.parse(`${tradeDate}T${mode.limits.deadlineTime}+08:00`);
+                return Object.freeze({ executed: false, runtimeMode: 'daily', tradeDate,
+                    reason: beforeDeadline && dailyProcessProbe(claim.ownerPid) ?
+                        'daily_collection_in_progress' : 'daily_collection_claim_without_receipt',
+                    claimId: claim.claimId, attempt, receipt: null,
+                    tailRecovery: null, dynamicDailyPreparation: null });
+            }
+            if (!claim && !existingReceipt && previousReceipt) {
+                const due = Date.parse(previousReceipt.completedAt) + mode.limits.cooldownMs;
+                if (!Number.isFinite(due)) throw new Error('daily_collection_retry_receipt_invalid');
+                if (now.valueOf() < due) {
+                    return Object.freeze({ executed: false, runtimeMode: 'daily', tradeDate,
+                        reason: 'daily_collection_retry_cooldown', attempt,
+                        nextAttemptAt: new Date(due).toISOString(), receipt: previousReceipt,
+                        tailRecovery: null, dynamicDailyPreparation: null });
+                }
+            }
+            let receipt;
+            try {
+                receipt = await dailyPostcloseRunner({ root, mode, sourceTradeDate: tradeDate,
+                    calendar, connectionGeneration: generation, attempt,
+                    now: () => new Date().toISOString(), fetchImpl });
+            } catch (error) {
+                if (error?.code !== 'EEXIST') throw error;
+                const concurrent = await readFile(path.join(collectionDirectory,
+                    `attempt-${String(attempt).padStart(2, '0')}-claim.json`), 'utf8')
+                    .then(JSON.parse).catch(() => null);
+                if (concurrent?.schemaVersion !== DAILY_MINUTE_VOLUME_COLLECTION_SCHEMA ||
+                    concurrent.sourceDate !== tradeDate ||
+                    concurrent.targetDate !== calendar.targetTradeDate ||
+                    concurrent.connectionGeneration !== generation || concurrent.attempt !== attempt ||
+                    !Number.isSafeInteger(concurrent.ownerPid) || concurrent.ownerPid < 1 ||
+                    (mode.limits.deadlineTime && now.valueOf() >=
+                        Date.parse(`${tradeDate}T${mode.limits.deadlineTime}+08:00`)) ||
+                    !dailyProcessProbe(concurrent.ownerPid)) throw error;
+                return Object.freeze({ executed: false, runtimeMode: 'daily', tradeDate,
+                    reason: 'daily_collection_in_progress', claimId: concurrent.claimId,
+                    attempt, receipt: null, tailRecovery: null, dynamicDailyPreparation: null });
+            }
+            const sameKeyNoop = receipt.outcome === 'complete'
+                ? await dailyNoopAuditor({ root, collectionReceipt: receipt, calendar,
+                    limits: mode.limits, trigger, now: () => new Date().toISOString() }) : null;
+            const closeTailException = receipt.outcome === 'complete'
+                ? await Promise.resolve().then(() => dailyCloseTailAssessor({ root, tradeDate, collectionReceipt: receipt,
+                    assessmentTrigger: trigger === 'scheduled'
+                        ? 'scheduled_after_original_collection' : 'operator_after_original_collection' }))
+                    .catch(error => ({ state: 'assessment_failed', reason: safeReason(error) }))
+                : null;
+            return Object.freeze({ executed: receipt.outcome === 'complete', sameKeyNoop, closeTailException,
+                runtimeMode: 'daily', tradeDate, receipt,
+                tailRecovery: null, dynamicDailyPreparation: null });
+        }
     }
     const history = await inspectPostcloseDailyBaseline({ root, tradeDate, historical });
     if (history.attempts.some((item) => item.receipt && !item.claim)) {
@@ -513,12 +622,12 @@ export async function runPostcloseDailyBaseline({ now = new Date(), root = appSu
 
 export function buildPostcloseBaselineLaunchAgentPlist(scriptPath) {
     if (!path.isAbsolute(scriptPath ?? '')) throw new TypeError('postclose script path is invalid');
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${POSTCLOSE_DAILY_BASELINE_LABEL}</string><key>ProgramArguments</key><array><string>${process.execPath}</string><string>${scriptPath}</string><string>--scheduled</string></array><key>StartCalendarInterval</key><dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${POSTCLOSE_DAILY_BASELINE_LABEL}</string><key>ProgramArguments</key><array><string>${resolveMonitorLaunchNode()}</string><string>${scriptPath}</string><string>--scheduled</string></array><key>StartCalendarInterval</key><dict><key>Hour</key><integer>13</integer><key>Minute</key><integer>35</integer></dict><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
 }
 
 export function buildPostcloseBaselineRetryLaunchAgentPlist(scriptPath) {
     if (!path.isAbsolute(scriptPath ?? '')) throw new TypeError('postclose script path is invalid');
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${POSTCLOSE_DAILY_BASELINE_RETRY_LABEL}</string><key>ProgramArguments</key><array><string>${process.execPath}</string><string>${scriptPath}</string><string>--scheduled</string></array><key>StartCalendarInterval</key><array><dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict><dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>55</integer></dict></array><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${POSTCLOSE_DAILY_BASELINE_RETRY_LABEL}</string><key>ProgramArguments</key><array><string>${resolveMonitorLaunchNode()}</string><string>${scriptPath}</string><string>--scheduled</string></array><key>StartCalendarInterval</key><array><dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>15</integer></dict><dict><key>Hour</key><integer>14</integer><key>Minute</key><integer>55</integer></dict></array><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
 }
 
 export async function installPostcloseBaselineRetryLaunchAgent({ root = appSupportRoot(),
@@ -613,7 +722,20 @@ async function main() {
         trigger: process.argv.includes('--scheduled') ? 'scheduled' : 'manual',
         historicalTradeDate: historicalTradeDate ?? null,
     });
-    process.stdout.write(`${JSON.stringify(result)}\n`);
+    let resetAnchor = null;
+    if (process.argv.includes('--scheduled')) {
+        try {
+            if ((await readDailyMinuteVolumeMode(appSupportRoot())).mode === 'daily') {
+                const saved = await recordBrokerResetObservation({ root: appSupportRoot() });
+                resetAnchor = { state: 'saved', evidenceHash: saved.evidenceHash,
+                    observedAt: saved.observedAt };
+            }
+        } catch (error) {
+            // 來源觀察不得改寫已完成的採集收據；翌日 admission 仍會拒絕缺錨點。
+            resetAnchor = { state: 'waiting', reason: safeReason(error) };
+        }
+    }
+    process.stdout.write(`${JSON.stringify({ ...result, ...(resetAnchor ? { resetAnchor } : {}) })}\n`);
     if (result.receipt?.outcome === 'failed') process.exitCode = 1;
 }
 

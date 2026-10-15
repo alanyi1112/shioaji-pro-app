@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -329,6 +330,128 @@ describe('intraday monitor local API service', () => {
         expect(JSON.stringify(diagnostics)).not.toContain('must-not-leak');
     });
 
+    it('API例外通過需有效artifact且對應160份原coverage，損壞或中段缺口不通過', async () => {
+        const day = '2026-10-15', hash = 'a'.repeat(64);
+        const rows = [{ canonicalSymbol: '1000.TW', minuteKey: '13:30', source: 'postclose_verified',
+            currentCumulativeVolume: 200, previousCumulativeVolume: 100, threshold: '1.5',
+            ratio: 2, comparison: 'matched', comparisonRevision: 18,
+            liveDelivered: false, notificationAuthority: false }];
+        const body = { schemaVersion: 'intraday-close-tail-assessment/1',
+            policyVersion: 'intraday-close-tail-exception/1', maximumExceptions: 10,
+            state: 'passed_with_close_tail_exception', tradeDate: day, previousTradeDate: '2026-10-14',
+            targetTradeDate: '2026-10-16', sessionId: 'fixture-session',
+            connectionGeneration: 'simulation:fixture-generation-api-001', originalExecutionOutcome: 'partial',
+            assessmentTrigger: 'operator_after_original_collection', assessedAt: `${day}T17:00:00+08:00`,
+            evidenceHash: hash, inputHashes: Object.fromEntries(['summary', 'session', 'collection',
+                'collectionClaim', 'threshold', 'observations', 'manifests', 'previousManifests'].map(k => [k, hash])),
+            liveCompleteCount: 159, livePartialCount: 1, rows, liveAcceptance: false,
+            notificationAuthority: false, retroactiveTriggerEligible: false, brokerWriteAuthority: false };
+        const artifact = { ...body, artifactHash: createHash('sha256').update(JSON.stringify(body)).digest('hex') };
+        const capacity = { runtimeMode: 'daily', session: { authorityTradeDate: day, sessionTradeDate: day,
+            phase: 'closing', current: false, staleReason: 'evidence_stale' }, dailyExecution: {
+            state: 'partial', completeCount: 159, partialCount: 1, closeTailException: artifact,
+            liveCoverageBySymbol: Array.from({ length: 160 }, (_, i) => ({
+                canonicalSymbol: `${1000 + i}.TW`, state: i === 0 ? 'partial' : 'complete',
+                observationCount: i === 0 ? 269 : 270, lastMinute: i === 0 ? '13:29' : '13:30',
+                reason: i === 0 ? 'close_minute_missing' : 'session_closed' })) } };
+        const { service } = await fixture({ capacity });
+        expect(service.readStatus().body.dailyExecution.closeTailException.state).toBe('passed_with_close_tail_exception');
+        expect(service.readStatus().body.dailyExecution.state).toBe('partial');
+        capacity.dailyExecution.liveCoverageBySymbol[0].observationCount = 268;
+        expect(service.readStatus().body.dailyExecution.closeTailException.state).toBe('invalid_evidence');
+        capacity.dailyExecution.liveCoverageBySymbol[0].observationCount = 269;
+        capacity.dailyExecution.closeTailException = { ...artifact,
+            rows: artifact.rows.map(row => ({ ...row, comparison: 'not_matched' })) };
+        expect(service.readStatus().body.dailyExecution.closeTailException.state).toBe('invalid_evidence');
+    });
+
+    it('daily 背景監控不依賴頁面 lease，收尾後同日結果保留為唯讀歷史', async () => {
+        const capacity = { runtimeMode: 'daily', gate0EvidenceCurrent: true,
+            boundedTransportReady: true, approvedActiveLimit: 160,
+            controlPlaneSubscriptionRequested: true,
+            session: { authorityTradeDate: '2026-09-04',
+                sessionTradeDate: '2026-09-04', phase: 'running', current: true,
+                configRevision: 1, savedConfigRevision: 1,
+                controlPlaneAccepted: true, controlPlaneRequested: true },
+            freshness: { evidenceAt: '2026-09-04T08:00:00.000Z',
+                ageMs: 0, budgetMs: 120_000, fresh: true },
+            items: [{ canonicalSymbol: '2330.TW', state: 'active', reason: 'none',
+                baselineState: 'complete', baselineTradeDate: '2026-09-03',
+                subscriptionState: 'confirmed' }] };
+        const { service } = await fixture({ capacity, triggers: [trigger(0)] });
+        expect(service.replaceConfig(configRequest())).toMatchObject({ status: 200 });
+        capacity.dailyExecution = { previousBaselineQuality: {
+            sourceTradeDate: '2026-09-03', targetTradeDate: '2026-09-04',
+            expectedCount: 1, readyCount: 1, independentMatchedCount: 0,
+            independentNotObservedCount: 1, missingCount: 0, unknownCount: 0,
+            state: 'repository_recorded' } };
+        const live = service.readStatus();
+        expect(live).toMatchObject({ status: 200, body: {
+            schemaVersion: 'intraday-monitor-status/2', runtimeMode: 'daily',
+            dailyExecution: { state: 'collecting', previousBaselineQuality: {
+                independentMatchedCount: 0, independentNotObservedCount: 1 } },
+            state: 'active',
+        } });
+        capacity.session = { ...capacity.session, current: false, phase: 'closing',
+            staleReason: 'evidence_stale' };
+        capacity.dailyExecution = { state: 'ended', completedAt: '2026-09-04T05:34:30.000Z',
+            completeCount: 1, partialCount: 0,
+            liveCoverageBySymbol: [{ canonicalSymbol: '2330.TW', state: 'complete',
+            reason: 'session_closed', observationCount: 270,
+                lastMinute: '13:30', lastComparableMinute: '13:30' }],
+            streamDisconnectReason: null, resourceFault: null,
+            nextBaselineState: 'independent_postclose_pending',
+            diagnosticsState: 'not_requested',
+            previousBaselineQuality: capacity.dailyExecution.previousBaselineQuality };
+        const ended = service.readStatus();
+        expect(ended).toMatchObject({ status: 200, body: {
+            state: 'idle', reason: 'session_closed',
+            capacity: { active: 0, dataActive: 0, notificationAuthority: false },
+            dailyExecution: { state: 'ended', completeCount: 1,
+                liveCoverageBySymbol: [{ canonicalSymbol: '2330.TW',
+                    state: 'complete', observationCount: 270,
+                    lastComparableMinute: '13:30' }] },
+        } });
+        capacity.dailyExecution = { ...capacity.dailyExecution, state: 'partial', completeCount: 0,
+            partialCount: 1, liveCoverageBySymbol: [{ canonicalSymbol: '2330.TW', state: 'partial',
+                reason: 'close_minute_missing', observationCount: 269, lastMinute: '13:29',
+                lastComparableMinute: '13:29' }] };
+        expect(service.readStatus()).toMatchObject({ body: {
+            state: 'degraded', reason: 'daily_close_partial',
+            session: { current: false }, capacity: { notificationAuthority: false } } });
+        capacity.session = { ...capacity.session, staleReason: 'generation_mismatch' };
+        expect(service.readStatus()).toMatchObject({ body: {
+            state: 'feature_off', reason: 'generation_mismatch' } });
+        capacity.session = { ...capacity.session, staleReason: 'evidence_stale' };
+        capacity.dailyExecution = { ...capacity.dailyExecution, state: 'ended', completeCount: 1,
+            partialCount: 0, liveCoverageBySymbol: [{ canonicalSymbol: '2330.TW', state: 'complete',
+                reason: 'session_closed', observationCount: 270, lastMinute: '13:30',
+                lastComparableMinute: '13:30' }] };
+        capacity.dailyExecution = { ...capacity.dailyExecution, completeCount: 160 };
+        expect(service.readStatus()).toMatchObject({ status: 200, body: {
+            dailyExecution: { state: 'unknown', completeCount: null },
+        } });
+        capacity.dailyExecution = { ...capacity.dailyExecution, completeCount: 1 };
+        expect(service.readResults({ tradeDate: '2026-09-04' })).toMatchObject({
+            status: 200, body: { authority: 'historical',
+                items: [{ kind: 'historical', historicalSource: 'closed_live',
+                    notificationAuthority: false }] },
+        });
+        capacity.dailyExecution = { state: 'failed', failureReason: 'summary_write_failed',
+            completedAt: '2026-09-04T05:35:00.000Z',
+            nextBaselineState: 'failed', nextBaselineReason: 'collection_deadline_exceeded' };
+        expect(service.readStatus()).toMatchObject({ status: 200, body: {
+            dailyExecution: { state: 'failed', failureReason: 'summary_write_failed',
+                completeCount: null, nextBaselineState: 'failed',
+                nextBaselineReason: 'collection_deadline_exceeded' },
+        } });
+        expect(service.readResults({ tradeDate: '2026-09-04' })).toMatchObject({
+            status: 200, body: { authority: 'historical',
+                items: [{ kind: 'historical', historicalSource: 'closed_live',
+                    notificationAuthority: false }] },
+        });
+    });
+
     it('固定排序前 20 檔為 pilot cohort，其餘啟用商品等待 pilot limit', async () => {
         const { service } = await fixture();
         const request = configRequest({ idempotencyKey: `${KEY}_cohort` });
@@ -411,6 +534,24 @@ describe('intraday monitor local API service', () => {
 });
 
 describe('intraday monitor loopback gateway', () => {
+    it('threshold-only CAS keeps all list items, duplicate is no-op and stale second tab is rejected', async () => {
+        const env = await fixture();
+        try {
+            const before = env.repository.read();
+            const request = { schemaVersion: 'intraday-monitor-threshold-request/1',
+                idempotencyKey: KEY, expectedRevision: before.revision, threshold: '3' };
+            const result = env.service.replaceThreshold(request);
+            expect(result.status).toBe(200);
+            expect(result.body.config.globalThreshold).toBe('3');
+            expect(env.repository.read().items).toEqual(before.items);
+            expect(env.service.replaceThreshold(request)).toEqual(result);
+            expect(env.repository.read().revision).toBe(result.body.revision);
+            expect(env.service.replaceThreshold({ ...request, idempotencyKey: `${KEY}_other`,
+                threshold: '2' }).status).toBe(409);
+            expect(env.service.replaceThreshold({ ...request, threshold: '4' }).status).toBe(400);
+            expect(env.counters.start).toBeUndefined();
+        } finally { env.repository.close(); }
+    });
     it('serves fixed local routes and leaves GET free of runtime/subscription mutations', async () => {
         const counters = {};
         const { service } = await fixture({ counters });

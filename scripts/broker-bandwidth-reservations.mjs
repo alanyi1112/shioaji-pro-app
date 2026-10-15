@@ -1,6 +1,7 @@
 /** 共用的持久保留 port；無預設啟動流量門檻、無下載／登入／訂閱。未配置政策一律拒絕。 */
 import { createHash, randomUUID } from 'node:crypto';
 import { readLocalConservativeIdentity } from './broker-local-conservative-ledger.mjs';
+import { readLocalVerifiedDailyIdentity } from './broker-local-verified-reset-ledger.mjs';
 
 const hash = v => createHash('sha256').update(JSON.stringify(v)).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
@@ -10,7 +11,8 @@ const fresh = (s, now, age = 60000) => typeof s === 'string' && Number.isFinite(
 const token = s => typeof s === 'string' && /^[a-zA-Z0-9:_|.-]{1,200}$/.test(s);
 const validQuotaIdentity = v => v && HASH.test(v.scope ?? '') && token(v.quotaEpoch)
     && HASH.test(v.quotaEpochEvidenceHash ?? '') && (Object.keys(v).length === 3
-        || Object.keys(v).length === 4 && v.identityMode === 'local-conservative-v1');
+        || Object.keys(v).length === 4 && ['local-conservative-v1',
+            'local-verified-daily-reset-v1'].includes(v.identityMode));
 function policyFingerprint(policy) {
     // freshness 是每次重驗的觀察時間，不是承諾修訂；否則正常跨毫秒重讀必定誤拒絕。
     // 只略去此時間，其餘額度、實測、證據、效期及 quota identity 全部仍綁定。
@@ -46,7 +48,8 @@ function observation(v, now) {
     // quotaEpoch 必須由可信 quota reset identity port 取得，不用 API generation／任意新日期免除債務。
     if (!v || !HASH.test(v.scope ?? '') || !token(v.quotaEpoch) || !HASH.test(v.quotaEpochEvidenceHash ?? '')
         || !(v.quotaEpochVerified === true && v.identityMode == null
-            || v.quotaEpochVerified === false && v.identityMode === 'local-conservative-v1')
+            || v.quotaEpochVerified === false && ['local-conservative-v1',
+                'local-verified-daily-reset-v1'].includes(v.identityMode))
         || !token(v.generation) || !fresh(v.observedAt, now)
         || !safe(v.usedBytes) || !safe(v.limitBytes) || v.limitBytes < 1 || !safe(v.remainingBytes)
         || v.usedBytes + v.remainingBytes !== v.limitBytes) throw new Error('broker_usage_pending');
@@ -76,6 +79,16 @@ export function createBrokerBandwidthAdmission({ db, readUsage, readPolicy, now 
                 if (JSON.stringify(anchor) !== JSON.stringify(policy.quotaIdentity)
                     || anchor.scope !== usage.scope || anchor.quotaEpoch !== usage.quotaEpoch
                     || anchor.quotaEpochEvidenceHash !== usage.quotaEpochEvidenceHash) throw new Error('broker_usage_pending');
+            }
+            if (usage.identityMode === 'local-verified-daily-reset-v1') {
+                const head = await readLocalVerifiedDailyIdentity(db);
+                if (head.scope !== usage.scope || head.quotaEpoch !== usage.quotaEpoch ||
+                    head.quotaEpochEvidenceHash !== usage.quotaEpochEvidenceHash ||
+                    JSON.stringify({ scope: head.scope, quotaEpoch: head.quotaEpoch,
+                        quotaEpochEvidenceHash: head.quotaEpochEvidenceHash,
+                        identityMode: head.identityMode }) !== JSON.stringify(policy.quotaIdentity)) {
+                    throw new Error('broker_usage_pending');
+                }
             }
             if (usage.generation !== generation) throw new Error('broker_generation_changed');
             if (policy.quotaIdentity && (usage.scope !== policy.quotaIdentity.scope

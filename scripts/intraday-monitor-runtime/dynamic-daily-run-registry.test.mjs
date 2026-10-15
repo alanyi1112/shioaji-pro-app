@@ -24,6 +24,19 @@ const claimedAt = '2026-09-30T08:45:00+08:00';
 const planHash = 'a'.repeat(64);
 
 describe('每日監控與 Stage 共用排他 claim', () => {
+    it('同一API跨交易日可另立daily claim，原收據不覆寫，同日仍拒絕第二次', async () => {
+        const root = await directory();
+        const first = await claimDynamicDailyRun({ directory: root, connectionGeneration, planHash, tradeDate, claimedAt });
+        const before = await readFile(first.claimPath, 'utf8');
+        await first.release();
+        const next = await claimDynamicDailyRun({ directory: root, connectionGeneration, planHash,
+            tradeDate: '2026-10-01', claimedAt: '2026-10-01T08:50:00+08:00' });
+        await next.release();
+        expect(next.claimPath).not.toBe(first.claimPath);
+        expect(await readFile(first.claimPath, 'utf8')).toBe(before);
+        await expect(claimDynamicDailyRun({ directory: root, connectionGeneration, planHash,
+            tradeDate: '2026-10-01', claimedAt: '2026-10-01T08:51:00+08:00' })).rejects.toThrow('daily_generation_already_used');
+    });
     it('產品路徑固定落在既有 Stage 的同一 registry，不接受相對路徑', async () => {
         const root = await directory();
         expect(resolveDynamicDailySharedRegistryDirectory(root))
@@ -52,7 +65,8 @@ describe('每日監控與 Stage 共用排他 claim', () => {
         expect((await inspectDirect160ActiveClaim(root)).planHash).toBe(planHash);
         await daily.release();
         expect(JSON.parse(await readFile(daily.claimPath, 'utf8')))
-            .toMatchObject({ planHash, reusable: false, secondStreamAllowed: false });
+            .toMatchObject({ planHash, ownerPid: process.pid,
+                reusable: false, secondStreamAllowed: false });
         await expect(claimDirect160Run({ directory: root, connectionGeneration,
             manifestHash: 'b'.repeat(64), tradeDate, claimedAt }))
             .rejects.toThrow('direct_160_generation_already_used');

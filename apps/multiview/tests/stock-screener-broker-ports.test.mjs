@@ -89,6 +89,20 @@ test('verified配置接上共用usage與集中ledger；reserve/dispatch/settle�
         assert(f.calls.every(c=>/\/(info|health|data\/snapshots|auth\/usage)$/.test(c.url)));
     }finally{await f.close();}
 });
+test('日常模式短效合併reserve與settle的usage，但generation變更會重新查詢',async()=>{
+    const f=await fixture();try{
+        await savePolicy(f,policyRecord(f.now().toISOString()));
+        const port=createScreenerBrokerPorts({...f.options,usageCacheMs:5000});
+        const first=await port.admission.reserve({cacheKey:'daily-first',generation:'simulation:fixture-generation'});
+        assert.equal(first.allowed,true);
+        await port.admission.start(first);
+        await port.admission.settle({...first,requested:1,responseBytes:300});
+        assert.equal(f.calls.filter(c=>c.url.endsWith('/auth/usage')).length,1);
+        await writeFile(path.join(f.root,'runtime-api-generation'),'simulation:next-generation');
+        await port.admission.reserve({cacheKey:'daily-second',generation:'simulation:next-generation'});
+        assert.equal(f.calls.filter(c=>c.url.endsWith('/auth/usage')).length,2);
+    }finally{await f.close();}
+});
 test('v2 正式接線逐工作 producer，receipt 缺席時零usage；有效承諾才reserve/dispatch',async()=>{
     const f=await fixture();try{
         const record=policyRecord(f.now().toISOString());record.version=2;

@@ -9,6 +9,7 @@ import {
     parseTwseOfficialCalendar,
 } from '../smart-order-runtime/official-market-calendar-core.mjs';
 import { hashDirect160 } from './direct-160-storage.mjs';
+import { readDailyCalendarCache } from './daily-calendar-cache.mjs';
 
 export const INTRADAY_MONITOR_TRADING_CALENDAR_AUTHORITY_SCHEMA =
     'intraday-monitor-trading-calendar-authority/1';
@@ -95,6 +96,12 @@ export async function resolveIntradayMonitorPremarketTradingDay({
     }
     const tradeDate = taipeiTradeDate(now.valueOf());
     try {
+        const daily = await readDailyCalendarCache({ root, now, tradeDate });
+        if (daily) return Object.freeze({ ...selectIntradayMonitorTradingDay({
+            tradeDate, snapshots: [daily.snapshot], observedAt: now.toISOString() }),
+            authorityKind: 'verified_daily_official_calendar_cache',
+            calendarFetchedAt: daily.value.fetchedAt, calendarTrigger: daily.value.trigger,
+            verifiedArtifactPath: daily.file });
         const directory = path.join(root, 'intraday-baselines');
         const names = await readdir(directory);
         const candidates = names.map((name) => {

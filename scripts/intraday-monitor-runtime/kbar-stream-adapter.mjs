@@ -10,6 +10,8 @@ export const INTRADAY_MONITOR_NORMAL_CLOSE_MINUTE = '13:30';
 export const INTRADAY_MONITOR_DELAYED_CLOSE_MINUTE = '13:33';
 export const INTRADAY_MONITOR_CLOSE_FINALIZATION_TIME = '13:34:30';
 const issuedCloseAuthorities = new WeakMap();
+const sinkFailureReason = value => typeof value?.reason === 'string' &&
+    /^[a-z][a-z0-9_]{0,95}$/.test(value.reason) ? value.reason : 'observation_sink_rejected';
 
 const EVENT_KEYS = Object.freeze([
     'schemaVersion', 'code', 'date', 'time', 'volume', 'receivedTime',
@@ -97,6 +99,7 @@ export function createIntradayMonitorKbarStreamAdapter({
     observationSink,
     nowEpochMs = () => Date.now(),
     futureSkewMs = 2_000,
+    requireFirstMinute = false,
     maximumCohortSize = INTRADAY_MONITOR_KBAR_PILOT_LIMIT,
 } = {}) {
     if (![INTRADAY_MONITOR_KBAR_PILOT_LIMIT, INTRADAY_MONITOR_KBAR_STAGE_LIMIT].includes(maximumCohortSize) ||
@@ -105,7 +108,7 @@ export function createIntradayMonitorKbarStreamAdapter({
         typeof connectionGeneration !== 'string' || connectionGeneration.length < 16 ||
         connectionGeneration.length > 128 || typeof observationSink !== 'function' || isProxy(observationSink) ||
         typeof nowEpochMs !== 'function' || isProxy(nowEpochMs) || !Number.isSafeInteger(futureSkewMs) ||
-        futureSkewMs < 0 || futureSkewMs > 10_000) {
+        futureSkewMs < 0 || futureSkewMs > 10_000 || typeof requireFirstMinute !== 'boolean') {
         throw new TypeError('kbar adapter options are invalid');
     }
     const contracts = cohort.map(normalizeContract);
@@ -206,8 +209,8 @@ export function createIntradayMonitorKbarStreamAdapter({
                 catch { sinkResult = null; }
                 if (sinkResult?.accepted !== true) {
                     state.degraded = true;
-                    state.reason = 'observation_sink_rejected';
-                    return decline('observation_sink_rejected');
+                    state.reason = sinkFailureReason(sinkResult);
+                    return decline(state.reason);
                 }
                 state.sealedMinute = '13:29';
                 state.cumulativeVolume = cumulativeVolume;
@@ -246,6 +249,13 @@ export function createIntradayMonitorKbarStreamAdapter({
             state.reason = 'forming';
             return Object.freeze({ accepted: true, reason: 'forming', canonicalSymbol: state.contract.canonicalSymbol, sealed: false, brokerWriteAuthority: false });
         }
+        // A late first bar is not a verified 09:01 prefix. Do not commit it as
+        // partial live evidence before the bounded historical repair has run.
+        if (requireFirstMinute && state.sealedMinute === null && state.forming.minuteKey !== '09:01') {
+            state.degraded = true;
+            state.reason = 'historical_prefix_missing';
+            return decline('historical_prefix_missing');
+        }
         if (minuteNumber(minuteKey) !== minuteNumber(state.forming.minuteKey) + 1) {
             state.degraded = true;
             state.reason = 'kbar_minute_gap';
@@ -280,8 +290,8 @@ export function createIntradayMonitorKbarStreamAdapter({
         catch { sinkResult = null; }
         if (sinkResult?.accepted !== true) {
             state.degraded = true;
-            state.reason = 'observation_sink_rejected';
-            return decline('observation_sink_rejected');
+            state.reason = sinkFailureReason(sinkResult);
+            return decline(state.reason);
         }
         const sealedMinute = state.forming.minuteKey;
         state.sealedMinute = sealedMinute;
@@ -298,10 +308,71 @@ export function createIntradayMonitorKbarStreamAdapter({
         if (!input || input.connectionGeneration !== connectionGeneration) return decline('disconnect_generation_mismatch');
         connected = false;
         for (const state of states.values()) {
-            state.degraded = true;
-            state.reason = 'stream_disconnected';
+            if (!state.degraded) {
+                state.degraded = true;
+                state.reason = 'stream_disconnected';
+            }
         }
         return Object.freeze({ accepted: true, brokerWriteAuthority: false });
+    }
+
+    function markReconnected(value) {
+        const input = exactRecord(value, ['connectionGeneration']);
+        if (!input || input.connectionGeneration !== connectionGeneration || connected) {
+            return decline('reconnect_generation_mismatch');
+        }
+        connected = true;
+        // A new physical SSE is not evidence that missed bars are complete.
+        // Every affected symbol stays degraded until a verified REST/live overlap.
+        return Object.freeze({ accepted: true, continuityRestored: false,
+            brokerWriteAuthority: false });
+    }
+
+    function restoreVerifiedGap(receipt, overlapEvent) {
+        const input = exactRecord(overlapEvent, EVENT_KEYS);
+        const state = states.get(String(input?.code));
+        if (!state || !state.degraded || !connected ||
+            !['kbar_minute_gap', 'historical_prefix_missing', 'stream_disconnected'].includes(state.reason) ||
+            receipt?.schemaVersion !== 'intraday-monitor-direct-160-gap-bootstrap/1' ||
+            receipt?.canonicalSymbol !== state.contract.canonicalSymbol ||
+            receipt?.tradeDate !== tradeDate || receipt?.liveGeneration !== connectionGeneration ||
+            receipt?.source !== 'shioaji-kbars-bootstrap' || receipt?.stableRefetch !== true ||
+            receipt?.rangeHash !== receipt?.refetchRangeHash ||
+            receipt?.liveDelivered !== false || receipt?.notificationAuthority !== false ||
+            receipt?.retroactiveTriggerEligible !== false ||
+            input?.connectionGeneration !== connectionGeneration ||
+            input?.date?.replaceAll('/', '-') !== tradeDate ||
+            input?.unit !== 'common_lot' || input?.sourceVersion !== receipt.sourceVersion ||
+            input?.time?.slice(0, 5) !== receipt.validationMinuteEnd ||
+            receipt?.liveOverlap?.matched !== true ||
+            !receipt.liveOverlap.comparedMinutes?.includes(receipt.validationMinuteEnd) ||
+            !Array.isArray(receipt.rows) || receipt.rows.length !== receipt.expectedMinuteCount ||
+            receipt.rows[0]?.minuteKey !== '09:01' ||
+            receipt.rows.at(-1)?.minuteKey !== receipt.requestedMinuteEnd ||
+            !Number.isSafeInteger(input.volume) || input.volume < 0) return decline('gap_restore_identity_invalid');
+        const last = receipt.rows.at(-1);
+        const former = state.forming && receipt.rows.find(row => row.minuteKey === state.forming.minuteKey);
+        const sealed = state.sealedMinute && receipt.rows.find(row => row.minuteKey === state.sealedMinute);
+        if (minuteNumber(receipt.validationMinuteEnd) !== minuteNumber(last.minuteKey) + 1 ||
+            state.sealedMinute && sealed?.cumulativeVolume !== state.cumulativeVolume ||
+            state.forming && state.forming.minuteKey <= last.minuteKey &&
+                former?.volumeCommonLot !== state.forming.volume ||
+            state.forming && state.forming.minuteKey === receipt.validationMinuteEnd &&
+                input.volume < state.forming.volume ||
+            !Number.isSafeInteger(last.cumulativeVolume) || last.cumulativeVolume < state.cumulativeVolume) {
+            return decline('gap_restore_overlap_conflict');
+        }
+        state.sealedMinute = last.minuteKey;
+        state.cumulativeVolume = last.cumulativeVolume;
+        state.sequence = receipt.rows.length;
+        state.forming = Object.freeze({ minuteKey: receipt.validationMinuteEnd,
+            time: input.time, volume: input.volume, receivedTime: input.receivedTime,
+            sourceVersion: input.sourceVersion });
+        state.degraded = false;
+        state.reason = 'historical_prefix_verified_waiting_live';
+        return Object.freeze({ accepted: true, canonicalSymbol: state.contract.canonicalSymbol,
+            lastHistoricalMinute: last.minuteKey, notificationAuthority: false,
+            brokerWriteAuthority: false });
     }
 
     function sealSessionClose(authority) {
@@ -313,8 +384,37 @@ export function createIntradayMonitorKbarStreamAdapter({
             const hasDelayedCloseOnly = state.delayedClose?.minuteKey === INTRADAY_MONITOR_DELAYED_CLOSE_MINUTE &&
                 state.forming === null && state.sealedMinute === '13:29';
             if (state.degraded || (!hasRegularCloseForming && !hasDelayedCloseOnly)) {
+                // The provider may omit a symbol's final 13:30 KBar even though
+                // its 13:29 KBar arrived. Final close authority can seal that
+                // observed penultimate bar, but cannot invent the missing close.
+                let reason = 'close_minute_missing';
+                if (!state.degraded && state.forming?.minuteKey === '13:29' &&
+                    state.sealedMinute === '13:28' && !state.delayedClose) {
+                    const cumulativeVolume = state.cumulativeVolume + state.forming.volume;
+                    if (Number.isSafeInteger(cumulativeVolume)) {
+                        const observation = Object.freeze({
+                            schemaVersion: INTRADAY_MONITOR_OBSERVATION_SCHEMA,
+                            contract: state.contract, tradeDate, minuteKey: '13:29',
+                            exchangeTime: state.forming.time,
+                            receivedTime: state.forming.receivedTime,
+                            connectionGeneration, sequence: state.sequence + 1,
+                            cumulativeVolume, unit: 'common_lot', source: 'shioaji-kbar-stream',
+                            sourceVersion: state.forming.sourceVersion,
+                            simtrade: false, intradayOdd: false, continuity: 'complete',
+                        });
+                        let sinkResult;
+                        try { sinkResult = Reflect.apply(observationSink, undefined, [observation]); }
+                        catch { sinkResult = null; }
+                        if (sinkResult?.accepted === true) {
+                            state.sealedMinute = '13:29';
+                            state.cumulativeVolume = cumulativeVolume;
+                            state.sequence += 1;
+                            state.forming = null;
+                        } else reason = sinkFailureReason(sinkResult);
+                    } else reason = 'cumulative_volume_overflow';
+                }
                 state.degraded = true;
-                state.reason = 'close_minute_missing';
+                state.reason = reason;
                 continue;
             }
             const cumulativeVolume = state.cumulativeVolume + (state.forming?.volume ?? 0) + (state.delayedClose?.volume ?? 0);
@@ -346,7 +446,7 @@ export function createIntradayMonitorKbarStreamAdapter({
             catch { sinkResult = null; }
             if (sinkResult?.accepted !== true) {
                 state.degraded = true;
-                state.reason = 'observation_sink_rejected';
+                state.reason = sinkFailureReason(sinkResult);
                 continue;
             }
             state.sealedMinute = INTRADAY_MONITOR_NORMAL_CLOSE_MINUTE;
@@ -393,5 +493,6 @@ export function createIntradayMonitorKbarStreamAdapter({
         });
     }
 
-    return Object.freeze({ accept, markDisconnected, sealSessionClose, status });
+    return Object.freeze({ accept, markDisconnected, markReconnected,
+        restoreVerifiedGap, sealSessionClose, status });
 }

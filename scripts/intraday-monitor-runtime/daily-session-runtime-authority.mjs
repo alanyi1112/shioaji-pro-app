@@ -5,14 +5,15 @@ import {
 import { evaluateIntradayMonitorCurrentSession } from './current-session-authority.mjs';
 import { resolveIntradayMonitorRuntimeArtifactBundleSync } from './runtime-artifact-bundle.mjs';
 import { IntradayMonitorSessionStateRepository } from './session-state-repository.mjs';
+import { createThresholdRuntime } from './threshold-runtime.mjs';
 
 export const INTRADAY_MONITOR_CLOSING_TRANSITION_TIME = '13:30:15';
 
-function readConfigRevision(configDatabasePath, appSupportRoot) {
+function readConfig(configDatabasePath, appSupportRoot) {
     const repository = new IntradayMonitorConfigRepository(
         configDatabasePath ?? resolveIntradayMonitorDatabasePath(appSupportRoot),
     );
-    try { return repository.read().revision; } finally { repository.close(); }
+    try { return repository.read(); } finally { repository.close(); }
 }
 
 function replaceItem(items, canonicalSymbol, transform) {
@@ -34,6 +35,7 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
     now = () => new Date().toISOString(),
 } = {}) {
     const repository = new IntradayMonitorSessionStateRepository(appSupportRoot);
+    let thresholdRuntime = null;
 
     function context() {
         const session = repository.readSession(tradeDate);
@@ -44,18 +46,21 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
                 bundleHash: session.artifactBundleHash,
             })
             : { valid: false, bundleHash: null };
-        let savedConfigRevision = null;
-        try { savedConfigRevision = readConfigRevision(configDatabasePath, appSupportRoot); } catch {}
+        let config = null;
+        try { config = readConfig(configDatabasePath, appSupportRoot); } catch {}
+        const savedConfigRevision = config?.revision ?? null;
         const authority = evaluateIntradayMonitorCurrentSession({
             authority: session?.calendarAuthority ?? null,
             session,
             approval,
             artifactBundle,
             savedConfigRevision,
+            thresholdConfigCompatibility: config && thresholdRuntime
+                ? thresholdRuntime.compatibility(config) : null,
             apiGeneration: connectionGeneration,
             nowEpochMs: Date.parse(now()),
         });
-        return Object.freeze({ authority, session, approval, artifactBundle, savedConfigRevision });
+        return Object.freeze({ authority, session, approval, artifactBundle, savedConfigRevision, config });
     }
 
     function update(transform) {
@@ -76,6 +81,17 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
 
     return Object.freeze({
         evaluate: () => context().authority,
+        initializeThresholdRuntime({ ownerId, ownerPid, activeSymbols }) {
+            if (thresholdRuntime) throw new Error('threshold_runtime_already_initialized');
+            const initial = context();
+            if (!initial.authority.current || !initial.session || !initial.config)
+                throw new Error('threshold_initial_authority_invalid');
+            thresholdRuntime = createThresholdRuntime({ root: appSupportRoot,
+                session: initial.session, initialConfig: initial.config, activeSymbols, ownerId, ownerPid,
+                configDatabasePath: configDatabasePath ?? resolveIntradayMonitorDatabasePath(appSupportRoot),
+                readConfig: () => readConfig(configDatabasePath, appSupportRoot), now });
+            return thresholdRuntime;
+        },
         beginClosing() {
             const observedAt = now();
             const epochMs = Date.parse(observedAt);
@@ -85,7 +101,14 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
                 throw new Error('session_closing_transition_outside_window');
             }
             const before = context();
-            if (!before.authority.current || !before.session) {
+            // 13:25–13:30 收盤集合競價可能沒有新 KBar。只在其餘資格全部仍有效、
+            // 最後真實資料不超過 closing 原有 10 分鐘預算時，允許排程轉入 closing；
+            // 不改寫 evidenceAt，也不能藉此救回早已失聯的 session。
+            const auctionPauseOnly = before.authority.reasons?.length === 1 &&
+                before.authority.reasons[0] === 'evidence_stale' &&
+                Number.isSafeInteger(before.authority.ageMs) &&
+                before.authority.ageMs <= 10 * 60_000;
+            if ((!before.authority.current && !auctionPauseOnly) || !before.session) {
                 throw new Error(before.authority.reason ?? 'current_session_missing');
             }
             if (before.session.phase !== 'running' || before.session.controlPlane?.accepted !== true) {
@@ -126,7 +149,9 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
                 })),
             })).authority;
         },
-        recordObservation({ canonicalSymbol, receivedAt, continuityComplete }) {
+        recordObservation({ canonicalSymbol, receivedAt, continuityComplete,
+            completedMinute = null, currentCumulativeVolume = null,
+            previousCumulativeVolume = null }) {
             return update((session) => ({
                 ...session,
                 phase: session.phase === 'closing' ? 'closing' : 'running',
@@ -140,6 +165,9 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
                         : item.baselineState === 'complete' ? 'minute_continuity_unknown' : 'baseline_missing',
                     subscriptionState: 'confirmed',
                     firstKbarAt: item.firstKbarAt ?? receivedAt,
+                    completedMinute,
+                    currentCumulativeVolume,
+                    previousCumulativeVolume,
                     updatedAt: receivedAt,
                 })),
             })).authority;

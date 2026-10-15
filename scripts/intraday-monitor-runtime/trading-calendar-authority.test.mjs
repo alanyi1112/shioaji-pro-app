@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildOfficialMarketCalendarSnapshot, parseTpexOfficialCalendar,
     parseTwseOfficialCalendar } from '../smart-order-runtime/official-market-calendar-core.mjs';
 import { hashDirect160 } from './direct-160-storage.mjs';
+import { saveDailyCalendarCache } from './daily-calendar-cache.mjs';
 import { resolveIntradayMonitorPremarketTradingDay, resolveIntradayMonitorTradingDay,
     selectIntradayMonitorTradingDay } from './trading-calendar-authority.mjs';
 
@@ -60,6 +61,28 @@ async function localBaseline(root, { fetchedAt = Date.parse('2026-09-21T14:00:00
 }
 
 describe('盤中監控官方交易日 authority', () => {
+    it('daily快取優先於過期v1，週末前日正確且新快取損壞不退回舊來源', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'premarket-calendar-daily-'));
+        try {
+            const old = await localBaseline(root);
+            const oldBytes = await readFile(old, 'utf8');
+            const at = '2026-10-12T05:35:00.000Z';
+            const snapshot = buildOfficialMarketCalendarSnapshot({
+                twse: parseTwseOfficialCalendar(twsePayload, 2026),
+                tpex: parseTpexOfficialCalendar(tpexPayload, 2026), fetchedAtEpochMs: Date.parse(at) });
+            const saved = await saveDailyCalendarCache({ root, fetchedAt: at,
+                calendar: { tradeDate: '2026-10-12', targetTradeDate: '2026-10-13',
+                    twse: twsePayload, tpex: tpexPayload, calendarSourceVersion: snapshot.calendarVersion } });
+            const authority = await resolveIntradayMonitorPremarketTradingDay({ root,
+                now: new Date('2026-10-13T08:20:00+08:00') });
+            expect(authority).toMatchObject({ current: true, previousTradeDate: '2026-10-12',
+                authorityKind: 'verified_daily_official_calendar_cache', calendarTrigger: 'postclose' });
+            expect(await readFile(old, 'utf8')).toBe(oldBytes);
+            await writeFile(saved.file, '{"tampered":true}');
+            expect((await resolveIntradayMonitorPremarketTradingDay({ root,
+                now: new Date('2026-10-13T08:20:00+08:00') })).current).toBe(false);
+        } finally { await rm(root, { recursive: true, force: true }); }
+    });
     it('盤前從前一交易日已驗證的本機雙市場日曆判定，不向網站發請求', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'premarket-calendar-local-'));
         try {

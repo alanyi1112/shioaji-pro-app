@@ -5,6 +5,8 @@ import { homedir } from 'node:os';
 import { createBrokerBandwidthAdmission } from './broker-bandwidth-reservations.mjs';
 import { readScreenerBrokerCommitments } from './stock-screener-broker-commitments.mjs';
 import { readLocalConservativeIdentity, localConservativeUsage } from './broker-local-conservative-ledger.mjs';
+import { readLocalVerifiedDailyIdentity, localVerifiedDailyUsage } from './broker-local-verified-reset-ledger.mjs';
+import { readBrokerAccountScopeHash } from './broker-reset-observation.mjs';
 import { observeRuntimeBudgetAllocations } from './stock-screener-runtime-budget-producer.mjs';
 
 async function readPrivate(root, name) {
@@ -24,8 +26,32 @@ async function boundedJson(fetchImpl, endpoint, body) {
     } finally { await reader.cancel().catch(() => {}); }
     return JSON.parse(Buffer.concat(parts).toString('utf8'));
 }
+// A short-lived observation may be reused only inside the same port instance and
+// only while the policy, simulation mode and API generation still match. The
+// persistent admission ledger continues to reserve every request atomically.
+export function createIdentityBoundUsageCache({ now = () => new Date(), maxAgeMs = 0 } = {}) {
+    if (typeof now !== 'function' || !Number.isSafeInteger(maxAgeMs) || maxAgeMs < 0 || maxAgeMs > 5000)
+        throw new TypeError('broker_usage_cache_invalid');
+    let cached = null;
+    return async ({ policy, mode, generation, load }) => {
+        if (mode !== 'simulation' || !generation || typeof load !== 'function')
+            throw new Error('simulation_runtime_pending');
+        const identity = JSON.stringify([policy?.version, policy?.scope, policy?.quotaEpoch,
+            policy?.quotaEpochEvidenceHash, policy?.validThrough, policy?.identityMode]);
+        const at = now().getTime();
+        if (maxAgeMs > 0 && cached?.identity === identity && cached.generation === generation &&
+            at >= cached.at && at - cached.at <= maxAgeMs) return cached.usage;
+        cached = null;
+        const usage = await load();
+        // Never carry a failed or delayed observation into the next request.
+        cached = { identity, generation, at: now().getTime(), usage };
+        return usage;
+    };
+}
 export function createScreenerBrokerPorts({ db, now = () => new Date(), fetchImpl = fetch,
-    root = process.env.REALTIME_STOCK_APP_SUPPORT ?? path.join(homedir(), 'Library/Application Support/RealTimeStock') }) {
+    root = process.env.REALTIME_STOCK_APP_SUPPORT ?? path.join(homedir(), 'Library/Application Support/RealTimeStock'),
+    usageCacheMs = 0 }) {
+    const cachedUsage = createIdentityBoundUsageCache({ now, maxAgeMs: usageCacheMs });
     const safety = async () => {
         const directory = await lstat(root);
         if (!path.isAbsolute(root) || directory.isSymbolicLink() || !directory.isDirectory() || directory.uid !== process.getuid()
@@ -45,28 +71,55 @@ export function createScreenerBrokerPorts({ db, now = () => new Date(), fetchImp
         const row = await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE id='screener-bollinger-broker-budget-policy'").first();
         if (row?.status !== 'verified') throw new Error('broker_policy_pending');
         const record = JSON.parse(row.checkpoint);
-        if (![1, 2, 3].includes(record.version) || typeof record.scope !== 'string' || !/^[a-f0-9]{64}$/.test(record.scope)
+        if (![1, 2, 3, 4].includes(record.version) || typeof record.scope !== 'string' || !/^[a-f0-9]{64}$/.test(record.scope)
             || typeof record.quotaEpoch !== 'string' || !/^[a-f0-9]{64}$/.test(record.quotaEpochEvidenceHash ?? '')
             || !(record.version === 3 ? record.quotaEpochVerified === false && record.identityMode === 'local-conservative-v1'
-                : record.quotaEpochVerified === true) || !Number.isFinite(Date.parse(record.validThrough))
+                : record.version === 4 ? record.quotaEpochVerified === false && record.identityMode === 'local-verified-daily-reset-v1'
+                    : record.quotaEpochVerified === true) || !Number.isFinite(Date.parse(record.validThrough))
             || Date.parse(record.validThrough) <= now().getTime()) throw new Error('broker_policy_pending');
         if (record.version === 3) {
             const anchor = await readLocalConservativeIdentity(db);
             if (anchor.scope !== record.scope || anchor.quotaEpoch !== record.quotaEpoch
                 || anchor.quotaEpochEvidenceHash !== record.quotaEpochEvidenceHash) throw new Error('broker_policy_pending');
         }
+        if (record.version === 4) {
+            const head = await readLocalVerifiedDailyIdentity(db);
+            if (head.scope !== record.scope || head.quotaEpoch !== record.quotaEpoch ||
+                head.quotaEpochEvidenceHash !== record.quotaEpochEvidenceHash ||
+                head.identityHash !== record.dailyIdentityHash) throw new Error('broker_policy_pending');
+        }
         return record;
     };
     const readUsage = async () => {
-        const policy = await policyRecord(), before = await safety();
-        const u = await boundedJson(fetchImpl, 'auth/usage');
-        if (await readPrivate(root, 'runtime-api-generation') !== before.generation) throw new Error('broker_generation_changed');
-        if (policy.version === 3) return localConservativeUsage(db, await readLocalConservativeIdentity(db), {
-            generation: before.generation, usedBytes: u.bytes, limitBytes: u.limit_bytes,
-            remainingBytes: u.remaining_bytes, observedAt: now().toISOString() });
-        return { scope: policy.scope, quotaEpoch: policy.quotaEpoch, quotaEpochEvidenceHash: policy.quotaEpochEvidenceHash,
-            quotaEpochVerified: true, generation: before.generation, usedBytes: u.bytes, limitBytes: u.limit_bytes,
-            remainingBytes: u.remaining_bytes, observedAt: now().toISOString() };
+        const policy = await policyRecord();
+        const mode = await readPrivate(root, 'runtime-mode');
+        const generation = await readPrivate(root, 'runtime-api-generation');
+        const usage = await cachedUsage({ policy, mode, generation, load: async () => {
+            const before = await safety();
+            const u = await boundedJson(fetchImpl, 'auth/usage');
+            if (await readPrivate(root, 'runtime-api-generation') !== before.generation)
+                throw new Error('broker_generation_changed');
+            if (policy.version === 3) return localConservativeUsage(db, await readLocalConservativeIdentity(db), {
+                generation: before.generation, usedBytes: u.bytes, limitBytes: u.limit_bytes,
+                remainingBytes: u.remaining_bytes, observedAt: now().toISOString() });
+            if (policy.version === 4) {
+                const accountScopeHash = await readBrokerAccountScopeHash({ root, fetchImpl });
+                if (await readPrivate(root, 'runtime-api-generation') !== before.generation) {
+                    throw new Error('broker_generation_changed');
+                }
+                return localVerifiedDailyUsage(db, await readLocalVerifiedDailyIdentity(db), {
+                    generation: before.generation, usedBytes: u.bytes,
+                    limitBytes: u.limit_bytes, remainingBytes: u.remaining_bytes,
+                    observedAt: now().toISOString() }, accountScopeHash);
+            }
+            return { scope: policy.scope, quotaEpoch: policy.quotaEpoch, quotaEpochEvidenceHash: policy.quotaEpochEvidenceHash,
+                quotaEpochVerified: true, generation: before.generation, usedBytes: u.bytes, limitBytes: u.limit_bytes,
+                remainingBytes: u.remaining_bytes, observedAt: now().toISOString() };
+        } });
+        if (await readPrivate(root, 'runtime-mode') !== 'simulation' ||
+            await readPrivate(root, 'runtime-api-generation') !== generation)
+            throw new Error('broker_generation_changed');
+        return usage;
     };
     // 校準只讀真實計數；不把本機配置宣稱為來源提供的 quota epoch，也不授予正式下載。
     const observeUsage = async () => {
@@ -81,13 +134,13 @@ export function createScreenerBrokerPorts({ db, now = () => new Date(), fetchImp
     return { safety, observeUsage, admission: createBrokerBandwidthAdmission({ db, now, readUsage,
         readPolicy: async () => {
             const record = await policyRecord();
-            if (record.version === 3 && record.consumerObservationMode != null)
+            if ([3, 4].includes(record.version) && record.consumerObservationMode != null)
                 await observeRuntimeBudgetAllocations({ db, record, root, now: now() });
             // 額度條款須綁定同一帳戶 scope／quota 證據。查詢 usage 時換 record
             // 不能拿新週期放行、漏扣原保留；不以 API generation 冒充 quota reset。
             const budgetPolicy = record.version >= 2 ? await readScreenerBrokerCommitments(db, record, now()) : record.budgetPolicy;
             return { ...budgetPolicy, quotaIdentity: { scope: record.scope,
                 quotaEpoch: record.quotaEpoch, quotaEpochEvidenceHash: record.quotaEpochEvidenceHash,
-                ...(record.version === 3 ? { identityMode: record.identityMode } : {}) } };
+                ...([3, 4].includes(record.version) ? { identityMode: record.identityMode } : {}) } };
         } }) };
 }

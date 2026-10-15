@@ -258,20 +258,35 @@ export function validateTieredExecutionToken(value, { plan, manifest, now } = {}
         grantsExecutionAuthority: false });
 }
 
+export function inspectTieredStageResources(resources, budgets) {
+    const fields = [
+        ['cpuBasisPoints', 'maxCpuBasisPoints', 0, 'maximum'],
+        ['maxRssBytes', 'maxRssBytes', 1, 'maximum'],
+        ['databaseGrowthBytes', 'maxDatabaseGrowthBytes', 0, 'maximum'],
+        ['minimumAvailableDiskBytes', 'minimumAvailableDiskBytes', 0, 'minimum'],
+        ['maxEventToSealLatencyMs', 'maxEventToSealLatencyMs', 0, 'maximum'],
+        ['maxChartFreshnessMs', 'maxChartFreshnessMs', 0, 'maximum'],
+    ];
+    const checks = fields.map(([field, budgetField, minimum, comparison]) => {
+        const value = resources?.[field];
+        const budget = budgets?.[budgetField];
+        const optional = field === 'maxChartFreshnessMs' && value === null;
+        const measured = Number.isSafeInteger(value) && value >= minimum;
+        const budgetValid = Number.isSafeInteger(budget) && budget >= 0;
+        const valid = optional || (measured && budgetValid &&
+            (comparison === 'minimum' ? value >= budget : value <= budget));
+        const reason = valid ? null : !measured ? `resource_${field}_invalid` :
+            !budgetValid ? `budget_${budgetField}_invalid` : `resource_${field}_budget_exceeded`;
+        return { field, value: measured ? value : null,
+            budget: budgetValid ? budget : null, comparison, optional, valid, reason };
+    });
+    return deepFreeze({ schemaVersion: 'intraday-monitor-stage-resource-diagnostics/1',
+        valid: checks.every((check) => check.valid),
+        reasons: checks.filter((check) => !check.valid).map((check) => check.reason), checks });
+}
+
 function validResources(resources, budgets) {
-    return resources && Number.isSafeInteger(resources.cpuBasisPoints) && resources.cpuBasisPoints >= 0 &&
-        Number.isSafeInteger(resources.maxRssBytes) && resources.maxRssBytes > 0 &&
-        Number.isSafeInteger(resources.databaseGrowthBytes) && resources.databaseGrowthBytes >= 0 &&
-        Number.isSafeInteger(resources.minimumAvailableDiskBytes) && resources.minimumAvailableDiskBytes >= 0 &&
-        Number.isSafeInteger(resources.maxEventToSealLatencyMs) && resources.maxEventToSealLatencyMs >= 0 &&
-        (resources.maxChartFreshnessMs === null ||
-            (Number.isSafeInteger(resources.maxChartFreshnessMs) && resources.maxChartFreshnessMs >= 0)) &&
-        resources.cpuBasisPoints <= budgets.maxCpuBasisPoints && resources.maxRssBytes <= budgets.maxRssBytes &&
-        resources.databaseGrowthBytes <= budgets.maxDatabaseGrowthBytes &&
-        resources.minimumAvailableDiskBytes >= budgets.minimumAvailableDiskBytes &&
-        resources.maxEventToSealLatencyMs <= budgets.maxEventToSealLatencyMs &&
-        (resources.maxChartFreshnessMs === null ||
-            resources.maxChartFreshnessMs <= budgets.maxChartFreshnessMs);
+    return inspectTieredStageResources(resources, budgets).valid;
 }
 
 function validStageSession(value, plan, manifest) {
@@ -324,7 +339,15 @@ export function createTieredStageSessionEvidence({ plan, manifest, evidence } = 
         provider: structuredClone(evidence.provider),
         operations: structuredClone(evidence.operations),
     }, 'sessionHash');
-    if (!validStageSession(session, plan, manifest)) throw new TypeError('tiered stage session is invalid');
+    if (!validStageSession(session, plan, manifest)) {
+        const diagnostics = inspectTieredStageResources(session.resources, plan.budgets);
+        const reasons = diagnostics.valid ? ['stage_session_contract_invalid'] : diagnostics.reasons;
+        const error = new TypeError(`tiered stage session is invalid: ${reasons.join(',')}`);
+        error.code = 'tiered_stage_session_invalid';
+        error.reasonCodes = reasons;
+        error.resourceDiagnostics = diagnostics;
+        throw error;
+    }
     return session;
 }
 

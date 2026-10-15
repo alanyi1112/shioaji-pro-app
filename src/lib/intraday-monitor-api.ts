@@ -111,7 +111,83 @@ export interface IntradayMonitorItemStatusView {
     updatedAt: string;
 }
 
+export interface IntradayMonitorThresholdSwitchView {
+    schemaVersion: 'intraday-monitor-threshold-switch-view/1';
+    savedRevision: number;
+    savedThreshold: string;
+    activeComparisonRevision: number | null;
+    activeThreshold: string | null;
+    effectiveAt: string | null;
+    state: 'applied' | 'pending' | 'failed' | 'no_active_owner' | 'unsupported_runtime';
+    reason: string | null;
+    effectiveMinutes: Array<{ canonicalSymbol: string; effectiveMinute: string | null }>;
+    reclassifiedSymbols: string[];
+    notificationAuthority: false;
+}
+
+export interface IntradayMonitorCloseTailExceptionView {
+    state: 'passed_with_close_tail_exception' | 'not_assessed' | 'invalid_evidence' | 'rejected';
+    policyVersion: string;
+    reason: string | null;
+    assessedAt?: string;
+    liveCompleteCount?: number;
+    livePartialCount?: number;
+    notificationAuthority: false;
+    liveAcceptance: false;
+    rows: Array<{
+        canonicalSymbol: string;
+        minuteKey: '13:30';
+        currentCumulativeVolume: number;
+        previousCumulativeVolume: number;
+        threshold: string;
+        comparisonRevision: number;
+        ratio: number | null;
+        comparison: 'matched' | 'not_matched' | 'zero_baseline';
+        source: 'postclose_verified';
+        liveDelivered: false;
+        notificationAuthority: false;
+    }>;
+}
+
 export interface IntradayMonitorStatusView {
+    thresholdSwitch?: IntradayMonitorThresholdSwitchView | null;
+    runtimeMode?: 'legacy' | 'daily';
+    dailyExecution?: {
+        closeTailException?: IntradayMonitorCloseTailExceptionView | null;
+        state: 'collecting' | 'ended' | 'partial' | 'failed' | 'unknown';
+        failureReason?: string | null;
+        completedAt: string | null;
+        completeCount: number | null;
+        partialCount: number | null;
+        lastSourceEventAt: string | null;
+        lastAcceptedEventAt: string | null;
+        liveCoverageBySymbol: Array<{
+            canonicalSymbol: string | null;
+            state: 'complete' | 'partial' | 'unknown';
+            reason: string;
+            observationCount: number | null;
+            lastMinute: string | null;
+            lastComparableMinute: string | null;
+        }> | null;
+        streamDisconnectReason: string | null;
+        resourceFault: string | null;
+        nextBaselineState: string;
+        nextBaselineReason: string;
+        nextBaselineTradeDate: string | null;
+        nextBaselineReadyCount: number | null;
+        previousBaselineQuality?: {
+            sourceTradeDate: string;
+            targetTradeDate: string;
+            expectedCount: number;
+            readyCount: number;
+            independentMatchedCount: number;
+            independentNotObservedCount: number;
+            missingCount: number;
+            unknownCount: number;
+            state: 'unavailable' | 'partial_unknown' | 'repository_recorded';
+        } | null;
+        diagnosticsState: string;
+    } | null;
     state: 'feature_off' | 'idle' | 'active' | 'degraded';
     reason: string;
     generation: string;
@@ -200,8 +276,10 @@ export interface IntradayMonitorConfigView {
 }
 
 export interface IntradayMonitorTriggerView {
+    reclassified?: boolean;
     eventId: string;
     kind: 'live' | 'historical';
+    historicalSource?: 'closed_live' | 'replay' | null;
     tradeDate: string;
     baselineTradeDate: string;
     canonicalSymbol: string;
@@ -350,13 +428,45 @@ export async function replaceIntradayMonitorConfig(
     return response.config;
 }
 
-export async function readIntradayMonitorResults(tradeDate: string) {
-    return (await readIntradayMonitorResultsPage(tradeDate)).items;
+export async function replaceIntradayMonitorThreshold(threshold: '1.5' | '2' | '3', expectedRevision: number) {
+    return await jsonRequest('/threshold', { method: 'PUT', body: JSON.stringify({
+        schemaVersion: 'intraday-monitor-threshold-request/1', idempotencyKey: crypto.randomUUID(),
+        expectedRevision, threshold,
+    }) }) as unknown as { config: IntradayMonitorConfigView;
+        thresholdSwitch: IntradayMonitorThresholdSwitchView | null };
 }
 
-export async function readIntradayMonitorResultsPage(tradeDate: string) {
+export async function readIntradayMonitorResults(tradeDate: string) {
+    return (await readIntradayMonitorResultsSnapshot(tradeDate)).items;
+}
+
+export async function readIntradayMonitorResultsPage(tradeDate: string, cursor: string | null = null,
+    signal?: AbortSignal) {
     const query = new URLSearchParams({ tradeDate, limit: '100' });
-    return await jsonRequest(`/results?${query}`) as unknown as IntradayMonitorResultsPage;
+    if (cursor) query.set('cursor', cursor);
+    return await jsonRequest(`/results?${query}`, signal ? { signal } : undefined) as unknown as IntradayMonitorResultsPage;
+}
+
+export async function readIntradayMonitorResultsSnapshot(tradeDate: string) {
+    const items = new Map<string, IntradayMonitorTriggerView>();
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    let first: IntradayMonitorResultsPage | null = null;
+    const deadline = AbortSignal.timeout(20_000);
+    for (let index = 0; index < 32; index += 1) {
+        const page = await readIntradayMonitorResultsPage(tradeDate, cursor, deadline);
+        if (first && (page.generation !== first.generation ||
+            page.repositoryRevision !== first.repositoryRevision)) {
+            throw new Error('intraday_result_snapshot_changed');
+        }
+        first ??= page;
+        for (const item of page.items) items.set(item.eventId, item);
+        if (!page.nextCursor) return { ...page, items: [...items.values()] };
+        if (seen.has(page.nextCursor)) throw new Error('intraday_result_cursor_not_advancing');
+        seen.add(page.nextCursor);
+        cursor = page.nextCursor;
+    }
+    throw new Error('intraday_result_snapshot_page_limit');
 }
 
 export async function readIntradayMonitorDiagnostics() {

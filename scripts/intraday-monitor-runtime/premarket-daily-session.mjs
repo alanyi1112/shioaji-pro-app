@@ -11,6 +11,9 @@ import {
     createDailySessionRecord,
 } from './session-state-repository.mjs';
 import { resolveIntradayMonitorRuntimeArtifactBundle } from './runtime-artifact-bundle.mjs';
+import { readDailyMinuteVolumeMode } from './daily-minute-volume-postclose.mjs';
+import { resolveDailyMinuteVolumeFixedBaseline }
+    from './daily-minute-volume-fixed-baseline.mjs';
 
 function hash(value) {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -75,6 +78,7 @@ export async function prepareIntradayMonitorPremarketDailySession({
         json(bundle.files.cohort),
         json(baselinePath).catch(() => null),
     ]);
+    const runtimeMode = (await readDailyMinuteVolumeMode(appSupportRoot)).mode;
     const symbols = (cohort.cohort ?? cohort.items ?? []).map(canonicalSymbol);
     if (symbols.length !== 160 || symbols.some((symbol) => symbol === null) ||
         new Set(symbols).size !== 160) {
@@ -88,10 +92,15 @@ export async function prepareIntradayMonitorPremarketDailySession({
         throw new Error('capacity_approval_missing');
     }
     const savedConfig = readConfigRevision(config, appSupportRoot);
-    const baselineCurrent = Boolean(baseline?.calendar?.targetTradeDate === authority.tradeDate &&
-        baseline?.calendar?.previousTradeDate === authority.previousTradeDate &&
-        baseline?.manifests?.length === symbols.length);
-    const baselineHash = baselineCurrent ? unprefixedHash(baseline.baselineHash) : null;
+    const dailyGate = runtimeMode === 'daily' ? resolveDailyMinuteVolumeFixedBaseline({
+        root: appSupportRoot, cohort, sourceTradeDate: authority.previousTradeDate,
+        targetTradeDate: authority.tradeDate, legacySet: baseline }) : null;
+    const baselineCurrent = dailyGate ? dailyGate.ready :
+        Boolean(baseline?.calendar?.targetTradeDate === authority.tradeDate &&
+            baseline?.calendar?.previousTradeDate === authority.previousTradeDate &&
+            baseline?.manifests?.length === symbols.length);
+    const baselineHash = dailyGate ? dailyGate.baselineHash :
+        baselineCurrent ? unprefixedHash(baseline.baselineHash) : null;
     const observedAt = now.toISOString();
     const schedulerReceiptHash = hash(schedulerReceipt);
     const sessionId = `session-${authority.tradeDate}-${hash({
@@ -130,7 +139,8 @@ export async function prepareIntradayMonitorPremarketDailySession({
         createdAt: observedAt,
     });
     const saved = repository.claimSession(session);
-    return Object.freeze({ session: saved, approval, bundle, savedConfig, baselineCurrent });
+    return Object.freeze({ session: saved, approval, bundle, savedConfig,
+        baselineCurrent, runtimeMode, dailyGate });
 }
 
 export async function inspectIntradayMonitorPremarketDailySession({
@@ -152,10 +162,19 @@ export async function inspectIntradayMonitorPremarketDailySession({
     const baselinePath = config.baselinePath ?? (authority?.tradeDate && authority?.previousTradeDate
         ? resolveIntradayMonitorDailyBaselinePath(appSupportRoot, authority) : null);
     const baseline = baselinePath ? await json(baselinePath).catch(() => null) : null;
-    const baselineCurrent = Boolean(baseline?.calendar?.targetTradeDate === authority?.tradeDate &&
-        baseline?.calendar?.previousTradeDate === authority?.previousTradeDate &&
-        baseline?.manifests?.length === session?.itemStates?.length);
-    const baselineHash = baselineCurrent ? unprefixedHash(baseline.baselineHash) : null;
+    const runtimeMode = (await readDailyMinuteVolumeMode(appSupportRoot)).mode;
+    const cohort = runtimeMode === 'daily' && bundle.valid
+        ? await json(bundle.files.cohort).catch(() => null) : null;
+    const dailyGate = runtimeMode === 'daily' && cohort && authority?.previousTradeDate &&
+        authority?.tradeDate ? resolveDailyMinuteVolumeFixedBaseline({
+            root: appSupportRoot, cohort, sourceTradeDate: authority.previousTradeDate,
+            targetTradeDate: authority.tradeDate, legacySet: baseline }) : null;
+    const baselineCurrent = runtimeMode === 'daily' ? dailyGate?.ready === true :
+        Boolean(baseline?.calendar?.targetTradeDate === authority?.tradeDate &&
+            baseline?.calendar?.previousTradeDate === authority?.previousTradeDate &&
+            baseline?.manifests?.length === session?.itemStates?.length);
+    const baselineHash = runtimeMode === 'daily' ? dailyGate?.baselineHash ?? null :
+        baselineCurrent ? unprefixedHash(baseline.baselineHash) : null;
     if (session?.baselineHash === null && baselineHash) {
         session = repository.attachSessionBaseline({ tradeDate: session.tradeDate, baselineHash,
             observedAt: now.toISOString() });
@@ -188,5 +207,7 @@ export async function inspectIntradayMonitorPremarketDailySession({
         approval,
         bundle,
         savedConfig,
+        runtimeMode,
+        dailyGate,
     });
 }

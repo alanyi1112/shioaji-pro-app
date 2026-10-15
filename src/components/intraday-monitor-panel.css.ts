@@ -13,6 +13,8 @@ export const root = style({
     containerType: 'inline-size',
 });
 
+export const thresholdControls = style({ display: 'grid', gap: 8, padding: '10px 12px', border: `1px solid ${vars.color.border}`, borderRadius: 6 });
+
 export const statusStrip = style({
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
@@ -37,6 +39,7 @@ export const statusGroup = style({
     gap: 2,
 });
 
+export const dailyItems = style({ maxHeight: 160, overflow: 'auto', overflowWrap: 'anywhere' });
 export const statusGroupTitle = style({
     margin: 0,
     color: vars.color.mutedForeground,

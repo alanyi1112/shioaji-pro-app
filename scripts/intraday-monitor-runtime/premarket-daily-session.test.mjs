@@ -167,7 +167,8 @@ describe('premarket daily session rollover', () => {
         runtime.markControlPlane({ requested: true, accepted: true });
         instant = '2026-09-22T09:01:02+08:00';
         runtime.recordFirstKbar({ canonicalSymbol: '1000.TW', receivedAt: instant });
-        instant = '2026-09-22T13:29:45+08:00';
+        // 13:25 後集合競價未再送 KBar，不能把合理空窗當作 session 失效。
+        instant = '2026-09-22T13:25:00+08:00';
         const repository = new IntradayMonitorSessionStateRepository(value.root);
         const beforeClose = repository.readSession('2026-09-22');
         repository.updateSession({ ...beforeClose,
@@ -179,15 +180,20 @@ describe('premarket daily session rollover', () => {
         });
         expect(() => wrongGeneration.beginClosing()).toThrow('generation_mismatch');
         expect(runtime.beginClosing()).toMatchObject({ current: true, phase: 'closing',
-            evidenceAt: '2026-09-22T13:29:45+08:00', ageMs: 30_000, budgetMs: 600_000 });
+            evidenceAt: '2026-09-22T13:25:00+08:00', ageMs: 315_000, budgetMs: 600_000 });
         expect(() => runtime.beginClosing()).toThrow('session_closing_transition_not_ready');
         instant = '2026-09-22T13:34:30+08:00';
         expect(runtime.evaluate()).toMatchObject({ current: true, phase: 'closing',
-            evidenceAt: '2026-09-22T13:29:45+08:00', ageMs: 285_000 });
+            evidenceAt: '2026-09-22T13:25:00+08:00', ageMs: 570_000 });
         runtime.recordObservation({ canonicalSymbol: '1000.TW', receivedAt: instant,
-            continuityComplete: true });
+            continuityComplete: true, completedMinute: '13:30',
+            currentCumulativeVolume: 101, previousCumulativeVolume: 99 });
         expect(runtime.evaluate()).toMatchObject({ current: true, phase: 'closing',
             evidenceAt: instant, budgetMs: 600_000 });
+        expect(repository.readSession('2026-09-22').itemStates[0]).toMatchObject({
+            completedMinute: '13:30', currentCumulativeVolume: 101,
+            previousCumulativeVolume: 99,
+        });
     });
 
     it('收盤轉換不能救回盤中已過期 evidence，也不能在收盤窗外啟動', async () => {

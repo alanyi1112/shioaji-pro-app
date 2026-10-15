@@ -554,6 +554,26 @@ function validateAuthorities(authority, finalVolumeAuthority, candidate, now, re
     }
 }
 
+// 共用純來源正規化；v1 的雙抓／總量資格仍由原 verifier 判定。
+// v2 不藉由偽造第二次 fetch 或總量來呼叫舊資格驗證。
+export function normalizeHistoricalKbarMinuteRows({ candidate, authority,
+    finalVolumeAuthority } = {}) {
+    const reasons = [];
+    const close = normalizeClose(validateArrays(candidate, reasons), candidate ?? {}, reasons);
+    const filled = fillKnownZeroMinutes(close.rows, candidate ?? {}, authority ?? {},
+        finalVolumeAuthority ?? {}, reasons);
+    if (filled.rows.length !== EXPECTED_MINUTES.length) reasons.push('minute_coverage_incomplete');
+    if (filled.rows.some((row, index) => row.minuteKey !== EXPECTED_MINUTES[index])) {
+        reasons.push('minute_coverage_invalid');
+    }
+    return { rows: filled.rows, closeMode: close.closeMode,
+        knownZeroMinutes: filled.repairedMinutes, reasonCodes: [...new Set(reasons)] };
+}
+
+export function hashHistoricalKbarValue(value) {
+    return sha256(value);
+}
+
 export function validateAndBuildHistoricalKbarRepair({
     authority,
     finalVolumeAuthority,

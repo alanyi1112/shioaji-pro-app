@@ -53,3 +53,35 @@ test('預算缺席／forecast破損／未知roster拒絕，不虛填零或改舊
         }finally{await f.close();}
     }
 });
+test('新版配置只由已送出且保留的 v2 預留承接，未送出不抵扣舊配置',async()=>{
+    const f=await fixture();try{
+        f.db.exec(`CREATE TABLE broker_bandwidth_reservations(scope TEXT,quota_epoch TEXT,job_key TEXT,status TEXT,estimated_bytes INTEGER)`);
+        const mode={schemaVersion:'intraday-minute-volume-runtime-mode/1',mode:'daily',
+            screenerDatabasePath:'/local/screener.sqlite3',limits:{maxRequests:320,maxResponseBytes:2*1024*1024,
+                requestTimeoutMs:20000,maxAttempts:3,cooldownMs:900000,deadlineTime:'19:00:00'}};
+        await writeFile(path.join(f.root,'IntradayMonitor/daily-runtime-mode.json'),JSON.stringify(mode),{mode:0o600});
+        f.record.consumerObservationMode='daily-baseline-allocation-v1';
+        await f.db.prepare('UPDATE screener_runs SET checkpoint=? WHERE id=?')
+            .bind(JSON.stringify(f.record),'screener-bollinger-broker-budget-policy').run();
+        await f.db.prepare('INSERT INTO broker_bandwidth_reservations VALUES(?,?,?,?,?)')
+            .bind(f.record.scope,f.record.quotaEpoch,'monitor-minute-v2:one','reserved',20_000_000).run();
+        await f.db.prepare('INSERT INTO broker_bandwidth_reservations VALUES(?,?,?,?,?)')
+            .bind(f.record.scope,f.record.quotaEpoch,'monitor-minute-v2:two','dispatched',20_000_000).run();
+        await f.db.prepare('INSERT INTO broker_bandwidth_reservations VALUES(?,?,?,?,?)')
+            .bind(f.record.scope,f.record.quotaEpoch,'other-job','charged',5_000_000).run();
+        await f.db.prepare('INSERT INTO broker_bandwidth_reservations VALUES(?,?,?,?,?)')
+            .bind(f.record.scope,'local-daily:2026-10-05','monitor-minute-v2:old-epoch','charged',99_000_000).run();
+        await observeRuntimeBudgetAllocations(f);
+        assert.equal((await readScreenerBrokerCommitments(f.db,f.record,f.now)).otherJobCommitments[0].bytes,50_000_000);
+        await f.db.prepare('UPDATE broker_bandwidth_reservations SET status=? WHERE job_key=?')
+            .bind('charged','monitor-minute-v2:one').run();
+        await observeRuntimeBudgetAllocations({...f,now:new Date(f.now.getTime()+1000)});
+        assert.equal((await readScreenerBrokerCommitments(f.db,f.record,new Date(f.now.getTime()+1000)))
+            .otherJobCommitments[0].bytes,30_000_000);
+        await f.db.prepare('INSERT INTO broker_bandwidth_reservations VALUES(?,?,?,?,?)')
+            .bind(f.record.scope,f.record.quotaEpoch,'monitor-minute-v2:three','quarantined',40_000_000).run();
+        await observeRuntimeBudgetAllocations({...f,now:new Date(f.now.getTime()+2000)});
+        const final=await readScreenerBrokerCommitments(f.db,f.record,new Date(f.now.getTime()+2000));
+        assert.deepEqual(final.otherJobCommitments,[{jobKey:'monitor-baseline-allocation',bytes:0}]);
+    }finally{await f.close();}
+});

@@ -231,6 +231,12 @@ export function validateDailySessionRecord(value) {
             ['complete', 'missing', 'stale', 'unknown'].includes(item.baselineState) &&
             ['none', 'requested', 'accepted', 'confirmed', 'unknown'].includes(item.subscriptionState) &&
             (item.firstKbarAt === null || validInstant(item.firstKbarAt)) &&
+            (item.completedMinute === undefined || item.completedMinute === null ||
+                /^(?:09:[0-5]\d|1[0-2]:[0-5]\d|13:(?:[0-2]\d|30))$/.test(item.completedMinute)) &&
+            (item.currentCumulativeVolume === undefined || item.currentCumulativeVolume === null ||
+                (Number.isSafeInteger(item.currentCumulativeVolume) && item.currentCumulativeVolume >= 0)) &&
+            (item.previousCumulativeVolume === undefined || item.previousCumulativeVolume === null ||
+                (Number.isSafeInteger(item.previousCumulativeVolume) && item.previousCumulativeVolume >= 0)) &&
             validInstant(item.updatedAt)) &&
         new Set(symbols).size === symbols.length &&
         typeof value.controlPlane?.requested === 'boolean' &&

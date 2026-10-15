@@ -11,6 +11,10 @@ import { HISTORICAL_KBAR_BASELINE_CANDIDATE_SCHEMA,
     computeHistoricalKbarPayloadHash, expectedTaiwanRegularSessionMinutes,
     validateAndBuildHistoricalKbarBaseline } from './historical-kbar-repair.mjs';
 import { fixtureBaseline } from './fixtures/direct-160-baseline.mjs';
+import { createDailyMinuteVolumeCandidate, DAILY_KBAR_TIMESTAMP_ENCODING,
+    verifyDailyMinuteVolumeBaseline } from './daily-minute-volume-baseline.mjs';
+import { createDynamicDailyBaselineGateReceipt,
+    validateDynamicDailyBaselineGateReceipt } from './dynamic-daily-premarket-gate.mjs';
 
 const previousTradeDate = '2026-09-29';
 const tradeDate = '2026-09-30';
@@ -65,7 +69,53 @@ function verifiedManifest(dailyPlan, code) {
     return result.manifest;
 }
 
+function verifiedDailyV2(code, { volume = 10, target = tradeDate } = {}) {
+    const symbol = `${code}.TW`;
+    const minutes = expectedTaiwanRegularSessionMinutes();
+    const entry = { canonicalSymbol: symbol, contractIdentity: { security_type: 'STK',
+        region: 'TW', exchange: 'TSE', code, target_code: null } };
+    const candidate = createDailyMinuteVolumeCandidate({ entry,
+        contract: { ...entry.contractIdentity, unit: 1000,
+            trading_suspended: false, update_date: previousTradeDate },
+        kbars: { fetchedAt: '2026-09-29T13:35:00+08:00', data: {
+            datetime: minutes.map(minute => `${previousTradeDate}T${minute}:00`),
+            Open: minutes.map(() => 100), High: minutes.map(() => 101),
+            Low: minutes.map(() => 99), Close: minutes.map(() => 100),
+            Volume: minutes.map(() => volume), Amount: minutes.map(() => volume * 1000),
+        } }, tradeDate: previousTradeDate, sourceVersion: 'fixture/1',
+        timestampEncoding: DAILY_KBAR_TIMESTAMP_ENCODING });
+    const result = verifyDailyMinuteVolumeBaseline({ candidate,
+        authority: { officialTradingDay: true, identityVerified: true,
+            instrumentStatus: 'normal', calendarVerified: true, symbol,
+            exchange: 'TSE', securityType: 'STK', tradeDate: previousTradeDate,
+            previousApplicableTradeDate: previousTradeDate, targetTradeDate: target,
+            timeZone: 'Asia/Taipei', calendarSource: 'fixture-calendar',
+            calendarSourceVersion: 'fixture-calendar/1' },
+        now: '2026-09-29T13:36:00+08:00' });
+    expect(result.ok).toBe(true);
+    return result.manifest;
+}
+
 describe('動態每日商品基準配對', () => {
+    it('盤前 Gate 接受已驗證 v2 的 fetchedAt，拒絕時間或 hash 偽造，不要求不存在的 refetchTime', () => {
+        const dailyPlan = plan(['2330']);
+        const manifest = verifiedDailyV2('2330');
+        const coverage = resolveDynamicDailyBaselineCoverage({ plan: dailyPlan,
+            dailyV2Manifests: [manifest] });
+        const gate = createDynamicDailyBaselineGateReceipt({ plan: dailyPlan, coverage,
+            sources: [{ manifest, sourceHash: manifest.manifestId,
+                sealedAt: manifest.fetchedAt }],
+            checkedAt: '2026-09-30T08:35:00+08:00',
+            officialCalendarCurrent: true, previousSessionFinalized: true });
+        expect(gate).toMatchObject({ outcome: 'ready', baselineReadyCount: 1 });
+        expect(validateDynamicDailyBaselineGateReceipt(gate, dailyPlan)).toBe(true);
+        const invalid = createDynamicDailyBaselineGateReceipt({ plan: dailyPlan, coverage,
+            sources: [{ manifest, sourceHash: 'b'.repeat(64),
+                sealedAt: manifest.fetchedAt }],
+            checkedAt: '2026-09-30T08:35:00+08:00',
+            officialCalendarCurrent: true, previousSessionFinalized: true });
+        expect(invalid).toMatchObject({ outcome: 'failed', baselineReadyCount: 0 });
+    });
     it('以商品鍵值比對，另一檔缺基準只隔離該檔', () => {
         const dailyPlan = plan(['2330', '2317']);
         const result = resolveDynamicDailyBaselineCoverage({ plan: dailyPlan,
@@ -132,5 +182,38 @@ describe('動態每日商品基準配對', () => {
         expect(result).toMatchObject({ plannedCount: 2, baselineReadyCount: 2,
             exact160BaselineReady: false });
         expect(baseline.baselineHash).toBe(originalHash);
+    });
+
+    it('日常模式優先選 v2，若只有合法 v1 則唯讀沿用', () => {
+        const dailyPlan = plan(['2330', '2317']);
+        const old = verifiedManifest(dailyPlan, '2330');
+        const newer = verifiedDailyV2('2330');
+        const result = resolveDynamicDailyBaselineCoverage({ plan: dailyPlan,
+            standaloneManifests: [old, verifiedManifest(dailyPlan, '2317')],
+            dailyV2Manifests: [newer] });
+        expect(result.items[0]).toMatchObject({ state: 'baseline_ready',
+            manifestId: newer.manifestId, schemaVersion: newer.schemaVersion });
+        expect(result.items[1]).toMatchObject({ state: 'baseline_ready',
+            manifestId: expect.any(String) });
+        expect(old.provenance).toBe('historical_baseline_verified');
+    });
+
+    it('v2 與 v1 累積量衝突、來源日期錯誤或持久衝突紀錄時逐檔拒絕', () => {
+        const dailyPlan = plan(['2330', '2317']);
+        const old = verifiedManifest(dailyPlan, '2330');
+        const mismatch = resolveDynamicDailyBaselineCoverage({ plan: dailyPlan,
+            standaloneManifests: [old, verifiedManifest(dailyPlan, '2317')],
+            dailyV2Manifests: [verifiedDailyV2('2330', { volume: 11 })] });
+        expect(mismatch.items[0]).toMatchObject({ state: 'waiting_baseline',
+            reason: 'baseline_source_conflict' });
+        expect(mismatch.items[1].state).toBe('baseline_ready');
+        const conflict = resolveDynamicDailyBaselineCoverage({ plan: dailyPlan,
+            dailyV2Manifests: [verifiedDailyV2('2330')], conflictSymbols: ['2330.TW'] });
+        expect(conflict.items[0]).toMatchObject({ state: 'waiting_baseline',
+            reason: 'baseline_source_conflict' });
+        const stale = resolveDynamicDailyBaselineCoverage({ plan: dailyPlan,
+            dailyV2Manifests: [verifiedDailyV2('2330', { target: '2026-10-01' })] });
+        expect(stale.items[0]).toMatchObject({ state: 'waiting_baseline',
+            reason: 'baseline_invalid' });
     });
 });

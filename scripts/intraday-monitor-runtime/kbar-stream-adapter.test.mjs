@@ -22,6 +22,14 @@ function harness() {
 }
 
 describe('realtime KBar one-bar delay adapter', () => {
+    it('保留合法sink拒絕根因，不能再以泛化訊息掩蓋config停止写入', () => {
+        const {adapter,sink}=harness();
+        sink.mockReturnValue({accepted:false,reason:'config_revision_mismatch'});
+        adapter.accept(event());
+        expect(adapter.accept(event({time:'09:02:00',receivedTime:'2026-09-07T01:02:02.500Z'})))
+            .toMatchObject({accepted:false,reason:'config_revision_mismatch'});
+        expect(adapter.status().symbols[0]).toMatchObject({degraded:true,reason:'config_revision_mismatch'});
+    });
     it('收到下一個連續分鐘後才 seal 前一根並輸出累積量', () => {
         const { adapter, observations } = harness();
         expect(adapter.accept(event())).toMatchObject({ accepted: true, reason: 'forming', sealed: false });
@@ -83,6 +91,25 @@ describe('realtime KBar one-bar delay adapter', () => {
             .toMatchObject({ accepted: false, reason: 'kbar_minute_gap' });
         expect(observations).toHaveLength(0);
         expect(adapter.status().symbols[0]).toMatchObject({ degraded: true, reason: 'kbar_minute_gap' });
+    });
+
+    it('單檔缺分鐘不阻擋其他商品，斷線也不覆蓋原本較早的單檔故障原因', () => {
+        const { adapter, observations } = harness();
+        adapter.accept(event());
+        adapter.accept(event({ code: '2454' }));
+        expect(adapter.accept(event({ time: '09:03:00',
+            receivedTime: '2026-09-07T01:03:02.500Z' }))).toMatchObject({
+                accepted: false, reason: 'kbar_minute_gap' });
+        expect(adapter.accept(event({ code: '2454', time: '09:02:00', volume: 8,
+            receivedTime: '2026-09-07T01:02:02.500Z' }))).toMatchObject({
+                accepted: true, sealedMinute: '09:01' });
+        expect(observations).toHaveLength(1);
+        adapter.markDisconnected({ connectionGeneration: 'kbar_generation_0001' });
+        expect(adapter.status().symbols.map(item => item.reason)).toEqual([
+            'kbar_minute_gap', 'stream_disconnected']);
+        expect(adapter.markReconnected({ connectionGeneration: 'kbar_generation_0001' }))
+            .toMatchObject({ accepted: true, continuityRestored: false });
+        expect(adapter.status().symbols.every(item => item.degraded)).toBe(true);
     });
 
     it.each([
@@ -190,5 +217,55 @@ describe('realtime KBar one-bar delay adapter', () => {
         expect(observations.at(-1)).toMatchObject({ minuteKey: '13:30', cumulativeVolume: 50, sequence: 3 });
         expect(adapter.status().symbols[0]).toMatchObject({ closeMode: 'delayed_13_33',
             sealedMinute: '13:30', cumulativeVolume: 50, sequence: 3 });
+    });
+
+    it('未收到個股 13:30 棒時只封存已收到的 13:29，該股仍為收盤 partial', () => {
+        const observations = [];
+        const adapter = createIntradayMonitorKbarStreamAdapter({
+            cohort: [contract('3533'), contract('2330')], tradeDate: '2026-09-07',
+            connectionGeneration: 'kbar_generation_0001',
+            observationSink(value) { observations.push(value); return { accepted: true }; },
+            nowEpochMs: () => Date.parse('2026-09-07T14:00:00+08:00'),
+        });
+        adapter.accept(event({ code: '3533', time: '13:28:00', volume: 5,
+            receivedTime: '2026-09-07T05:28:02.500Z' }));
+        adapter.accept(event({ code: '3533', time: '13:29:00', volume: 0,
+            receivedTime: '2026-09-07T05:29:02.500Z' }));
+        adapter.accept(event({ code: '2330', time: '13:30:00', volume: 20,
+            receivedTime: '2026-09-07T05:30:02.500Z' }));
+        const epoch = Date.parse('2026-09-07T13:34:30+08:00');
+        const authority = issueIntradayMonitorKbarSessionCloseAuthority({ tradeDate: '2026-09-07',
+            observedAtEpochMs: epoch, timeZone: 'Asia/Taipei' }, epoch);
+        expect(adapter.sealSessionClose(authority)).toMatchObject({ accepted: false,
+            sealedCount: 1, expectedCount: 2, reason: 'close_incomplete' });
+        expect(observations.map(({ contract: item, minuteKey, cumulativeVolume }) =>
+            [item.code, minuteKey, cumulativeVolume])).toEqual([
+            ['3533', '13:28', 5], ['3533', '13:29', 5], ['2330', '13:30', 20],
+        ]);
+        expect(adapter.status().symbols.find(item => item.canonicalSymbol === '3533.TW'))
+            .toMatchObject({ sealedMinute: '13:29', cumulativeVolume: 5,
+                degraded: true, reason: 'close_minute_missing' });
+        expect(adapter.status().symbols.find(item => item.canonicalSymbol === '2330.TW'))
+            .toMatchObject({ sealedMinute: '13:30', degraded: false, reason: 'session_closed' });
+    });
+
+    it('13:29 封存遭 sink 拒絕時不進位水位，也不假裝 13:30 完整', () => {
+        const observations = [];
+        const adapter = createIntradayMonitorKbarStreamAdapter({ cohort: [contract('3533')],
+            tradeDate: '2026-09-07', connectionGeneration: 'kbar_generation_0001',
+            observationSink(value) { observations.push(value); return { accepted: value.minuteKey !== '13:29' }; },
+            nowEpochMs: () => Date.parse('2026-09-07T14:00:00+08:00'),
+        });
+        adapter.accept(event({ code: '3533', time: '13:28:00', volume: 5,
+            receivedTime: '2026-09-07T05:28:02.500Z' }));
+        adapter.accept(event({ code: '3533', time: '13:29:00', volume: 0,
+            receivedTime: '2026-09-07T05:29:02.500Z' }));
+        const epoch = Date.parse('2026-09-07T13:34:30+08:00');
+        const authority = issueIntradayMonitorKbarSessionCloseAuthority({ tradeDate: '2026-09-07',
+            observedAtEpochMs: epoch, timeZone: 'Asia/Taipei' }, epoch);
+        expect(adapter.sealSessionClose(authority)).toMatchObject({ accepted: false, sealedCount: 0 });
+        expect(adapter.status().symbols[0]).toMatchObject({ sealedMinute: '13:28',
+            degraded: true, reason: 'observation_sink_rejected' });
+        expect(observations.map(item => item.minuteKey)).toEqual(['13:28', '13:29']);
     });
 });

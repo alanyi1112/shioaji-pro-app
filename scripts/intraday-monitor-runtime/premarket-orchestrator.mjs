@@ -1,3 +1,4 @@
+import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, statfs, unlink, writeFile } from 'node:fs/promises';
@@ -21,6 +22,10 @@ import {
     resolveIntradayMonitorDailyBaselinePath,
 } from './premarket-daily-session.mjs';
 import { resolveIntradayMonitorPremarketTradingDay } from './trading-calendar-authority.mjs';
+import { readDailyMinuteVolumeMode } from './daily-minute-volume-postclose.mjs';
+import { runPremarketBrokerDailyReset } from './premarket-broker-daily-reset.mjs';
+import { resolveDailyMinuteVolumeFixedBaseline }
+    from './daily-minute-volume-fixed-baseline.mjs';
 
 export const PREMARKET_ORCHESTRATOR_SCHEMA = 'intraday-monitor-premarket-orchestrator/1';
 export const PREMARKET_ORCHESTRATOR_LABEL = 'com.alanyi.realtimestock.intraday-premarket';
@@ -80,7 +85,7 @@ async function readText(file) {
     try { return (await readFile(file, 'utf8')).trim(); } catch { return null; }
 }
 
-async function inspectArtifactSet(config, root) {
+async function inspectArtifactSet(config, root, { dailyMode = false } = {}) {
     let resolvedConfig = config;
     let runtimeBundle = null;
     if (config.artifactBundleHash) {
@@ -99,24 +104,30 @@ async function inspectArtifactSet(config, root) {
             prerequisitePath: runtimeBundle.files.baseline_prerequisite ??
                 runtimeBundle.files.prerequisite };
     }
-    const keys = ['manifestPath', 'planPath', 'baselinePath', 'prerequisitePath', 'configDatabasePath'];
+    const keys = dailyMode ? ['manifestPath', 'planPath', 'prerequisitePath',
+        'configDatabasePath'] : ['manifestPath', 'planPath', 'baselinePath',
+        'prerequisitePath', 'configDatabasePath'];
     const files = await Promise.all(keys.map(async (key) => ({ key, path: resolvedConfig[key], exists: Boolean(resolvedConfig[key]) &&
         await stat(resolvedConfig[key]).then((value) => value.isFile()).catch(() => false) })));
     if (!files.every((file) => file.exists)) return { ready: false, files, exactCohort: false, baseline: false };
     try {
         const [manifest, plan, baseline, prerequisite] = await Promise.all(
             ['manifestPath', 'planPath', 'baselinePath', 'prerequisitePath']
-                .map((key) => readFile(resolvedConfig[key], 'utf8').then(JSON.parse)));
+                .map((key) => dailyMode && key === 'baselinePath' ? null :
+                    readFile(resolvedConfig[key], 'utf8').then(JSON.parse)));
         const symbols = manifest.cohort?.map((item) => item.canonicalSymbol) ?? [];
         return { ready: manifest.stage === 160 && symbols.length === 160 && new Set(symbols).size === 160 &&
                 plan.stage === 160 && plan.manifestHash === manifest.manifestHash &&
-                baseline.manifestHash === manifest.manifestHash && baseline.calendar?.targetTradeDate === config.tradeDate &&
-                baseline.manifests?.length === 160 && prerequisite.assessment?.liveStage160Eligible === true &&
+                (dailyMode || baseline.manifestHash === manifest.manifestHash &&
+                    baseline.calendar?.targetTradeDate === config.tradeDate &&
+                    baseline.manifests?.length === 160) &&
+                prerequisite.assessment?.liveStage160Eligible === true &&
                 prerequisite.review?.decision === 'GO',
             files, exactCohort: symbols.length === 160 && new Set(symbols).size === 160,
             cohortSymbols: symbols,
-            baseline: baseline.manifests?.length === 160 && baseline.calendar?.targetTradeDate === config.tradeDate,
-            manifestHash: manifest.manifestHash, baselineHash: baseline.baselineHash,
+            baseline: dailyMode ? false : baseline.manifests?.length === 160 &&
+                baseline.calendar?.targetTradeDate === config.tradeDate,
+            manifestHash: manifest.manifestHash, baselineHash: baseline?.baselineHash ?? null,
             runtimeBundle, resolvedConfig };
     } catch { return { ready: false, files, exactCohort: false, baseline: false }; }
 }
@@ -164,6 +175,7 @@ async function inspectProductSinkReadiness(config, root, artifacts) {
 export async function inspectPremarketGates(config, root = appSupportRoot(),
     { requireStableGeneration = false } = {}) {
     const paths = resolvePremarketOrchestratorPaths(root);
+    const runtimeMode = (await readDailyMinuteVolumeMode(root)).mode;
     const [info, health, snapshot, web, multiView, mode, generation, artifacts, disk, anchor] = await Promise.all([
         fetchProbe('http://127.0.0.1:8080/api/v1/info'),
         fetchProbe('http://127.0.0.1:8080/api/v1/health'),
@@ -173,7 +185,7 @@ export async function inspectPremarketGates(config, root = appSupportRoot(),
                 code: '2330', target_code: null }] }) }),
         fetchProbe('http://127.0.0.1:5173/'), fetchProbe('http://127.0.0.1:5174/api/health'),
         readText(path.join(root, 'runtime-mode')), readText(path.join(root, 'runtime-api-generation')),
-        inspectArtifactSet(config, root),
+        inspectArtifactSet(config, root, { dailyMode: runtimeMode === 'daily' }),
         statfs(root).then((value) => value.bavail * value.bsize).catch(() => null),
         readFile(paths.generationAnchorPath, 'utf8').then(JSON.parse).catch(() => null),
     ]);
@@ -181,13 +193,31 @@ export async function inspectPremarketGates(config, root = appSupportRoot(),
         artifacts.resolvedConfig?.configDatabasePath ?? config.configDatabasePath,
         artifacts.cohortSymbols,
     );
-    const productSinkPreflight = await inspectProductSinkReadiness(config, root, artifacts);
+    let dailyGate = null;
+    if (runtimeMode === 'daily' && artifacts.ready && config.previousTradeDate && config.tradeDate) {
+        try {
+            const cohort = JSON.parse(await readFile(artifacts.resolvedConfig.manifestPath, 'utf8'));
+            const legacy = await readFile(config.baselinePath, 'utf8')
+                .then(JSON.parse).catch(error => {
+                    if (error?.code === 'ENOENT') return null;
+                    throw error;
+                });
+            dailyGate = resolveDailyMinuteVolumeFixedBaseline({ root, cohort,
+                sourceTradeDate: config.previousTradeDate,
+                targetTradeDate: config.tradeDate, legacySet: legacy });
+        } catch { dailyGate = null; }
+    }
+    const productSinkPreflight = runtimeMode === 'daily' ? {
+        ready: dailyGate?.ready === true,
+        reason: dailyGate?.ready === true ? 'daily_baseline_ready' : 'daily_baseline_missing',
+    } : await inspectProductSinkReadiness(config, root, artifacts);
     const checks = { simulation: info.ok && info.body?.simulation === true && mode === 'simulation',
         apiGeneration: typeof generation === 'string' && /^simulation:[A-Za-z0-9_-]{16,100}$/.test(generation),
         businessSession: health.ok && health.body?.status === 'healthy',
         snapshot2330: snapshot.ok && Array.isArray(snapshot.body) && snapshot.body.length === 1,
         web: web.ok, multiView: multiView.ok && multiView.body?.ok === true,
-        artifacts: artifacts.ready, exactCohort: artifacts.exactCohort, baseline: artifacts.baseline,
+        artifacts: artifacts.ready, exactCohort: artifacts.exactCohort,
+        baseline: runtimeMode === 'daily' ? dailyGate?.ready === true : artifacts.baseline,
         configuredCohort: configuredCohort.matches,
         productSink: productSinkPreflight.ready,
         disk: Number.isSafeInteger(disk) && disk >= (config.minimumAvailableDiskBytes ?? 8 * 1024 ** 3),
@@ -195,7 +225,8 @@ export async function inspectPremarketGates(config, root = appSupportRoot(),
         brokerWriteBlockade: true };
     return Object.freeze({ ready: Object.values(checks).every(Boolean), checks, probes: { info, health,
         snapshot2330: snapshot, web, multiView }, mode, generation, artifacts,
-        availableDiskBytes: disk, generationAnchor: anchor, configuredCohort, productSinkPreflight,
+        availableDiskBytes: disk, generationAnchor: anchor, configuredCohort,
+        productSinkPreflight, runtimeMode, dailyGate,
         observedAt: new Date().toISOString(), brokerWriteAuthority: false });
 }
 
@@ -273,7 +304,9 @@ export async function recoverMissingPremarketSession({ root, config, authority, 
     now = new Date(), inspectGates = inspectPremarketGates,
     prepareDailySession = prepareIntradayMonitorPremarketDailySession,
     readNoCurrentData = noCurrentSessionData } = {}) {
-    if (!['08:35', '08:45'].includes(step) || !authority?.current ||
+    if (!['08:35', '08:45', '08:50'].includes(step) ||
+        step === '08:50' && (now < new Date(`${authority?.tradeDate}T08:50:00+08:00`) ||
+            now >= new Date(`${authority?.tradeDate}T09:00:00+08:00`)) || !authority?.current ||
         authority.isTradingDate !== true || !authority.previousTradeDate) {
         return Object.freeze({ recovered: false, reason: 'rollover_recovery_not_authorized' });
     }
@@ -470,6 +503,7 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
     prepareDailySession = prepareIntradayMonitorPremarketDailySession,
     inspectDailySession = inspectIntradayMonitorPremarketDailySession,
     recoverMissingSession = recoverMissingPremarketSession,
+    rolloverDailyBudget = runPremarketBrokerDailyReset,
     runCapture = runChild } = {}) {
     if (!STEPS.has(step) || !(now instanceof Date) || !Number.isFinite(now.valueOf())) {
         throw new TypeError('premarket step input is invalid');
@@ -515,6 +549,7 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
         return result;
     }
     const effectiveConfig = { ...config, tradeDate: authority.tradeDate,
+        previousTradeDate: authority.previousTradeDate,
         baselinePath: resolveIntradayMonitorDailyBaselinePath(root, authority),
         outputPath: path.join(root, 'direct-160-live', `capture-${authority.tradeDate}.json`),
         chartEvidencePath: path.join(root, 'direct-160-live',
@@ -532,15 +567,19 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
     let outcome;
     let daily = null;
     try {
+        let budgetRollover = null;
         if (step === '08:20') {
             const warmed = await warmup({ config: effectiveConfig, root, repoDirectory, paths,
                 inspectGates });
+            budgetRollover = await rolloverDailyBudget({ root, authority });
             daily = await prepareDailySession({ appSupportRoot: root, config: effectiveConfig,
                 authority, connectionGeneration: warmed.gates.generation,
                 schedulerReceipt: receipt, now });
             outcome = { ...warmed, dailySession: daily.session,
+                budgetRollover,
                 rolloverOutcome: daily.baselineCurrent ? 'session_created' : 'waiting_baseline' };
         } else if (step === '08:35' || step === '08:45') {
+            budgetRollover = await rolloverDailyBudget({ root, authority });
             let gates = await inspectGates(effectiveConfig, root, { requireStableGeneration: true });
             daily = await inspectDailySession({ appSupportRoot: root, config: effectiveConfig,
                 authority, connectionGeneration: gates.generation, now });
@@ -569,6 +608,7 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
                 }
             }
             outcome = { gates, dailySession: daily.session,
+                budgetRollover,
                 generationRecovery, rolloverRecovery,
                 rolloverOutcome: rolloverRecovery?.recovered
                     ? 'session_recovered_after_0820_failure' : 'step_complete',
@@ -581,9 +621,23 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
             }
             if (!gates.ready) throw new Error(`premarket_${step.replace(':', '')}_gate_failed`);
         } else {
-            const gates = await inspectGates(effectiveConfig, root, { requireStableGeneration: true });
+            budgetRollover = await rolloverDailyBudget({ root, authority });
+            if (budgetRollover.state === 'waiting') {
+                throw new Error(`broker_daily_reset_${budgetRollover.reason}`);
+            }
+            let gates = await inspectGates(effectiveConfig, root, { requireStableGeneration: true });
             daily = await inspectDailySession({ appSupportRoot: root, config: effectiveConfig,
                 authority, connectionGeneration: gates.generation, now });
+            let rolloverRecovery = null;
+            if (!daily.session && daily.reason === 'current_session_missing') {
+                rolloverRecovery = await recoverMissingSession({ root, config: effectiveConfig,
+                    authority, step, now, inspectGates, prepareDailySession });
+                if (rolloverRecovery.recovered) {
+                    gates = await inspectGates(effectiveConfig, root, { requireStableGeneration: true });
+                    daily = await inspectDailySession({ appSupportRoot: root, config: effectiveConfig,
+                        authority, connectionGeneration: gates.generation, now });
+                }
+            }
             if (!daily.ready) throw new Error(daily.reason);
             if (gates.checks?.artifacts === true && gates.configuredCohort?.reason === 'checked' &&
                 gates.checks?.configuredCohort === false) throw new Error('configured_cohort_mismatch');
@@ -596,13 +650,25 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
             await claimPremarketCaptureStart({ root, tradeDate: authority.tradeDate,
                 source: 'scheduled_0850', sessionId: daily.session.sessionId,
                 generation: gates.generation, now: new Date() });
-            const captureArgs = buildPremarketCaptureArgs({ resolved, effectiveConfig,
-                authority, paths, approvedActiveLimit, root });
-            const capture = await runCapture(process.execPath,
-                [path.join(repoDirectory, 'scripts/intraday-monitor-runtime/capture-direct-160-stage.mjs'), ...captureArgs],
-                { cwd: repoDirectory });
-            outcome = { gates, dailySession: daily.session, capture };
-            if (capture.exitCode !== 0) throw new Error('direct_160_capture_failed');
+            const runtimeMode = (await readDailyMinuteVolumeMode(root)).mode;
+            let capture;
+            if (runtimeMode === 'daily') {
+                capture = await runCapture(process.execPath,
+                    [path.join(repoDirectory, 'scripts/intraday-monitor-runtime/daily-minute-volume-execute.mjs'),
+                        '--execute', `--app-support-root=${root}`,
+                        `--trade-date=${authority.tradeDate}`], { cwd: repoDirectory });
+            } else {
+                const captureArgs = buildPremarketCaptureArgs({ resolved, effectiveConfig,
+                    authority, paths, approvedActiveLimit, root });
+                capture = await runCapture(process.execPath,
+                    [path.join(repoDirectory, 'scripts/intraday-monitor-runtime/capture-direct-160-stage.mjs'), ...captureArgs],
+                    { cwd: repoDirectory });
+            }
+            outcome = { gates, dailySession: daily.session, budgetRollover, rolloverRecovery,
+                rolloverOutcome: rolloverRecovery?.recovered ? 'session_recovered_after_0820_failure' : 'step_complete',
+                runtimeMode, capture };
+            if (capture.exitCode !== 0) throw new Error(runtimeMode === 'daily' ?
+                'daily_minute_volume_execution_failed' : 'direct_160_capture_failed');
         }
         const result = { schemaVersion: PREMARKET_ORCHESTRATOR_SCHEMA, executed: true, step,
             tradeDate: authority.tradeDate, startedAt, endedAt: new Date().toISOString(), claim, receipt,
@@ -647,7 +713,7 @@ export function buildPremarketLaunchAgentPlist(scriptPath, logPath) {
         return `<dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>`;
     }).join('');
     void logPath;
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${PREMARKET_ORCHESTRATOR_LABEL}</string><key>ProgramArguments</key><array><string>${process.execPath}</string><string>${scriptPath}</string><string>--scheduled</string></array><key>StartCalendarInterval</key><array>${intervals}</array><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${PREMARKET_ORCHESTRATOR_LABEL}</string><key>ProgramArguments</key><array><string>${resolveMonitorLaunchNode()}</string><string>${scriptPath}</string><string>--scheduled</string></array><key>StartCalendarInterval</key><array>${intervals}</array><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
 }
 
 export async function installPremarketLaunchAgent({ root = appSupportRoot(),

@@ -54,7 +54,10 @@ describe('晚開機本機入口', () => {
             artifacts: { resolvedConfig: {} }, generationAnchor: null };
         const args = { root, clock: () => at('08:55:00'),
             resolveTradingDay: async () => authority,
-            inspectGates: async () => gate,
+            inspectGates: async (config) => {
+                expect(config).toMatchObject({ tradeDate, previousTradeDate });
+                return gate;
+            },
             inspectDailySession: async () => prepared
                 ? { ready: true, session, approval: { approvedActiveLimit: 160 } }
                 : { ready: false, reason: 'current_session_missing', session: null },
@@ -77,6 +80,43 @@ describe('晚開機本機入口', () => {
             .rejects.toMatchObject({ code: 'ENOENT' });
         expect(await runLateBootPremarketCatchup(args)).toMatchObject({
             executed: false, reason: 'capture_already_started' });
+    });
+
+    it('daily mode 晚開機只啟動輕量 runner，v2 基準不要求舊 baseline-set', async () => {
+        const { root, baseline } = await fixture();
+        await rm(baseline);
+        const session = { sessionId: `session-${tradeDate}-${'a'.repeat(24)}`,
+            sessionIdentityHash: 'fixture-session-hash',
+            baselineHash: 'd'.repeat(64), phase: 'starting' };
+        const gate = { ready: true, generation: 'simulation:fixture-generation-1234',
+            checks: { simulation: true, apiGeneration: true, businessSession: true,
+                snapshot2330: true, artifacts: true, exactCohort: true,
+                baseline: true, configuredCohort: true, disk: true,
+                generationStable: true, brokerWriteBlockade: true },
+            artifacts: { resolvedConfig: {} }, generationAnchor: null };
+        let prepared = false, command;
+        const result = await runLateBootPremarketCatchup({ root,
+            clock: () => at('08:55:00'), resolveTradingDay: async () => authority,
+            resolveBaseline: async () => ({ runtimeMode: 'daily',
+                baselineCurrent: true, baselineHash: 'd'.repeat(64), baselinePath: null }),
+            inspectGates: async (config) => {
+                expect(config).toMatchObject({ tradeDate, previousTradeDate });
+                return gate;
+            },
+            inspectDailySession: async () => prepared ? { ready: true, session,
+                approval: { approvedActiveLimit: 160 } } : {
+                ready: false, reason: 'current_session_missing', session: null },
+            prepareDailySession: async () => { prepared = true;
+                return { baselineCurrent: true, session }; },
+            readNoCurrentData: async () => true,
+            runCapture: async (...args) => { command = args; return { exitCode: 0 }; },
+        });
+        expect(result).toMatchObject({ executed: true, outcome: 'capture_completed' });
+        expect(command[1]).toEqual([
+            expect.stringMatching(/daily-minute-volume-execute\.mjs$/), '--execute',
+            `--app-support-root=${root}`, `--trade-date=${tradeDate}`,
+        ]);
+        expect(command[1].join(' ')).not.toContain('capture-direct-160-stage.mjs');
     });
 
     it('08:42 只建 session，交給原 08:50 啟動；09:00 一律不動', async () => {

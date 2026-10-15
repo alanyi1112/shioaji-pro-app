@@ -7,6 +7,7 @@ import { createTieredCohortManifests } from './tiered-capacity-stage-artifacts.m
 import { importIntradayMonitorRuntimeArtifactBundle } from './runtime-artifact-bundle.mjs';
 import { IntradayMonitorSessionStateRepository, createCapacityApprovalRecord } from './session-state-repository.mjs';
 import { fixtureBaseline } from './fixtures/direct-160-baseline.mjs';
+import { DAILY_MINUTE_VOLUME_COLLECTION_SCHEMA } from './daily-minute-volume-collector.mjs';
 import { buildPostcloseBaselineLaunchAgentPlist, resolvePostcloseBaselineCalendar,
     resolvePostcloseDailyBaselinePaths, resolveHistoricalBaselinePaths, runPostcloseDailyBaseline,
     inspectPostcloseDailyBaseline, buildPostcloseBaselineRetryLaunchAgentPlist } from './postclose-daily-baseline.mjs';
@@ -70,6 +71,147 @@ async function fixture() {
 }
 
 describe('收盤後隔日 160 檔基準', () => {
+    it('daily mode 只交給獨立採集器，不進入 legacy Python、Stage 或尾端復原', async () => {
+        const value = await fixture();
+        await writeFile(path.join(value.root, 'runtime-api-generation'),
+            'simulation:daily-postclose-test-001\n');
+        const calls = [];
+        const mode = { mode: 'daily', limits: { maxAttempts: 3 } };
+        const result = await runPostcloseDailyBaseline({ root: value.root, now: value.now,
+            calendarResolver: value.calendarResolver, dailyModeReader: async () => mode,
+            dailyPostcloseRunner: async input => {
+                calls.push(input);
+                return { outcome: 'complete', readyCount: 160 };
+            },
+            preflight: async () => { throw new Error('legacy_preflight_called'); },
+            execute: async () => { throw new Error('legacy_collector_called'); } });
+        expect(result).toMatchObject({ executed: true, runtimeMode: 'daily',
+            tailRecovery: null, dynamicDailyPreparation: null });
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({ sourceTradeDate: '2026-09-11',
+            connectionGeneration: 'simulation:daily-postclose-test-001', attempt: 1 });
+        const old = resolvePostcloseDailyBaselinePaths(value.root, '2026-09-11');
+        await expect(readFile(old.claimPath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+    it('同一原生盤後程序完整後才查同鍵no-op；診斷失敗不得改判基準', async () => {
+        const value = await fixture();
+        await writeFile(path.join(value.root, 'runtime-api-generation'), 'simulation:daily-postclose-test-001\n');
+        const events = [];
+        const options = { root: value.root, now: value.now, trigger: 'scheduled',
+            calendarResolver: value.calendarResolver, dailyModeReader: async () => ({ mode: 'daily', limits: { maxAttempts: 3 } }),
+            dailyPostcloseRunner: async () => { events.push('collection'); return { outcome: 'complete', readyCount: 160 }; },
+            dailyNoopAuditor: async input => { events.push('noop'); expect(input.trigger).toBe('scheduled');
+                expect(input.collectionReceipt.readyCount).toBe(160); return { state: 'diagnostic_failed', reason: 'fixture_readonly_failure' }; },
+            dailyCloseTailAssessor: async input => { events.push('assessment');
+                expect(input.assessmentTrigger).toBe('scheduled_after_original_collection');
+                throw new Error('fixture_assessment_failure'); } };
+        const result = await runPostcloseDailyBaseline(options);
+        expect(events).toEqual(['collection', 'noop', 'assessment']);
+        expect(result.executed).toBe(true);
+        expect(result.receipt.outcome).toBe('complete');
+        expect(result.sameKeyNoop.state).toBe('diagnostic_failed');
+        expect(result.closeTailException.state).toBe('assessment_failed');
+        events.length = 0;
+        const partial = await runPostcloseDailyBaseline({ ...options, dailyPostcloseRunner: async () => ({ outcome: 'partial' }) });
+        expect(events).toEqual([]); expect(partial.sameKeyNoop).toBeNull();
+    });
+    it('長時 daily 採集跨過 14:15／14:55 重試仍維持單一 claim，不開第二份下載', async () => {
+        const value = await fixture();
+        const generation = 'simulation:daily-postclose-test-001';
+        await writeFile(path.join(value.root, 'runtime-api-generation'), `${generation}\n`);
+        const directory = path.join(value.root, 'IntradayMonitor',
+            'daily-minute-volume-collection', '2026-09-11');
+        await mkdir(directory, { recursive: true });
+        const claim = { schemaVersion: DAILY_MINUTE_VOLUME_COLLECTION_SCHEMA,
+            sourceDate: '2026-09-11', targetDate: '2026-09-14',
+            connectionGeneration: generation, attempt: 1, claimId: 'existing-claim', ownerPid: 1234 };
+        const claimFile = path.join(directory, 'attempt-01-claim.json');
+        const raw = `${JSON.stringify(claim)}\n`;
+        await writeFile(claimFile, raw);
+        const mode = { mode: 'daily', limits: { maxAttempts: 3, deadlineTime: '18:30:00' } };
+        let downloads = 0;
+        const options = { root: value.root, calendarResolver: value.calendarResolver,
+            dailyModeReader: async () => mode,
+            dailyPostcloseRunner: async () => { downloads += 1; throw new Error('duplicate_download'); },
+            dailyProcessProbe: pid => pid === 1234 };
+        for (const time of ['14:15:00', '14:55:00']) {
+            const result = await runPostcloseDailyBaseline({ ...options,
+                now: new Date(`2026-09-11T${time}+08:00`) });
+            expect(result).toMatchObject({ executed: false, runtimeMode: 'daily',
+                reason: 'daily_collection_in_progress', attempt: 1, claimId: 'existing-claim' });
+        }
+        expect(downloads).toBe(0);
+        expect(await readFile(claimFile, 'utf8')).toBe(raw);
+        expect(await readFile(path.join(directory, 'attempt-01-receipt.json'), 'utf8')
+            .catch(error => error.code)).toBe('ENOENT');
+        const dead = await runPostcloseDailyBaseline({ ...options,
+            dailyProcessProbe: () => false, now: new Date('2026-09-11T14:56:00+08:00') });
+        expect(dead.reason).toBe('daily_collection_claim_without_receipt');
+        expect(downloads).toBe(0);
+        const expired = await runPostcloseDailyBaseline({ ...options,
+            now: new Date('2026-09-11T18:31:00+08:00') });
+        expect(expired.reason).toBe('daily_collection_claim_without_receipt');
+        expect(downloads).toBe(0);
+        await writeFile(claimFile, `${JSON.stringify({ ...claim, targetDate: '2026-09-15' })}\n`);
+        await expect(runPostcloseDailyBaseline({ ...options,
+            now: new Date('2026-09-11T14:15:00+08:00') }))
+            .rejects.toThrow('daily_collection_claim_identity_conflict');
+    });
+    it('前一次 daily 收據剛完成時補跑尊重冷卻；到期才接續下一 attempt', async () => {
+        const value = await fixture();
+        await writeFile(path.join(value.root, 'runtime-api-generation'),
+            'simulation:daily-postclose-test-001\n');
+        const directory = path.join(value.root, 'IntradayMonitor',
+            'daily-minute-volume-collection', '2026-09-11');
+        await mkdir(directory, { recursive: true });
+        const prior = { outcome: 'partial', completedAt: '2026-09-11T14:10:00+08:00' };
+        await writeFile(path.join(directory, 'attempt-01-receipt.json'), JSON.stringify(prior));
+        const calls = [];
+        const options = { root: value.root, calendarResolver: value.calendarResolver,
+            dailyModeReader: async () => ({ mode: 'daily', limits: {
+                maxAttempts: 3, cooldownMs: 15 * 60_000, deadlineTime: '18:30:00' } }),
+            dailyPostcloseRunner: async input => {
+                calls.push(input.attempt);
+                return { outcome: 'complete', readyCount: 160 };
+            } };
+        const cooling = await runPostcloseDailyBaseline({ ...options,
+            now: new Date('2026-09-11T14:15:00+08:00') });
+        expect(cooling).toMatchObject({ reason: 'daily_collection_retry_cooldown',
+            nextAttemptAt: '2026-09-11T06:25:00.000Z', attempt: 2 });
+        expect(calls).toEqual([]);
+        const resumed = await runPostcloseDailyBaseline({ ...options,
+            now: new Date('2026-09-11T14:26:00+08:00') });
+        expect(resumed.executed).toBe(true);
+        expect(calls).toEqual([2]);
+    });
+    it('補跑與原程序在冷卻到期時競爭，claim 已被另一程序取得則不重抓', async () => {
+        const value = await fixture();
+        const generation = 'simulation:daily-postclose-test-001';
+        await writeFile(path.join(value.root, 'runtime-api-generation'), `${generation}\n`);
+        const directory = path.join(value.root, 'IntradayMonitor',
+            'daily-minute-volume-collection', '2026-09-11');
+        await mkdir(directory, { recursive: true });
+        await writeFile(path.join(directory, 'attempt-01-receipt.json'),
+            JSON.stringify({ outcome: 'partial', completedAt: '2026-09-11T14:10:00+08:00' }));
+        const result = await runPostcloseDailyBaseline({ root: value.root,
+            now: new Date('2026-09-11T14:26:00+08:00'),
+            calendarResolver: value.calendarResolver,
+            dailyModeReader: async () => ({ mode: 'daily', limits: {
+                maxAttempts: 3, cooldownMs: 15 * 60_000, deadlineTime: '18:30:00' } }),
+            dailyProcessProbe: pid => pid === 1234,
+            dailyPostcloseRunner: async () => {
+                await writeFile(path.join(directory, 'attempt-02-claim.json'), JSON.stringify({
+                    schemaVersion: DAILY_MINUTE_VOLUME_COLLECTION_SCHEMA,
+                    sourceDate: '2026-09-11', targetDate: '2026-09-14',
+                    connectionGeneration: generation, attempt: 2,
+                    claimId: 'winner', ownerPid: 1234 }));
+                const error = new Error('claim already exists');
+                error.code = 'EEXIST';
+                throw error;
+            } });
+        expect(result).toMatchObject({ executed: false,
+            reason: 'daily_collection_in_progress', attempt: 2, claimId: 'winner' });
+    });
     it('盤後先讀 TWSE 官方 OpenAPI，完成雙市場日曆後供隔日離線使用', async () => {
         const value = await fixture();
         const urls = [];

@@ -23,6 +23,10 @@ const NOTICES = Object.freeze({
         title: '盤中監控收盤證據未完成',
         body: '13:40 仍無今日完整正式擷取證據；請查看本機擷取狀態與失敗收據。',
     },
+    daily_monitor_incomplete: {
+        title: '盤中監控資料未完整',
+        body: '今日輕量監控的收尾或逐檔分鐘資料未完整；已保存的結果仍可查閱，請查看本機摘要與失敗收據。',
+    },
 });
 
 function osHandoff(execFileImpl, notice) {

@@ -6,11 +6,50 @@ import path from 'node:path';
 
 import { inspectDirect160StageStart, inspectOptionalPassiveChartEvidence, validateFreshSimulationGeneration,
     verifyLateBootCatchup, verifyLateBootPreparedCapture,
-    writeDirect160CaptureFailure } from './capture-direct-160-stage.mjs';
+    writeDirect160CaptureFailure, writeDirect160FinalizedCapture } from './capture-direct-160-stage.mjs';
 import { createDailySessionRecord,
     IntradayMonitorSessionStateRepository } from './session-state-repository.mjs';
 
 describe('direct 160 stage launcher preflight', () => {
+    it('完整日資源驗收失敗仍先保存真實 capture／原因，原失敗收據與資料不可覆寫', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'closeout-resource-'));
+        const outputPath = path.join(root, 'capture.json');
+        const error = new TypeError('tiered stage session is invalid: resource_maxRssBytes_budget_exceeded');
+        const capture = { schemaVersion: 'intraday-monitor-direct-160-capture/1',
+            tradeDate: '2026-10-05', captureMode: 'full-session',
+            session: { assessment: { fullSession: true }, minuteCount: 43_200 },
+            replay: { consistent: true, runCount: 2 }, tieredSession: null,
+            finalization: { valid: false, reasonCodes: ['resource_maxRssBytes_budget_exceeded'] },
+            assessment: { formalAcceptanceEvidence: false, readyForBundle: false } };
+        await expect(writeDirect160FinalizedCapture({ outputPath, capture, validationError: error }))
+            .rejects.toBe(error);
+        const original = await readFile(outputPath, 'utf8');
+        expect(JSON.parse(original)).toEqual(capture);
+        const failure = await writeDirect160CaptureFailure({ outputPath, tradeDate: '2026-10-05',
+            mode: 'full-session', error });
+        expect(failure).toMatchObject({ mainEvidenceCreated: true, notificationEligible: false,
+            output: { mainEvidenceCreated: true,
+                mainEvidenceSha256: createHash('sha256').update(original).digest('hex') } });
+        const originalFailure = await readFile(`${outputPath}.failure.json`, 'utf8');
+        await expect(writeDirect160FinalizedCapture({ outputPath, capture: { ...capture,
+            assessment: { formalAcceptanceEvidence: true } } })).rejects.toMatchObject({ code: 'EEXIST' });
+        await expect(writeDirect160CaptureFailure({ outputPath, tradeDate: '2026-10-05',
+            mode: 'full-session', error: new Error('different') })).rejects.toMatchObject({ code: 'EEXIST' });
+        expect(await readFile(outputPath, 'utf8')).toBe(original);
+        expect(await readFile(`${outputPath}.failure.json`, 'utf8')).toBe(originalFailure);
+    });
+
+    it('成功收尾照常保存，失敗 sidecar 不把錯日既有檔誤稱今日 capture', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'closeout-success-'));
+        const outputPath = path.join(root, 'capture.json');
+        const capture = { schemaVersion: 'intraday-monitor-direct-160-capture/1',
+            tradeDate: '2026-10-02', captureMode: 'full-session',
+            assessment: { formalAcceptanceEvidence: true } };
+        expect(await writeDirect160FinalizedCapture({ outputPath, capture })).toBe(capture);
+        const failure = await writeDirect160CaptureFailure({ outputPath, tradeDate: '2026-10-05',
+            mode: 'full-session', error: new Error('failed') });
+        expect(failure.output).toMatchObject({ mainEvidenceCreated: false, mainEvidenceSha256: null });
+    });
     it('可見圖表只是選用診斷：缺件、錯日或無效不阻擋背景擷取', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'optional-chart-'));
         const file = path.join(root, 'chart.json');

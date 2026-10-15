@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { canonicalJson } from '../smart-order-runtime/canonical-json.mjs';
 import { validateDirect160BaselineSet } from './direct-160-baseline.mjs';
 import { isHistoricalKbarBaselineManifest } from './historical-kbar-repair.mjs';
+import { isDailyMinuteVolumeBaseline, resolveDailyMinuteVolumeBaseline }
+    from './daily-minute-volume-baseline.mjs';
 import { validateDynamicDailyCohortPlan } from './dynamic-daily-cohort-plan.mjs';
 
 export function dynamicDailySymbolBaselineCohortHash({ tradeDate, previousTradeDate,
@@ -37,11 +39,25 @@ function validForPlan(manifest, entry, plan) {
             index === 0 || row.cumulativeVolume >= rows[index - 1].cumulativeVolume);
 }
 
+function validDailyV2ForPlan(manifest, entry, plan) {
+    return isDailyMinuteVolumeBaseline(manifest) &&
+        manifest.symbol === entry.canonicalSymbol && manifest.exchange === entry.exchange &&
+        manifest.tradeDate === plan.previousTradeDate &&
+        manifest.targetTradeDate === plan.tradeDate &&
+        manifest.minuteCoverage?.canonicalMinuteCount === 270 &&
+        manifest.cumulativeSeries.every((row, index, rows) =>
+            index === 0 || row.cumulativeVolume >= rows[index - 1].cumulativeVolume);
+}
+
 // 只消費已驗證的 immutable set／逐檔 manifest，不進行歷史請求或追認盤前 Gate。
 export function resolveDynamicDailyBaselineCoverage({ plan, verifiedSets = [],
-    standaloneManifests = [] } = {}) {
+    standaloneManifests = [], dailyV2Manifests = [], conflictSymbols = [] } = {}) {
     if (!validateDynamicDailyCohortPlan(plan) || !Array.isArray(verifiedSets) ||
-        !Array.isArray(standaloneManifests)) throw new TypeError('daily_baseline_input_invalid');
+        !Array.isArray(standaloneManifests) || !Array.isArray(dailyV2Manifests) ||
+        !Array.isArray(conflictSymbols) ||
+        conflictSymbols.some(symbol => typeof symbol !== 'string')) {
+        throw new TypeError('daily_baseline_input_invalid');
+    }
     const bySymbol = new Map();
     const invalidSymbols = new Set();
     const add = (manifest, sourceHash) => {
@@ -74,24 +90,48 @@ export function resolveDynamicDailyBaselineCoverage({ plan, verifiedSets = [],
         }
         add(manifest, manifest.manifestId);
     }
+    for (const manifest of dailyV2Manifests) {
+        if (!isDailyMinuteVolumeBaseline(manifest) ||
+            manifest.tradeDate !== plan.previousTradeDate ||
+            manifest.targetTradeDate !== plan.tradeDate) {
+            if (typeof manifest?.symbol === 'string') invalidSymbols.add(manifest.symbol);
+            continue;
+        }
+        add(manifest, manifest.manifestId);
+    }
     const items = plan.selected.map((entry) => {
         const candidates = bySymbol.get(`${plan.tradeDate}|${plan.previousTradeDate}|${entry.canonicalSymbol}`) ?? [];
-        const matches = candidates.filter(({ manifest }) => validForPlan(manifest, entry, plan));
+        const legacy = candidates.filter(({ manifest }) => validForPlan(manifest, entry, plan));
+        const daily = candidates.filter(({ manifest }) => validDailyV2ForPlan(manifest, entry, plan));
+        const matches = [...daily, ...legacy];
         const unique = new Map(matches.map(({ manifest, sourceHash }) => [manifest.manifestId,
             { manifest, sourceHash }]));
+        const hasInvalid = invalidSymbols.has(entry.canonicalSymbol) ||
+            conflictSymbols.includes(entry.canonicalSymbol) || matches.length !== candidates.length;
+        const resolved = daily.length > 0 ? resolveDailyMinuteVolumeBaseline({
+            symbol: entry.canonicalSymbol, exchange: entry.exchange,
+            sourceTradeDate: plan.previousTradeDate, targetTradeDate: plan.tradeDate,
+            v2: daily.map(({ manifest }) => manifest),
+            legacy: legacy.map(({ manifest }) => manifest),
+        }) : null;
         // 同商品若同時出現不合法來源，不得以另一份合法 manifest 靜默掩蓋衝突。
-        if (unique.size !== 1 || invalidSymbols.has(entry.canonicalSymbol)) {
+        if (hasInvalid || resolved?.state === 'waiting_baseline' ||
+            (daily.length === 0 && unique.size !== 1)) {
             return Object.freeze({ canonicalSymbol: entry.canonicalSymbol,
-                state: 'waiting_baseline', reason: unique.size > 1 ?
+                state: 'waiting_baseline', reason: conflictSymbols.includes(entry.canonicalSymbol) ||
+                    resolved?.reason === 'baseline_source_conflict' || unique.size > 1 && daily.length === 0 ?
                     'baseline_source_conflict' :
-                    (invalidSymbols.has(entry.canonicalSymbol) || candidates.length > 0) ?
+                    (hasInvalid || candidates.length > 0) ?
                         'baseline_invalid' : 'baseline_missing', manifestId: null,
                 sourceHash: null });
         }
-        const chosen = [...unique.values()][0];
+        const chosen = daily.length > 0 ?
+            matches.find(({ manifest }) => manifest.manifestId === resolved.manifest.manifestId) :
+            [...unique.values()][0];
         return Object.freeze({ canonicalSymbol: entry.canonicalSymbol,
             state: 'baseline_ready', reason: null, manifestId: chosen.manifest.manifestId,
-            sourceHash: chosen.sourceHash });
+            sourceHash: chosen.sourceHash,
+            schemaVersion: chosen.manifest.schemaVersion });
     });
     const readyCount = items.filter((item) => item.state === 'baseline_ready').length;
     return Object.freeze({ tradeDate: plan.tradeDate, previousTradeDate: plan.previousTradeDate,

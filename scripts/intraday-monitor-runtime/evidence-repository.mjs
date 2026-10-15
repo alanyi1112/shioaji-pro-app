@@ -494,6 +494,30 @@ export class IntradayMonitorEvidenceRepository {
         }
     }
 
+    // Daily mode reads a single prior-minute value from SQLite instead of retaining
+    // 160 full baseline series in a second in-memory map.
+    getBaseline(canonicalSymbol, tradeDate) {
+        const row = this.database.prepare(`SELECT payload_json FROM intraday_monitor_baselines
+            WHERE canonical_symbol=? AND trade_date=?`).get(canonicalSymbol, tradeDate);
+        return row ? parsePayload(row.payload_json, isIntradayMonitorBaseline, 'baseline') : null;
+    }
+
+    getBaselineMinute(canonicalSymbol, tradeDate, minuteKey) {
+        const row = this.database.prepare(`SELECT cumulative_volume,provenance
+            FROM intraday_monitor_baseline_minutes
+            WHERE canonical_symbol=? AND trade_date=? AND minute_key=?`)
+            .get(canonicalSymbol, tradeDate, minuteKey);
+        return row ? { cumulativeVolume: row.cumulative_volume, provenance: row.provenance } : null;
+    }
+
+    summarizeDailyTradeDate(tradeDate) {
+        return this.database.prepare(`SELECT canonical_symbol AS canonicalSymbol,
+            COUNT(*) AS observationCount,MIN(minute_key) AS firstMinute,
+            MAX(minute_key) AS lastMinute,MAX(cumulative_volume) AS lastCumulativeVolume
+            FROM intraday_monitor_observations WHERE trade_date=?
+            GROUP BY canonical_symbol ORDER BY canonical_symbol`).all(tradeDate);
+    }
+
     putBootstrapBaseline(baseline, expectedRevision) {
         if (!isIntradayMonitorBaseline(baseline)) {
             throw new IntradayMonitorEvidenceRepositoryError('invalid_baseline');

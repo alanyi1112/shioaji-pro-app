@@ -11,18 +11,31 @@ export const DYNAMIC_DAILY_POSTCLOSE_PREPARER_SCHEMA =
 // 排程可於盤後或隔夜帶入已確認的官方交易日、simulation session 與有界預算。
 // 本函式不啟動排程、不開登入／SSE、不改現行 session；候選 plan 寫入獨立版號路徑。
 export async function prepareDynamicDailyPostclose({ root, config, authority,
-    approval, verifiedSets = [], standaloneManifests = [], calendar,
+    approval, verifiedSets = [], standaloneManifests = [], dailyV2Manifests = [],
+    sourceRecords: suppliedSources = [], calendar,
     budget = null, worker = null, sourceVersion = null, sessionProof = null,
     createdAt = new Date().toISOString() } = {}) {
     const plan = createDynamicDailyCohortPlan({ config, authority, approval, createdAt });
     const initial = resolveDynamicDailyBaselineCoverage({ plan,
-        verifiedSets, standaloneManifests });
+        verifiedSets, standaloneManifests, dailyV2Manifests });
     const candidate = await writeDynamicDailyCohortPlan(root, plan);
+    const sourceRecords = verifiedSets.flatMap((source) =>
+        (source.baseline?.manifests ?? []).map((manifest) => ({ manifest,
+            sourceHash: source.baseline.baselineHash, sealedAt: source.sealedAt ?? null })));
+    for (const manifest of dailyV2Manifests) sourceRecords.push({ manifest,
+        sourceHash: manifest.manifestId, sealedAt: manifest.fetchedAt });
+    for (const source of suppliedSources) sourceRecords.push(source);
+    const matchingSources = (coverage, records) => coverage.items.flatMap((item) => {
+        const matches = records.filter((source) => source.manifest?.manifestId === item.manifestId &&
+            source.sourceHash === item.sourceHash);
+        return matches.slice(0, 2);
+    });
     const missing = initial.items.filter((item) => item.state === 'waiting_baseline');
     if (missing.length === 0) {
         return Object.freeze({ schemaVersion: DYNAMIC_DAILY_POSTCLOSE_PREPARER_SCHEMA,
             outcome: 'baseline_ready', plan, planPath: candidate.path,
             coverage: initial, deltaReceiptPath: null, addedManifestPaths: [],
+            sources: matchingSources(initial, sourceRecords),
             notificationAuthority: false, subscriptionAuthority: false });
     }
     // 無效或衝突基準不得以重抓靜默掩蓋；只對真正尚缺的商品做有界差異驗證。
@@ -33,6 +46,7 @@ export async function prepareDynamicDailyPostclose({ root, config, authority,
         return Object.freeze({ schemaVersion: DYNAMIC_DAILY_POSTCLOSE_PREPARER_SCHEMA,
             outcome: 'waiting_baseline', plan, planPath: candidate.path,
             coverage: initial, deltaReceiptPath: null, addedManifestPaths: [],
+            sources: matchingSources(initial, sourceRecords),
             notificationAuthority: false, subscriptionAuthority: false });
     }
     const delta = await worker.run({ root, plan, coverage: initial,
@@ -41,9 +55,10 @@ export async function prepareDynamicDailyPostclose({ root, config, authority,
     for (const item of delta.results) {
         if (item.outcome !== 'verified' || !item.manifestPath) continue;
         added.push(JSON.parse(await readFile(item.manifestPath, 'utf8')));
+        sourceRecords.push({ manifest: added.at(-1), sourceHash: item.sourceHash, sealedAt: item.sealedAt });
     }
     const coverage = resolveDynamicDailyBaselineCoverage({ plan, verifiedSets,
-        standaloneManifests: [...standaloneManifests, ...added] });
+        standaloneManifests: [...standaloneManifests, ...added], dailyV2Manifests });
     return Object.freeze({ schemaVersion: DYNAMIC_DAILY_POSTCLOSE_PREPARER_SCHEMA,
         outcome: coverage.baselineReadyCount === plan.selected.length ?
             'baseline_ready' : 'waiting_baseline',
@@ -51,5 +66,6 @@ export async function prepareDynamicDailyPostclose({ root, config, authority,
         deltaReceiptPath: delta.receiptPath,
         addedManifestPaths: delta.results.filter((item) => item.outcome === 'verified')
             .map((item) => item.manifestPath),
+        sources: matchingSources(coverage, sourceRecords),
         notificationAuthority: false, subscriptionAuthority: false });
 }

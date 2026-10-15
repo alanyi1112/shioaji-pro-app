@@ -1,3 +1,4 @@
+import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -14,6 +15,11 @@ import { inspectIntradayMonitorPremarketDailySession,
 import { buildPremarketCaptureArgs, inspectPremarketGates, noCurrentSessionData,
     resolvePremarketOrchestratorPaths, runChild } from './premarket-orchestrator.mjs';
 import { resolveIntradayMonitorPremarketTradingDay } from './trading-calendar-authority.mjs';
+import { readDailyMinuteVolumeMode } from './daily-minute-volume-postclose.mjs';
+import { resolveDailyMinuteVolumeFixedBaseline }
+    from './daily-minute-volume-fixed-baseline.mjs';
+import { resolveIntradayMonitorRuntimeArtifactBundle }
+    from './runtime-artifact-bundle.mjs';
 
 export const LATE_BOOT_CATCHUP_SCHEMA = 'intraday-monitor-late-boot-catchup/1';
 export const LATE_BOOT_LAUNCH_AGENT_LABEL =
@@ -48,11 +54,35 @@ function latePaths(root, tradeDate) {
 
 function effectiveConfigForDay(config, root, authority) {
     return { ...config, tradeDate: authority.tradeDate,
+        previousTradeDate: authority.previousTradeDate,
         baselinePath: resolveIntradayMonitorDailyBaselinePath(root, authority),
         outputPath: path.join(root, 'direct-160-live', `capture-${authority.tradeDate}.json`),
         chartEvidencePath: path.join(root, 'direct-160-live',
             `passive-chart-freshness-${authority.tradeDate}.json`),
         officialTradingDates: [authority.tradeDate] };
+}
+
+export async function resolveLateBootBaselineState({ root, config, authority,
+    modeReader = readDailyMinuteVolumeMode,
+    bundleReader = resolveIntradayMonitorRuntimeArtifactBundle,
+    fixedResolver = resolveDailyMinuteVolumeFixedBaseline } = {}) {
+    const runtimeMode = (await modeReader(root)).mode;
+    const baselinePath = resolveIntradayMonitorDailyBaselinePath(root, authority);
+    if (runtimeMode !== 'daily') {
+        const legacy = await readJsonOrNull(baselinePath);
+        return { runtimeMode, baselineCurrent: Boolean(legacy),
+            baselineHash: legacy?.baselineHash ?? null, baselinePath };
+    }
+    const bundle = await bundleReader({ appSupportRoot: root,
+        bundleHash: config?.artifactBundleHash });
+    if (!bundle?.valid) throw new Error('late_boot_daily_bundle_invalid');
+    const cohort = await readJson(bundle.files.cohort);
+    const legacy = await readJsonOrNull(baselinePath);
+    const gate = fixedResolver({ root, cohort,
+        sourceTradeDate: authority.previousTradeDate,
+        targetTradeDate: authority.tradeDate, legacySet: legacy });
+    return { runtimeMode, baselineCurrent: gate.ready,
+        baselineHash: gate.baselineHash, baselinePath: null };
 }
 
 function runtimeOnlyNotReady(gates) {
@@ -75,6 +105,7 @@ export async function runLateBootPremarketCatchup({ root = defaultRoot(),
     inspectGates = inspectPremarketGates, inspectDailySession = inspectIntradayMonitorPremarketDailySession,
     prepareDailySession = prepareIntradayMonitorPremarketDailySession,
     readNoCurrentData = noCurrentSessionData, runCapture = runChild,
+    resolveBaseline = resolveLateBootBaselineState,
     sleep = wait } = {}) {
     const enteredAt = clock();
     const entered = taipeiPremarketInstant(enteredAt);
@@ -112,8 +143,10 @@ export async function runLateBootPremarketCatchup({ root = defaultRoot(),
             readJsonOrNull(path.join(paths.receiptsDirectory, `${entered.localDate}-0850.json`)),
             readPremarketCaptureStartClaim(root, entered.localDate),
         ]);
-        const baselineCurrent = Boolean(effectiveConfig &&
-            await exists(effectiveConfig.baselinePath));
+        const baselineState = effectiveConfig ? await resolveBaseline({ root, config,
+            authority }) : { runtimeMode: 'legacy', baselineCurrent: false,
+                baselineHash: null, baselinePath: null };
+        const baselineCurrent = baselineState.baselineCurrent;
         const decision = decideLateBootPremarketCatchup({ now, authority, baselineCurrent,
             scheduled0820, scheduled0850, captureStarted: Boolean(captureClaim) });
         if (!decision.eligible) {
@@ -209,14 +242,19 @@ export async function runLateBootPremarketCatchup({ root = defaultRoot(),
             } else if (gates.generationAnchor?.generation !== gates.generation) {
                 throw new Error('generation_mismatch');
             }
-            const baseline = await readJson(effectiveConfig.baselinePath);
+            if (!baselineState.baselineCurrent || !baselineState.baselineHash ||
+                baselineState.runtimeMode === 'daily' &&
+                daily.session.baselineHash !== baselineState.baselineHash) {
+                throw new Error('late_boot_baseline_identity_mismatch');
+            }
             const preparedReceipt = { schemaVersion: LATE_BOOT_CATCHUP_SCHEMA,
                 lateBootId, tradeDate: entered.localDate, source: 'late_boot',
                 enteredAt: enteredAt.toISOString(), preparedAt: clock().toISOString(),
                 anchoredAt: anchorAt, sessionId: daily.session.sessionId,
                 sessionIdentityHash: daily.session.sessionIdentityHash,
-                generation: gates.generation, baselineHash: baseline.baselineHash,
-                baselinePath: effectiveConfig.baselinePath, authority,
+                generation: gates.generation, baselineHash: baselineState.baselineHash,
+                baselinePath: baselineState.baselinePath,
+                runtimeMode: baselineState.runtimeMode, authority,
                 scheduled0820Present: decision.scheduled0820Present,
                 scheduled0820Success: decision.scheduled0820Success,
                 scheduled0850Present: decision.scheduled0850Present,
@@ -257,13 +295,21 @@ export async function runLateBootPremarketCatchup({ root = defaultRoot(),
             await claimPremarketCaptureStart({ root, tradeDate: entered.localDate,
                 source: 'late_boot', sessionId: daily.session.sessionId,
                 generation: gates.generation, now: clock() });
-            const captureArgs = buildPremarketCaptureArgs({
-                resolved: refreshedGates.artifacts.resolvedConfig ?? effectiveConfig,
-                effectiveConfig, authority, paths,
-                approvedActiveLimit: refreshedDaily.approval.approvedActiveLimit, root });
-            const capture = await runCapture(process.execPath,
-                [path.join(repoDirectory, 'scripts/intraday-monitor-runtime/capture-direct-160-stage.mjs'),
-                    ...captureArgs, '--late-boot-catchup'], { cwd: repoDirectory });
+            let capture;
+            if (baselineState.runtimeMode === 'daily') {
+                capture = await runCapture(process.execPath,
+                    [path.join(repoDirectory, 'scripts/intraday-monitor-runtime/daily-minute-volume-execute.mjs'),
+                        '--execute', `--app-support-root=${root}`,
+                        `--trade-date=${entered.localDate}`], { cwd: repoDirectory });
+            } else {
+                const captureArgs = buildPremarketCaptureArgs({
+                    resolved: refreshedGates.artifacts.resolvedConfig ?? effectiveConfig,
+                    effectiveConfig, authority, paths,
+                    approvedActiveLimit: refreshedDaily.approval.approvedActiveLimit, root });
+                capture = await runCapture(process.execPath,
+                    [path.join(repoDirectory, 'scripts/intraday-monitor-runtime/capture-direct-160-stage.mjs'),
+                        ...captureArgs, '--late-boot-catchup'], { cwd: repoDirectory });
+            }
             const outcome = capture.exitCode === 0 ? 'capture_completed' : 'capture_failed';
             await appendLateResult(paths, { ...preparedReceipt, outcome,
                 completedAt: clock().toISOString(), capture });
@@ -299,7 +345,7 @@ export function buildLateBootLaunchAgentPlist(scriptPath) {
     if (!path.isAbsolute(scriptPath ?? '')) throw new TypeError('absolute late boot script path required');
     const retries = [25, 40, 55, 58].map((minute) =>
         `<dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>${minute}</integer></dict>`).join('');
-    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${LATE_BOOT_LAUNCH_AGENT_LABEL}</string><key>ProgramArguments</key><array><string>${process.execPath}</string><string>${scriptPath}</string><string>--startup-catchup</string></array><key>RunAtLoad</key><true/><key>StartCalendarInterval</key><array>${retries}</array><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${LATE_BOOT_LAUNCH_AGENT_LABEL}</string><key>ProgramArguments</key><array><string>${resolveMonitorLaunchNode()}</string><string>${scriptPath}</string><string>--startup-catchup</string></array><key>RunAtLoad</key><true/><key>StartCalendarInterval</key><array>${retries}</array><key>ProcessType</key><string>Background</string><key>StandardOutPath</key><string>/dev/null</string><key>StandardErrorPath</key><string>/dev/null</string></dict></plist>\n`;
 }
 
 export async function installLateBootLaunchAgent({ scriptPath = new URL(import.meta.url).pathname,

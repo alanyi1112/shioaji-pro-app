@@ -1,3 +1,5 @@
+import { isThresholdConfigCompatibility } from './threshold-switch-controller.mjs';
+
 export const INTRADAY_MONITOR_CURRENT_SESSION_AUTHORITY_SCHEMA =
     'intraday-monitor-current-session-authority/1';
 
@@ -30,6 +32,7 @@ export function evaluateIntradayMonitorCurrentSession({
     approval,
     artifactBundle,
     savedConfigRevision,
+    thresholdConfigCompatibility = null,
     apiGeneration,
     premarketCaptureFailure = null,
     nowEpochMs = Date.now(),
@@ -52,7 +55,9 @@ export function evaluateIntradayMonitorCurrentSession({
         (session && session.artifactBundleHash !== artifactBundle?.bundleHash)) {
         reasons.push('artifact_bundle_invalid');
     }
-    if (session && session.configRevision !== savedConfigRevision) {
+    const thresholdConfigCompatible = isThresholdConfigCompatibility(
+        thresholdConfigCompatibility, session, savedConfigRevision);
+    if (session && session.configRevision !== savedConfigRevision && !thresholdConfigCompatible) {
         reasons.push('config_revision_mismatch');
     }
     if (session && session.connectionGeneration !== apiGeneration) {
@@ -80,6 +85,7 @@ export function evaluateIntradayMonitorCurrentSession({
         phase: session?.phase ?? null,
         configRevision: session?.configRevision ?? null,
         savedConfigRevision: Number.isSafeInteger(savedConfigRevision) ? savedConfigRevision : null,
+        thresholdConfigCompatible,
         evidenceAt: session?.freshness?.evidenceAt ?? null,
         ageMs: evidenceAgeMs,
         budgetMs,
@@ -87,7 +93,7 @@ export function evaluateIntradayMonitorCurrentSession({
         controlPlaneAuthority: current,
         dataPlaneAuthority: current,
         resultsAuthority: current,
-        notificationAuthority: current && approval?.decision === 'go',
+        notificationAuthority: current && approval?.decision === 'go' && session?.phase === 'running',
         brokerWriteAuthority: false,
         productionAuthority: false,
     });
@@ -145,6 +151,9 @@ export function normalizeIntradayMonitorSessionItems({
             baselineTradeDate: raw?.baselineTradeDate ?? null,
             subscriptionState: currentSession?.current ? raw?.subscriptionState ?? 'unknown' : 'none',
             firstKbarAt: currentSession?.current ? raw?.firstKbarAt ?? null : null,
+            completedMinute: currentSession?.current ? raw?.completedMinute ?? null : null,
+            currentCumulativeVolume: currentSession?.current ? raw?.currentCumulativeVolume ?? null : null,
+            previousCumulativeVolume: currentSession?.current ? raw?.previousCumulativeVolume ?? null : null,
             updatedAt: raw?.updatedAt ?? observedAt,
         });
     });

@@ -58,6 +58,13 @@ export function normalizeIntradayMonitorStatus(value: LegacyStatus): IntradayMon
         fresh: false,
     };
     const current = session.current === true && freshness.fresh === true;
+    const closedDaily = !current && value.runtimeMode === 'daily' &&
+        session.authorityTradeDate !== null && session.authorityTradeDate === session.sessionTradeDate &&
+        Number.isSafeInteger(session.configRevision) && session.configRevision === session.savedConfigRevision &&
+        session.savedConfigRevision === value.configRevision &&
+        ['evidence_stale', 'session_not_live', null].includes(session.staleReason) &&
+        ['ended', 'partial'].includes(value.dailyExecution?.state ?? '') &&
+        ['daily_close_partial', 'session_closed'].includes(value.reason);
     const capacity = current ? value.capacity : {
         ...value.capacity,
         dataActive: 0,
@@ -67,8 +74,8 @@ export function normalizeIntradayMonitorStatus(value: LegacyStatus): IntradayMon
     };
     return {
         ...value,
-        state: current ? value.state : 'feature_off',
-        reason: current ? value.reason : session.staleReason ?? 'current_session_missing',
+        state: current || closedDaily ? value.state : 'feature_off',
+        reason: current || closedDaily ? value.reason : session.staleReason ?? 'current_session_missing',
         capacity,
         approval,
         session: { ...session, current },
@@ -94,6 +101,8 @@ export const itemStateLabels: Record<IntradayMonitorItemState, string> = {
 
 export const reasonLabels: Record<string, string> = {
     none: '證據完整',
+    daily_close_partial: '今日已部分收尾；缺口及有效結果保留，目前不再發送盤中通知',
+    session_closed: '今日已收尾；結果僅供歷史查看，目前不再發送盤中通知',
     disabled: '使用者已停用',
     awaiting_first_kbar: '訂閱已接受，等待第一筆合法 KBar',
     minute_continuity_unknown: '09:01 至目前分鐘仍有缺口',
@@ -160,10 +169,16 @@ export function overallMonitorLabel(
 ) {
     if (offline) return '服務離線';
     if (!status) return '尚未開始';
+    if (status.runtimeMode === 'daily' && status.dailyExecution?.state === 'partial' &&
+        status.dailyExecution.closeTailException?.state === 'passed_with_close_tail_exception')
+        return '日常運作通過（收盤尾筆例外）';
+    if (status.runtimeMode === 'daily' && status.dailyExecution?.state === 'ended') return '已完整收尾';
+    if (status.runtimeMode === 'daily' && status.dailyExecution?.state === 'partial') return '部分收尾';
+    if (status.runtimeMode === 'daily' && status.dailyExecution?.state === 'failed') return '收尾失敗';
     if (!status.session.current) return '今日未啟動';
     if (status.state === 'feature_off') return '等待 bounded Gate';
     if (connection === 'starting') return '尚未開始';
-    if (connection === 'paused') return '監控已暫停';
+    if (connection === 'paused') return '本頁即時連線暫停';
     if (connection === 'reconnecting') return '重新連線中';
     if (status.state === 'degraded' || status.capacity.degraded > 0) return '部分 degraded';
     if ((status.capacity.awaitingFirstKbar ?? 0) > 0) return '等待首筆行情';
@@ -182,9 +197,13 @@ export function emptyIntradayMonitorResultMessage(
     const label = overallMonitorLabel(status, offline, connection);
     if (offline) return '服務離線，目前沒有可保留的當日結果。';
     if (!status || label === '尚未開始') return '監控尚未開始，正在取得頁面 lease 與狀態。';
+    if (label === '已完整收尾') return '今日輕量監控已完整收尾，沒有達標結果；收尾後不再發送盤中通知。';
+    if (label === '日常運作通過（收盤尾筆例外）') return '日常運作依收盤尾筆例外通過；盤後補算獨立呈現，不補發即時通知。';
+    if (label === '部分收尾') return '今日輕量監控部分收尾，沒有可驗證的達標結果；請查看逐檔缺口，收尾後不再發送盤中通知。';
+    if (label === '收尾失敗') return '今日輕量監控收尾摘要寫入失敗，不能判定全日完整；已提交的逐分鐘資料與結果仍保留。';
     if (!status.session.current || !status.freshness.fresh) return '今日監控未啟動，沒有可驗證的當日達標結果。';
     if (label === '等待 bounded Gate') return '等待 bounded Gate；目前不會產生達標結果。';
-    if (label === '監控已暫停') return '監控已暫停；恢復前不會新增達標結果。';
+    if (label === '本頁即時連線暫停') return '本頁即時連線暫停；背景監控與達標結果以伺服器證據為準。';
     if (label === '重新連線中') return '正在重新連線；恢復前不會新增達標結果。';
     if (label === '等待首筆行情') return '等待第一筆合法 KBar；目前不會產生達標結果。';
     if (label === '等待容量') return '等待可用容量；目前沒有達標結果。';

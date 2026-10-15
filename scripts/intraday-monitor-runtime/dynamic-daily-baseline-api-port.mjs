@@ -45,6 +45,7 @@ export function createDynamicDailyBaselineApiPort({ fetchImpl = fetch,
         throw new TypeError('daily_baseline_api_port_invalid');
     }
     async function request(pathname, body = undefined, signal = undefined) {
+        signal = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000);
         const response = await fetchImpl(`${api}${pathname}`, {
             method: body === undefined ? 'GET' : 'POST', redirect: 'error',
             headers: { accept: 'application/json',

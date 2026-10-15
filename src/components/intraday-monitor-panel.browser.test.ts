@@ -1,7 +1,7 @@
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { page } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { taipeiTradeDate } from '../lib/intraday-monitor-api';
 import { darkTwClass } from '../theme.css';
 import {
@@ -143,6 +143,190 @@ class FakeAudioContext {
 describe('盤中監控面板', () => {
     let root: Root | null = null;
 
+    it('收盤尾筆例外分開呈現原live與盤後補算，零新增通知或設定寫入', async () => {
+        const fallback = activeFetch();
+        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+            if (String(input).endsWith('/status')) {
+                const original = await fallback(input);
+                return response({ ...(await original.json()), runtimeMode: 'daily', state: 'degraded',
+                    reason: 'daily_close_partial', dailyExecution: { state: 'partial',
+                        completeCount: 157, partialCount: 3, nextBaselineState: 'ready',
+                        nextBaselineReadyCount: 160, closeTailException: {
+                            state: 'passed_with_close_tail_exception', policyVersion: 'intraday-close-tail-exception/1',
+                            liveAcceptance: false, notificationAuthority: false,
+                            rows: ['2355.TW', '6191.TW', '6449.TW'].map(canonicalSymbol => ({
+                                canonicalSymbol, minuteKey: '13:30', source: 'postclose_verified',
+                                currentCumulativeVolume: 200, previousCumulativeVolume: 100,
+                                threshold: '1.5', ratio: 2, comparisonRevision: 18, comparison: 'matched',
+                                liveDelivered: false, notificationAuthority: false })) } } });
+            }
+            if (String(input).endsWith('/daily-status')) return response({ daily: { mode: 'feature_off' } });
+            return fallback(input);
+        });
+        vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('EventSource', FakeEventSource);
+        const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+        await act(async () => { root?.render(createElement(IntradayMonitorPanel, panelProps()));
+            await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(host.textContent).toContain('日常運作通過（收盤尾筆例外）');
+        expect(host.textContent).toContain('原 live 完整 157／160');
+        expect(host.textContent).toContain('盤後補算，不通知（3 檔）');
+        expect(host.textContent).toContain('2355.TW');
+        expect(host.textContent).toContain('比較版本 18');
+        expect(host.textContent).toContain('量比結果 0');
+        expect(FakeNotification.instances).toHaveLength(0);
+        expect(FakeAudioContext.starts).toBe(0);
+        expect(fetchMock.mock.calls.every(([input]) => !/subscribe|login|orders/.test(String(input)))).toBe(true);
+    });
+
+    it('收尾後重新載入讀完三頁245筆，不只顯示首100筆、不重開通知連線', async () => {
+        const fallback = activeFetch(), today = taipeiTradeDate();
+        const rows = Array.from({ length: 245 }, (_, i) => ({
+            ...trigger(`pagination-${i}`, '2330', '10:05', 200, 210, false, today), kind: 'historical' }));
+        const reads: string[] = [];
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.includes('/results?')) {
+                reads.push(url);
+                const offset = Number(new URL(url, 'http://fixture').searchParams.get('cursor') ?? 0);
+                return response({ generation: 'fixture-generation', repositoryRevision: 245,
+                    items: rows.slice(offset, offset + 100), cursor: String(Math.min(offset + 100, 245)),
+                    nextCursor: offset + 100 < 245 ? String(offset + 100) : null });
+            }
+            if (url.endsWith('/daily-status')) return response({ daily: { mode: 'feature_off' } });
+            if (url.endsWith('/status')) {
+                const r = await fallback(input);
+                return response({ ...(await r.json()), runtimeMode: 'daily',
+                    session: { ...currentStatusMetadata(today).session, current: false, phase: 'closing' },
+                    dailyExecution: { state: 'partial', completeCount: 157, partialCount: 3 } });
+            }
+            return fallback(input);
+        }));
+        vi.stubGlobal('EventSource', FakeEventSource);
+        const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+        await act(async () => { root?.render(createElement(IntradayMonitorPanel, panelProps()));
+            await new Promise(resolve => setTimeout(resolve, 30)); });
+        expect(host.textContent).toContain('量比結果 245');
+        expect(reads).toHaveLength(3);
+        expect(FakeEventSource.instances).toHaveLength(0);
+        expect(FakeNotification.instances).toHaveLength(0);
+    });
+
+    it('長駐分頁跨台北午夜後清除舊結果與cursor，拒收舊回應並保留草稿', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-10-14T23:59:50+08:00'));
+        const fallback = activeFetch();
+        const requestedDates: string[] = [];
+        let resolveOld: ((value: Response) => void) | undefined;
+        let oldReads = 0;
+        const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.includes('/results?')) {
+                const day = new URL(url, 'http://fixture').searchParams.get('tradeDate')!;
+                requestedDates.push(day);
+                if (day === '2026-10-14' && ++oldReads > 1) {
+                    return new Promise<Response>(resolve => { resolveOld = resolve; });
+                }
+                return response({ items: [trigger(`event-${day}`, day === '2026-10-14' ? '2330' : '2454',
+                    '10:05', 180, 190, false, day)], cursor: `cursor-${day}`, nextCursor: null });
+            }
+            if (url.endsWith('/leases/acquire')) return response({ lease: {
+                leaseId: 'lease_notification_identity_1234', clientId: '123e4567-e89b-42d3-a456-426614174000',
+                generation: 'generation_test_1234567890', acquiredAt: new Date().toISOString(),
+                expiresAt: '2099-10-15T10:00:00+08:00',
+            } });
+            return fallback(input);
+        });
+        vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('EventSource', FakeEventSource);
+        const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+        await act(async () => { root?.render(createElement(IntradayMonitorPanel, panelProps()));
+            await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(host.textContent).toContain('當日：2026-10-14');
+        expect(host.textContent).toContain('2330');
+        const oldStream = FakeEventSource.instances.at(-1)!;
+        // A same-day resume must not churn the page lease or SSE.
+        await act(async () => { window.dispatchEvent(new Event('focus')); });
+        expect(FakeEventSource.instances).toHaveLength(1);
+        await act(async () => { await page.getByRole('tab', { name: '監控名單 0' }).click(); });
+        const input = host.querySelector<HTMLInputElement>('input[aria-label="全域量比門檻"]')!;
+        await act(async () => { setInputValue(input, '7'); });
+        await act(async () => { document.dispatchEvent(new Event('visibilitychange'));
+            await new Promise(resolve => setTimeout(resolve, 0)); });
+        vi.setSystemTime(new Date('2026-10-15T09:05:00+08:00'));
+        await act(async () => { window.dispatchEvent(new Event('focus'));
+            await new Promise(resolve => setTimeout(resolve, 0)); });
+        expect(host.textContent).toContain('當日：2026-10-15');
+        expect(input.value).toBe('7');
+        expect(oldStream.closed).toBe(true);
+        const newStream = FakeEventSource.instances.at(-1)!;
+        expect(newStream.url).toContain('tradeDate=2026-10-15');
+        expect(newStream.url).not.toContain('cursor-2026-10-14');
+        await act(async () => {
+            resolveOld?.(await response({ items: [trigger('late-old', '2317', '10:05', 180, 190, false,
+                '2026-10-14')], cursor: 'late-old-cursor' }));
+            oldStream.emit('replay', { items: [trigger('stale-frame', '2317', '10:05', 180, 190,
+                false, '2026-10-14')] });
+            await new Promise(resolve => setTimeout(resolve, 20));
+        });
+        await act(async () => { await page.getByRole('tab', { name: /量比結果/ }).click(); });
+        expect(host.textContent).toContain('2454');
+        expect(host.textContent).not.toContain('2330');
+        expect(host.textContent).not.toContain('2317');
+        expect(requestedDates).toContain('2026-10-15');
+        expect(fetchMock.mock.calls.some(([url, init]) => init?.method === 'PUT'
+            || /subscribe|login|orders/.test(String(url)))).toBe(false);
+        expect(FakeNotification.instances).toHaveLength(0);
+    });
+
+    it('三快捷門檻只送專用CAS，pending不冒充生效且未儲存草稿不被覆寫', async () => {
+        const fallback = activeFetch();
+        let saved = {revision:1,globalThreshold:'1.5',items:[]};
+        let view = {schemaVersion:'intraday-monitor-threshold-switch-view/1',state:'applied',
+            savedRevision:1,savedThreshold:'1.5',activeComparisonRevision:1,activeThreshold:'1.5',
+            effectiveAt:'2026-10-13T10:01:00+08:00',effectiveMinutes:[],reclassifiedSymbols:[],
+            notificationAuthority:false,reason:null};
+        let pending = false;
+        const requests: Array<{threshold:string;expectedRevision:number}> = [];
+        const fetchMock = vi.fn(async (input:RequestInfo|URL, init?:RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/threshold')) {
+                const body = JSON.parse(String(init?.body)); requests.push(body);
+                expect(Object.keys(body).sort()).toEqual(['expectedRevision','idempotencyKey','schemaVersion','threshold']);
+                expect(body.expectedRevision).toBe(saved.revision);
+                saved = {...saved,revision:saved.revision+1,globalThreshold:body.threshold};
+                view = {...view,state:'pending',savedRevision:saved.revision,savedThreshold:body.threshold};
+                pending = true; return response({config:saved,thresholdSwitch:view});
+            }
+            if (url.endsWith('/config')) return response({config:saved});
+            if (url.endsWith('/status')) {
+                if (pending) { pending=false;view={...view,state:'applied',activeComparisonRevision:saved.revision,
+                    activeThreshold:saved.globalThreshold}; }
+                const original = await fallback(input);
+                return response({...await original.json(),configRevision:saved.revision,thresholdSwitch:view});
+            }
+            return fallback(input);
+        });
+        vi.stubGlobal('fetch',fetchMock);vi.stubGlobal('EventSource',FakeEventSource);
+        const host=document.createElement('div');document.body.append(host);root=createRoot(host);
+        await act(async()=>{root?.render(createElement(IntradayMonitorPanel,panelProps()));
+            await new Promise(resolve=>setTimeout(resolve,0));});
+        await act(async()=>{await page.getByRole('tab',{name:'監控名單 0'}).click();});
+        const input=host.querySelector<HTMLInputElement>('input[aria-label="全域量比門檻"]')!;
+        await act(async()=>setInputValue(input,'7'));
+        for(const threshold of ['2','3','1.5']) {
+            await act(async()=>{await page.getByRole('button',{name:`立即 ${threshold} 倍`,exact:true}).click();});
+            expect(host.textContent).toContain('切換中，仍使用');
+            await act(async()=>{await new Promise(resolve=>setTimeout(resolve,1100));});
+            await expect.element(page.getByText(new RegExp(`已生效 ${threshold.replace('.', '\\.') } 倍`))).toBeVisible();
+            expect(host.textContent).not.toContain('門檻已保存，等待監控程序確認');
+            expect(input.value).toBe('7');
+        }
+        expect(requests.map(value=>value.threshold)).toEqual(['2','3','1.5']);
+        expect(requests.map(value=>value.expectedRevision)).toEqual([1,2,3]);
+        expect(fetchMock.mock.calls.some(([url,init])=>String(url).endsWith('/config')&&init?.method==='PUT')).toBe(false);
+        expect(fetchMock.mock.calls.some(([url])=>/subscribe|login|orders/.test(String(url)))).toBe(false);
+        expect(FakeNotification.instances).toHaveLength(0);
+    });
+
     afterEach(async () => {
         if (root) await act(async () => root?.unmount());
         root = null;
@@ -154,6 +338,7 @@ describe('盤中監控面板', () => {
         FakeAudioContext.starts = 0;
         localStorage.clear();
         vi.restoreAllMocks();
+        vi.useRealTimers();
     });
 
     it('每日名單與歷史 Stage 分開呈現，未有盤中證據不稱 data active', async () => {
@@ -167,6 +352,7 @@ describe('盤中監控面板', () => {
                 degraded: null,
                 pendingRevision: 10, pendingReason: 'revision_unverified',
                 evidenceState: 'not_live', notificationAuthority: false,
+                executionPhase: 'not_started', matchedResults: [],
             } });
             return fallback(input);
         });
@@ -187,6 +373,39 @@ describe('盤中監控面板', () => {
         expect(host.textContent).toContain('降級未證實');
         expect(host.textContent).toContain('待生效 revision10（revision_unverified）');
         expect(host.textContent).toContain('尚未有合法盤中資料');
+    });
+
+    it('daily 基準品質明列未做獨立總量核對，診斷預設收合', async () => {
+        const fallback = activeFetch();
+        vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/daily-status')) return response({ daily: { mode: 'feature_off' } });
+            if (url.endsWith('/status')) {
+                const original = await fallback(input);
+                return response({ ...(await original.json()), runtimeMode: 'daily',
+                    dailyExecution: { state: 'collecting', previousBaselineQuality: {
+                        sourceTradeDate: '2026-10-02', targetTradeDate: taipeiTradeDate(),
+                        expectedCount: 160, readyCount: 159, missingCount: 1, unknownCount: 0,
+                        independentMatchedCount: 0, independentNotObservedCount: 159,
+                        state: 'repository_recorded' } } });
+            }
+            return fallback(input);
+        }));
+        vi.stubGlobal('EventSource', FakeEventSource);
+        vi.spyOn(globalThis.crypto, 'randomUUID')
+            .mockReturnValue('123e4567-e89b-42d3-a456-426614174000');
+        const host = document.createElement('div');
+        document.body.append(host); root = createRoot(host);
+        await act(async () => {
+            root?.render(createElement(IntradayMonitorPanel, panelProps()));
+            await new Promise(resolve => setTimeout(resolve, 0));
+        });
+        expect(host.textContent).toContain('前日 v2 基準');
+        expect(host.textContent).toContain('已記錄 159／160 · 缺漏 1 · 未知 0');
+        expect(host.textContent).toContain('已對帳 0、未觀測 159、未知 0');
+        const quality = [...host.querySelectorAll('details')].find(item =>
+            item.querySelector('summary')?.textContent === '來源品質與選用診斷');
+        expect(quality?.open).toBe(false);
     });
 
     it('歷史 160 GO 與今日未啟動分開呈現，保留 baseline unknown 與 reviewer provenance', async () => {
@@ -542,7 +761,9 @@ describe('盤中監控面板', () => {
     });
 
     it('顯示可稽核結果、目前量比並提供穩定排序', async () => {
-        const rows = [trigger('event_b', '2454', '10:05', 160, 170), trigger('event_a', '2330', '10:06', 210, 220)];
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-09-04T10:11:00+08:00'));
+        const rows = [trigger('event_b', '2454', '10:05', 300, 310), trigger('event_a', '2330', '10:06', 210, 220)];
         const fetchMock = vi.fn((input: RequestInfo | URL) => {
             const url = String(input);
             if (url.endsWith('/status')) return response({
@@ -582,22 +803,25 @@ describe('盤中監控面板', () => {
             root?.render(createElement(IntradayMonitorPanel, props));
             await new Promise((resolve) => setTimeout(resolve, 0));
         });
+        expect(typeof FakeEventSource.instances[0]?.onopen).toBe('function');
         await act(async () => FakeEventSource.instances[0]?.onopen?.());
         expect(FakeEventSource.instances[0]?.url).toContain('cursor=cursor_identity_1234567890');
         expect(host.textContent).toContain('監控中');
-        expect(host.textContent).toContain('已有結果 2（即時 2／歷史重播 0）');
+        expect(host.textContent).toContain('已有結果 2（即時 2／收尾保留 0／歷史重播 0）');
         expect(host.textContent).toContain('2.20×');
         expect(host.textContent).toContain('觸發 2.10×');
         expect(host.textContent).toContain('2026-09-04／2026-09-03 · 同分鐘 10:06');
         expect(host.textContent).toContain('shioaji/1.7.1');
         expect([...host.querySelectorAll('article')][0]?.textContent).toContain('2454.TW');
+        expect(host.querySelector<HTMLSelectElement>('select[aria-label="結果排序"]')?.selectedOptions[0]?.textContent)
+            .toBe('觸發時間');
         const target = host.querySelector<HTMLSelectElement>('select[aria-label="盤中結果目標 K 線圖"]')!;
         await act(async () => {
             target.value = 'chart-2';
             target.dispatchEvent(new Event('change', { bubbles: true }));
         });
         expect(onTargetChange).toHaveBeenCalledTimes(1);
-        const addButton = host.querySelector<HTMLButtonElement>('button[aria-label*="加入盤中選股清單"]')!;
+        const addButton = host.querySelector<HTMLButtonElement>('button[aria-label^="將 2454 "]')!;
         await act(async () => {
             addButton.click();
             await new Promise((resolve) => setTimeout(resolve, 0));
@@ -624,7 +848,7 @@ describe('盤中監控面板', () => {
         expect(host.textContent).toContain('請選擇、解鎖或新增日 K 圖');
         const sort = host.querySelector<HTMLSelectElement>('select[aria-label="結果排序"]')!;
         await act(async () => { sort.value = 'ratio'; sort.dispatchEvent(new Event('change', { bubbles: true })); });
-        expect([...host.querySelectorAll('article')][0]?.textContent).toContain('2330.TW');
+        expect([...host.querySelectorAll('article')][0]?.textContent).toContain('2454.TW');
     });
 
     it('大量結果仍保持卡片高度與可捲動，並分開顯示即時和歷史筆數', async () => {
@@ -649,7 +873,7 @@ describe('盤中監控面板', () => {
         const list = host.querySelector<HTMLElement>('[role="tabpanel"]')!;
         const cards = [...list.querySelectorAll<HTMLElement>('article')];
         expect(host.textContent).toContain('量比結果 97');
-        expect(host.textContent).toContain('已有結果 97（即時 32／歷史重播 65）');
+        expect(host.textContent).toContain('已有結果 97（即時 32／收尾保留 0／歷史重播 65）');
         expect(cards).toHaveLength(97);
         expect(getComputedStyle(cards[0]!).flexShrink).toBe('0');
         expect(cards[0]!.getBoundingClientRect().height).toBeGreaterThan(40);
@@ -1008,5 +1232,41 @@ describe('盤中監控面板', () => {
         expect(acquisitions).toBeGreaterThanOrEqual(2);
         expect(FakeEventSource.instances[0]?.closed).toBe(true);
         expect(FakeEventSource.instances.at(-1)?.url).toContain('cursor=cursor_recovery_identity_1234');
+    });
+    it('暫時無法讀取 status 後，既有有效 lease 與 SSE 可恢復本頁連線，不重複 acquire', async () => {
+        const fallback = activeFetch();
+        let statusUnavailable = false;
+        const fetchMock = vi.fn((input: RequestInfo | URL) => {
+            if (String(input).endsWith('/status') && statusUnavailable) {
+                return Promise.reject(new Error('temporary status failure'));
+            }
+            return fallback(input);
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        vi.stubGlobal('EventSource', FakeEventSource);
+        vi.spyOn(globalThis.crypto, 'randomUUID')
+            .mockReturnValue('123e4567-e89b-42d3-a456-426614174000');
+        const host = document.createElement('div');
+        document.body.append(host); root = createRoot(host);
+        await act(async () => {
+            root?.render(createElement(IntradayMonitorPanel, panelProps()));
+            await new Promise(resolve => setTimeout(resolve, 0));
+        });
+        await act(async () => FakeEventSource.instances[0]?.onopen?.());
+        expect(host.textContent).toContain('監控中');
+        statusUnavailable = true;
+        await act(async () => {
+            document.dispatchEvent(new Event('visibilitychange'));
+            await new Promise(resolve => setTimeout(resolve, 0));
+        });
+        expect(host.textContent).toContain('服務離線');
+        statusUnavailable = false;
+        await act(async () => {
+            document.dispatchEvent(new Event('visibilitychange'));
+            await new Promise(resolve => setTimeout(resolve, 0));
+        });
+        expect(host.textContent).toContain('監控中');
+        expect(FakeEventSource.instances).toHaveLength(1);
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/leases/acquire'))).toHaveLength(1);
     });
 });

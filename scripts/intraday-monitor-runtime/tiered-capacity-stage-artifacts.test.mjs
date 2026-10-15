@@ -10,6 +10,7 @@ import {
     createTieredStageSessionEvidence,
     decideTieredRollback,
     evaluateTieredStagePreflight,
+    inspectTieredStageResources,
     validateTieredCohortManifest,
     validateTieredExecutionToken,
     validateTieredStageEvidenceBundle,
@@ -45,6 +46,24 @@ function budgets() {
 }
 
 describe('分級 cohort、plan 與 preflight artifacts', () => {
+    it('資源拒絕明列量測值與原門檻，不以通用錯誤掩蓋超標或 unknown', () => {
+        const resources = { cpuBasisPoints: 100, maxRssBytes: 100_000_000,
+            databaseGrowthBytes: 0, minimumAvailableDiskBytes: 10_000_000_000,
+            maxEventToSealLatencyMs: 100, maxChartFreshnessMs: null };
+        expect(inspectTieredStageResources(resources, budgets()).valid).toBe(true);
+        const exceeded = inspectTieredStageResources({ ...resources,
+            maxEventToSealLatencyMs: budgets().maxEventToSealLatencyMs + 1,
+            databaseGrowthBytes: budgets().maxDatabaseGrowthBytes + 1 }, budgets());
+        expect(exceeded.reasons).toEqual(['resource_databaseGrowthBytes_budget_exceeded',
+            'resource_maxEventToSealLatencyMs_budget_exceeded']);
+        expect(exceeded.checks[2]).toMatchObject({ value: 50_000_001, budget: 50_000_000,
+            comparison: 'maximum', valid: false });
+        expect(inspectTieredStageResources({ ...resources, maxRssBytes: NaN }, budgets()).reasons)
+            .toEqual(['resource_maxRssBytes_invalid']);
+        expect(inspectTieredStageResources({ ...resources,
+            minimumAvailableDiskBytes: budgets().minimumAvailableDiskBytes - 1 }, budgets()).reasons)
+            .toEqual(['resource_minimumAvailableDiskBytes_budget_exceeded']);
+    });
     it('直接 160 的 plan 綁定空間 profile，token v3 接受 20 GO 並拒絕低磁碟與舊 token', () => {
         const manifest = createTieredCohortManifests({ ...inputs(), sourceVersion: '1.7.1', createdAt })[160];
         const plan = createTieredStagePlan({ manifest, budgets: budgets(), createdAt });
@@ -217,6 +236,16 @@ describe('分級 cohort、plan 與 preflight artifacts', () => {
         });
         expect(() => createTieredStageSessionEvidence({ plan, manifest,
             evidence: { ...make('2026-09-12'), resources: { ...make('2026-09-12').resources,
-                maxRssBytes: budgets().maxRssBytes + 1 } } })).toThrow();
+                maxRssBytes: budgets().maxRssBytes + 1 } } })).toThrow('resource_maxRssBytes_budget_exceeded');
+        try {
+            createTieredStageSessionEvidence({ plan, manifest,
+                evidence: { ...make('2026-09-12'), resources: { ...make('2026-09-12').resources,
+                    maxRssBytes: budgets().maxRssBytes + 1 } } });
+            expect.unreachable();
+        } catch (error) {
+            expect(error.code).toBe('tiered_stage_session_invalid');
+            expect(error.resourceDiagnostics.checks[1]).toMatchObject({
+                value: 512_000_001, budget: 512_000_000, valid: false });
+        }
     });
 });

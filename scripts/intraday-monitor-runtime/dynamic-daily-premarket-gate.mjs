@@ -5,6 +5,7 @@ import path from 'node:path';
 import { canonicalJson } from '../smart-order-runtime/canonical-json.mjs';
 import { validateDynamicDailyCohortPlan } from './dynamic-daily-cohort-plan.mjs';
 import { isHistoricalKbarBaselineManifest } from './historical-kbar-repair.mjs';
+import { isDailyMinuteVolumeBaseline } from './daily-minute-volume-baseline.mjs';
 
 export const DYNAMIC_DAILY_BASELINE_GATE_SCHEMA = 'intraday-monitor-daily-baseline-gate/1';
 export const DYNAMIC_DAILY_FINAL_GATE_SCHEMA = 'intraday-monitor-daily-final-gate/1';
@@ -59,7 +60,10 @@ export function createDynamicDailyBaselineGateReceipt({ plan, coverage, sources 
         else {
             const { manifest, sealedAt, sourceHash } = matched[0];
             const sealedAtMs = Date.parse(sealedAt ?? '');
-            if (!isHistoricalKbarBaselineManifest(manifest) ||
+            const v1 = isHistoricalKbarBaselineManifest(manifest);
+            const v2 = isDailyMinuteVolumeBaseline(manifest);
+            const fetchedAt = v2 ? manifest.fetchedAt : v1 ? manifest.refetchTime : null;
+            if ((!v1 && !v2) ||
                 manifest.symbol !== entry.canonicalSymbol ||
                 manifest.exchange !== entry.exchange ||
                 manifest.tradeDate !== plan.previousTradeDate ||
@@ -67,10 +71,10 @@ export function createDynamicDailyBaselineGateReceipt({ plan, coverage, sources 
                 manifest.manifestId !== coverageItem.manifestId ||
                 sourceHash !== coverageItem.sourceHash || !SHA256.test(sourceHash ?? '') ||
                 !INSTANT.test(sealedAt ?? '') || !Number.isFinite(sealedAtMs) ||
-                !Number.isFinite(Date.parse(manifest.refetchTime ?? '')) ||
+                !Number.isFinite(Date.parse(fetchedAt ?? '')) ||
                 sealedAtMs > checkedAtMs ||
                 sealedAtMs > taipeiDeadline(plan.tradeDate, '08:35:00') ||
-                Date.parse(manifest.refetchTime ?? '') > sealedAtMs) {
+                Date.parse(fetchedAt) > sealedAtMs) {
                 reason = 'baseline_receipt_invalid';
             }
         }
@@ -128,6 +132,8 @@ export function validateDynamicDailyBaselineGateReceipt(value, plan) {
         return item.state === 'baseline_ready' && item.reason === null &&
             SHA256.test(item.manifestId ?? '') && SHA256.test(item.sourceHash ?? '') &&
             INSTANT.test(item.sealedAt ?? '') &&
+            Number.isFinite(Date.parse(item.sealedAt)) &&
+            Date.parse(item.sealedAt) <= taipeiDeadline(plan.tradeDate, '08:35:00') &&
             Date.parse(item.sealedAt) <= Date.parse(value.checkedAt);
     });
     const readyCount = value.items.filter((item) => item.state === 'baseline_ready').length;

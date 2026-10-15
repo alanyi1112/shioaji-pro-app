@@ -1,6 +1,10 @@
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { classifyPremarketCaptureFailure } from './premarket-failure-classifier.mjs';
+import { readThresholdSwitchState } from './threshold-switch-repository.mjs';
+import { readCloseTailExceptionView } from './daily-close-tail-exception.mjs';
+import { thresholdCompatibility, thresholdOwnerIsCurrent, readThresholdSwitchView } from './threshold-runtime.mjs';
 
 import {
     IntradayMonitorConfigRepository,
@@ -24,6 +28,8 @@ import { createPassiveChartEvidenceRecorder } from './passive-chart-evidence-rec
 import { readDynamicDailyActivePlan } from './dynamic-daily-active-plan.mjs';
 import { readPostcloseTailRecoveryView } from './postclose-tail-recovery-view.mjs';
 import { IntradayMonitorSessionStateRepository } from './session-state-repository.mjs';
+import { readDailyMinuteVolumeModeSync } from './daily-minute-volume-postclose.mjs';
+import { readDailyMinuteVolumeQuality } from './daily-minute-volume-repository.mjs';
 import { resolveIntradayMonitorRuntimeArtifactBundleSync } from './runtime-artifact-bundle.mjs';
 import {
     evaluateIntradayMonitorCurrentSession,
@@ -45,15 +51,61 @@ const JSON_HEADERS = Object.freeze({
     'Referrer-Policy': 'no-referrer',
 });
 
-function readPremarketCaptureFailure(appSupportRoot, tradeDate) {
+function readPremarketCaptureFailure(appSupportRoot, tradeDate, session) {
     const receiptPath = path.join(appSupportRoot, 'IntradayMonitor', 'premarket',
         'receipts', `${tradeDate}-0850.json`);
     let receipt;
     try { receipt = JSON.parse(readFileSync(receiptPath, 'utf8')); }
     catch { return null; }
-    if (receipt?.schemaVersion !== 'intraday-monitor-premarket-orchestrator/1' ||
-        receipt.localDate !== tradeDate || receipt.step !== '08:50') return null;
-    return receipt.rolloverOutcome === 'failed' ? receipt.reason ?? 'unknown' : null;
+    let summary = null;
+    try { summary = JSON.parse(readFileSync(path.join(appSupportRoot, 'IntradayMonitor',
+        'daily-run', tradeDate, 'summary.json'), 'utf8')); } catch {}
+    return classifyPremarketCaptureFailure({ receipt, summary, session, tradeDate });
+}
+
+function readDailyPostcloseState(appSupportRoot, sourceDate, mode) {
+    const directory = path.join(appSupportRoot, 'IntradayMonitor',
+        'daily-minute-volume-collection', sourceDate);
+    for (let attempt = 3; attempt >= 1; attempt--) {
+        const prefix = `attempt-${String(attempt).padStart(2, '0')}`;
+        try {
+            const receipt = JSON.parse(readFileSync(path.join(directory,
+                `${prefix}-receipt.json`), 'utf8'));
+            if (receipt.schemaVersion === 'intraday-minute-volume-collection/2' &&
+                receipt.sourceDate === sourceDate &&
+                /^\d{4}-\d{2}-\d{2}$/.test(receipt.targetDate ?? '') &&
+                receipt.targetDate > sourceDate &&
+                Number.isSafeInteger(receipt.readyCount) && receipt.readyCount <= 160 &&
+                (receipt.outcome !== 'complete' || receipt.readyCount === 160) &&
+                ['complete', 'partial'].includes(receipt.outcome)) {
+                return { state: receipt.outcome === 'complete' ? 'ready' : 'partial',
+                    targetTradeDate: receipt.targetDate,
+                    readyCount: receipt.readyCount };
+            }
+        } catch {}
+        try {
+            const claim = JSON.parse(readFileSync(path.join(directory,
+                `${prefix}-claim.json`), 'utf8'));
+            if (claim.schemaVersion === 'intraday-minute-volume-collection/2' &&
+                claim.sourceDate === sourceDate && claim.attempt === attempt &&
+                Number.isFinite(Date.parse(claim.claimedAt ?? ''))) {
+                const deadline = Date.parse(`${sourceDate}T${mode.limits.deadlineTime}+08:00`);
+                const expired = Date.now() >= deadline;
+                let alive = null;
+                if (Number.isSafeInteger(claim.ownerPid) && claim.ownerPid > 0) {
+                    try { process.kill(claim.ownerPid, 0); alive = true; }
+                    catch (error) { if (error?.code === 'ESRCH') alive = false; }
+                }
+                return { state: expired || alive === false ? 'failed' :
+                    alive === true ? 'collecting' : 'unknown',
+                    reason: expired ? 'receipt_missing_after_deadline' :
+                        alive === false ? 'collector_process_exited_without_receipt' :
+                            alive === true ? null : 'collector_liveness_unverified',
+                    targetTradeDate: claim.targetDate ?? null, readyCount: null };
+            }
+        } catch {}
+    }
+    return { state: 'unknown', targetTradeDate: null, readyCount: null };
 }
 
 function isLoopbackAddress(value) {
@@ -84,6 +136,7 @@ function routeFor(method, pathname) {
         if (pathname === '/diagnostics') return 'diagnostics';
     }
     if (method === 'PUT' && pathname === '/config') return 'config_replace';
+    if (method === 'PUT' && pathname === '/threshold') return 'threshold_replace';
     if (method === 'POST' && pathname === '/leases/acquire') return 'lease_acquire';
     if (method === 'POST' && pathname === '/leases/renew') return 'lease_renew';
     if (method === 'POST' && pathname === '/leases/release') return 'lease_release';
@@ -123,7 +176,7 @@ export function authorizeIntradayMonitorGatewayRequest(request) {
     const route = routeFor(request.method ?? 'GET', pathname);
     if (!route) return { allowed: false, status: 404, reason: 'route_not_allowed' };
     if (!validQuery(route, url)) return { allowed: false, status: 400, reason: 'invalid_query' };
-    const mutation = route === 'config_replace' || route.startsWith('lease_') ||
+    const mutation = route === 'threshold_replace' || route === 'config_replace' || route.startsWith('lease_') ||
         route === 'chart_evidence_observe';
     if (mutation && (headers.get('content-type') ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return { allowed: false, status: 415, reason: 'json_required' };
     if (!mutation && headers.has('content-length') && headers.get('content-length') !== '0') return { allowed: false, status: 400, reason: 'get_body_forbidden' };
@@ -252,7 +305,12 @@ export function createIntradayMonitorLocalApiGatewayMiddleware({ service, chartE
             let body;
             try { body = await readJsonBody(request); }
             catch (error) { return sendJson(response, boundaryError(error.message === 'payload_too_large' ? 413 : 400, error.message === 'payload_too_large' ? 'payload_too_large' : 'invalid_json')); }
-            if (checked.route === 'config_replace') result = service.replaceConfig(body);
+            if (checked.route === 'config_replace') result = service.replaceConfig(body, {
+                sourceType: checked.headers.has('origin') &&
+                    checked.headers.get('sec-fetch-site') === 'same-origin' ? 'ui' : 'local_api' });
+            else if (checked.route === 'threshold_replace') result = service.replaceThreshold(body, {
+                sourceType: checked.headers.has('origin') &&
+                    checked.headers.get('sec-fetch-site') === 'same-origin' ? 'ui' : 'local_api' });
             else if (checked.route === 'chart_evidence_observe') {
                 if (!chartEvidenceRecorder) return sendJson(response,
                     boundaryError(503, 'chart_evidence_recorder_unavailable'));
@@ -299,6 +357,8 @@ export function createStateBackedRuntime(appSupportRoot) {
     const currentProjection = () => {
         const config = configRepository.read();
         const authorityTradeDate = taipeiDate();
+        const dailyMode = readDailyMinuteVolumeModeSync(appSupportRoot);
+        const runtimeMode = dailyMode.mode;
         const session = sessionRepository.readSession(authorityTradeDate);
         const approval = sessionRepository.readApproval();
         const authority = session?.calendarAuthority?.tradeDate === authorityTradeDate
@@ -308,10 +368,17 @@ export function createStateBackedRuntime(appSupportRoot) {
             ? resolveIntradayMonitorRuntimeArtifactBundleSync({ appSupportRoot,
                 bundleHash: approval.artifactBundleHash })
             : { valid: false, bundleHash: null };
+        let thresholdConfigCompatibility = null;
+        try {
+            const saved = session ? readThresholdSwitchState(appSupportRoot, session) : null;
+            if (saved) thresholdConfigCompatibility = thresholdCompatibility(saved, config,
+                thresholdOwnerIsCurrent(appSupportRoot, saved.initial));
+        } catch { /* Invalid evidence never relaxes the authority gate. */ }
         const evaluated = evaluateIntradayMonitorCurrentSession({ authority, session, approval,
             artifactBundle: bundle, savedConfigRevision: config.revision,
+            thresholdConfigCompatibility,
             apiGeneration: runtimeGeneration(),
-            premarketCaptureFailure: readPremarketCaptureFailure(appSupportRoot, authorityTradeDate),
+            premarketCaptureFailure: readPremarketCaptureFailure(appSupportRoot, authorityTradeDate, session),
             nowEpochMs: Date.now() });
         const configuredItems = config.items.map((item) => ({
             canonicalSymbol: `${item.contract.code}.${item.contract.exchange === 'TSE' ? 'TW' : 'TWO'}`,
@@ -325,7 +392,63 @@ export function createStateBackedRuntime(appSupportRoot) {
         const firstKbarAt = evaluated.current
             ? session.itemStates.map((item) => item.firstKbarAt).filter(Boolean).sort()[0] ?? null
             : null;
+        let dailyExecution = null;
+        if (runtimeMode === 'daily') {
+            try {
+                const summaryText = readFileSync(path.join(appSupportRoot,
+                    'IntradayMonitor', 'daily-run', authorityTradeDate, 'summary.json'), 'utf8');
+                const summary = JSON.parse(summaryText);
+                if (summary.schemaVersion === 'intraday-monitor-daily-runner/1' &&
+                    summary.tradeDate === authorityTradeDate &&
+                    summary.connectionGeneration === session?.connectionGeneration &&
+                    ['ended', 'partial'].includes(summary.executionOutcome)) {
+                    dailyExecution = { state: summary.executionOutcome,
+                        closeTailException: readCloseTailExceptionView({ root: appSupportRoot,
+                            tradeDate: authorityTradeDate, summary: summaryText }),
+                        completedAt: summary.completedAt, lastSourceEventAt: summary.lastSourceEventAt,
+                        lastAcceptedEventAt: summary.lastAcceptedEventAt,
+                        completeCount: summary.liveCoverageBySymbol?.filter(item =>
+                            item.state === 'complete').length ?? 0,
+                        partialCount: summary.liveCoverageBySymbol?.filter(item =>
+                            item.state === 'partial').length ?? 0,
+                        liveCoverageBySymbol: summary.liveCoverageBySymbol ?? null,
+                        streamDisconnectReason: summary.stream?.disconnect?.reason ?? null,
+                        resourceFault: summary.resources?.resourceFault ?? null,
+                        diagnosticsState: summary.diagnosticsState ?? 'unknown',
+                        nextBaselineState: summary.nextBaselineState ?? 'unknown' };
+                }
+            } catch {}
+            if (!dailyExecution) {
+                try {
+                    const sidecar = JSON.parse(readFileSync(path.join(appSupportRoot,
+                        'IntradayMonitor', 'daily-run', authorityTradeDate,
+                        'summary-write-failed.json'), 'utf8'));
+                    if (sidecar.schemaVersion === 'intraday-monitor-daily-runner/1' &&
+                        sidecar.tradeDate === authorityTradeDate &&
+                        ['summary_exists', 'summary_write_failed'].includes(sidecar.reason)) {
+                        dailyExecution = { state: 'failed', failureReason: sidecar.reason,
+                            completedAt: sidecar.observedAt ?? null };
+                    }
+                } catch {}
+            }
+            const next = readDailyPostcloseState(appSupportRoot, authorityTradeDate, dailyMode);
+            dailyExecution = { ...dailyExecution,
+                nextBaselineState: next.state,
+                nextBaselineReason: next.reason ?? null,
+                nextBaselineTradeDate: next.targetTradeDate,
+                nextBaselineReadyCount: next.readyCount };
+            const symbols = session?.itemStates?.map(item => item.canonicalSymbol);
+            if (session?.previousTradeDate && Array.isArray(symbols) &&
+                symbols.length > 0 && symbols.length <= 160) {
+                dailyExecution.previousBaselineQuality = readDailyMinuteVolumeQuality({
+                    databasePath: path.join(appSupportRoot, 'IntradayMonitor',
+                        'daily-minute-volume-baselines.sqlite3'),
+                    sourceTradeDate: session.previousTradeDate,
+                    targetTradeDate: authorityTradeDate, symbols });
+            }
+        }
         return { config, approval, session, evaluated, normalized, firstKbarAt,
+            runtimeMode, dailyExecution,
             lateBoot: lateBootPrepared(authorityTradeDate, session), bundle };
     };
     const sessionController = Object.freeze({
@@ -345,6 +468,8 @@ export function createStateBackedRuntime(appSupportRoot) {
         evidenceRepository,
         leaseCoordinator,
         generation,
+        thresholdSwitchProvider: () => readThresholdSwitchView(appSupportRoot,
+            sessionRepository.readSession(taipeiDate()), configRepository.read()),
         dailyStatusProvider: async () => {
             const saved = await readDynamicDailyActivePlan(appSupportRoot, taipeiDate());
             if (!saved) return {};
@@ -360,8 +485,10 @@ export function createStateBackedRuntime(appSupportRoot) {
         },
         capacityProvider: () => {
             const current = currentProjection();
-            const { approval, session, evaluated, normalized, lateBoot } = current;
+            const { approval, session, evaluated, normalized, lateBoot,
+                runtimeMode, dailyExecution } = current;
             return { gate0EvidenceCurrent: evaluated.current, globalOwnershipComplete: false,
+                runtimeMode, dailyExecution,
                 boundedTransportReady: evaluated.current && normalized.capacity.dataActive === normalized.capacity.admitted,
                 controlPlaneSubscriptionRequested: evaluated.current && session?.controlPlane?.requested === true,
                 awaitingFirstKbar: normalized.capacity.awaitingFirstKbar,
