@@ -1,3 +1,9 @@
+## 2026-10-15 結案決議：被新版取代而退役
+
+使用者已明確授權本案以 `retired_superseded_by_design` 結案，先同步主規格再歸檔，不更動現有服務或排程，不 commit／push。取代者為已歸檔的 `simplify-intraday-relative-volume-runtime` 及正式 `intraday-monitor-daily-runtime`：使用獨立 v2 基準，日常產品例外至多 10 檔、且只能缺 canonical 13:30。
+
+下列原提案保留為歷史設計；其最多 4 檔／每檔至多 5 分鐘、v1 雙抓／ticks／capture 復原鏈不再是新版 daily 的必要條件。原 5.3 真實自動時序驗收未完成，因退役不再追驗，**不標為 passed 或 live acceptance complete**。本次為規格與驗收待辦的退役，不刪程式或資料、不停用任何已載入工作；歷史查詢與選用診斷相容性保留。詳見 `verification/retirement-2026-10-15.md`。
+
 ## Why
 
 盤中監控可能只在收盤最後幾分鐘留下缺口；目前雖有經人工執行的受限尾端雙抓審閱，以及獨立的翌日基準建檔，卻沒有自動辨識、驗證並回報當日缺口的流程。2026-10-02 另出現 160 檔同時缺少 13:30 observation，顯示「少量來源尾端缺漏」與「整批收尾異常」必須分開處理，不能用盤後歷史資料冒充當日 live 成功。

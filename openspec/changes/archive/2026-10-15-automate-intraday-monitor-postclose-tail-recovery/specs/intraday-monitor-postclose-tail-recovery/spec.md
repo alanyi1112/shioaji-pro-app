@@ -1,5 +1,33 @@
 ## ADDED Requirements
 
+### Requirement: 舊版尾端復原必須以被新版取代的退役契約保存
+
+自 2026-10-15 使用者明確授權退役後，本能力 MUST 標示 `retired_superseded_by_design`；原真實自動時序驗收 5.3 MUST 保留未通過及取消後續追驗的原因，不得標示 live acceptance complete。下列 capture 分類、最多 4 檔／每檔最多 5 分鐘、v1 雙抓／收盤量／derived acceptance 要求 MUST 僅適用於舊版歷史 artifact 的解讀，以及日後另經明確要求的 legacy diagnostic；MUST NOT 成為現行 daily 的啟動、基準或產品驗收 Gate。
+
+現行日常行為 MUST 以 `intraday-monitor-daily-runtime` 的獨立 v2 基準與版本化收盤尾筆例外為準：至多 10 檔且僅缺 canonical 13:30；原 live 完整性、盤後補算及產品判定分開。MUST NOT 用舊 4 檔／5 分鐘門檻擴大或縮小新版政策，也不得將 v2 偽裝為 v1 雙抓／ticks 驗證。資料不足、來源衝突及通知安全規則不因退役而放寬。
+
+本次規格退役與歸檔 MUST NOT 自動刪除或改寫舊 capture、baseline、claim／receipt、衍生 artifact、failed／partial／unknown、程式或查詢相容性；MUST NOT 啟停、重載、卸載服務或排程、重跑採集、建立 broker login／行情連線／訂閱、補發通知或下單。程式／排程的實體移除 MUST 另經明確變更與授權，不得由歸檔副作用執行。
+
+#### Scenario: 未完成的舊實盤驗收被新版取代
+
+- **WHEN** 舊案 5.3 尚無完整真實時序證據，而使用者明確核准以新版取代的退役方式結案
+- **THEN** 系統 MUST 保留原未完成 checkbox 與歷史限制，記錄退役理由及取代規格後歸檔，不得將任務改為 passed
+
+#### Scenario: 現行 daily 遇到三檔僅缺 13:30
+
+- **WHEN** 新版 daily 三檔各有 269 個連續 live 分鐘、其餘及完整盤後 v2 來源符合現行收盤尾筆例外 Gate
+- **THEN** MUST 依新版至多 10 檔／僅缺 13:30 政策判定，不要求舊 capture、固定雙抓或 ticks，也不得提升原 live 完整性或補發通知
+
+#### Scenario: 讀取舊版盤後復原結果
+
+- **WHEN** 查詢原有 `postclose_data_recovered` 或 `bounded_post_close_tail_repair` artifact
+- **THEN** MUST 依該 artifact 原政策與來源解讀，保留 liveDelivered=false 及原正式資格，不能套新版政策追認歷史成功
+
+#### Scenario: 僅同步規格與歸檔
+
+- **WHEN** 執行本次退役結案
+- **THEN** MUST 只更新文件與 change 位置，保留原程式、服務、排程、券商 session 及證據，不得把文件退役宣稱為工作已卸載
+
 ### Requirement: 收盤後復原必須依原始 capture 分類且不可改寫原證據
 
 系統 MUST 等到當日 13:34:30 收盤定稿、正式擷取結束並取得可驗證的原始 capture hash，才可建立復原工作。工作 MUST 綁定交易日、固定 cohort、來源 capture hash 與當次 simulation session；同一 identity 的重複觸發 MUST 冪等。原 capture、失敗狀態、排程／警示收據及已接受的 live observation MUST 維持不可變。

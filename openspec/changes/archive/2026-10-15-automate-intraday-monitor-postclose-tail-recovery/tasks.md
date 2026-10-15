@@ -1,3 +1,7 @@
+## 2026-10-15 退役結案狀態
+
+本案原實作任務為 14／15，剩餘 5.3 未通過；經使用者明確授權，以 `retired_superseded_by_design` 結案並歸檔。5.3 因新版 daily v2／收盤尾筆例外取代而取消後續驗收，保留未勾，不虛增為 15／15。原 failed／partial／unknown 與驗收紀錄完整保留；詳見 `verification/retirement-2026-10-15.md`。此結案不修改服務、程式、行情或排程。
+
 ## 1. 來源與既有證據契約
 
 - [x] 1.1 唯讀盤點 2026-09-16 與 2026-10-02 原始 capture、失敗收據及 13:35 基準 manifest，記錄 hash、來源交易日、cohort、雙抓、逐筆對帳、零量與收盤編碼可證明的欄位；保存原檔 SHA-256，不足欄位明列為 `source_unverified`。
@@ -25,5 +29,5 @@
 
 - [x] 5.1 用 2026-09-16 單檔兩分鐘缺口、2026-10-02 全 160 檔缺 13:30、中段缺口與 complete-live 樣本驗證分類及資格分流；核對原始檔 SHA-256 不變。
 - [x] 5.2 測試來源待發布、雙抓漂移、live 前綴衝突、零量證據不足、13:33 合併、重複觸發、共享預算耗盡及舊 client 缺欄，逐項確認 fail closed 與無追溯通知。
-- [ ] 5.3 在下一適用交易日以既有 simulation session 的真實收尾與 verified 基準 receipt 驗證自動時序、API／UI provenance 及資源預算；離線測試與盤後復原不得冒充當日 live 或跨日實盤驗收。
+- [ ] 5.3 在下一適用交易日以既有 simulation session 的真實收尾與 verified 基準 receipt 驗證自動時序、API／UI provenance 及資源預算；離線測試與盤後復原不得冒充當日 live 或跨日實盤驗收。（2026-10-15：superseded-by-design，經授權退役而不再追驗；未通過，非 live acceptance complete。）
 - [x] 5.4 執行相關 focused tests、build、`openspec validate automate-intraday-monitor-postclose-tail-recovery --strict` 與 `git diff --check`，分列已通過、失敗、partial、unknown 及未完成的實盤項目。
