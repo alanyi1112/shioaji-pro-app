@@ -9,6 +9,7 @@ import { publishPreparedScreenerV6 } from '../apps/multiview/worker/stock-screen
 import { publishPreparedScreenerV7 } from '../apps/multiview/worker/stock-screener-v7-publisher.ts';
 import { SCREENER_INSTITUTIONAL_MAPPING_VERSION } from '../src/lib/stock-screener-v6.ts';
 import { chipDownloadDecision } from '../apps/multiview/worker/stock-screener-chip-policy.ts';
+import { safelyPrepareScreenerDependencyCache } from '../apps/multiview/worker/stock-screener-dependency-cache.ts';
 
 export async function updateScreenerChip(db, { limit = 1, publishOnly = false, fetcher = fetch } = {}) {
   const base = await readScreenerV4Snapshot(db);
@@ -40,7 +41,8 @@ export async function updateScreenerChip(db, { limit = 1, publishOnly = false, f
     return ready;
   });
   if (!publishOnly && pending.length && !due.length) return { state: 'pending', reason: 'reports_waiting',
-    requiredSessions: required.length, remainingSessions: pending.length, collected, waiting };
+    requiredSessions: required.length, remainingSessions: pending.length, collected, waiting,
+    conditionDependencies: await safelyPrepareScreenerDependencyCache(db, now) };
   // Reserve a slot for the current session; history has its own bounded budget.
   const latest = required.at(-1);
   const work = [...(due.includes(latest) ? [latest] : []), ...due.filter(date => date !== latest).slice(0, limit)];
@@ -58,12 +60,13 @@ export async function updateScreenerChip(db, { limit = 1, publishOnly = false, f
     .map(row => `${row.requested_date}|${row.market}|${row.dataset}`));
   const remaining = required.filter(date => ['TWSE','TPEx'].some(market => ['institutional-flow','margin-short']
     .some(dataset => !afterVerified.has(`${date}|${market}|${dataset}`)))).length;
+  const conditionDependencies = await safelyPrepareScreenerDependencyCache(db, now);
   const v5 = await publishPreparedScreenerV5(db);
   const v6 = await publishPreparedScreenerV6(db);
   const v7 = ['published', 'unchanged'].includes(v6.state) ? await publishPreparedScreenerV7(db)
     : { state: 'pending', reason: 'v6_snapshot_pending' };
   return { state: v7.state, requiredSessions: required.length, remainingSessions: remaining,
-    collected, publication: { v5, v6, v7 } };
+    collected, publication: { v5, v6, v7 }, conditionDependencies };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

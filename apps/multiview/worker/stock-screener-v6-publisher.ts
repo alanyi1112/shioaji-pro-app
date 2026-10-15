@@ -7,8 +7,9 @@ import { readScreenerV5Snapshot } from "./stock-screener-v5-repository.ts";
 import { publishScreenerV6Snapshot, readScreenerV6Snapshot, type ScreenerV6Metadata } from "./stock-screener-v6-repository.ts";
 
 type Receipt = { id: string; market: "TWSE" | "TPEx"; requested_date: string; source_date: string | null;
+  status: string;
   payload_hash: string; row_count: number; universe_target: number; missing_count: number; invalid_count: number;
-  verification_status: string | null; mapping_version: string | null };
+  verification_status: string | null; mapping_version: string | null; mapping_payload_hash: string | null };
 type Daily = { symbol: string; session_date: string; foreign_net_shares: string | null; investment_trust_net_shares: string | null;
   institutional_receipt_id: string | null; institutional_mapping_version: string | null; close: string | null; volume_shares: string | null };
 
@@ -23,19 +24,33 @@ async function paged<T>(db: ScreenerDatabase, sql: string, bindings: Array<strin
 
 export async function publishPreparedScreenerV6(db: ScreenerDatabase, now = new Date()) {
   const base = await readScreenerV5Snapshot(db);
+  const built = await buildScreenerV6Evidence(db, base);
+  if (built.state !== 'prepared') return built;
+  const { inputs, metadata } = built;
+  const previous = await readScreenerV6Snapshot(db);
+  if (previous?.metadata.baseSnapshotId === metadata.baseSnapshotId && previous.metadata.receiptsHash === metadata.receiptsHash)
+    return { state: 'unchanged', snapshotId: previous.id } as const;
+  const snapshotId = await publishScreenerV6Snapshot(db, metadata, inputs, now);
+  return { state: 'published', snapshotId, metadata } as const;
+}
+
+/** 不發布、不下載；scoped 僅供隔離的條件底稿，不放寬正式 v6 的全來源 Gate。 */
+export async function buildScreenerV6Evidence(db: ScreenerDatabase,
+  base: { id: string; inputs: import('../../../src/lib/stock-screener-v5.ts').ScreenerInputV5[];
+    metadata: import('./stock-screener-v5-repository.ts').ScreenerV5Metadata } | null, scoped = false) {
   if (!base) return { state: "pending", reason: "v5_snapshot_pending" } as const;
   const effective = base.metadata.effectiveSessionDate;
   const sessions = base.metadata.dailySessions;
   if (sessions.length < 21 || sessions.at(-1) !== effective) return { state: "pending", reason: "mixed_session_dates" } as const;
   const required = sessions.slice(-21);
-  const receipts = await paged<Receipt>(db, `SELECT r.id,r.market,r.requested_date,r.source_date,r.payload_hash,v.row_count,
-      v.universe_target,v.missing_count,v.invalid_count,v.status AS verification_status,v.mapping_version
+  const receipts = await paged<Receipt>(db, `SELECT r.id,r.market,r.requested_date,r.source_date,r.payload_hash,r.status,v.row_count,
+      v.universe_target,v.missing_count,v.invalid_count,v.status AS verification_status,v.mapping_version,v.payload_hash AS mapping_payload_hash
     FROM screener_chip_receipts r LEFT JOIN screener_institutional_mapping_verifications v
       ON v.receipt_id=r.id AND v.mapping_version=?
     WHERE r.dataset='institutional-flow' AND r.requested_date>=? AND r.requested_date<=?
     ORDER BY r.requested_date,r.market,r.id`, [SCREENER_INSTITUTIONAL_MAPPING_VERSION, required[0]!, effective]);
-  const verified = receipts.filter((row) => row.verification_status === "verified"
-    && row.mapping_version === SCREENER_INSTITUTIONAL_MAPPING_VERSION && row.requested_date === row.source_date
+  const verified = receipts.filter((row) => row.status === 'verified' && row.verification_status === "verified"
+    && row.mapping_version === SCREENER_INSTITUTIONAL_MAPPING_VERSION && row.mapping_payload_hash === row.payload_hash && row.requested_date === row.source_date
     && Number(row.invalid_count) === 0 && Number(row.row_count) + Number(row.missing_count) === Number(row.universe_target));
   const keys = new Set(verified.map((row) => `${row.requested_date}|${row.market}`));
   const expected = required.flatMap((date) => (["TWSE", "TPEx"] as const).map((market) => `${date}|${market}`));
@@ -48,7 +63,7 @@ export async function publishPreparedScreenerV6(db: ScreenerDatabase, now = new 
       invalidRows: marketRows.reduce((sum, row) => sum + Number(row.invalid_count), 0),
       lastVerifiedSourceDate: marketRows.map((row) => row.source_date).filter(Boolean).sort().at(-1) ?? null }];
   })) as ScreenerV6Metadata["institutionalCoverage"];
-  if (expected.some((key) => !keys.has(key))) return { state: "pending", reason: "institutional_v2_history_pending",
+  if (!scoped && expected.some((key) => !keys.has(key))) return { state: "pending", reason: "institutional_v2_history_pending",
     coverage, progress: { target: expected.length, processed: expected.filter((key) => keys.has(key)).length } } as const;
   const daily = await paged<Daily>(db, `SELECT d.symbol,d.session_date,d.foreign_net_shares,d.investment_trust_net_shares,
       d.institutional_receipt_id,d.institutional_mapping_version,o.close,o.volume_shares
@@ -60,7 +75,11 @@ export async function publishPreparedScreenerV6(db: ScreenerDatabase, now = new 
     WHERE d.session_date>=? AND d.session_date<=? AND v.receipt_id IS NOT NULL
     ORDER BY d.symbol,d.session_date`, [SCREENER_INSTITUTIONAL_MAPPING_VERSION, required[0]!, effective]);
   const bySymbol = new Map<string, Daily[]>();
-  for (const row of daily) { const values = bySymbol.get(row.symbol) ?? []; values.push(row); bySymbol.set(row.symbol, values); }
+  const verifiedIds = new Set(verified.map(row => row.id));
+  for (const row of daily) {
+    if (!row.institutional_receipt_id || !verifiedIds.has(row.institutional_receipt_id)) continue;
+    const values = bySymbol.get(row.symbol) ?? []; values.push(row); bySymbol.set(row.symbol, values);
+  }
   const inputs: ScreenerInputV6[] = [];
   for (const input of base.inputs) {
     const points: InstitutionalDailyPointV6[] = (bySymbol.get(input.symbol) ?? []).map((row) => ({
@@ -77,13 +96,8 @@ export async function publishPreparedScreenerV6(db: ScreenerDatabase, now = new 
       market: row.market, rowCount: Number(row.row_count), universeTarget: Number(row.universe_target),
       missingCount: Number(row.missing_count), invalidCount: Number(row.invalid_count) })),
     evidenceHashes: inputs.map((row) => row.institutionalV6.evidenceHash) });
-  const previous = await readScreenerV6Snapshot(db);
-  if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) {
-    return { state: "unchanged", snapshotId: previous.id } as const;
-  }
   const metadata: ScreenerV6Metadata = { ...base.metadata, version: 6, schemaVersion: 6,
     formulaVersion: "after-market-v6-institutional-reversal-1", sourceMappingVersion: SCREENER_INSTITUTIONAL_MAPPING_VERSION,
     baseSnapshotId: base.id, receiptsHash, institutionalCoverage: coverage };
-  const snapshotId = await publishScreenerV6Snapshot(db, metadata, inputs, now);
-  return { state: "published", snapshotId, metadata } as const;
+  return { state: 'prepared', inputs, metadata, verifiedKeys: [...keys].sort() } as const;
 }

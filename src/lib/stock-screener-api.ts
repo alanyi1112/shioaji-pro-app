@@ -59,6 +59,7 @@ export interface ScreenerResultRowV3 extends ScreenerResultRow {
     };
 }
 export interface ScreenerResponseV3 {
+    dailyRequired?: boolean;
     version: 3;
     state: ScreenerState;
     reason: string;
@@ -87,6 +88,7 @@ export interface ScreenerResultRowV4 extends ScreenerResultRowV3 {
     };
 }
 export interface ScreenerResponseV4 {
+    dailyRequired?: boolean;
     version: 4;
     state: ScreenerState;
     reason: string;
@@ -116,6 +118,7 @@ export interface ScreenerResultRowV5 extends ScreenerResultRowV4 {
 }
 export interface ScreenerResponseV5 extends Omit<ScreenerResponseV4, 'version' | 'rows' | 'sourceMappingVersion' | 'counts' | 'byMarket'> {
     version: 5;
+    dependencyScope?: { version: 1; sourceSnapshotId: string; required: string[]; preparedAt: string };
     sourceMappingVersion: typeof SCREENER_CHIP_MAPPING_VERSION;
     formulaVersion: typeof SCREENER_V5_FORMULA_VERSION;
     chipCoverage: { daily: Record<'TWSE' | 'TPEx', { target: number; institutional: number; margin: number }>;
@@ -139,11 +142,15 @@ export interface ScreenerV7Counts extends Omit<ScreenerV5Counts, 'missingByCondi
     missingByCondition: ScreenerV5Counts['missingByCondition'] & Record<'foreignReversal' | 'trustReversal'
         | 'bollPosition' | 'rsiCross' | 'kdCross' | 'macdSignal', number>;
 }
-export interface ScreenerResultRowV7 extends ScreenerResultRowV6 {
+export interface ScreenerResultRowV7 extends Omit<ScreenerResultRowV6, 'chipV5' | 'institutionalV6'> {
+    chipV5: ScreenerResultRowV6['chipV5'] | null;
+    institutionalV6: ScreenerResultRowV6['institutionalV6'] | null;
     technicalV7: { outcomes: TechnicalOutcomesV7; evidenceHash: string; through: string };
 }
 export interface ScreenerResponseV7 extends Omit<ScreenerResponseV6, 'version' | 'rows' | 'sourceMappingVersion' | 'formulaVersion' | 'counts' | 'byMarket'> {
     version: 7;
+    queryDataScope?: 'technical-only';
+    sourceSnapshotVersion?: 4;
     sourceMappingVersion: typeof SCREENER_OHLCV_V4_MAPPING_VERSION;
     formulaVersion: typeof SCREENER_V7_FORMULA_VERSION;
     technicalCoverage: Record<'TWSE' | 'TPEx', { target: number; covered: number; complete130: number;
@@ -384,6 +391,20 @@ export function decodeScreenerResponse(value: unknown): ScreenerResponseV3 | Scr
         || !Array.isArray(value.rows) || !(value.snapshotId === null || typeof value.snapshotId === 'string')
         || !(value.createdAt === null || Number.isFinite(Date.parse(String(value.createdAt))))) throw new Error('invalid_screener_response');
     const version = value.version as 3 | 4 | 5 | 6 | 7;
+    const technicalOnly = version === 7 && value.queryDataScope === 'technical-only';
+    if (value.dailyRequired !== undefined && typeof value.dailyRequired !== 'boolean') throw new Error('invalid_screener_response');
+    if (value.queryDataScope !== undefined && !technicalOnly) throw new Error('invalid_screener_response');
+    if (value.dependencyScope !== undefined) {
+        const d = value.dependencyScope;
+        if (version < 5 || technicalOnly || !object(d) || d.version !== 1
+            || typeof d.sourceSnapshotId !== 'string' || !/^[\w-]{36}$/.test(d.sourceSnapshotId)
+            || !Number.isFinite(Date.parse(String(d.preparedAt))) || !Array.isArray(d.required)
+            || d.required.some(k => typeof k !== 'string' || !/^\d{4}-\d{2}-\d{2}\|(TWSE|TPEx)\|(institutional-flow|institutional-v2|margin-short)$/.test(k)))
+            throw new Error('invalid_screener_response');
+    }
+    if (technicalOnly && (value.sourceSnapshotVersion !== 4 || value.chipCoverage !== null
+        || value.institutionalCoverage !== null || !iso(value.effectiveSessionDate)
+        || value.technicalAnchors === null)) throw new Error('invalid_screener_response');
     if (value.sessionReadiness !== undefined && value.sessionReadiness !== null) {
         try { if (!parseScreenerSessionReadiness(value.sessionReadiness)) throw new Error('invalid'); }
         catch { throw new Error('invalid_screener_response'); }
@@ -420,12 +441,14 @@ export function decodeScreenerResponse(value: unknown): ScreenerResponseV3 | Scr
                 throw new Error('invalid_screener_response');
             }
         }
-        if (version >= 5 && (!object(candidate.chipV5) || !object(candidate.chipV5.outcomes)
+        if (technicalOnly && (candidate.chipV5 !== null || candidate.institutionalV6 !== null)) throw new Error('invalid_screener_response');
+        if (version >= 5 && !technicalOnly && (!object(candidate.chipV5) || !object(candidate.chipV5.outcomes)
             || !/^[a-f0-9]{64}$/.test(String(candidate.chipV5.evidenceHash)))) throw new Error('invalid_screener_response');
-        if (version >= 6 && (!object(candidate.institutionalV6) || !object(candidate.institutionalV6.outcomes)
+        if (version >= 6 && !technicalOnly && (!object(candidate.institutionalV6) || !object(candidate.institutionalV6.outcomes)
             || !/^[a-f0-9]{64}$/.test(String(candidate.institutionalV6.evidenceHash)))) throw new Error('invalid_screener_response');
         if (version === 7 && (!object(candidate.technicalV7) || !object(candidate.technicalV7.outcomes)
             || !iso(candidate.technicalV7.through) || !/^[a-f0-9]{64}$/.test(String(candidate.technicalV7.evidenceHash))
+            || technicalOnly && candidate.technicalV7.through !== value.effectiveSessionDate
             || !['bollPosition', 'rsiCross', 'kdCross', 'macdSignal'].every((key) => {
                 const outcome = (candidate.technicalV7 as Record<string, unknown>).outcomes as Record<string, unknown>;
                 const row = outcome[key];

@@ -519,9 +519,10 @@ export function StockScreenerPanel({ targets, onPick, onOpenChart, onTargetChang
             {error && (bollingerResponse || candlestickResponse) && <div>以下保留上次合法查詢快照及原資料日；本次查詢失敗，結果操作已暫停。</div>}
             {applied && <div>已套用 {enabledStockScreenerConditions(applied.criteria).length} 項 · {applied.criteria.mode === 'all' ? '全部符合（AND）' : '任一符合（OR）'}</div>}
             {response && statusReasons[response.reason] && <div>{statusReasons[response.reason]}</div>}
-            {response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current)
+            {response?.dailyRequired === false && <div>此查詢僅使用集保週資料；未啟用的日量與技術資料不參與日期判定。集保資料日：{response.anchors.weekly?.current ?? '待準備'}</div>}
+            {response?.dailyRequired !== false && response?.expectedSessionDate && response.expectedSessionDate !== (response.effectiveSessionDate ?? response.anchors.daily?.current)
                 && <div className={styles.criticalStatus}>資料日期尚未同步：有效 {response.effectiveSessionDate ?? response.anchors.daily?.current ?? '未提供'} · 預期 {response.expectedSessionDate}</div>}
-            {response?.sessionReadiness && response.sessionReadiness.phase !== 'complete' && (['TWSE', 'TPEx'] as const).map((market) => {
+            {response?.dailyRequired !== false && response?.sessionReadiness && response.sessionReadiness.phase !== 'complete' && (['TWSE', 'TPEx'] as const).map((market) => {
                 const publication = response.sessionReadiness!.markets[market];
                 const label = publication.status === 'complete' ? '已完成' : publication.status === 'pending' ? '等待發布'
                     : publication.status === 'rate-limited' ? '冷卻中' : publication.status === 'blocked' ? '來源阻擋' : '驗證失敗';

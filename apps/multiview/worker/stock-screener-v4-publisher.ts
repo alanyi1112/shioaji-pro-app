@@ -9,6 +9,16 @@ import { planOhlcvV4Bootstrap } from "../../../scripts/stock-screener-ohlcv-boot
 import { type ScreenerDatabase } from "./stock-screener-repository.ts";
 import { readScreenerV3Snapshot } from "./stock-screener-v3-repository.ts";
 import { publishScreenerV4Snapshot, readScreenerV4Snapshot } from "./stock-screener-v4-repository.ts";
+import { prepareTechnicalV7Cache } from './stock-screener-v7-technical-cache.ts';
+import { safelyPrepareScreenerDependencyCache } from './stock-screener-dependency-cache.ts';
+
+async function prepareIndependentTechnicalV7(db: ScreenerDatabase, id: string, now: Date) {
+  try {
+    const technical = await prepareTechnicalV7Cache(db, id, now);
+    return { ...technical, conditionDependencies: await safelyPrepareScreenerDependencyCache(db, now) };
+  }
+  catch { return { state: 'pending', reason: 'v7_technical_preparation_failed' } as const; }
+}
 
 type OhlcvRow = { symbol: string; data_date: string; market: "TWSE" | "TPEx"; open: string; high: string;
   low: string; close: string; volume_shares: string };
@@ -67,7 +77,8 @@ export async function publishPreparedScreenerV4(db: ScreenerDatabase, now = new 
   const receiptsHash = await technicalEvidenceHash({ readerVersion: "session-aligned-v2", receipts: relevantReceipts });
   const previous = await readScreenerV4Snapshot(db);
   if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) {
-    return { state: "unchanged", snapshotId: previous.id } as const;
+    return { state: "unchanged", snapshotId: previous.id,
+      technicalV7: await prepareIndependentTechnicalV7(db, previous.id, now) } as const;
   }
 
   const bySymbol = new Map<string, CanonicalOhlcv[]>();
@@ -117,5 +128,6 @@ export async function publishPreparedScreenerV4(db: ScreenerDatabase, now = new 
     return { state: "pending", reason: "mixed_session_dates" } as const;
   }
   const snapshotId = await publishScreenerV4Snapshot(db, metadata, inputs, now);
-  return { state: "published", snapshotId, metadata } as const;
+  return { state: "published", snapshotId, metadata,
+    technicalV7: await prepareIndependentTechnicalV7(db, snapshotId, now) } as const;
 }

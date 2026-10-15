@@ -1,3 +1,4 @@
+import { readScreenerDependencySnapshot } from './stock-screener-dependency-cache.ts';
 import { effectiveCriteria, screenStocks, type ScreenerRow } from "../../../src/lib/stock-screener-domain.ts";
 import { compareTechnicalRows, selectStoredBoll, selectStoredFractal } from "../../../src/lib/stock-screener-technical-patterns.ts";
 import { evaluateMaCriteria, selectStoredDivergence, type ScreenerInputV4 } from "../../../src/lib/stock-screener-v4.ts";
@@ -14,6 +15,7 @@ import { baseResult } from "./stock-screener-v3-route.ts";
 import { handleStockScreenerV6, parseScreenerV6Query } from "./stock-screener-v6-route.ts";
 import { readScreenerFreshness } from "./stock-screener-session-readiness.ts";
 import { readScreenerV7Snapshot } from "./stock-screener-v7-repository.ts";
+import { isTechnicalOnlyV7, queryTechnicalOnlyV7 } from './stock-screener-v7-technical-query.ts';
 
 const technicalKeys = ["bollPosition", "rsiCross", "kdCross", "macdSignal"] as const;
 const chipKeys = ["largeHolderTrend", "largeHolderConcentration", "retailHolderDecline", "trustOwnership",
@@ -144,7 +146,13 @@ export async function handleStockScreenerV7(url: URL, env: { DB?: ScreenerDataba
   if (!newEnabled && !url.pathname.endsWith("/status")) return handleStockScreenerV6(projectV6(url), env, now);
   if (!env.DB) return json({ ...pending("d1_unavailable"), state: "unavailable" }, 503);
   try {
-    const snapshot = await readScreenerV7Snapshot(env.DB, query.cursor?.snapshotId);
+    if (isTechnicalOnlyV7(query.criteria)) {
+      const result = await queryTechnicalOnlyV7(env.DB, query, url.pathname.endsWith('/status'), now);
+      if (result) return json(result);
+      // 舊資料庫可能僅保留完整 v7；沒有 v4 時仍核對原不可變 v7，不製造新資料。
+    }
+    const scoped = newEnabled ? await readScreenerDependencySnapshot(env.DB, query.criteria, query.cursor?.snapshotId) : null;
+    const snapshot = scoped ?? await readScreenerV7Snapshot(env.DB, query.cursor?.snapshotId);
     if (!snapshot) {
       if (query.cursor) return json({ reason: "snapshot_expired" }, 409);
       return json(pending("v7_preparation_pending"));
@@ -235,7 +243,7 @@ export async function handleStockScreenerV7(url: URL, env: { DB?: ScreenerDataba
     const freshnessPending = freshness.pending || !!freshness.expectedSessionDate && snapshot.metadata.effectiveSessionDate < freshness.expectedSessionDate;
     const stale = now.getTime() > Date.parse(snapshot.metadata.validThrough) || freshnessPending;
     const hasMissing = Object.values(counts.missingByCondition).some((count) => count > 0);
-    return json({ version: 7, state: freshnessPending ? "pending" : stale ? "stale" : hasMissing ? "partial" : "ready",
+    return json({ version: 7, ...(scoped ? { dependencyScope: scoped.dependencyScope } : {}), state: freshnessPending ? "pending" : stale ? "stale" : hasMissing ? "partial" : "ready",
       reason: freshnessPending ? freshness.reason : stale ? "snapshot_stale" : "none", snapshotId: snapshot.id,
       universeRevision: snapshot.metadata.universeRevision, formulaVersion: SCREENER_V7_FORMULA_VERSION,
       sourceMappingVersion: SCREENER_OHLCV_V4_MAPPING_VERSION, criteriaFingerprint: query.criteriaKey,

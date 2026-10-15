@@ -1,3 +1,5 @@
+import { readScreenerDependencySnapshot } from './stock-screener-dependency-cache.ts';
+import { screenerRequiresDailyData } from '../../../src/lib/stock-screener-data-dependencies.ts';
 import { effectiveCriteria, screenStocks, type ScreenerRow } from "../../../src/lib/stock-screener-domain.ts";
 import { compareTechnicalRows, selectStoredBoll, selectStoredFractal } from "../../../src/lib/stock-screener-technical-patterns.ts";
 import { evaluateMaCriteria, selectStoredDivergence, type ScreenerInputV4 } from "../../../src/lib/stock-screener-v4.ts";
@@ -117,7 +119,8 @@ export async function handleStockScreenerV5(url: URL, env: { DB?: ScreenerDataba
   if (!chipEnabled(query.criteria) && !url.pathname.endsWith("/status")) return handleStockScreenerV4(projectV4(url), env, now);
   if (!env.DB) return json({ ...pending("d1_unavailable"), state: "unavailable" }, 503);
   try {
-    const snapshot = await readScreenerV5Snapshot(env.DB, query.cursor?.snapshotId);
+    const scoped = await readScreenerDependencySnapshot(env.DB, query.criteria, query.cursor?.snapshotId);
+    const snapshot = scoped ?? await readScreenerV5Snapshot(env.DB, query.cursor?.snapshotId);
     if (!snapshot) {
       if (query.cursor) return json({ reason: "snapshot_expired" }, 409);
       return json(pending("v5_preparation_pending", await readScreenerChipHealth(env.DB)));
@@ -183,10 +186,11 @@ export async function handleStockScreenerV5(url: URL, env: { DB?: ScreenerDataba
     });
     const offset = query.cursor?.offset ?? 0, next = offset + query.limit;
     if (offset > rows.length) return json({ reason: "invalid_cursor" }, 400);
-    const freshnessPending = freshness.pending || !!freshness.expectedSessionDate && snapshot.metadata.effectiveSessionDate < freshness.expectedSessionDate;
+    const dailyRequired = screenerRequiresDailyData(query.criteria as unknown as Record<string, unknown>);
+    const freshnessPending = dailyRequired && (freshness.pending || !!freshness.expectedSessionDate && snapshot.metadata.effectiveSessionDate < freshness.expectedSessionDate);
     const stale = now.getTime() > Date.parse(snapshot.metadata.validThrough) || freshnessPending;
     const hasMissing = Object.values(counts.missingByCondition).some((count) => count > 0);
-    return json({ version: 5, state: freshnessPending ? "pending" : stale ? "stale" : hasMissing ? "partial" : "ready",
+    return json({ version: 5, dailyRequired, ...(scoped ? { dependencyScope: scoped.dependencyScope } : {}), state: freshnessPending ? "pending" : stale ? "stale" : hasMissing ? "partial" : "ready",
       reason: freshnessPending ? freshness.reason : stale ? "snapshot_stale" : "none", snapshotId: snapshot.id,
       universeRevision: snapshot.metadata.universeRevision, formulaVersion: SCREENER_V5_FORMULA_VERSION,
       sourceMappingVersion: SCREENER_CHIP_MAPPING_VERSION, criteriaFingerprint: query.criteriaKey,

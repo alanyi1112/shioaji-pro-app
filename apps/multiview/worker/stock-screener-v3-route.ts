@@ -10,6 +10,7 @@ import type { ScreenerDatabase } from "./stock-screener-repository.ts";
 import { readScreenerSnapshot } from "./stock-screener-repository.ts";
 import { readScreenerV3Snapshot } from "./stock-screener-v3-repository.ts";
 import { readScreenerFreshness } from "./stock-screener-session-readiness.ts";
+import { screenerRequiresDailyData } from '../../../src/lib/stock-screener-data-dependencies.ts';
 
 const allowedKeys = new Set(["version", "mode", "volume", "volumeThreshold", "volumeTurnover", "volumeTurnoverMinimumWan",
   "holder", "holderThreshold", "holderMode", "holderStreakWeeks", "holderTurnover", "holderTurnoverMinimumWan",
@@ -121,8 +122,9 @@ export async function handleStockScreenerV3(url: URL, env: { DB?: ScreenerDataba
     const expectedSessionDate = freshness.readiness ? freshness.expectedSessionDate
       : latestBase?.metadata.expectedSessionDate ?? latestBase?.metadata.anchors.daily?.current ?? freshness.expectedSessionDate;
     const technicalThrough = technicalSnapshot?.metadata.technicalAnchors.through ?? null;
-    const mixed = freshness.pending || !expectedSessionDate || currentSessionDate !== expectedSessionDate
-      || technicalRequired && technicalThrough !== expectedSessionDate;
+    const dailyRequired = screenerRequiresDailyData(query.criteria as unknown as Record<string, unknown>);
+    const mixed = dailyRequired && (freshness.pending || !expectedSessionDate || currentSessionDate !== expectedSessionDate
+      || technicalRequired && technicalThrough !== expectedSessionDate);
     if (mixed && !query.cursor) {
       const progressRow = await env.DB.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-ohlcv-progress'").first<{ checkpoint: string }>();
       let progress: ScreenerV3Progress | null = null;
@@ -175,16 +177,19 @@ export async function handleStockScreenerV3(url: URL, env: { DB?: ScreenerDataba
     });
     const offset = query.cursor?.offset ?? 0;
     if (offset > rows.length) return json({ reason: "invalid_cursor" }, 400);
+    const expectedWeekDate = 'expectedWeekDate' in snapshot.metadata ? snapshot.metadata.expectedWeekDate : null;
+    const weeklyPending = query.criteria.holder.enabled && (!snapshot.metadata.anchors.weekly
+      || !!expectedWeekDate && snapshot.metadata.anchors.weekly.current < expectedWeekDate);
     const next = offset + query.limit, stale = now.getTime() > Date.parse(snapshot.metadata.validThrough) || mixed;
     const hasMissing = Object.values(counts.missingByCondition).some((count) => count > 0);
-    const payload = { version: 3, state: stale ? "stale" : hasMissing ? "partial" : "ready",
-      reason: mixed ? "mixed_session_dates" : stale ? "snapshot_stale" : "none", snapshotId: snapshot.id, universeRevision: snapshot.metadata.universeRevision,
+    const payload = { version: 3, dailyRequired, state: weeklyPending ? 'pending' : stale ? "stale" : hasMissing ? "partial" : "ready",
+      reason: weeklyPending ? 'period_pending' : mixed ? "mixed_session_dates" : stale ? "snapshot_stale" : "none", snapshotId: snapshot.id, universeRevision: snapshot.metadata.universeRevision,
       formulaVersion: SCREENER_V3_FORMULA_VERSION, criteriaFingerprint: query.criteriaKey,
       expectedSessionDate, effectiveSessionDate: currentSessionDate, sessionReadiness: freshness.readiness, createdAt: snapshot.createdAt,
       anchors: snapshot.metadata.anchors, technicalAnchors: technicalSnapshot?.metadata.technicalAnchors ?? null, counts, byMarket,
       preparation: technicalSnapshot?.metadata.progress ?? null,
-      rows: url.pathname.endsWith("/status") || stale ? [] : rows.slice(offset, next),
-      nextCursor: !url.pathname.endsWith("/status") && !stale && next < rows.length
+      rows: url.pathname.endsWith("/status") || stale || weeklyPending ? [] : rows.slice(offset, next),
+      nextCursor: !url.pathname.endsWith("/status") && !stale && !weeklyPending && next < rows.length
         ? btoa(JSON.stringify({ version: 3, snapshotId: snapshot.id, offset: next, fingerprint: query.fingerprint })) : null };
     return json(payload);
   } catch (error) {

@@ -1,3 +1,4 @@
+import { readScreenerDependencySnapshot } from './stock-screener-dependency-cache.ts';
 import { effectiveCriteria, screenStocks, type ScreenerRow } from "../../../src/lib/stock-screener-domain.ts";
 import { compareTechnicalRows, selectStoredBoll, selectStoredFractal } from "../../../src/lib/stock-screener-technical-patterns.ts";
 import { evaluateMaCriteria, selectStoredDivergence, type ScreenerInputV4 } from "../../../src/lib/stock-screener-v4.ts";
@@ -123,7 +124,8 @@ export async function handleStockScreenerV6(url: URL, env: { DB?: ScreenerDataba
   }
   if (!env.DB) return json({ ...pending("d1_unavailable"), state: "unavailable" }, 503);
   try {
-    const snapshot = await readScreenerV6Snapshot(env.DB, query.cursor?.snapshotId);
+    const scoped = await readScreenerDependencySnapshot(env.DB, query.criteria, query.cursor?.snapshotId);
+    const snapshot = scoped ?? await readScreenerV6Snapshot(env.DB, query.cursor?.snapshotId);
     if (!snapshot) {
       if (query.cursor) return json({ reason: "snapshot_expired" }, 409);
       return json(pending("v6_preparation_pending", await readScreenerChipHealth(env.DB)));
@@ -196,7 +198,7 @@ export async function handleStockScreenerV6(url: URL, env: { DB?: ScreenerDataba
     const freshnessPending = freshness.pending || !!freshness.expectedSessionDate && snapshot.metadata.effectiveSessionDate < freshness.expectedSessionDate;
     const stale = now.getTime() > Date.parse(snapshot.metadata.validThrough) || freshnessPending;
     const hasMissing = Object.values(counts.missingByCondition).some((count) => count > 0);
-    return json({ version: 6, state: freshnessPending ? "pending" : stale ? "stale" : hasMissing ? "partial" : "ready",
+    return json({ version: 6, ...(scoped ? { dependencyScope: scoped.dependencyScope } : {}), state: freshnessPending ? "pending" : stale ? "stale" : hasMissing ? "partial" : "ready",
       reason: freshnessPending ? freshness.reason : stale ? "snapshot_stale" : "none", snapshotId: snapshot.id,
       universeRevision: snapshot.metadata.universeRevision, formulaVersion: SCREENER_V6_FORMULA_VERSION,
       sourceMappingVersion: SCREENER_INSTITUTIONAL_MAPPING_VERSION, criteriaFingerprint: query.criteriaKey,

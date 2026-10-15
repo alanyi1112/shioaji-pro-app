@@ -39,7 +39,34 @@ function tdccFeature(row: TdccRow, receiptId: string | null): TdccChipWeek | nul
   } catch { return null; }
 }
 
+async function readCloses(db: ScreenerDatabase, first: string, last: string) {
+  const rows: OhlcvRow[] = [];
+  let afterSymbol = '', afterDate = '';
+  for (;;) {
+    const page = (await db.prepare(`SELECT symbol,data_date,close FROM screener_daily_ohlcv
+      INDEXED BY screener_daily_ohlcv_symbol_date_idx WHERE (symbol,data_date)>(?,?)
+      AND data_date>=? AND data_date<=? AND validation='canonical-complete-v2'
+      ORDER BY symbol,data_date LIMIT 5000`).bind(afterSymbol, afterDate, first, last).all<OhlcvRow>()).results ?? [];
+    rows.push(...page);
+    if (rows.length > 130 * 10000) throw Error('dependency_cache_budget_exceeded');
+    if (page.length < 5000) return rows;
+    afterSymbol = page.at(-1)!.symbol; afterDate = page.at(-1)!.data_date;
+  }
+}
+
 export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new Date()) {
+  const built = await buildScreenerV5Evidence(db);
+  if (built.state !== 'prepared') return built;
+  const { base, inputs, metadata } = built;
+  const previous = await readScreenerV5Snapshot(db);
+  if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === metadata.receiptsHash)
+    return { state: 'unchanged', snapshotId: previous.id } as const;
+  const snapshotId = await publishScreenerV5Snapshot(db, metadata, inputs, now);
+  return { state: 'published', snapshotId, metadata } as const;
+}
+
+/** 唯讀建構資料；查詢專用底稿允許未選用來源缺漏，但不取得完整 v5 發布資格。 */
+export async function buildScreenerV5Evidence(db: ScreenerDatabase, scoped = false) {
   const base = await readScreenerV4Snapshot(db);
   if (!base) return { state: "pending", reason: "v4_snapshot_pending" } as const;
   const effective = base.metadata.effectiveSessionDate;
@@ -55,7 +82,7 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
   const receiptKeys = new Set(verified.map((row) => `${row.requested_date}|${row.market}|${row.dataset}`));
   const expectedKeys = requiredDaily.flatMap((date) => (["TWSE", "TPEx"] as const).flatMap((market) =>
     (["institutional-flow", "margin-short"] as const).map((dataset) => `${date}|${market}|${dataset}`)));
-  if (expectedKeys.some((key) => !receiptKeys.has(key))) return { state: "pending", reason: "chip_history_pending",
+  if (!scoped && expectedKeys.some((key) => !receiptKeys.has(key))) return { state: "pending", reason: "chip_history_pending",
     progress: { target: expectedKeys.length, processed: expectedKeys.filter((key) => receiptKeys.has(key)).length } } as const;
   const chipRows = await readPaged<ChipRow>(db,
     `SELECT d.symbol,d.session_date,
@@ -68,24 +95,31 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
      LEFT JOIN screener_chip_receipts m ON m.id=d.margin_receipt_id AND m.status='verified' AND m.source_date=d.session_date
      WHERE d.session_date>=? AND d.session_date<=? ORDER BY d.symbol,d.session_date`,
     [requiredDaily[0], effective]);
-  const closes = await readPaged<OhlcvRow>(db,
-    "SELECT symbol,data_date,close FROM screener_daily_ohlcv WHERE data_date>=? AND data_date<=? AND validation='canonical-complete-v2' ORDER BY symbol,data_date",
-    [sessions[0], effective]);
+  const verifiedIds = new Set(verified.map(row => String(row.id)));
+  for (const row of chipRows) {
+    if (!row.institutional_receipt_id || !verifiedIds.has(row.institutional_receipt_id)) {
+      row.investment_trust_net_shares = null; row.institutional_receipt_id = null;
+    }
+    if (!row.margin_receipt_id || !verifiedIds.has(row.margin_receipt_id)) {
+      row.margin_today_balance_lots = null; row.short_today_balance_lots = null; row.margin_receipt_id = null;
+    }
+  }
+  const closes = await readCloses(db, sessions[0]!, effective);
   const candidateDates = (await db.prepare(`SELECT DISTINCT data_date FROM screener_tdcc_weekly
     WHERE validation='full-17' AND data_date<=? ORDER BY data_date DESC LIMIT 13`)
     .bind(effective).all<{ data_date: string }>()).results ?? [];
-  if (candidateDates.length < 4) return { state: "pending", reason: "tdcc_universe_coverage_pending" } as const;
+  if (!scoped && candidateDates.length < 4) return { state: "pending", reason: "tdcc_universe_coverage_pending" } as const;
   const candidateRows = await readPaged<TdccRow>(db,
     `SELECT symbol,data_date,payload FROM screener_tdcc_weekly WHERE validation='full-17'
-     AND data_date>=? AND data_date<=? ORDER BY symbol,data_date`, [candidateDates.at(-1)!.data_date, candidateDates[0]!.data_date]);
+     AND data_date>=? AND data_date<=? ORDER BY symbol,data_date`, [candidateDates.at(-1)?.data_date ?? effective, candidateDates[0]?.data_date ?? effective]);
   // Keep official periods even when one symbol is missing; never compress a gap into a weekly transition.
   const tdccPeriods = [...new Set([...candidateDates.map((row) => row.data_date),
     ...(base.metadata.anchors.weeklyPeriods ?? [])])].filter((date) => date <= effective).sort().slice(-13);
-  if (tdccPeriods.length < 4) return { state: "pending", reason: "tdcc_universe_coverage_pending" } as const;
+  if (!scoped && tdccPeriods.length < 4) return { state: "pending", reason: "tdcc_universe_coverage_pending" } as const;
   const tdccRows = candidateRows.filter((row) => tdccPeriods.includes(row.data_date));
   const provenanceRows = await readPaged<{ symbol: string; data_date: string; receipt_id: string | null }>(db,
     "SELECT symbol,data_date,receipt_id FROM tdcc_distribution_row_provenance WHERE data_date>=? AND data_date<=? ORDER BY symbol,data_date",
-    [tdccPeriods[0]!, tdccPeriods.at(-1)!]).catch(() => []);
+    [tdccPeriods[0] ?? effective, tdccPeriods.at(-1) ?? effective]).catch(() => []);
   const receiptByTdcc = new Map(provenanceRows.map((row) => [`${row.symbol}|${row.data_date}`, row.receipt_id]));
   const universeRows = await readPaged<{ symbol: string; payload: string; issued_common_shares: string | null;
     issued_shares_source_date: string | null; issued_shares_source_url: string | null; issued_shares_payload_hash: string | null;
@@ -122,8 +156,6 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
   }
   const receiptsHash = await technicalEvidenceHash({ readerVersion: "adjacent-tdcc-v2", tdccPeriods, evidenceHashes: inputs.map((input) => input.chipV5.evidenceHash), receipts: verified.map((row) => ({ id: row.id, hash: row.payload_hash,
     date: row.source_date, market: row.market, dataset: row.dataset })) });
-  const previous = await readScreenerV5Snapshot(db);
-  if (previous?.metadata.baseSnapshotId === base.id && previous.metadata.receiptsHash === receiptsHash) return { state: "unchanged", snapshotId: previous.id } as const;
   const marketTargets = { TWSE: base.inputs.filter((row) => row.market === "TWSE").length,
     TPEx: base.inputs.filter((row) => row.market === "TPEx").length };
   const coverage = { daily: { TWSE: { target: marketTargets.TWSE, institutional: 0, margin: 0 },
@@ -135,13 +167,12 @@ export async function publishPreparedScreenerV5(db: ScreenerDatabase, now = new 
     coverage.daily[market].institutional = latest.filter((row) => row.institutional_receipt_id).length;
     coverage.daily[market].margin = latest.filter((row) => row.margin_receipt_id).length;
   }
-  if (issuedValid !== inputs.length) return { state: "pending", reason: "issued_shares_coverage_pending", coverage } as const;
+  if (!scoped && issuedValid !== inputs.length) return { state: "pending", reason: "issued_shares_coverage_pending", coverage } as const;
   const metadata: ScreenerV5Metadata = { version: 5, schemaVersion: 5, formulaVersion: SCREENER_V5_FORMULA_VERSION,
     sourceMappingVersion: SCREENER_CHIP_MAPPING_VERSION, baseSnapshotId: base.id, universeRevision: base.metadata.universeRevision,
     effectiveSessionDate: effective, expectedSessionDate: effective, dailyThrough: effective,
     weeklyThrough: tdccPeriods.at(-1) ?? null, dailySessions: sessions, tdccPeriods, receiptsHash,
     total: inputs.length, validThrough: base.metadata.validThrough, anchors: base.metadata.anchors,
     technicalAnchors: base.metadata.technicalAnchors, coverage };
-  const snapshotId = await publishScreenerV5Snapshot(db, metadata, inputs, now);
-  return { state: "published", snapshotId, metadata } as const;
+  return { state: 'prepared', base, inputs, metadata, verifiedKeys: [...receiptKeys].sort() } as const;
 }

@@ -3,10 +3,11 @@ import { effectiveCriteria, screenStocks, type Verdict } from '../../../src/lib/
 import { selectStoredFractal, selectStoredBoll } from '../../../src/lib/stock-screener-technical-patterns.ts';
 import { evaluateMaCriteria, selectStoredDivergence } from '../../../src/lib/stock-screener-v4.ts';
 import { evaluateChipCriteria } from '../../../src/lib/stock-screener-v5.ts';
-import { evaluateInstitutionalCriteriaV6 } from '../../../src/lib/stock-screener-v6.ts';
+import { evaluateInstitutionalCriteriaV6, combineCriteriaV6 } from '../../../src/lib/stock-screener-v6.ts';
 import { evaluateTechnicalCriteriaV7, combineCriteriaV7, type CriteriaV7 } from '../../../src/lib/stock-screener-v7.ts';
 import { readScreenerV7Snapshot } from './stock-screener-v7-repository.ts';
 import type { ScreenerDatabase } from './stock-screener-repository.ts';
+import { readScreenerDependencySnapshot } from './stock-screener-dependency-cache.ts';
 
 export const enabledLegacyBranches = (c: CriteriaV7) => Object.entries(c).filter(([key, value]) => key !== 'mode'
   && value && typeof value === 'object' && 'enabled' in value && value.enabled).map(([key]) => key);
@@ -20,7 +21,7 @@ export async function readBollingerLegacyJoin(db: ScreenerDatabase, criteria: Cr
   const columns = (await db.prepare('PRAGMA table_info(screener_snapshots)').all<{ name: string }>()).results ?? [];
   if (!columns.some(c => c.name === 'schema_version')) return unknown;
   let snapshot;
-  try { snapshot = await readScreenerV7Snapshot(db); }
+  try { snapshot = await readScreenerDependencySnapshot(db, criteria) ?? await readScreenerV7Snapshot(db); }
   catch (e) { if (e instanceof Error && /^invalid_.*snapshot$/.test(e.message)) return unknown; throw e; }
   if (!snapshot || snapshot.metadata.effectiveSessionDate !== date || snapshot.metadata.universeRevision !== universeRevision
     || snapshot.inputs.length !== symbols.length || snapshot.inputs.some(r => !symbols.includes(r.symbol))) return unknown;
@@ -34,8 +35,10 @@ export async function readBollingerLegacyJoin(db: ScreenerDatabase, criteria: Cr
       ma: criteria.ma.enabled ? evaluateMaCriteria(input.technicalV4.ma, criteria.ma).verdict : undefined,
       divergence: criteria.divergence.enabled ? selectStoredDivergence(input.technicalV4.divergence, criteria.divergence).verdict : undefined };
     const chip = evaluateChipCriteria(input.chipV5, criteria), institutional = evaluateInstitutionalCriteriaV6(input.institutionalV6, criteria);
-    const technical = evaluateTechnicalCriteriaV7(input.technicalV7, criteria);
-    return [input.symbol, { verdict: combineCriteriaV7(criteria, legacy, chip, institutional, technical),
+    const technicalRequired = (['bollPosition','rsiCross','kdCross','macdSignal'] as const).some(k => criteria[k].enabled);
+    const technical = technicalRequired && input.technicalV7 ? evaluateTechnicalCriteriaV7(input.technicalV7, criteria) : null;
+    return [input.symbol, { verdict: technical ? combineCriteriaV7(criteria, legacy, chip, institutional, technical)
+      : combineCriteriaV6(criteria, legacy, chip, institutional),
       evidence: { legacy, chip, institutional, technical } }];
   }));
   return { snapshotId: snapshot.id, reason: 'none', enabled, rows };

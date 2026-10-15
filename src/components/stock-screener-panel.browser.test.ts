@@ -158,6 +158,36 @@ async function mount(
     return { host, onPick, onOpenChart, onTargetChange, onAddToWatchlist, fetcher };
 }
 describe('收盤後選股面板（fixture 驗收）', () => {
+    it('僅用週資料時明示真實週資料日，不以未使用的日資料缺日誤報紅字', async () => {
+        const weekly = { ...ready, dailyRequired: false, effectiveSessionDate: '2026-08-28', expectedSessionDate: '2026-08-31' };
+        const { host } = await mount(undefined, Promise.resolve(Response.json(weekly)));
+        expect(host.textContent).toContain('此查詢僅使用集保週資料');
+        expect(host.textContent).toContain('集保資料日：2026-08-28');
+        expect(host.textContent).not.toContain('資料日期尚未同步：');
+    });
+    it('純布林位置可從舊籌碼日期切到當日技術結果，不要求籌碼證據或寫入清單', async () => {
+        const old = { ...readyV7, state: 'pending', reason: 'mixed_session_dates',
+            effectiveSessionDate: '2026-10-14', expectedSessionDate: '2026-10-15', rows: [] };
+        const { host, fetcher, onPick, onAddToWatchlist } = await mount(undefined, Promise.resolve(Response.json(old)));
+        await act(async () => button(host, '全部取消').click());
+        await openCondition(host, 'technical', 'bollPosition');
+        await act(async () => host.querySelector<HTMLInputElement>('[aria-label="啟用布林通道位置"]')!.click());
+        const current = { ...readyV7, queryDataScope: 'technical-only', sourceSnapshotVersion: 4,
+            effectiveSessionDate: '2026-10-15', expectedSessionDate: '2026-10-15', chipCoverage: null, institutionalCoverage: null,
+            technicalAnchors: { through: '2026-10-15', sessions: Array.from({ length: 130 }, (_, i) =>
+                new Date(Date.UTC(2026, 9, 15 - 129 + i)).toISOString().slice(0, 10)) },
+            rows: readyV7.rows.map(row => ({ ...row, chipV5: null, institutionalV6: null,
+                technicalV7: { ...row.technicalV7, through: '2026-10-15' } })) };
+        fetcher.mockImplementation(async (url: string) => Response.json(url.includes('/results?') ? current : old));
+        await act(async () => button(host, '開始篩選').click());
+        expect(host.textContent).toContain('有效 2026-10-15');
+        expect(host.textContent).not.toContain('資料日期尚未同步');
+        expect(host.textContent).not.toContain('籌碼覆蓋：');
+        expect(host.textContent).toContain('3008');
+        expect(onPick).not.toHaveBeenCalled(); expect(onAddToWatchlist).not.toHaveBeenCalled();
+        const calls = fetcher.mock.calls as unknown as Array<[string, RequestInit?]>;
+        expect(calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+    });
     it('兩項預設、手動篩選、原值、指定圖表與窄版內部捲動', async () => {
         const { host, onPick, fetcher } = await mount();
         expect(host.querySelector<HTMLInputElement>('[aria-label="成交量倍數"]')!.value).toBe('3');
