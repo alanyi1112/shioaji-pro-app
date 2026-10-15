@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 import { localShioajiTransportPlugin } from "./build/local-shioaji-transport-plugin";
+import { localListenerLivenessPlugin } from "./build/local-listener-liveness.mjs";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -83,6 +84,7 @@ export default defineConfig(async () => {
       ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
     },
     plugins: [
+      localListenerLivenessPlugin(),
       localShioajiTransportPlugin({
         upstream: "http://127.0.0.1:8080",
         webTarget: "http://127.0.0.1:5173",
