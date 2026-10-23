@@ -82,6 +82,25 @@ watchdog 不會修復、啟動或探測 production 行情，也不會載入 CA�
 
 交易終端「版面 → MultiView」會先開啟 5173 的輕量 launcher。launcher 只讀取 5174 的固定 health endpoint 與 Shioaji mode；確認 simulation 後才導向 MultiView。若 5174 未啟動，畫面會保留可操作的重試與重啟指引。
 
+## Simulation API 啟動錯誤日誌
+
+2026-10-23 16:30:39 已依使用者另次明確授權，備份舊版並原子安裝 JSONL `/2` wrapper 至 App Support；安裝當時沒有重啟程序。**17:28 唯讀核對已確認新版由既有 launchd 新世代載入**：wrapper PID956／API PID1200、16:56:04 的同一 attemptId 啟動與實際輸出、已安裝 hash 及完整命令綁定均一致。詳見 `openspec/changes/archive/2026-10-23-improve-simulation-api-startup-diagnostics/acceptance/natural-load-2026-10-23.md`；此為新版載入通過，不代表完整行情或真實失敗分支已全部驗收。
+
+repo 的 `scripts/intraday-monitor-runtime/service-log-wrapper.mjs` 為新版來源。程式修改與離線測試本身不會換版已安裝副本，單檔安裝也不等於現有程序重新載入。本次安裝及證據整理沒有重啟服務、登入、探測行情或增加下載，也沒有修改兩站與自然驗收追蹤。既有 `/1` hash 無法還原過去的失敗原因；現存 `/2` 的 HTTP 400／unknown 只按允許清單判讀，不推定端點或深層根因。
+
+正式日誌位置為 `~/Library/Application Support/RealTimeStock/logs/simulation-api.jsonl`。目錄 0700、檔案 0600，5 MiB 起輪替，最多保留 `.1`～`.5`；新舊 schema 應分別解讀。讀取既有檔案即可診斷，不需要執行 `local-runtime status` 或重新啟動 API 來取得新證據。
+
+| 欄位 | 判讀方式 |
+| --- | --- |
+| `attemptId`／`childPid`／`sequence`／`elapsedMs` | 關聯同一次 wrapper 的程序、訊息順序與經過時間；每次啟動使用不同 attemptId，不保存 argv／環境內容。 |
+| `diagnostic.reason`／`code`／`httpStatus` | 固定允許清單的 DNS、連線、TLS、認證、session、監聽位址、權限／檔案及 runtime 前置契約訊號。未識別內容為 unknown，不保存自由文字。 |
+| `diagnostic.stage`／`evidence` | 訊息觀測階段與 `pattern_match`，不是獨立根因驗證或行情 ready 證明。單獨 login failed 不推定金鑰錯誤，HTTP 403 不推定憑證無效。 |
+| `messageHash`／`messageBytes`／`analysisTruncated`／`unterminated` | 完整原始行（不含換行）的 hash／byte 數；只分析前 16 KiB，超長行明示截斷，未換行尾段亦保留。`/1` 曾移除 CR，新 `/2` hash 保留 CR，不能將 CRLF 的跨 schema hash 當同一訊息。 |
+| `process_exit` | 保存退出碼、signal、spawn_error／安全 spawnCode、訊息／截斷計數；先排空雙 pipe 再記退出。 |
+| `lastDiagnostic`／`lastKnownDiagnostic` | 分別是最後觀測診斷與最後符合允許規則的診斷，搭配各自 sequence 回查。最後未知錯誤不被較早已知錯誤掩蓋；兩者都不能自動當成退出的唯一原因。 |
+
+URL、帳號／金鑰／token 等敏感欄位及 JSON request／headers 容器不作診斷證據；任何原文、stack、路徑或未列入清單的字串都不寫入。`rawMessageSaved` 固定 false。寫入失敗只回報固定訊息與安全錯誤碼，不回顯 OS 原文或路徑，也不執行修復／重啟。未知 SDK 格式需另補固定規則與離線案例，不能以 hash 猜測根因。
+
 ## 切換模式
 
 切回預設 simulation：

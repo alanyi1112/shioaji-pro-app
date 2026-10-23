@@ -1,0 +1,332 @@
+{
+  "schemaVersion": "simulation-api-natural-load-evidence/1",
+  "observedFrom": "2026-10-23T09:28:07.714227+00:00",
+  "observedUntil": "2026-10-23T09:28:08.054021+00:00",
+  "timezone": "Asia/Taipei",
+  "result": "pass_for_wrapper_activation_only",
+  "installedAt": "2026-10-23T08:30:39.617085+00:00",
+  "installationReceiptSha256": "d3496aeb313949c6b32142c7feac76110e4d5c03e40b223d5dc8ff94799f75af",
+  "files": {
+    "repoWrapper": {
+      "mode": "0o644",
+      "ownedByCurrentUser": true,
+      "isSymlink": false,
+      "bytes": 14970,
+      "sha256": "7d124d71f90be70641fa0826f6d08954aa0c579f692ac39ae81bc898abb57e66"
+    },
+    "installedWrapper": {
+      "mode": "0o600",
+      "ownedByCurrentUser": true,
+      "isSymlink": false,
+      "bytes": 14970,
+      "sha256": "7d124d71f90be70641fa0826f6d08954aa0c579f692ac39ae81bc898abb57e66"
+    },
+    "backupWrapper": {
+      "mode": "0o600",
+      "ownedByCurrentUser": true,
+      "isSymlink": false,
+      "bytes": 3761,
+      "sha256": "b27bd76407487a497abf2701e3ae42bfec5da2e448f68f1c11db4c3b84d0eeb5"
+    },
+    "binDirectory": {
+      "mode": "0o700",
+      "ownedByCurrentUser": true,
+      "isSymlink": false,
+      "bytes": 256,
+      "sha256": null
+    },
+    "logDirectory": {
+      "mode": "0o700",
+      "ownedByCurrentUser": true,
+      "isSymlink": false,
+      "bytes": 256,
+      "sha256": null
+    },
+    "currentLog": {
+      "mode": "0o600",
+      "ownedByCurrentUser": true,
+      "isSymlink": false,
+      "bytes": 232617,
+      "sha256": "610dbeea80757746e66181ede8b096fb917cbb61f8b4d540fc8bc66501c5ca71"
+    }
+  },
+  "job": {
+    "label": "com.alanyi.realtimestock.simulation-api",
+    "domainCurrentUser": true,
+    "state": "running",
+    "pid": 956,
+    "runs": 1,
+    "last exit code": "(never exited)",
+    "plistSha256": "cd97d7743c3116b48d29f1ce19612ab9bbd935a75d38ad02ba4c19ca456e0889",
+    "runAtLoad": true,
+    "keepAlive": true,
+    "liveCommandMatchesPlist": true,
+    "wrapperPathBound": true,
+    "logPathBound": true
+  },
+  "bootAt": "2026-10-23T08:54:09+00:00",
+  "wrapperProcess": {
+    "pid": 956,
+    "ppid": 1,
+    "ownedByCurrentUser": true,
+    "startedLocal": "Fri Oct 23 16:56:00 2026",
+    "executableClass": "node"
+  },
+  "apiProcess": {
+    "pid": 1200,
+    "ppid": 956,
+    "ownedByCurrentUser": true,
+    "startedLocal": "Fri Oct 23 16:56:04 2026",
+    "executableClass": "shioaji"
+  },
+  "listener8080Pid": 1200,
+  "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+  "logRead": {
+    "capBytes": 33554432,
+    "totalBytes": 26447774,
+    "files": [
+      {
+        "name": "simulation-api.jsonl",
+        "snapshotBytes": 232617,
+        "snapshotSha256": "610dbeea80757746e66181ede8b096fb917cbb61f8b4d540fc8bc66501c5ca71",
+        "mode": "0o600"
+      },
+      {
+        "name": "simulation-api.jsonl.1",
+        "snapshotBytes": 5242953,
+        "snapshotSha256": "b3fee9a50c2e3be6920fd2a71c63711cfb4a9393171f14a84dd70096ce6acb73",
+        "mode": "0o600"
+      },
+      {
+        "name": "simulation-api.jsonl.2",
+        "snapshotBytes": 5242947,
+        "snapshotSha256": "9ebf500e2c4c193f6ccc5c717950c460c3500ae07d75f5870edf78c6a2b373a7",
+        "mode": "0o600"
+      },
+      {
+        "name": "simulation-api.jsonl.3",
+        "snapshotBytes": 5243018,
+        "snapshotSha256": "1a771fb8ce4b75de4c4203be531c51cc5ea4dd9b7bb971dddb20f5f2c3d98607",
+        "mode": "0o600"
+      },
+      {
+        "name": "simulation-api.jsonl.4",
+        "snapshotBytes": 5243110,
+        "snapshotSha256": "5b18a1cd8ee7cf5a690838f0d56afc352756e4cd1f909d47111c37b94eef38c4",
+        "mode": "0o600"
+      },
+      {
+        "name": "simulation-api.jsonl.5",
+        "snapshotBytes": 5243129,
+        "snapshotSha256": "6abccfcf344fef6a2ecf15098cdebe2f17449ea0b616a8ee91b77ae70feaa933",
+        "mode": "0o600"
+      }
+    ],
+    "parseErrors": 0,
+    "partialLines": 0,
+    "attemptRecords": 1803,
+    "sequenceFirst": 0,
+    "sequenceLast": 1802,
+    "sequenceContiguous": true,
+    "timestampsMonotonic": true,
+    "elapsedMonotonic": true,
+    "allRawMessageSavedFalse": true,
+    "outputCountsByStream": {
+      "stderr": 1,
+      "stdout": 1800
+    },
+    "eventCounts": {
+      "wrapper_start": 1,
+      "process_start": 1,
+      "error": 2,
+      "process_output": 1546,
+      "business_session": 7,
+      "subscription": 226,
+      "market_data": 20
+    },
+    "diagnosticCounts": {
+      "unknown": 2,
+      "http_error": 180
+    },
+    "http400Count": 180,
+    "processExitObserved": false,
+    "samples": [
+      {
+        "file": "simulation-api.jsonl.1",
+        "line": 18005,
+        "recordSha256": "e55183551dbc69206f4002497aaa5317115084e985657f891030ec09df2c8597",
+        "schemaVersion": "realtimestock-redacted-service-log/2",
+        "event": "wrapper_start",
+        "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+        "childPid": null,
+        "sequence": 0,
+        "at": "2026-10-23T08:56:04.028Z",
+        "elapsedMs": 10,
+        "rawMessageSaved": false
+      },
+      {
+        "file": "simulation-api.jsonl.1",
+        "line": 18006,
+        "recordSha256": "66c4f657546ecac60520f013a1aa38e6ecf8565079bd353f745944c101637743",
+        "schemaVersion": "realtimestock-redacted-service-log/2",
+        "event": "process_start",
+        "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+        "childPid": 1200,
+        "sequence": 1,
+        "at": "2026-10-23T08:56:04.045Z",
+        "elapsedMs": 17,
+        "rawMessageSaved": false
+      },
+      {
+        "file": "simulation-api.jsonl.1",
+        "line": 18007,
+        "recordSha256": "bd0c28919298f5ed36dbea153ecad81b26bbb8f7276f006dd841e436d31e9794",
+        "schemaVersion": "realtimestock-redacted-service-log/2",
+        "event": "error",
+        "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+        "childPid": 1200,
+        "sequence": 2,
+        "at": "2026-10-23T08:56:04.255Z",
+        "elapsedMs": 227,
+        "rawMessageSaved": false,
+        "stream": "stderr",
+        "messageHash": "sha256:4d7828bb547ad2a96c2a3e84544ea3585d70bb391f86466c0f2ee0bd8c5184dd",
+        "messageBytes": 43,
+        "analysisTruncated": false,
+        "unterminated": false,
+        "diagnostic": {
+          "reason": "unknown",
+          "code": null,
+          "httpStatus": null,
+          "stage": "unknown",
+          "evidence": "pattern_match"
+        }
+      },
+      {
+        "file": "simulation-api.jsonl.1",
+        "line": 18008,
+        "recordSha256": "7dc34fc89afa110f0d02736521cae996bfadd03591896297d66ad452acae5995",
+        "schemaVersion": "realtimestock-redacted-service-log/2",
+        "event": "process_output",
+        "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+        "childPid": 1200,
+        "sequence": 3,
+        "at": "2026-10-23T08:56:04.265Z",
+        "elapsedMs": 237,
+        "rawMessageSaved": false,
+        "stream": "stdout",
+        "messageHash": "sha256:9b7ba1481431328b7ef2d385737ce15e482e1097bcbecc0237ea876c6eeeb5c5",
+        "messageBytes": 119,
+        "analysisTruncated": false,
+        "unterminated": false
+      },
+      {
+        "file": "simulation-api.jsonl.1",
+        "line": 18278,
+        "recordSha256": "4a776f55958e9248be97bf2bf8a947d60f8cc8c36f1f6e235e3076c702d54439",
+        "schemaVersion": "realtimestock-redacted-service-log/2",
+        "event": "process_output",
+        "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+        "childPid": 1200,
+        "sequence": 273,
+        "at": "2026-10-23T09:21:36.355Z",
+        "elapsedMs": 1532364,
+        "rawMessageSaved": false,
+        "stream": "stdout",
+        "messageHash": "sha256:eb2df6a412eac3ac10946244abda6b57200efaa96813397807937f8c7b7fcd69",
+        "messageBytes": 402,
+        "analysisTruncated": false,
+        "unterminated": false,
+        "diagnostic": {
+          "reason": "http_error",
+          "code": null,
+          "httpStatus": 400,
+          "stage": "unknown",
+          "evidence": "pattern_match"
+        }
+      },
+      {
+        "file": "simulation-api.jsonl",
+        "line": 525,
+        "recordSha256": "d6e6cb6755136e67de15c5832978285edce34cfe4b3af4a1b7623fefc78d7669",
+        "schemaVersion": "realtimestock-redacted-service-log/2",
+        "event": "process_output",
+        "attemptId": "53637686-55fc-4b4d-9d02-8e2ce1710a58",
+        "childPid": 1200,
+        "sequence": 1802,
+        "at": "2026-10-23T09:28:03.762Z",
+        "elapsedMs": 1919774,
+        "rawMessageSaved": false,
+        "stream": "stdout",
+        "messageHash": "sha256:36ea43e0e2500e9d29ac03eb701d49bbdf2ac08e649e6f9cbaed4da7deec6b87",
+        "messageBytes": 394,
+        "analysisTruncated": false,
+        "unterminated": false
+      }
+    ]
+  },
+  "existingWatchdogObservation": {
+    "state": "healthy",
+    "generation": "956",
+    "armed": true,
+    "consecutiveFailures": 0,
+    "restartCount": 0,
+    "lastReason": "available",
+    "fileMtime": "2026-10-23T09:27:51.884002+00:00"
+  },
+  "protectedFingerprints": {
+    "count": 29,
+    "before": {
+      "/Users/alanyi/.codex/automations/automation/automation.toml": "a90f82add3a3da8849e9b3280a5bdb8b55cd9cef8f3c7f3b8773f4226f1764bf",
+      "/Users/alanyi/.codex/automations/etf/automation.toml": "ee7ff99a4eb9df1cf7336db6b230e2a87da9b8cccf1beb557ce4daf89d44dbbe",
+      "/Users/alanyi/.codex/automations/etf-2/automation.toml": "3c3db0e329230b994987d5b5432d0d6be2ce932dd4f3af884fa5e7e2f0c4ed94",
+      "/Users/alanyi/.codex/automations/etf-9-30/automation.toml": "4c8d0edb263b37bb94c0e068b3ede9d76e430e89180ee6c7712c08e531c14d2d",
+      "/Users/alanyi/.codex/automations/etf-9-30-18-30/automation.toml": "cb9879d14986e1e6e8e55e813e56488e37cef820c4b7a8f6ae98fdbcde21cf47",
+      "/Users/alanyi/.codex/automations/etf-9-30-2/automation.toml": "65416c03c6061652141d6e1ef7b4acadfd9a4aeb1767f88eff96b5810e6cc0c9",
+      "/Users/alanyi/.codex/automations/shared-calendar-natural-acceptance/automation.toml": "0e5dca584eb2403394fe7eb361f369c3cb00073ca21b09b35e4c6a32f86c059b",
+      "/Users/alanyi/.codex/automations/simulation-api/automation.toml": "710d01cfa58e464b074fc179666a1b68aea6faf645c3add7ee410aadfe189c1b",
+      "/Users/alanyi/Library/Application Support/RealTimeStock/bin/realtimestock-runtime": "6c1d60a1e4a4a67476fafcca3a2d6581e9c43329245f5711f43ca4bb0994c14f",
+      "/Users/alanyi/Library/Application Support/RealTimeStock/bin/realtimestock-runtime.before-afterhours-20260916-235031": "c19d9233d6ecd4902ea66205babeb88802cd9ca03d484789bd1858e3ac68fe09",
+      "/Users/alanyi/Library/Application Support/RealTimeStock/bin/realtimestock-runtime.before-bollinger-20261003T050629Z": "c98ee78e1a36577ece6c9b235ad51d3ea12f9a581da9d36a873355d0a871e1ca",
+      "/Users/alanyi/Library/Application Support/RealTimeStock/bin/realtimestock-runtime.pre-task-0.3-20260822": "19b0568656a91b3807121218f5490cb91f09a593ef0f23639f68cf68df2767f8",
+      "/Users/alanyi/Library/Application Support/RealTimeStock/bin/service-log-wrapper.mjs": "7d124d71f90be70641fa0826f6d08954aa0c579f692ac39ae81bc898abb57e66",
+      "/Users/alanyi/Library/Application Support/RealTimeStock/runtime-mode": "3d43d89fbcb22be3ceb1684790189c4431594f07c60f941bbac07a937c12ecf5",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.business-session-watchdog.plist": "4a23a9c407e03feabe25ba30f5537e7e47813d17f8a1edd16d7dd791f391a47e",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.intraday-failure-audit.plist": "ea53dda00b7b778e75738e29ace57721ae57386d85f07fba4faacfc08b888e79",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.intraday-postclose-baseline-retry.plist": "bd0fa8fc0d17a5eb60ad64f48ead84d057531cd3fd2a7d129a76f81aa9e29b90",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.intraday-postclose-baseline.plist": "a5d5eb401d013c4fada50fcf7a00fc17dc2a1f24f873b86014528a3b9b2a8ea0",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.intraday-premarket-late-boot.plist": "c1f56ef3cbd83bd29f1b9f064fc974fdbba1ebaa579602931bdd5d65de990c3d",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.intraday-premarket.plist": "ca7a1af481e6672f5f248d9a7ffe88877ccf55f364ea1b1e4131f6be41b2f3cc",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.intraday-roster-finalize.plist": "9c45c64d9a4aea9a43bb8b2a10e003f8d48cf97c9cc4cc450a08b211a1dfc29e",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.multiview-daily-pipeline.plist": "f9cb8135aee96d05efd2c81d2349b30fffb23541629fd071cf526d89ef8a4336",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.multiview-tdcc-early.plist": "11c9ed24981b708f9aeecd41b7fb7e0abfb5118477f561516e4daef61bc86a46",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.multiview-tdcc-pipeline.plist": "2902aa287ed5c30b2c2b36855716ebb8987da187b891dc1110efadfa0d55f5d1",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.multiview-tdcc-watcher.plist": "9b02bf27d86b73f10ed47c48a7d0a654218131c9fe4cc592a3707bc09ace551f",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.multiview.plist": "0b71f0936d7a143e6bdc96de2eced6eccc5e5cd8a6f57a83eba2b981fe11045f",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.simulation-api.plist": "cd97d7743c3116b48d29f1ce19612ab9bbd935a75d38ad02ba4c19ca456e0889",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.smart-order-sidecar.plist": "055037ba23c6873e5cd7103671a89f52a6a772c8a8f1366383139c6516400c45",
+      "/Users/alanyi/Library/LaunchAgents/com.alanyi.realtimestock.web.plist": "1456afa1711811d1699a15c3c9dbc08872bfd5115ae03e7e0f3cab1efebfd2eb"
+    },
+    "afterIdentical": true
+  },
+  "git": {
+    "head": "4f33a618b8d74900a714a218923f3a69ffb5f04a",
+    "stagedDiffEmpty": true
+  },
+  "actions": {
+    "serviceRestartPerformed": false,
+    "signalsSent": false,
+    "httpRequestsAdded": 0,
+    "loginPerformed": false,
+    "downloadsAdded": 0,
+    "productionOrBrokerWrites": false,
+    "runtimeEntryExecuted": false,
+    "observerChanged": false
+  },
+  "limits": [
+    "證明既有 launchd 新世代載入新版；本次沒有重啟，未獨立證明所有外部操作的因果。",
+    "自然啟動沒有製造失敗；process_exit／spawn error 等仍依既有離線測試。",
+    "HTTP 400 只證固定分類生效，不證端點或深層原因；未知診斷保留。",
+    "沒有新增業務探測，不以本證據宣稱完整行情、商品覆蓋或其他 change 驗收完成。"
+  ]
+}
