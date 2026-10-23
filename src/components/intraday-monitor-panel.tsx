@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { SpecialMarketClosuresSettings } from './special-market-closures-settings';
 import {
     acquireIntradayMonitorLease,
     IntradayMonitorApiError,
@@ -1339,6 +1340,7 @@ export function IntradayMonitorPanel({
                         </article>
                     );
                 })}
+                {view === 'monitor' && <SpecialMarketClosuresSettings/>}
                 {view === 'monitor' && draft && (
                     <section className={styles.editor} aria-label='盤中監控設定編輯器'>
                         <div className={styles.editorHeader}>

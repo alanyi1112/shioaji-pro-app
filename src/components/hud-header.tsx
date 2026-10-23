@@ -47,6 +47,7 @@ import {
 import { fmtMoney } from '../lib/utils/format';
 import { type BlockType } from '../lib/workspace';
 import { Menu } from './header-menu';
+import { MarketCalendarMenu } from './special-market-closures-settings';
 import { MarketBar } from './market-bar';
 import { ServerManager } from './server-manager';
 import { ProfilesMenu } from './workspace-layout-menu';
@@ -654,6 +655,7 @@ export function HudHeader({
                 onToggle={setServerMgrOpen}
             />
             <AccountMenu />
+            <MarketCalendarMenu />
             <RiskMenu />
             <AddBlockMenu
                 addableTypes={addableTypes}

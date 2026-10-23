@@ -357,8 +357,8 @@ export class IntradayMonitorApiError extends Error {
     }
 }
 
-async function jsonRequest(path: string, init?: RequestInit) {
-    const response = await fetch(`${PREFIX}${path}`, {
+async function jsonRequest(path: string, init?: RequestInit, prefix=PREFIX) {
+    const response = await fetch(`${prefix}${path}`, {
         credentials: 'same-origin',
         cache: 'no-store',
         ...init,
@@ -384,6 +384,21 @@ async function jsonRequest(path: string, init?: RequestInit) {
 export async function readIntradayMonitorStatus() {
     const value = await jsonRequest('/status') as unknown as IntradayMonitorStatusView;
     return normalizeIntradayMonitorStatus(value);
+}
+
+export interface SpecialMarketClosuresView {
+    revision: number;
+    today: string;
+    entries: { date: string; markets?: ('TSE'|'OTC')[]; reason: string; recordedAt: string; revision: number }[];
+    liveHolds?: {date:string;markets:('TSE'|'OTC')[]}[];
+}
+export async function readSpecialMarketClosures() {
+    return (await jsonRequest('/special-closures',undefined,'/api/market-calendar/v1') as unknown as { closures: SpecialMarketClosuresView }).closures;
+}
+export async function saveSpecialMarketClosure(input: { action: 'close' | 'revoke';
+    date: string; markets?: ('TSE'|'OTC')[]; reason: string; expectedRevision: number; confirmed: boolean }) {
+    return (await jsonRequest('/special-closures', { method: 'POST', body: JSON.stringify(input) },'/api/market-calendar/v1') as unknown as
+        { closures: SpecialMarketClosuresView }).closures;
 }
 
 export async function readIntradayMonitorDailyStatus() {
@@ -532,4 +547,10 @@ export function taipeiTradeDate(now = new Date()) {
         month: '2-digit',
         day: '2-digit',
     }).format(now);
+}
+
+export async function readCalendarDataCheck(query:import('./market-calendar').LocalCalendarCheck) {
+    const response=await jsonRequest('/checks',{method:'POST',body:JSON.stringify(query)},'/api/market-calendar/v1');
+    return response.check as unknown as {status:string;reason?:string|null;calendarVersion:string;observedAt:string;
+        missing?:string[];excluded?:string[];conflicts?:string[];scope?:string;externalRequests:number;changedDb:boolean};
 }
