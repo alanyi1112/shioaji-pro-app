@@ -1,3 +1,6 @@
+import {readLocalCalendarDataCheck} from '../local-calendar-check-bridge.mjs';
+import {readLocalMarketCalendar} from '../market-calendar-local.mjs';
+import { readSpecialMarketClosures, saveSpecialMarketClosure, specialMarketClosureDecision } from './special-market-closures.mjs';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -126,6 +129,8 @@ function parseHeaders(request) {
 
 function routeFor(method, pathname) {
     if (method === 'GET') {
+        if (pathname === '/projection') return 'market_calendar';
+        if (pathname === '/special-closures') return 'special_closures';
         if (pathname === '/config') return 'config';
         if (pathname === '/status') return 'status';
         if (pathname === '/daily-status') return 'daily_status';
@@ -135,6 +140,8 @@ function routeFor(method, pathname) {
         if (pathname === '/events') return 'events';
         if (pathname === '/diagnostics') return 'diagnostics';
     }
+    if (method === 'POST' && pathname === '/special-closures') return 'special_closure_save';
+    if (method === 'POST' && pathname === '/checks') return 'market_calendar_check';
     if (method === 'PUT' && pathname === '/config') return 'config_replace';
     if (method === 'PUT' && pathname === '/threshold') return 'threshold_replace';
     if (method === 'POST' && pathname === '/leases/acquire') return 'lease_acquire';
@@ -159,7 +166,8 @@ function validQuery(route, url) {
 
 export function authorizeIntradayMonitorGatewayRequest(request) {
     const rawUrl = request.url ?? '/';
-    if (!(rawUrl === INTRADAY_MONITOR_LOCAL_API_PREFIX || rawUrl.startsWith(`${INTRADAY_MONITOR_LOCAL_API_PREFIX}/`) || rawUrl.startsWith(`${INTRADAY_MONITOR_LOCAL_API_PREFIX}?`))) return null;
+    const prefix = ['/api/market-calendar/v1',INTRADAY_MONITOR_LOCAL_API_PREFIX].find(p=>rawUrl===p||rawUrl.startsWith(p+'/')||rawUrl.startsWith(p+'?'));
+    if (!prefix) return null;
     if (Buffer.byteLength(rawUrl) > MAX_URL_BYTES || /%(?:2f|5c|2e|00)/i.test(rawUrl)) return { allowed: false, status: 400, reason: 'invalid_url' };
     const headers = parseHeaders(request);
     if (!headers) return { allowed: false, status: 400, reason: 'invalid_headers' };
@@ -172,12 +180,13 @@ export function authorizeIntradayMonitorGatewayRequest(request) {
     if (headers.get('sec-fetch-site') === 'cross-site') return { allowed: false, status: 403, reason: 'same_origin_required' };
     let url;
     try { url = new URL(rawUrl, 'http://127.0.0.1'); } catch { return { allowed: false, status: 400, reason: 'invalid_url' }; }
-    const pathname = url.pathname.slice(INTRADAY_MONITOR_LOCAL_API_PREFIX.length) || '/';
+    const pathname = url.pathname.slice(prefix.length) || '/';
+    if(prefix==='/api/market-calendar/v1'&&!['/special-closures','/projection','/checks'].includes(pathname))return {allowed:false,status:404,reason:'route_not_allowed'};
     const route = routeFor(request.method ?? 'GET', pathname);
     if (!route) return { allowed: false, status: 404, reason: 'route_not_allowed' };
     if (!validQuery(route, url)) return { allowed: false, status: 400, reason: 'invalid_query' };
     const mutation = route === 'threshold_replace' || route === 'config_replace' || route.startsWith('lease_') ||
-        route === 'chart_evidence_observe';
+        route === 'chart_evidence_observe' || route === 'special_closure_save' || route === 'market_calendar_check';
     if (mutation && (headers.get('content-type') ?? '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') return { allowed: false, status: 415, reason: 'json_required' };
     if (!mutation && headers.has('content-length') && headers.get('content-length') !== '0') return { allowed: false, status: 400, reason: 'get_body_forbidden' };
     const declaredLength = headers.get('content-length');
@@ -305,7 +314,9 @@ export function createIntradayMonitorLocalApiGatewayMiddleware({ service, chartE
             let body;
             try { body = await readJsonBody(request); }
             catch (error) { return sendJson(response, boundaryError(error.message === 'payload_too_large' ? 413 : 400, error.message === 'payload_too_large' ? 'payload_too_large' : 'invalid_json')); }
-            if (checked.route === 'config_replace') result = service.replaceConfig(body, {
+            if (checked.route === 'market_calendar_check') result = await service.readCalendarDataCheck(body);
+            else if (checked.route === 'special_closure_save') result = service.saveSpecialClosure(body);
+            else if (checked.route === 'config_replace') result = service.replaceConfig(body, {
                 sourceType: checked.headers.has('origin') &&
                     checked.headers.get('sec-fetch-site') === 'same-origin' ? 'ui' : 'local_api' });
             else if (checked.route === 'threshold_replace') result = service.replaceThreshold(body, {
@@ -317,7 +328,9 @@ export function createIntradayMonitorLocalApiGatewayMiddleware({ service, chartE
                 result = await chartEvidenceRecorder.observe(body);
             }
             else result = service.mutateLease(checked.route.slice('lease_'.length), body);
-        } else if (checked.route === 'config') result = service.readConfig();
+        } else if (checked.route === 'market_calendar') result = service.readMarketCalendar();
+        else if (checked.route === 'special_closures') result = service.readSpecialClosures();
+        else if (checked.route === 'config') result = service.readConfig();
         else if (checked.route === 'status') result = service.readStatus();
         else if (checked.route === 'daily_status') result = await service.readDailyStatus();
         else if (checked.route === 'capacity') result = service.readCapacity();
@@ -361,9 +374,12 @@ export function createStateBackedRuntime(appSupportRoot) {
         const runtimeMode = dailyMode.mode;
         const session = sessionRepository.readSession(authorityTradeDate);
         const approval = sessionRepository.readApproval();
-        const authority = session?.calendarAuthority?.tradeDate === authorityTradeDate
+        let authority = session?.calendarAuthority?.tradeDate === authorityTradeDate
             ? session.calendarAuthority
             : { current: false, tradeDate: authorityTradeDate, previousTradeDate: null };
+        const closure = specialMarketClosureDecision({ root: appSupportRoot,
+            dates: [authorityTradeDate, ...(authority.previousTradeDate ? [authority.previousTradeDate] : [])] });
+        if (!closure.allowed) authority = { ...authority, current: false, isTradingDate: false, reason: closure.reason };
         const bundle = approval
             ? resolveIntradayMonitorRuntimeArtifactBundleSync({ appSupportRoot,
                 bundleHash: approval.artifactBundleHash })
@@ -464,6 +480,10 @@ export function createStateBackedRuntime(appSupportRoot) {
     const leaseCoordinator = createIntradayMonitorPageLeaseCoordinator({ sessionController });
     const generation = `local_${randomBytes(24).toString('base64url')}`;
     const service = createIntradayMonitorLocalApiService({
+        marketCalendarProvider:()=>readLocalMarketCalendar(appSupportRoot),
+        calendarDataCheckProvider:query=>readLocalCalendarDataCheck(query,readLocalMarketCalendar(appSupportRoot)),
+        specialClosures: { read: () => readSpecialMarketClosures(appSupportRoot),
+            save: input => saveSpecialMarketClosure(appSupportRoot, input) },
         configRepository,
         evidenceRepository,
         leaseCoordinator,

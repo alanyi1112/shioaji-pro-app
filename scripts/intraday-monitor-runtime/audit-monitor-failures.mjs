@@ -1,3 +1,4 @@
+import { specialMarketClosureDecision } from './special-market-closures.mjs';
 import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
@@ -102,6 +103,9 @@ export async function auditIntradayMonitorFailures({ root = rootDefault(), now =
         throw new TypeError('monitor failure audit input is invalid');
     }
     const { tradeDate, minuteOfDay } = localParts(now);
+    const closure = specialMarketClosureDecision({ root, dates: [tradeDate], now });
+    if (!closure.allowed) return { checked: false, reason: closure.reason, tradeDate, requests: 0, closure };
+
     const authority = await resolveTradingDay({ root, now });
     if (authority?.current !== true || authority.isTradingDate !== true ||
         authority.tradeDate !== tradeDate) {

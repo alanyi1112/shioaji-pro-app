@@ -3,6 +3,7 @@ import { markWatchlistChipWarmAttempt } from "./watchlist-chip-prewarming";
 import { acquireCandleHistory, candleHistoryIdentity, clearCandleHistoryRuntimeState, mergeCandleHistory, persistCandleHistoryContinuity, readCandleHistory, readCandleHistoryState, upsertCandleHistory, type HistoryCandle } from "./candle-history";
 import { runD1Batch } from "./d1-batch.ts";
 import { candlePayloadFromRows, fetchCandles, providerForCandleSymbol } from "./market-data";
+import { handleLocalMarketCalendarCheck } from './local-market-calendar-checks';
 import { normalizeTaiwanStockVolume } from "./taiwan-stock-volume";
 import { normalizeCandleContinuityAcceptanceSymbols, planCandleContinuityAuditBatch, runCandleContinuityAuditBatch, summarizeCandleContinuityAcceptance } from "./candle-continuity-maintenance";
 import {
@@ -3427,6 +3428,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
 
 export async function handleAppRequest(request: Request, env: Env, context?: AppExecutionContext): Promise<Response | null> {
   const url = new URL(request.url); const path = url.pathname;
+  if(path==='/api/local-market-calendar/check')return handleLocalMarketCalendarCheck(request,env);
   const personalPath = path === "/api/instruments"
     || path.startsWith("/api/instruments/")
     || path === "/api/integrations/stock-screener-list/items"

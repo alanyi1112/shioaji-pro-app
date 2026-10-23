@@ -41,6 +41,7 @@ export function evaluateIntradayMonitorCurrentSession({
     const reasons = [];
     if (!session) reasons.push('current_session_missing');
     if (!authority?.current || !authority.tradeDate) reasons.push('calendar_authority_unavailable');
+    if (authority?.isTradingDate === false) reasons.push('non_trading_date');
     if (session && authority?.tradeDate && session.tradeDate !== authority.tradeDate) {
         reasons.push('session_trade_date_stale');
     }

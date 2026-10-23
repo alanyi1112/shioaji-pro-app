@@ -1,3 +1,5 @@
+import { specialMarketClosureDecision, assertNoSpecialMarketClosure, defaultClosureRoot, readSpecialMarketClosures } from './special-market-closures.mjs';
+import {createMarketCalendar,adjacentMarketDate} from '../../src/lib/market-calendar.ts';
 import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -166,7 +168,7 @@ async function fetchAnnualCalendar(year, fetchImpl, at) {
 }
 
 export async function resolvePostcloseBaselineCalendar({ now, fetchImpl = fetch,
-    sourceTradeDate = localDate(now) } = {}) {
+    sourceTradeDate = localDate(now), root = defaultClosureRoot() } = {}) {
     if (!(now instanceof Date) || !Number.isFinite(now.valueOf())) {
         throw new TypeError('postclose baseline time is invalid');
     }
@@ -179,20 +181,29 @@ export async function resolvePostcloseBaselineCalendar({ now, fetchImpl = fetch,
         throw new Error('postclose_baseline_window_not_open');
     }
     const year = Number(tradeDate.slice(0, 4));
+    assertNoSpecialMarketClosure({ root, dates: [tradeDate], now });
     const current = await fetchAnnualCalendar(year, fetchImpl, now.valueOf());
     const currentDay = current.snapshot.days.find((day) => day.tradeDate === tradeDate);
     if (currentDay?.TSE !== 'scheduled_trading' || currentDay?.OTC !== 'scheduled_trading') {
         throw new Error('official_non_trading_date');
     }
-    let target = current.snapshot.days.find((day) => day.tradeDate > tradeDate &&
-        day.TSE === 'scheduled_trading' && day.OTC === 'scheduled_trading');
+    const closureState=readSpecialMarketClosures(root,{now});
+    const manualClosures={available:true,revision:closureState.revision,hash:closureState.hash,
+        entries:closureState.entries,liveHolds:closureState.liveHolds};
+    const shared=createMarketCalendar({...current.snapshot,verified:true},manualClosures,now);
+    let next=adjacentMarketDate(shared,tradeDate,'next',undefined,now);
+    let target=next.date?{tradeDate:next.date}:null;
     let nextYear = null;
     if (!target) {
         nextYear = await fetchAnnualCalendar(year + 1, fetchImpl, now.valueOf());
-        target = nextYear.snapshot.days.find((day) =>
-            day.TSE === 'scheduled_trading' && day.OTC === 'scheduled_trading');
+        const crossYear=createMarketCalendar({...current.snapshot,verified:true,
+            calendarVersion:current.snapshot.calendarVersion+'+'+nextYear.snapshot.calendarVersion,
+            days:[...current.snapshot.days,...nextYear.snapshot.days]},manualClosures,now);
+        next=adjacentMarketDate(crossYear,tradeDate,'next',undefined,now);
+        target=next.date?{tradeDate:next.date}:null;
     }
     if (!target) throw new Error('next_trade_date_unavailable');
+    assertNoSpecialMarketClosure({ root, dates: [tradeDate, target.tradeDate], now });
     if (target.tradeDate.slice(0, 4) !== tradeDate.slice(0, 4)) {
         // 現有 baseline bundle calendar schema 只包含單一年度；不得猜測跨年來源。
         throw new Error('cross_year_baseline_calendar_unsupported');
@@ -200,6 +211,7 @@ export async function resolvePostcloseBaselineCalendar({ now, fetchImpl = fetch,
     return Object.freeze({ tradeDate, targetTradeDate: target.tradeDate,
         twse: current.twse, tpex: current.tpex,
         calendarSourceVersion: current.snapshot.calendarVersion,
+        sharedCalendarVersion:shared.version,manualClosures,
         nextYearSourceVersion: nextYear?.snapshot.calendarVersion ?? null });
 }
 
@@ -277,6 +289,8 @@ export async function runPostcloseDailyBaseline({ now = new Date(), root = appSu
     } } = {}) {
     const historical = historicalTradeDate !== null;
     const tradeDate = historical ? historicalTradeDate : localDate(now);
+    const closure = specialMarketClosureDecision({ root, dates: [tradeDate, localDate(now)], now });
+    if (!closure.allowed) return Object.freeze({ executed: false, reason: closure.reason, tradeDate, requests: 0, closure });
     if (historical) {
         const ageDays = (Date.parse(`${localDate(now)}T00:00:00Z`) -
             Date.parse(`${tradeDate}T00:00:00Z`)) / 86_400_000;
@@ -291,7 +305,8 @@ export async function runPostcloseDailyBaseline({ now = new Date(), root = appSu
     if (!historical) {
         const mode = await dailyModeReader(root);
         if (mode.mode === 'daily') {
-            const calendar = await calendarResolver({ now, fetchImpl, sourceTradeDate: tradeDate });
+            const calendar = await calendarResolver({ now, fetchImpl, sourceTradeDate: tradeDate, root });
+            assertNoSpecialMarketClosure({ root, dates: [tradeDate, calendar.targetTradeDate], now });
             const collectionDirectory = path.join(root, 'IntradayMonitor',
                 'daily-minute-volume-collection', tradeDate);
             let attempt = 1;
@@ -460,7 +475,7 @@ export async function runPostcloseDailyBaseline({ now = new Date(), root = appSu
     let planPath = null;
     try {
         const calendar = await calendarResolver({ now, fetchImpl,
-            sourceTradeDate: tradeDate });
+            sourceTradeDate: tradeDate, root });
         if (calendar.tradeDate !== tradeDate) throw new Error('calendar_authority_unavailable');
         if (historical && calendar.targetTradeDate <= localDate(now)) {
             throw new Error('historical_target_date_not_future');

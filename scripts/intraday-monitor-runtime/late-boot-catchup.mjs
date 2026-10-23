@@ -1,3 +1,4 @@
+import { specialMarketClosureDecision } from './special-market-closures.mjs';
 import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
@@ -109,6 +110,9 @@ export async function runLateBootPremarketCatchup({ root = defaultRoot(),
     sleep = wait } = {}) {
     const enteredAt = clock();
     const entered = taipeiPremarketInstant(enteredAt);
+    const closure = specialMarketClosureDecision({root,dates:[entered.localDate],now:enteredAt});
+    if(!closure.allowed)return {executed:false,reason:closure.reason,requests:0,closure};
+
     const paths = latePaths(root, entered.localDate);
     if (entered.seconds < 8 * 3_600 + 20 * 60 || entered.seconds >= 8 * 3_600 + 59 * 60) {
         const reason = entered.seconds < 8 * 3_600 + 20 * 60

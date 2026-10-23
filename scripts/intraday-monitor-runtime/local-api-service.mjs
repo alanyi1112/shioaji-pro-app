@@ -466,6 +466,9 @@ export function createIntradayMonitorLocalApiService({
     capacityProvider = () => ({}),
     diagnosticsProvider = () => ({}),
     dailyStatusProvider = async () => ({}),
+    specialClosures = null,
+    marketCalendarProvider = null,
+    calendarDataCheckProvider = null,
     thresholdSwitchProvider = () => null,
     now = () => new Date().toISOString(),
     cursorSecret = randomBytes(32),
@@ -522,6 +525,37 @@ export function createIntradayMonitorLocalApiService({
         } catch {
             return errorReply(503, 'config_repository_unavailable');
         }
+    }
+
+    async function readCalendarDataCheck(query) {
+        try{return calendarDataCheckProvider ? await calendarDataCheckProvider(query) : errorReply(503,'local_readonly_check_unavailable');}
+        catch{return errorReply(503,'local_readonly_check_unavailable');}
+    }
+    function readSpecialClosures() {
+        try {
+            if (!specialClosures) return errorReply(503, 'special_closure_settings_unavailable');
+            return reply(200, { ok: true, closures: specialClosures.read() });
+        } catch { return errorReply(503, 'special_closure_settings_unavailable'); }
+    }
+
+    function saveSpecialClosure(request) {
+        try {
+            if (!specialClosures) return errorReply(503, 'special_closure_settings_unavailable');
+            return reply(200, { ok: true, closures: specialClosures.save(request) });
+        } catch (error) {
+            const reason = error?.code;
+            if (['special_closure_revision_conflict', 'special_closure_already_exists',
+                'special_closure_not_found'].includes(reason)) return errorReply(409, reason);
+            if (['special_closure_input_invalid', 'special_closure_today_immutable'].includes(reason)) return errorReply(422, reason);
+            return errorReply(503, 'special_closure_settings_unavailable');
+        }
+    }
+
+    function readMarketCalendar() {
+        try {
+            if (!marketCalendarProvider) return errorReply(503, 'market_calendar_unavailable');
+            return reply(200, {ok:true,calendar:marketCalendarProvider()});
+        } catch {return errorReply(503,'market_calendar_unavailable');}
     }
 
     function replaceConfig(request) {
@@ -818,6 +852,10 @@ export function createIntradayMonitorLocalApiService({
     return frozen({
         generation,
         readConfig,
+        readSpecialClosures,
+        readCalendarDataCheck,
+        readMarketCalendar,
+        saveSpecialClosure,
         replaceConfig,
         replaceThreshold,
         mutateLease,

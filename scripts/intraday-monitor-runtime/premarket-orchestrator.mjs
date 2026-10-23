@@ -1,3 +1,4 @@
+import { specialMarketClosureDecision, taipeiClosureDate } from './special-market-closures.mjs';
 import { resolveMonitorLaunchNode } from "./monitor-launch-node.mjs";
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -512,6 +513,18 @@ export async function runPremarketStep({ step, dryRun = false, now = new Date(),
         throw new Error('system_time_zone_is_not_asia_taipei');
     }
     const paths = resolvePremarketOrchestratorPaths(root);
+    const closure = specialMarketClosureDecision({ root, dates: [taipeiClosureDate(now)], now });
+    if (!closure.allowed) {
+        const result = { executed: false, reason: closure.reason, step, localDate: taipeiClosureDate(now),
+            requests: 0, closure };
+        if (!dryRun) await persistPremarketRunReceipt(paths, {
+            schemaVersion: PREMARKET_ORCHESTRATOR_SCHEMA, localDate: result.localDate, step,
+            computedFireAt: `${result.localDate}T${step}:00+08:00`, actualStartedAt: now.toISOString(),
+            sessionId: null, stepClaim: null, rolloverOutcome: 'special_closure_noop_or_blocked',
+            ...result, brokerWriteAuthority: false });
+        return result;
+    }
+
     const config = JSON.parse(await readFile(paths.configPath, 'utf8'));
     const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei',
         year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);

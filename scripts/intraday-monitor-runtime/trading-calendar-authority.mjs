@@ -10,6 +10,8 @@ import {
 } from '../smart-order-runtime/official-market-calendar-core.mjs';
 import { hashDirect160 } from './direct-160-storage.mjs';
 import { readDailyCalendarCache } from './daily-calendar-cache.mjs';
+import { specialMarketClosureDecision, assertNoSpecialMarketClosure, readSpecialMarketClosures, defaultClosureRoot } from './special-market-closures.mjs';
+import {createMarketCalendar,marketCalendarDay,adjacentMarketDate} from '../../src/lib/market-calendar.ts';
 
 export const INTRADAY_MONITOR_TRADING_CALENDAR_AUTHORITY_SCHEMA =
     'intraday-monitor-trading-calendar-authority/1';
@@ -84,6 +86,27 @@ export function selectIntradayMonitorTradingDay({
     });
 }
 
+// 執行中的本機消費者必須走共用核心。原 selector 保留給舊證據驗證，不能授權新版執行。
+export function selectSharedMonitorTradingDay({tradeDate,snapshots,observedAt,root=defaultClosureRoot()}={}){
+    const now=new Date(observedAt),state=readSpecialMarketClosures(root,{now});
+    const annual={verified:true,calendarVersion:snapshots.map(s=>s.calendarVersion).sort().join('+'),
+        fetchedAtEpochMs:Math.max(...snapshots.map(s=>s.fetchedAtEpochMs)),
+        validUntilEpochMs:Math.min(...snapshots.map(s=>s.validUntilEpochMs)),
+        days:snapshots.flatMap(s=>s.days)};
+    const calendar=createMarketCalendar(annual,state,now);
+    const days=['TSE','OTC'].map(m=>marketCalendarDay(calendar,tradeDate,m,now));
+    if(days.some(d=>d.state==='unknown'))throw Error('shared_calendar_unconfirmed');
+    const live=specialMarketClosureDecision({root,dates:[tradeDate],now});
+    if(!live.allowed&&live.reason!=='special_market_closure')throw Error(live.reason);
+    const isTradingDate=days.every(d=>d.state==='scheduled');
+    const previous=adjacentMarketDate(calendar,tradeDate,'previous',undefined,now);
+    if(!previous.date&&isTradingDate)throw Error('previous_trade_date_unavailable');
+    return Object.freeze({schemaVersion:INTRADAY_MONITOR_TRADING_CALENDAR_AUTHORITY_SCHEMA,current:true,tradeDate,
+        previousTradeDate:previous.date,isTradingDate,source:'shared local market calendar',
+        sourceVersions:Object.freeze([...snapshots.map(s=>s.calendarVersion).sort(),`manual:${state.revision}:${state.hash??'none'}`]),
+        calendarVersion:calendar.version,observedAt,brokerWriteAuthority:false,productionAuthority:false});
+}
+
 // 盤前只讀取前一交易日盤後已驗證的雙市場日曆；不在 08:20–08:50 連官方網站。
 export async function resolveIntradayMonitorPremarketTradingDay({
     now = new Date(),
@@ -95,10 +118,20 @@ export async function resolveIntradayMonitorPremarketTradingDay({
         throw new TypeError('premarket trading calendar input is invalid');
     }
     const tradeDate = taipeiTradeDate(now.valueOf());
+    const closure = specialMarketClosureDecision({ root, dates: [tradeDate], now });
+    if (!closure.allowed) return Object.freeze({ schemaVersion: INTRADAY_MONITOR_TRADING_CALENDAR_AUTHORITY_SCHEMA,
+        current: closure.reason === 'special_market_closure', tradeDate, previousTradeDate: null,
+        isTradingDate: closure.reason === 'special_market_closure' ? false : null,
+        source: 'local_user', sourceVersions: [], reason: closure.reason, closure,
+        observedAt: now.toISOString(), brokerWriteAuthority: false, productionAuthority: false });
     try {
         const daily = await readDailyCalendarCache({ root, now, tradeDate });
-        if (daily) return Object.freeze({ ...selectIntradayMonitorTradingDay({
-            tradeDate, snapshots: [daily.snapshot], observedAt: now.toISOString() }),
+        if (daily) {
+            const selected = selectSharedMonitorTradingDay({tradeDate, snapshots:[daily.snapshot], observedAt:now.toISOString(),root});
+            assertNoSpecialMarketClosure({root,dates:[tradeDate,selected.previousTradeDate],now});
+        }
+        if (daily) return Object.freeze({ ...selectSharedMonitorTradingDay({
+            tradeDate, snapshots: [daily.snapshot], observedAt: now.toISOString(),root }),
             authorityKind: 'verified_daily_official_calendar_cache',
             calendarFetchedAt: daily.value.fetchedAt, calendarTrigger: daily.value.trigger,
             verifiedArtifactPath: daily.file });
@@ -112,6 +145,7 @@ export async function resolveIntradayMonitorPremarketTradingDay({
             right.previousTradeDate.localeCompare(left.previousTradeDate));
         if (!candidates.length) throw new Error('verified_calendar_snapshot_missing');
         const candidate = candidates[0];
+        assertNoSpecialMarketClosure({root,dates:[tradeDate,candidate.previousTradeDate,candidate.targetTradeDate],now});
         const file = path.join(directory, candidate.name, 'baseline-set.json');
         const baseline = JSON.parse(await readFile(file, 'utf8'));
         const { baselineHash, ...body } = baseline;
@@ -140,8 +174,8 @@ export async function resolveIntradayMonitorPremarketTradingDay({
                 candidate.previousTradeDate) {
             throw new Error('verified_calendar_snapshot_identity_mismatch');
         }
-        return Object.freeze({ ...selectIntradayMonitorTradingDay({ tradeDate,
-            snapshots: [snapshot], observedAt: now.toISOString() }),
+        return Object.freeze({ ...selectSharedMonitorTradingDay({ tradeDate,
+            snapshots: [snapshot], observedAt: now.toISOString(),root }),
         authorityKind: 'verified_postclose_local_snapshot',
         calendarFetchedAt: new Date(calendar.fetchedAtEpochMs).toISOString(),
         verifiedArtifactPath: file });
@@ -222,6 +256,7 @@ async function fetchSnapshotWithRetry(year, fetchImpl, nowEpochMs) {
 export async function resolveIntradayMonitorTradingDay({
     now = new Date(),
     fetchImpl = fetch,
+    root = defaultClosureRoot(),
 } = {}) {
     if (!(now instanceof Date) || !Number.isFinite(now.valueOf()) || typeof fetchImpl !== 'function') {
         throw new TypeError('trading calendar authority input is invalid');
@@ -229,15 +264,17 @@ export async function resolveIntradayMonitorTradingDay({
     const tradeDate = taipeiTradeDate(now.valueOf());
     const year = Number(tradeDate.slice(0, 4));
     try {
+        assertNoSpecialMarketClosure({root,dates:[tradeDate],now});
         const snapshots = [await fetchSnapshotWithRetry(year, fetchImpl, now.valueOf())];
         if (tradeDate.endsWith('-01-01') ||
             !snapshots[0].days.some((day) => day.tradeDate < tradeDate && scheduled(day))) {
             snapshots.unshift(await fetchSnapshotWithRetry(year - 1, fetchImpl, now.valueOf()));
         }
-        return selectIntradayMonitorTradingDay({
+        return selectSharedMonitorTradingDay({
             tradeDate,
             snapshots,
             observedAt: now.toISOString(),
+            root,
         });
     } catch (error) {
         return Object.freeze({
@@ -260,6 +297,7 @@ export async function resolveIntradayMonitorTradingDay({
 export async function resolveNextIntradayMonitorTradingDay({
     now = new Date(),
     fetchImpl = fetch,
+    root = defaultClosureRoot(),
 } = {}) {
     if (!(now instanceof Date) || !Number.isFinite(now.valueOf()) || typeof fetchImpl !== 'function') {
         throw new TypeError('trading calendar authority input is invalid');
@@ -270,16 +308,13 @@ export async function resolveNextIntradayMonitorTradingDay({
         const snapshots = [await fetchSnapshotWithRetry(year, fetchImpl, now.valueOf())];
         const hasFuture = snapshots[0].days.some((day) => day.tradeDate > localDate && scheduled(day));
         if (!hasFuture) snapshots.push(await fetchSnapshotWithRetry(year + 1, fetchImpl, now.valueOf()));
-        const next = snapshots.flatMap((snapshot) => snapshot.days)
-            .filter((day) => day.tradeDate > localDate && scheduled(day))
-            .sort((left, right) => left.tradeDate.localeCompare(right.tradeDate))[0];
-        if (!next) throw new Error('next_trade_date_unavailable');
-        const previous = snapshots.flatMap((snapshot) => snapshot.days)
-            .filter((day) => day.tradeDate < next.tradeDate && scheduled(day))
-            .sort((left, right) => left.tradeDate.localeCompare(right.tradeDate)).at(-1);
-        if (!previous) throw new Error('previous_trade_date_unavailable');
-        return selectIntradayMonitorTradingDay({ tradeDate: next.tradeDate, snapshots,
-            observedAt: now.toISOString() });
+        const state=readSpecialMarketClosures(root,{now});
+        const calendar=createMarketCalendar({verified:true,calendarVersion:snapshots.map(s=>s.calendarVersion).sort().join('+'),
+            fetchedAtEpochMs:Math.max(...snapshots.map(s=>s.fetchedAtEpochMs)),validUntilEpochMs:Math.min(...snapshots.map(s=>s.validUntilEpochMs)),
+            days:snapshots.flatMap(s=>s.days)},state,now);
+        const next=adjacentMarketDate(calendar,localDate,'next',undefined,now);
+        if(!next.date)throw Error('next_trade_date_unavailable');
+        return selectSharedMonitorTradingDay({tradeDate:next.date,snapshots,observedAt:now.toISOString(),root});
     } catch (error) {
         return Object.freeze({
             schemaVersion: INTRADAY_MONITOR_TRADING_CALENDAR_AUTHORITY_SCHEMA,

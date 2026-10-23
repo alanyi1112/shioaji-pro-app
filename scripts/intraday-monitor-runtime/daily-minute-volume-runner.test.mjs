@@ -1,6 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, realpathSync } from 'node:fs';
+import {saveSpecialMarketClosure} from './special-market-closures.mjs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -124,6 +125,27 @@ function localRuntime(root, clock, transportFactory, extra = {}) {
             minimumFreeDiskBytes: 1, maximumEventProcessingMs: 10_000,
             diskCheckIntervalMs: 1_000 }, ...extra };
 }
+
+test('late special closure blocks subsequent comparison, transport and health without deleting prior receipts', async()=>{
+    const root=realpathSync(mkdtempSync(path.join(os.tmpdir(),'daily-runner-manual-close-')));
+    const clock={value:Date.parse(`${targetDate}T08:50:00+08:00`)};
+    let onEvent,transportFetch,fetches=0;
+    const transportFactory=options=>{onEvent=options.onEvent;transportFetch=options.fetchImpl;
+        return {async start(){return {started:true,cohortSize:1,subscribeAccepted:true};},
+            async stop(){return {stopped:true};},status(){return {phase:'running',streamActive:true};}};};
+    try {
+        const runner=createDailyMinuteVolumeRunner(localRuntime(root,clock,transportFactory,{fetchImpl:async()=>{fetches++;throw Error('unexpected_request');}}));
+        assert.equal((await runner.start()).started,true);
+        clock.value=Date.parse(`${targetDate}T09:01:10+08:00`);
+        saveSpecialMarketClosure(root,{action:'close',date:targetDate,reason:'開盤後臨時宣布休市',expectedRevision:0,confirmed:true},{now:new Date(clock.value)});
+        const result=onEvent({schemaVersion:'intraday-monitor-kbar-event/1',code:'2330',date:targetDate,time:'09:01:00',volume:2,
+            receivedTime:new Date(clock.value).toISOString(),connectionGeneration:generation,unit:'common_lot',sourceVersion:'fixture/1'});
+        assert.equal(result.accepted,false);assert.equal(result.reason,'special_market_closure');
+        assert.throws(()=>transportFetch('http://127.0.0.1:8080/unused'),/special_market_closure/);
+        assert.equal(fetches,0);assert.equal((await runner.checkHealth()).reason,'special_market_closure');
+        const stopped=await runner.stop();assert.equal(stopped.stopped,true);
+    }finally{rmSync(root,{recursive:true,force:true});}
+});
 
 function streamEvent(clock, minute, volume) {
     return { schemaVersion: 'intraday-monitor-kbar-event/1',

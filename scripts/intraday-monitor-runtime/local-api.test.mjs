@@ -1,11 +1,16 @@
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IntradayMonitorConfigRepository } from './config-repository.mjs';
+import {readSpecialMarketClosures,saveSpecialMarketClosure} from './special-market-closures.mjs';
+import {createMarketCalendar} from '../../src/lib/market-calendar.ts';
+import {readLocalCalendarDataCheck} from '../local-calendar-check-bridge.mjs';
+import {handleLocalMarketCalendarCheck} from '../../apps/multiview/worker/local-market-calendar-checks.ts';
+import {SqliteD1} from '../../apps/multiview/tests/helpers/sqlite-d1.mjs';
 import { createIntradayMonitorPageLeaseCoordinator } from './page-lease-coordinator.mjs';
 import {
     INTRADAY_MONITOR_LOCAL_API_MAX_BODY_BYTES,
@@ -59,7 +64,7 @@ function trigger(index, kind = 'live') {
 }
 
 async function fixture({ triggers = [], configRepo, counters = {}, capacity = null,
-    dailyStatusProvider } = {}) {
+    dailyStatusProvider, specialClosures, marketCalendarProvider, calendarDataCheckProvider } = {}) {
     const repository = configRepo ?? await configRepository();
     const leaseCoordinator = createIntradayMonitorPageLeaseCoordinator({
         sessionController: {
@@ -85,6 +90,7 @@ async function fixture({ triggers = [], configRepo, counters = {}, capacity = nu
         listTriggers(tradeDate) { counters.resultRead = (counters.resultRead ?? 0) + 1; return triggers.filter((item) => item.tradeDate === tradeDate); },
     };
     const service = createIntradayMonitorLocalApiService({
+        specialClosures, marketCalendarProvider, calendarDataCheckProvider,
         configRepository: repository,
         leaseCoordinator,
         evidenceRepository,
@@ -149,6 +155,41 @@ async function startServer(service) {
     servers.push(server);
     return server.address().port;
 }
+
+describe('全域日曆真正 HTTP 邊界',()=>{
+    it('POST JSON 確實傳給 store；新舊路由讀同一版本，檢查只呼叫明確唯讀 provider',async()=>{
+        const root=await realpath(await mkdtemp(path.join(tmpdir(),'calendar-api-')));roots.push(root);
+        const now=new Date('2026-10-23T09:00:00+08:00');
+        const read=()=>readSpecialMarketClosures(root,{now});
+        const db=new SqliteD1();db.exec('CREATE TABLE candle_history(provider TEXT,symbol TEXT,interval TEXT,time INTEGER,open REAL,high REAL,low REAL,close REAL,volume REAL)');
+        const projection=()=>createMarketCalendar({verified:true,calendarVersion:'fixture-annual',fetchedAtEpochMs:+now-1000,
+            validUntilEpochMs:+now+3600000,days:['2026-10-22','2026-10-23'].map(tradeDate=>({tradeDate,TSE:'scheduled_trading',OTC:'scheduled_trading'}))},read(),now);
+        const inspect=vi.fn(query=>readLocalCalendarDataCheck(query,projection(),{fetchImpl:async(url,init)=>
+            handleLocalMarketCalendarCheck(new Request(url,init),{DEPLOYMENT_TARGET:'local',DB:db},now)}));
+        const {service,repository}=await fixture({specialClosures:{read,save:body=>saveSpecialMarketClosure(root,body,{now})},
+            marketCalendarProvider:()=>({version:'fixture-projection'}),calendarDataCheckProvider:inspect});
+        try{
+            const port=await startServer(service),prefix='/api/market-calendar/v1';
+            const payload={action:'close',date:'2026-10-22',markets:['OTC'],reason:'歷史公告補登',confirmed:true,expectedRevision:0};
+            expect(await request(port,{pathname:prefix+'/special-closures',method:'POST',body:payload})).toMatchObject({status:200,body:{closures:{revision:1,entries:[{markets:['OTC']}]}}});
+            expect(read().revision).toBe(1);
+            expect(await request(port,{pathname:INTRADAY_MONITOR_LOCAL_API_PREFIX+'/special-closures'})).toMatchObject({status:200,body:{closures:{revision:1}}});
+            expect(await request(port,{pathname:prefix+'/projection'})).toMatchObject({status:200,body:{calendar:{version:'fixture-projection'}}});
+            const query={symbol:'2330.TW',from:'2026-10-23',through:'2026-10-23',dataset:'candles',interval:'1d'};
+            expect(await request(port,{pathname:prefix+'/checks',method:'POST',body:query})).toMatchObject({status:200,body:{check:{query}}});
+            expect(inspect).toHaveBeenCalledExactlyOnceWith(query);
+            expect(await request(port,{pathname:prefix+'/special-closures',method:'POST',body:{...payload,date:'2026-10-23',markets:['TSE'],expectedRevision:1}})).toMatchObject({status:200});
+            const rechecked=await request(port,{pathname:prefix+'/checks',method:'POST',body:query});
+            expect(rechecked).toMatchObject({status:200,body:{check:{status:'complete',excluded:['2026-10-23'],externalRequests:0,changedDb:false}}});
+            expect(rechecked.body.check.calendarVersion).toContain('manual:2:');
+            expect(await request(port,{pathname:prefix+'/special-closures',method:'POST',body:payload,headers:{Origin:'http://evil.invalid'}})).toMatchObject({status:403});
+            expect(await request(port,{pathname:prefix+'/special-closures',method:'POST',body:payload,headers:{'Content-Type':'text/plain'}})).toMatchObject({status:415});
+            expect(await request(port,{pathname:prefix+'/checks?download=true',method:'POST',body:query})).toMatchObject({status:400});
+            expect(await request(port,{pathname:prefix+'/leases/acquire',method:'POST',body:{}})).toMatchObject({status:404});
+            expect(read().revision).toBe(2);
+        }finally{repository.close();db.close();}
+    });
+});
 
 function request(port, { pathname = `${INTRADAY_MONITOR_LOCAL_API_PREFIX}/status`, method = 'GET', body, headers = {} } = {}) {
     return new Promise((resolve, reject) => {

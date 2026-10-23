@@ -1,3 +1,4 @@
+import { assertNoSpecialMarketClosure, specialMarketClosureDecision } from './special-market-closures.mjs';
 import { mkdir, open, readFile, stat, statfs } from 'node:fs/promises';
 import { statfsSync } from 'node:fs';
 import path from 'node:path';
@@ -59,6 +60,8 @@ export function createDailyMinuteVolumeRunner({ appSupportRoot, manifests,
         (limits?.sourceSilenceMs ?? 180_000) > 600_000) {
         throw new TypeError('daily_runner_inputs_invalid');
     }
+    const closureOptions = () => ({ root: appSupportRoot, dates: [tradeDate, previousTradeDate], now: new Date(now()) });
+    const guardedFetch = (url, init) => { assertNoSpecialMarketClosure(closureOptions()); return fetchImpl(url, init); };
     const contracts = config?.items?.filter(item => item.enabled).map(item => item.contract);
     if (!Array.isArray(contracts) || contracts.length < 1 || contracts.length > 160) {
         throw new TypeError('daily_runner_cohort_invalid');
@@ -138,7 +141,7 @@ export function createDailyMinuteVolumeRunner({ appSupportRoot, manifests,
             const { contract, event, endMinute, overlapMinute } = repairQueue.shift();
             const pending = (async () => {
                 try {
-                    const worker = repairWorkerFactory({ fetchImpl, now, concurrency: 1 });
+                    const worker = repairWorkerFactory({ fetchImpl: guardedFetch, now, concurrency: 1 });
                     const repaired = await worker.run({ contracts: [contract], tradeDate,
                         endMinute, overlapMinute, liveGeneration: connectionGeneration,
                         liveOverlapBySymbol: new Map([[contract.canonicalSymbol,
@@ -168,6 +171,8 @@ export function createDailyMinuteVolumeRunner({ appSupportRoot, manifests,
     }
 
     function recordEvent(event) {
+        const closure = specialMarketClosureDecision(closureOptions());
+        if (!closure.allowed) { fault(closure.reason); return { accepted: false, reason: closure.reason }; }
         sourceEvents += 1;
         lastSourceEventAt = event?.receivedTime ?? now();
         if (resourceFault) return { accepted: false, reason: resourceFault };
@@ -250,6 +255,8 @@ export function createDailyMinuteVolumeRunner({ appSupportRoot, manifests,
 
     async function checkHealth() {
         if (!['running', 'closing'].includes(phase)) return { state: 'inactive' };
+        const closure = specialMarketClosureDecision(closureOptions());
+        if (!closure.allowed) { fault(closure.reason); return {state:'stalled',reason:closure.reason}; }
         const at = nowEpochMs();
         const stream = transport?.status();
         const activeStart = Date.parse(`${tradeDate}T09:00:00+08:00`);
@@ -319,6 +326,7 @@ export function createDailyMinuteVolumeRunner({ appSupportRoot, manifests,
     }
 
     async function start({ latestAllowedAt = `${tradeDate}T09:00:00+08:00` } = {}) {
+        assertNoSpecialMarketClosure(closureOptions());
         if (phase !== 'idle') throw new Error('daily_runner_already_used');
         if (!Number.isFinite(Date.parse(latestAllowedAt)) ||
             Date.parse(now()) >= Date.parse(latestAllowedAt) ||
@@ -353,7 +361,7 @@ export function createDailyMinuteVolumeRunner({ appSupportRoot, manifests,
                 connectionGeneration, observationSink: sink.receive, nowEpochMs,
                 maximumCohortSize: 160, requireFirstMinute: true });
             let controlPlaneMarked = false;
-            transport = transportFactory({ fetchImpl, now, storageProfile: DYNAMIC_DAILY_STORAGE,
+            transport = transportFactory({ fetchImpl: guardedFetch, now, storageProfile: DYNAMIC_DAILY_STORAGE,
                 onEvent: recordEvent,
                 onSubscribeAccepted() {
                     const control = sessionAuthority.markControlPlane({ requested: true,

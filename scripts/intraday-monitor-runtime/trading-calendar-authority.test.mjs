@@ -66,7 +66,7 @@ describe('盤中監控官方交易日 authority', () => {
         try {
             const old = await localBaseline(root);
             const oldBytes = await readFile(old, 'utf8');
-            const at = '2026-10-12T05:35:00.000Z';
+            const at = '2026-10-12T14:00:00.000Z';
             const snapshot = buildOfficialMarketCalendarSnapshot({
                 twse: parseTwseOfficialCalendar(twsePayload, 2026),
                 tpex: parseTpexOfficialCalendar(tpexPayload, 2026), fetchedAtEpochMs: Date.parse(at) });
@@ -86,7 +86,7 @@ describe('盤中監控官方交易日 authority', () => {
     it('盤前從前一交易日已驗證的本機雙市場日曆判定，不向網站發請求', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'premarket-calendar-local-'));
         try {
-            await localBaseline(root);
+            await localBaseline(root,{fetchedAt:Date.parse('2026-09-21T22:00:00+08:00')});
             const trading = await resolveIntradayMonitorPremarketTradingDay({ root,
                 now: new Date('2026-09-22T08:20:00+08:00') });
             expect(trading).toMatchObject({ current: true, tradeDate: '2026-09-22',
@@ -94,7 +94,8 @@ describe('盤中監控官方交易日 authority', () => {
                 authorityKind: 'verified_postclose_local_snapshot' });
             const weekend = await resolveIntradayMonitorPremarketTradingDay({ root,
                 now: new Date('2026-09-26T08:20:00+08:00') });
-            expect(weekend).toMatchObject({ current: true, isTradingDate: false });
+            // 超過原 snapshot 12 小時，不能以週末常識延長來源效期。
+            expect(weekend).toMatchObject({ current: false, isTradingDate: null, reason:'shared_calendar_unconfirmed' });
         } finally { await rm(root, { recursive: true, force: true }); }
     });
 

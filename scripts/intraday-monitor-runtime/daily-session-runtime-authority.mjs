@@ -6,6 +6,7 @@ import { evaluateIntradayMonitorCurrentSession } from './current-session-authori
 import { resolveIntradayMonitorRuntimeArtifactBundleSync } from './runtime-artifact-bundle.mjs';
 import { IntradayMonitorSessionStateRepository } from './session-state-repository.mjs';
 import { createThresholdRuntime } from './threshold-runtime.mjs';
+import { specialMarketClosureDecision } from './special-market-closures.mjs';
 
 export const INTRADAY_MONITOR_CLOSING_TRANSITION_TIME = '13:30:15';
 
@@ -49,7 +50,7 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
         let config = null;
         try { config = readConfig(configDatabasePath, appSupportRoot); } catch {}
         const savedConfigRevision = config?.revision ?? null;
-        const authority = evaluateIntradayMonitorCurrentSession({
+        let authority = evaluateIntradayMonitorCurrentSession({
             authority: session?.calendarAuthority ?? null,
             session,
             approval,
@@ -60,6 +61,10 @@ export function createIntradayMonitorDailySessionRuntimeAuthority({
             apiGeneration: connectionGeneration,
             nowEpochMs: Date.parse(now()),
         });
+        const closure = specialMarketClosureDecision({ root: appSupportRoot,
+            dates: [tradeDate, ...(session?.previousTradeDate ? [session.previousTradeDate] : [])], now: new Date(now()) });
+        if (!closure.allowed) authority = { ...authority, current: false, reason: closure.reason,
+            controlPlaneAuthority: false, dataPlaneAuthority: false, resultsAuthority: false, notificationAuthority: false };
         return Object.freeze({ authority, session, approval, artifactBundle, savedConfigRevision, config });
     }
 

@@ -1,3 +1,4 @@
+import { assertNoSpecialMarketClosure } from './special-market-closures.mjs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
@@ -130,6 +131,7 @@ export async function runDailyMinuteVolumePostclose({ root, mode, sourceTradeDat
         typeof now !== 'function' || typeof fetchImpl !== 'function') {
         throw new TypeError('daily_postclose_inputs_invalid');
     }
+    assertNoSpecialMarketClosure({root,dates:[sourceTradeDate,calendar.targetTradeDate],now:new Date(now())});
     const verifiedCalendar = baselineCalendar(calendar.twse, calendar.tpex,
         sourceTradeDate, calendar.targetTradeDate, Date.parse(now()));
     if (verifiedCalendar.sourceVersion !== calendar.calendarSourceVersion) {

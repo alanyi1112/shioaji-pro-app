@@ -1,6 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, realpathSync } from 'node:fs';
+import { saveSpecialMarketClosure } from './special-market-closures.mjs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -28,12 +29,14 @@ const tpex = { data: { html: '<table><tr><td>中華民國115年有價證券櫃�
 
 function setup({ failKbars = false, failKbarsOnce = false, maxRequests = 2,
     rateLimitOnce = false, withContractCache = false, earlyWakeOnce = false,
-    frozenWait = false } = {}) {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'daily-minute-collector-'));
+    frozenWait = false, closeAfterContract = false } = {}) {
+    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'daily-minute-collector-')));
     const repository = new DailyMinuteVolumeRepository(path.join(root, 'baseline.sqlite3'));
     const calls = { contract: 0, kbars: 0, reservations: 0, waits: 0, settles: [] };
     let current = at;
-    const apiPort = { async fetchContract() { calls.contract++; return { value: contract, responseBytes: 100 }; },
+    const apiPort = { async fetchContract() { calls.contract++;
+        if(closeAfterContract)saveSpecialMarketClosure(root,{action:'close',date,reason:'工作開始後臨時休市',confirmed:true,expectedRevision:0},{now:new Date(current)});
+        return { value: contract, responseBytes: 100 }; },
         async fetchKbars() { calls.kbars++;
             if (failKbars || failKbarsOnce && calls.kbars === 1) {
                 throw new Error('baseline_provider_unavailable');
@@ -83,6 +86,26 @@ test('daily collector makes one K query, publishes v2 and same-key rerun is read
         assert.equal(next.alreadyPresent, true);
         assert.equal(env.calls.kbars, 1);
     } finally { env.close(); }
+});
+
+test('late manual closure prevents the next request, preserving the real first request and settlement', async () => {
+    const env=setup({closeAfterContract:true});
+    try {
+        const receipt=await env.collector.collect(env.options);
+        assert.equal(receipt.outcome,'partial');assert.equal(receipt.requests,1);
+        assert.equal(receipt.results[0].reason,'special_market_closure');
+        assert.equal(env.calls.contract,1);assert.equal(env.calls.kbars,0);
+        assert.equal(env.calls.settles.length,1);assert.equal(env.repository.currentRevision(),0);
+    } finally {env.close();}
+});
+
+test('a closed target rejects the old D-to-T before any collector claim or request', async () => {
+    const env=setup();
+    try {
+        saveSpecialMarketClosure(env.options.root,{action:'close',date:target,reason:'目標日臨時休市',confirmed:true,expectedRevision:0},{now:new Date(at)});
+        await assert.rejects(()=>env.collector.collect(env.options),/special_market_closure/);
+        assert.equal(env.calls.reservations,0);assert.equal(env.calls.contract,0);assert.equal(env.calls.kbars,0);
+    } finally {env.close();}
 });
 
 test('central rate limit waits until the recorded admission time without increasing request budget', async () => {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildOfficialMarketCalendarSnapshot, parseTwseOfficialCalendar,
     parseTpexOfficialCalendar } from '../smart-order-runtime/official-market-calendar-core.mjs';
+import {createMarketCalendar,adjacentMarketDate,marketCalendarDay,validClosureState} from '../../src/lib/market-calendar.ts';
 
 const SCHEMA = 'intraday-monitor-official-calendar-cache/1';
 const day = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') &&
@@ -12,7 +13,7 @@ const directory = root => path.join(root, 'IntradayMonitor', 'official-calendar-
 const trading = row => row.TSE === 'scheduled_trading' && row.OTC === 'scheduled_trading';
 
 export function verifyDailyCalendarCache(value, now = new Date()) {
-    if (!value || value.schemaVersion !== SCHEMA || !['postclose', 'operator-repair'].includes(value.trigger) ||
+    if (!value || ![SCHEMA,'intraday-monitor-official-calendar-cache/2'].includes(value.schemaVersion) || !['postclose', 'operator-repair'].includes(value.trigger) ||
         !day(value.sourceTradeDate) || !day(value.targetTradeDate) ||
         value.sourceTradeDate >= value.targetTradeDate ||
         value.sourceTradeDate.slice(0, 4) !== value.targetTradeDate.slice(0, 4) ||
@@ -30,8 +31,15 @@ export function verifyDailyCalendarCache(value, now = new Date()) {
         fetchedAtEpochMs: Date.parse(value.fetchedAt),
     });
     const source = snapshot.days.find(row => row.tradeDate === value.sourceTradeDate);
-    const next = snapshot.days.find(row => row.tradeDate > value.sourceTradeDate && trading(row));
-    if (!source || !trading(source) || next?.tradeDate !== value.targetTradeDate ||
+    let next = snapshot.days.find(row => row.tradeDate > value.sourceTradeDate && trading(row))?.tradeDate;
+    if(value.schemaVersion==='intraday-monitor-official-calendar-cache/2'){
+        if(!validClosureState(value.manualClosures))throw Error('daily_calendar_manual_identity_invalid');
+        const at=new Date(value.fetchedAt),effective=createMarketCalendar({...snapshot,verified:true},value.manualClosures,at);
+        if(value.sharedCalendarVersion!==effective.version||['TSE','OTC'].some(m=>marketCalendarDay(effective,value.sourceTradeDate,m,at).state!=='scheduled'))
+            throw Error('daily_calendar_manual_identity_invalid');
+        next=adjacentMarketDate(effective,value.sourceTradeDate,'next',undefined,at).date;
+    }
+    if (!source || !trading(source) || next !== value.targetTradeDate ||
         snapshot.calendarVersion !== value.calendarVersion) throw new Error('daily_calendar_cache_identity_mismatch');
     return snapshot;
 }
@@ -39,10 +47,11 @@ export function verifyDailyCalendarCache(value, now = new Date()) {
 export async function saveDailyCalendarCache({ root, calendar, fetchedAt,
     trigger = 'postclose' } = {}) {
     if (!path.isAbsolute(root ?? '')) throw new TypeError('daily_calendar_root_invalid');
-    const body = { schemaVersion: SCHEMA, trigger, sourceTradeDate: calendar.tradeDate,
+    const body = { schemaVersion: calendar.manualClosures?'intraday-monitor-official-calendar-cache/2':SCHEMA, trigger, sourceTradeDate: calendar.tradeDate,
         targetTradeDate: calendar.targetTradeDate, fetchedAt,
         calendarVersion: calendar.calendarSourceVersion, twse: calendar.twse, tpex: calendar.tpex,
-        brokerWriteAuthority: false, notificationAuthority: false };
+        brokerWriteAuthority: false, notificationAuthority: false,
+        ...(calendar.manualClosures?{manualClosures:calendar.manualClosures,sharedCalendarVersion:calendar.sharedCalendarVersion}:{}) };
     const value = { ...body, evidenceHash: hash(body) };
     verifyDailyCalendarCache(value, new Date(fetchedAt));
     const bytes = JSON.stringify(value);

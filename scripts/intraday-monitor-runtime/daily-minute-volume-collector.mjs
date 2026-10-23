@@ -1,3 +1,4 @@
+import { assertNoSpecialMarketClosure } from './special-market-closures.mjs';
 import { mkdir, open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -45,12 +46,14 @@ export function createDailyMinuteVolumeCollector({ apiPort, admission, repositor
         throw new TypeError('daily_minute_volume_collector_port_invalid');
     }
 
-    async function request(kind, entry, generation, tradeDate, deadlineAt, limits, counters) {
+    async function request(kind, entry, generation, tradeDate, deadlineAt, limits, counters, closureContext) {
+        assertNoSpecialMarketClosure({ ...closureContext, now: new Date(now()) });
         if (Date.parse(now()) >= Date.parse(deadlineAt)) throw new Error('daily_collection_deadline_exceeded');
         if (counters.requests >= limits.maxRequests) throw new Error('daily_collection_request_limit');
         const cacheKey = `monitor-minute-v2:${tradeDate}:${entry.canonicalSymbol}:${kind}`;
         let reservation;
         for (;;) {
+            assertNoSpecialMarketClosure({ ...closureContext, now: new Date(now()) });
             reservation = await admission.reserve({ cacheKey, generation });
             if (reservation?.allowed === true && reservation.reservationId) break;
             const waitingUntil = Date.parse(reservation?.nextAttemptAt ?? '');
@@ -82,7 +85,9 @@ export function createDailyMinuteVolumeCollector({ apiPort, admission, repositor
         }
         let requested = 0, responseBytes = null;
         try {
+            assertNoSpecialMarketClosure({ ...closureContext, now: new Date(now()) });
             await admission.start({ reservationId: reservation.reservationId });
+            assertNoSpecialMarketClosure({ ...closureContext, now: new Date(now()) });
             requested = 1;
             counters.requests += 1;
             const controller = new AbortController();
@@ -137,6 +142,8 @@ export function createDailyMinuteVolumeCollector({ apiPort, admission, repositor
         }
         const sourceDate = calendar?.previousTradeDate;
         const targetDate = calendar?.targetTradeDate;
+        const closureContext = { root, dates: [sourceDate, targetDate] };
+        assertNoSpecialMarketClosure({ ...closureContext, now: new Date(now()) });
         const verifiedCalendar = baselineCalendar(calendar?.twse, calendar?.tpex,
             sourceDate, targetDate, calendar?.fetchedAtEpochMs);
         if (verifiedCalendar.sourceVersion !== calendar?.sourceVersion ||
@@ -217,11 +224,11 @@ export function createDailyMinuteVolumeCollector({ apiPort, admission, repositor
                         cached.value?.update_date === sourceDate;
                     const contract = reusable ? cached.value :
                         await request('contract', entry, connectionGeneration, sourceDate,
-                            limits.deadlineAt, limits, counters);
+                            limits.deadlineAt, limits, counters, closureContext);
                     if (!reusable) await writeCachedContract({ entry, tradeDate: sourceDate,
                         sourceVersion, connectionGeneration, value: contract });
                     const bars = await request('kbars', entry, connectionGeneration, sourceDate,
-                        limits.deadlineAt, limits, counters);
+                        limits.deadlineAt, limits, counters, closureContext);
                     const candidate = createDailyMinuteVolumeCandidate({ entry, contract,
                         kbars: bars, tradeDate: sourceDate, sourceVersion,
                         timestampEncoding: DAILY_KBAR_TIMESTAMP_ENCODING });
