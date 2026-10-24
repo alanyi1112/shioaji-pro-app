@@ -134,12 +134,14 @@ export async function startChipBackfillOrchestratorRun(input: {
   runId: string;
   trigger: ChipBackfillTrigger;
   scope?: ChipBackfillScope;
+  completedSession?: string;
   now?: Date | string;
 }) {
   const scope = input.scope || "combined";
   if (!RUN_ID.test(input.runId) || !["schedule", "workflow_dispatch", "scheduled"].includes(input.trigger) || !CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.scopes.includes(scope)) throw new Error("invalid_response");
   const now = iso(input.now);
-  const expected = latestCompletedTaiwanSessionDate(now);
+  const expected = input.completedSession ?? latestCompletedTaiwanSessionDate(now);
+  if (!validDate(expected) || expected > latestCompletedTaiwanSessionDate(now)) throw new Error("invalid_response");
   const phase: ChipBackfillPhase = scope === "daily" ? "daily" : "latest";
   await input.db.prepare(`INSERT INTO chip_backfill_orchestrator_runs
     (run_id,scope,trigger,status,phase,expected_session_date,heartbeat_at,started_at)
@@ -148,6 +150,7 @@ export async function startChipBackfillOrchestratorRun(input: {
     .bind(input.runId, scope, input.trigger, phase, expected, now, now).run();
   const run = await readChipBackfillOrchestratorRun(input.db, input.runId);
   if (run?.scope !== scope) throw new Error("invalid_response");
+  if (input.completedSession && run.expectedSessionDate !== input.completedSession) throw new Error("invalid_response");
   return run;
 }
 

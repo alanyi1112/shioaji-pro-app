@@ -147,6 +147,7 @@ import { localShioajiAdapterHealth } from "./local-shioaji-adapter";
 import { notifyRealtimeWatchlistSymbols, readRealtimeHealth, realtimeViewerCapability, type RealtimeEnv } from "./realtime-routing";
 import { auditTaiwanDailyContinuity, cacheTaiwanOfficialMonthPayload } from "./taiwan-daily-continuity";
 import { resolveOfficialCompletedSession, seedOfficialTradingCalendar } from "./official-trading-session";
+import { resolveLocalCompletedSession } from "./local-completed-session";
 import {
   STOCK_SCREENER_LIST_SYNC_SCHEMA_VERSION,
   STOCK_SCREENER_MULTIVIEW_TAB_LABEL,
@@ -163,7 +164,7 @@ type ImagesBinding = {
     };
   };
 };
-export type Env = RealtimeEnv & { ASSETS: Fetcher; DB?: D1Database; IMAGES?: ImagesBinding; APP_COMMIT_SHA?: string; ACCESS_TEAM_DOMAIN?: string; ACCESS_AUD?: string; ACCESS_OWNER_EMAIL?: string; MASSIVE_API_KEY?: string; TPEX_MIRROR_INGEST_SECRET?: string; TDCC_HISTORY_INGEST_SECRET?: string; TDCC_CONTINUOUS_BACKFILL_SECRET?: string; CANDLE_CONTINUITY_AUDIT_SECRET?: string; TDCC_HISTORY_AUTOMATION_ENABLED?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string; FINMIND_API_TOKEN?: string; PE_RIVER_INGEST_SECRET?: string; PE_RIVER_BACKFILL_SECRET?: string; PE_RIVER_ACCESS_MODE?: string; PE_RIVER_COMMERCIAL_USE?: string; PE_RIVER_PROVISIONAL_LATEST_ENABLED?: string; SHIOAJI_API_TARGET?: string; MULTIVIEW_STATE_DIR?: string; MULTIVIEW_SCHEMA_REVISION?: string; REALTIME_STOCK_WEB_URL?: string; LOCAL_PIPELINE_SECRET?: string };
+export type Env = RealtimeEnv & { ASSETS: Fetcher; DB?: D1Database; IMAGES?: ImagesBinding; APP_COMMIT_SHA?: string; ACCESS_TEAM_DOMAIN?: string; ACCESS_AUD?: string; ACCESS_OWNER_EMAIL?: string; MASSIVE_API_KEY?: string; TPEX_MIRROR_INGEST_SECRET?: string; TDCC_HISTORY_INGEST_SECRET?: string; TDCC_CONTINUOUS_BACKFILL_SECRET?: string; CANDLE_CONTINUITY_AUDIT_SECRET?: string; TDCC_HISTORY_AUTOMATION_ENABLED?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string; FINMIND_API_TOKEN?: string; PE_RIVER_INGEST_SECRET?: string; PE_RIVER_BACKFILL_SECRET?: string; PE_RIVER_ACCESS_MODE?: string; PE_RIVER_COMMERCIAL_USE?: string; PE_RIVER_PROVISIONAL_LATEST_ENABLED?: string; SHIOAJI_API_TARGET?: string; MULTIVIEW_STATE_DIR?: string; MULTIVIEW_SCHEMA_REVISION?: string; REALTIME_STOCK_WEB_URL?: string; LOCAL_PIPELINE_SECRET?: string; LOCAL_MARKET_CALENDAR_PROOF?: string };
 type Instrument = {
   symbol: string;
   name: string;
@@ -842,7 +843,7 @@ async function invalidateCandlePayloadCache(db: D1Database | undefined, symbol: 
 function taiwanDailyContinuityOptions(env: Env, symbol: string, interval: string, now: Date, expectedSession: string | null, maxOfficialMonths?: number) {
   if (interval !== "1d" || !/\.(TW|TWO)$/i.test(symbol)) return {};
   return {
-    continuityAudit: (rows: HistoryCandle[], requiredRows: number) => expectedSession ? auditTaiwanDailyContinuity({
+    continuityAudit: async (rows: HistoryCandle[], requiredRows: number) => expectedSession ? auditTaiwanDailyContinuity({
       db: env.DB,
       symbol,
       rows,
@@ -850,6 +851,8 @@ function taiwanDailyContinuityOptions(env: Env, symbol: string, interval: string
       expectedThrough: expectedSession,
       now,
       maxOfficialMonths,
+      calendarWindow: env.DEPLOYMENT_TARGET === 'local'
+        ? (await resolveLocalCompletedSession(env.LOCAL_MARKET_CALENDAR_PROOF,env.LOCAL_PIPELINE_SECRET,now)).calendarWindow : undefined,
     }) : Promise.resolve({
       status: "unknown" as const, checkedFrom: sessionDateForCandle(rows[0]), checkedThrough: null,
       checkedAt: now.toISOString(), verifiedThrough: null, missingSessionCount: 0,
@@ -964,7 +967,7 @@ async function cachedCandlePayload(
   }
   try {
     const expectedSession = /\.(TW|TWO)$/i.test(symbol)
-      ? (await resolveOfficialCompletedSession(requestNow, fetch, env.DB)).expectedSession : null;
+      ? (await resolveContinuitySession(env, requestNow)).expectedSession : null;
     const baseProvider = providerForCandleSymbol(symbol);
     const provider = baseProvider === "yfinance" && interval === "1wk"
       ? "yfinance-weekly-from-daily-v1"
@@ -1374,7 +1377,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
   if (!authorizedTdccContinuous(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   await ensureDb(env.DB);
   const historyAutomationEnabled = env.TDCC_HISTORY_AUTOMATION_ENABLED === "true";
-  if (request.method === "GET") return json({ ok: true, contract: TDCC_CONTINUOUS_CONTRACT, historyAutomationEnabled, orchestrator: await readChipBackfillOrchestratorHealth(env.DB), chipPrewarming: { contract: WATCHLIST_CHIP_PREWARM_CONTRACT, health: await readWatchlistChipPrewarmHealth(env.DB) }, health: await readTdccContinuousHealth(env.DB) });
+  if (request.method === "GET") return json({ ok: true, contract: TDCC_CONTINUOUS_CONTRACT, historyAutomationEnabled, orchestrator: await readChipBackfillOrchestratorHealth(env.DB), chipPrewarming: { contract: WATCHLIST_CHIP_PREWARM_CONTRACT, health: await localChipPrewarmHealth(env) }, health: await readTdccContinuousHealth(env.DB) });
   let body: JsonObject;
   try { body = jsonObject(await request.json()); }
   catch { return json({ ok: false, error: "Invalid payload" }, 400); }
@@ -1387,10 +1390,10 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     if (!["combined", "daily", "tdcc-weekly"].includes(orchestratorScope)) throw new Error("invalid_response");
     if (action === "orchestrator-start") {
       const trigger = orchestratorTrigger;
-      let orchestrator = await startChipBackfillOrchestratorRun({ db: env.DB, runId, trigger, scope: orchestratorScope });
+      let orchestrator = await startChipBackfillOrchestratorRun({ db: env.DB, runId, trigger, scope: orchestratorScope, completedSession: await localChipCompletedSession(env) });
       if (orchestrator?.status === "completed") return json({ ok: true, ...chipBackfillWorkflowResult(orchestrator, true) });
       if (orchestrator?.scope === "daily") {
-        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS });
+        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
         const done = targets.dueSymbols === 0;
         orchestrator = await advanceChipBackfillOrchestratorRun({
           db: env.DB,
@@ -1418,7 +1421,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
           await finishTdccContinuousRun({ db: env.DB, runId });
           return json({ ok: true, ...chipBackfillWorkflowResult(orchestrator, true) });
         }
-        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS });
+        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
         const done = targets.dueSymbols === 0;
         orchestrator = await advanceChipBackfillOrchestratorRun({
           db: env.DB,
@@ -1440,7 +1443,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       if (!current) throw new Error("invalid_response");
       if (current.status === "completed") return json({ ok: true, ...chipBackfillWorkflowResult(current, true) });
       if (current.phase !== "daily" || !["daily", "combined"].includes(current.scope)) throw new Error("invalid_response");
-      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS });
+      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
       const processed: string[] = [];
       let reason: string | null = null;
       for (const target of targets.targets) {
@@ -1461,7 +1464,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
           reason = reason || "provider_unavailable";
         }
       }
-      const remaining = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS });
+      const remaining = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
       const done = remaining.dueSymbols === 0;
       if (done && !reason && remaining.pendingSymbols) reason = "source_not_published";
       const orchestrator = await advanceChipBackfillOrchestratorRun({
@@ -1511,7 +1514,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     }
     if (action === "chip-targets") {
       await refreshTdccContinuousTargets(request, env);
-      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: Number(body?.limit || WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun) });
+      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: Number(body?.limit || WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun), completedSession: await localChipCompletedSession(env) });
       await heartbeatTdccContinuousRun({ db: env.DB, runId });
       return json({ ok: true, ...targets, contract: WATCHLIST_CHIP_PREWARM_CONTRACT });
     }
@@ -2870,7 +2873,7 @@ async function taiwanStockChipHealth(env: Env) {
       reason: latest?.reason_code || null,
     }];
   }));
-  return { enabled: true, datasets, backgroundOrchestrator: await readChipBackfillOrchestratorHealth(env.DB), watchlistPrewarming: await readWatchlistChipPrewarmHealth(env.DB), shareholderDistributionBackfill: await readTdccHistoryBackfillStatus(env.DB), shareholderDistributionContinuous: await readTdccContinuousHealth(env.DB), immediateWorkflowDispatchConfigured: Boolean(env.GITHUB_WORKFLOW_DISPATCH_TOKEN), finMindTokenConfigured: Boolean(env.FINMIND_API_TOKEN) };
+  return { enabled: true, datasets, backgroundOrchestrator: await readChipBackfillOrchestratorHealth(env.DB), watchlistPrewarming: await localChipPrewarmHealth(env), shareholderDistributionBackfill: await readTdccHistoryBackfillStatus(env.DB), shareholderDistributionContinuous: await readTdccContinuousHealth(env.DB), immediateWorkflowDispatchConfigured: Boolean(env.GITHUB_WORKFLOW_DISPATCH_TOKEN), finMindTokenConfigured: Boolean(env.FINMIND_API_TOKEN) };
 }
 
 export async function runChipBackfillScheduled(env: Env, scheduledTime: number) {
@@ -3019,8 +3022,24 @@ type DailyContinuityHealthRow = {
   continuity_reason_code?: string | null;
 };
 
-async function readDailyContinuityHealth(db: D1Database | undefined, now = new Date()) {
-  const calendar = await resolveOfficialCompletedSession(now, fetch, db);
+async function localChipCompletedSession(env: Env) {
+  if (env.DEPLOYMENT_TARGET !== "local") return undefined;
+  const calendar = await resolveContinuitySession(env, new Date());
+  if (!calendar.expectedSession) throw new Error(calendar.reasonCode || "calendar_authority_unavailable");
+  return calendar.expectedSession;
+}
+
+async function localChipPrewarmHealth(env: Env) {
+  try { return await readWatchlistChipPrewarmHealth(env.DB, new Date(), await localChipCompletedSession(env)); }
+  catch { return { configured: Boolean(env.DB), status: "unknown", lastErrorCode: "calendar_authority_unavailable" }; }
+}
+
+async function resolveContinuitySession(env: Env, now: Date) {
+  return env.DEPLOYMENT_TARGET === "local" ? resolveLocalCompletedSession(env.LOCAL_MARKET_CALENDAR_PROOF, env.LOCAL_PIPELINE_SECRET, now) : resolveOfficialCompletedSession(now, fetch, env.DB);
+}
+
+async function readDailyContinuityHealth(db: D1Database | undefined, now = new Date(), env?: Env) {
+  const calendar = env ? await resolveContinuitySession(env, now) : await resolveOfficialCompletedSession(now, fetch, db);
   const empty = {
     global: { d1: db ? "available" : "unavailable", schema: db ? "unknown" : "unavailable" },
     counts: { enabledSymbols: 0, complete: 0, partial: 0, unknown: 0, notAudited: 0, latestSessionCoverage: 0, latestSessionVerified: 0 },
@@ -3143,6 +3162,18 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
     const identity = candleHistoryIdentity(providerForCandleSymbol(symbol), symbol, "1d");
     const [persisted, state] = await Promise.all([readCandleHistory(env.DB, identity, displayCount), readCandleHistoryState(env.DB, identity)]);
     if (persisted.ok && persisted.rows.length > 0 && state) {
+      const local = env.DEPLOYMENT_TARGET === 'local' ? await resolveLocalCompletedSession(env.LOCAL_MARKET_CALENDAR_PROOF, env.LOCAL_PIPELINE_SECRET, requestNow) : null;
+      if (local?.expectedSession && local.calendarWindow) {
+        const audit = await auditTaiwanDailyContinuity({ db: env.DB, rows: persisted.rows, symbol, requiredRows: displayCount,
+          expectedThrough: local.expectedSession, now: requestNow, calendarWindow: local.calendarWindow, cacheOnly: true });
+        return { status: audit.status, coverageEnd: sessionDateForCandle(persisted.rows.at(-1)!), missingSessionCount: audit.missingSessionCount,
+          verifiedThrough: audit.verifiedThrough, checkedAt: audit.checkedAt, reasonCode: audit.reasonCode };
+      }
+      const calendar = await resolveContinuitySession(env, requestNow);
+      if (!calendar.expectedSession || state.continuity.verifiedThrough !== calendar.expectedSession) {
+        return { status: "unknown" as const, coverageEnd: null, missingSessionCount: 0, verifiedThrough: null,
+          checkedAt: requestNow.toISOString(), reasonCode: "calendar_authority_unavailable" };
+      }
       return {
         status: state.continuity.status,
         coverageEnd: state.coverageEnd == null ? null : sessionDateForCandle({ time: state.coverageEnd, open: 1, high: 1, low: 1, close: 1, volume: 0, sourceTimeZone: "Asia/Taipei" }),
@@ -3152,8 +3183,10 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
         reasonCode: state.continuity.reasonCode,
       };
     }
+    return { status: "unknown" as const, coverageEnd: null, missingSessionCount: 0, verifiedThrough: null,
+      checkedAt: requestNow.toISOString(), reasonCode: "storage_unavailable" };
   }
-  const expectedSession = (await resolveOfficialCompletedSession(requestNow, fetch, env.DB)).expectedSession;
+  const expectedSession = (await resolveContinuitySession(env, requestNow)).expectedSession;
   const history = await acquireCandleHistory({
     db: env.DB,
     provider: providerForCandleSymbol(symbol),
@@ -3183,19 +3216,19 @@ async function auditCandleContinuitySymbol(env: Env, symbol: string, requestNow:
 }
 
 // Called only after local-maintenance has authenticated its loopback request.
-export async function runLocalCandleContinuity(request: Request, env: Env) {
+export async function runLocalCandleContinuity(request: Request, env: Env, reuseExistingOnly = false) {
   if (env.DEPLOYMENT_TARGET !== "local" || !env.LOCAL_PIPELINE_SECRET || !env.DB) throw new Error("local_only");
   const now = new Date();
-  const calendar = await resolveOfficialCompletedSession(now, fetch, env.DB);
+  const calendar = await resolveContinuitySession(env, now);
   const expectedSession = calendar.expectedSession;
   if (!expectedSession) return { done: false, processed: 0, reasonCode: calendar.reasonCode || "calendar_authority_unavailable" };
-  const runId = `local-daily-continuity-${expectedSession}`;
+  const runId = `local-daily-continuity-${expectedSession}${reuseExistingOnly ? "-calendar-reuse-v1" : ""}`;
   // Reuse the audited state machine without installing or exposing another secret.
   const auditEnv = { ...env, CANDLE_CONTINUITY_AUDIT_SECRET: env.LOCAL_PIPELINE_SECRET };
   const invoke = async (action: string) => {
     const auditRequest = new Request(request.url, {
       method: "POST", headers: { authorization: `Bearer ${env.LOCAL_PIPELINE_SECRET}`, "content-type": "application/json" },
-      body: JSON.stringify({ action, runId, expectedSession, trigger: "local" }),
+      body: JSON.stringify({ action, runId, expectedSession, trigger: "local", ...(reuseExistingOnly ? { preferPersisted: true } : {}) }),
     });
     await prepareRequestPrincipal(auditRequest, auditEnv);
     const response = await candleContinuityAuditResponse(auditRequest, auditEnv);
@@ -3253,6 +3286,17 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
   await ensureDb(env.DB);
   const action = String(body.action || "");
   if (action) {
+    if (action === "local-calendar-reuse-audit") {
+      if (!local || !Array.isArray(body.symbols) || body.symbols.length < 1 || body.symbols.length > 4)
+        return json({ ok: false, reasonCode: "invalid_payload" }, 400);
+      let symbols: string[];
+      try { symbols = normalizeCandleContinuityAcceptanceSymbols(body.symbols); }
+      catch { return json({ ok:false,reasonCode:"invalid_payload" },400); }
+      if (symbols.length !== body.symbols.length) return json({ ok:false,reasonCode:"invalid_payload" },400);
+      const now = new Date();
+      const items = await runCandleContinuityAuditBatch(symbols, symbol => auditCandleContinuitySymbol(env,symbol,now,160,true));
+      return json({ ok:true,manual:true,scope:"persisted-160-calendar-reuse",sourceRequests:0,items });
+    }
     if (action === "seed-official-trading-calendar") {
       if (!local || !env.DB || !Number.isInteger(body.year)) return json({ ok: false, reasonCode: "invalid_payload" }, 400);
       try {
@@ -3291,7 +3335,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
           symbol: symbols[0],
           rows: historyRows,
           requiredRows: Math.min(320, Math.max(1, historyRows.length)),
-          expectedThrough: (await resolveOfficialCompletedSession(now, fetch, env.DB)).expectedSession,
+          expectedThrough: (await resolveContinuitySession(env, now)).expectedSession,
           now,
         });
         if (continuity.repairRows.length) {
@@ -3318,7 +3362,7 @@ async function candleContinuityAuditResponse(request: Request, env: Env) {
     const now = new Date();
     try {
       if (action === "orchestrator-start") {
-        const calendar = await resolveOfficialCompletedSession(now, fetch, env.DB);
+        const calendar = await resolveContinuitySession(env, now);
         const expectedSession = calendar.expectedSession;
         if (!expectedSession) throw new Error(calendar.reasonCode || "calendar_authority_unavailable");
         if (body.expectedSession && body.expectedSession !== expectedSession) throw new Error("expected_session_mismatch");
@@ -3451,7 +3495,7 @@ export async function handleAppRequest(request: Request, env: Env, context?: App
     const deploymentTarget = deploymentTargetForRequest(request);
     const continuityTarget = deploymentTarget === "cloudflare" ? "cloudflare" : deploymentTarget === "local" ? "local" : "sites";
     const chipHealth = await taiwanStockChipHealth(env);
-    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB), continuityAudit: { configured: Boolean(env.DB && (env.CANDLE_CONTINUITY_AUDIT_SECRET || env.DEPLOYMENT_TARGET === "local" && env.LOCAL_PIPELINE_SECRET)), batchLimit: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.batchLimit, concurrency: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.concurrency, automation: await readCandleContinuityAutomationHealth(env.DB, continuityTarget) }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: env.DB ? { ...chipHealth, archive: await tdccArchiveStatus(env.DB) } : chipHealth, taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
+    return json({ ok: true, app: "報價線圖 multiview", runtime: deploymentTarget === "cloudflare" ? "cloudflare-workers" : deploymentTarget === "local" ? "local-worker" : "codex-sites", deploymentTarget, commitSha: env.APP_COMMIT_SHA || null, language: "zh-TW", maxCharts: 8, providers: ["shioaji-local", "hyperliquid", "yahoo-chart", "sample", "finmind", "twse", "tpex", "tdcc"], persistence: { d1: Boolean(env.DB), stateDirectory: deploymentTarget === "local" ? env.MULTIVIEW_STATE_DIR || null : null, schemaRevision: env.MULTIVIEW_SCHEMA_REVISION || null, candleCache: Boolean(env.DB), candleHistory: Boolean(env.DB), taiwanStockChip: Boolean(env.DB), taiwanStockPeRiver: Boolean(env.DB) }, shioajiAdapter: deploymentTarget === "local" ? localShioajiAdapterHealth() : { configured: false, dataOnly: true }, realtime: await readRealtimeHealth(env), usage: runtimeUsageSummary(), cacheMaintenance: await readCandleCacheMaintenance(env.DB), dailyCandleContinuity: await readDailyContinuityHealth(env.DB, new Date(), env), continuityAudit: { configured: Boolean(env.DB && (env.CANDLE_CONTINUITY_AUDIT_SECRET || env.DEPLOYMENT_TARGET === "local" && env.LOCAL_PIPELINE_SECRET)), batchLimit: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.batchLimit, concurrency: CANDLE_CONTINUITY_AUTOMATION_CONTRACT.concurrency, automation: await readCandleContinuityAutomationHealth(env.DB, continuityTarget) }, quoteVerification: { enabled: true, providers: { twse: { enabled: true, configured: true }, tpex: { enabled: true, configured: true }, tpexMirror: { enabled: true, configured: Boolean(env.DB && env.TPEX_MIRROR_INGEST_SECRET) }, massive: { enabled: true, configured: Boolean(env.MASSIVE_API_KEY) } } }, taiwanStockChip: env.DB ? { ...chipHealth, archive: await tdccArchiveStatus(env.DB) } : chipHealth, taiwanStockPeRiver: env.DB ? { ...river, continuous: await readPeRiverContinuousHealth(env.DB) } : river });
   }
   if (path === "/api/internal/candle-continuity-audit" && request.method === "POST") return candleContinuityAuditResponse(request, env);
   if (path === "/api/internal/taiwan-stock-pe-river" && request.method === "POST") return ingestPeRiverMonth(request, env);

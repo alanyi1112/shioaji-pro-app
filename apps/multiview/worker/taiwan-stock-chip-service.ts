@@ -32,8 +32,10 @@ import { calculateEstimatedMarginMetrics, ESTIMATED_MARGIN_FORMULA_VERSION } fro
 import { runD1Batch } from "./d1-batch.ts";
 import { tdccArchiveStatus, tdccDistributionMaterialHash, tdccStoredDistributionMaterialHash } from "./tdcc-archive-bootstrap.ts";
 import { fetchTdccLatestOfficial, TDCC_LATEST_SOURCES } from "./tdcc-latest-source.ts";
+import { resolveLocalCompletedSession } from "./local-completed-session.ts";
 
-type ChipEnv = { DB?: D1Database; FINMIND_API_TOKEN?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string };
+type ChipEnv = { DB?: D1Database; FINMIND_API_TOKEN?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string;
+  DEPLOYMENT_TARGET?: string; LOCAL_MARKET_CALENDAR_PROOF?: string; LOCAL_PIPELINE_SECRET?: string };
 export type TaiwanChipEligibility = { eligible: boolean; symbol: string; exchange: "TWSE" | "TPEx" | ""; quoteType?: string; eligibleSymbols: ReadonlySet<string> };
 type Availability = { status: "available" | "partial" | "unavailable"; reason: ChipReasonCode; rowCount: number };
 type ChipDailyDbRow = {
@@ -113,7 +115,11 @@ export async function prewarmTaiwanStockChipSymbol(input: {
   fetchImpl?: typeof fetch;
 }) {
   if (!input.eligibility.eligible) return { symbol: input.eligibility.symbol, eligible: false, warmedDatasets: [], status: "not_eligible" };
-  const window = watchlistChipWarmWindow(input.now);
+  const completed = input.env.DEPLOYMENT_TARGET === "local"
+    ? await resolveLocalCompletedSession(input.env.LOCAL_MARKET_CALENDAR_PROOF, input.env.LOCAL_PIPELINE_SECRET,
+      input.now ? new Date(input.now) : new Date()) : null;
+  if (completed && !completed.expectedSession) throw new Error(completed.reasonCode || "calendar_authority_unavailable");
+  const window = watchlistChipWarmWindow(input.now, completed?.expectedSession ?? undefined);
   const datasets = [...new Set((input.datasets || [...WATCHLIST_CHIP_PREWARM_CONTRACT.datasets]).filter((dataset) => WATCHLIST_CHIP_PREWARM_CONTRACT.datasets.includes(dataset as typeof WATCHLIST_CHIP_PREWARM_CONTRACT.datasets[number])))];
   if (!datasets.length) return { symbol: input.eligibility.symbol, eligible: true, warmedDatasets: [], status: "not_requested" };
   const url = new URL("https://internal/api/taiwan-stock-chip");

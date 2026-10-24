@@ -24,11 +24,13 @@ export type TaiwanContinuityAudit = CandleHistoryContinuityMetadata & {
   candidateMonths: string[];
   officialRequests: number;
 };
+export type LocalCalendarWindow = { from: string; through: string; TSE: string; OTC: string; validUntil: string; version: string };
 
 type FetchOfficialMonthOptions = {
   db?: D1Database;
   fetchImpl?: typeof fetch;
   now?: Date;
+  cacheOnly?: boolean;
   requestBudget?: {
     remaining: number;
     used: number;
@@ -254,7 +256,7 @@ export async function fetchTaiwanOfficialMonth(symbol: string, month: string, op
   const key = officialMonthKey(normalizedSymbol, month);
   const memory = officialMonthMemory.get(key);
   if (memory && memory.expiresAt > epoch) return memory.value;
-  const existing = officialMonthInflight.get(key);
+  const existing = options.cacheOnly ? null : officialMonthInflight.get(key);
   if (existing) return existing;
   const promise = (async (): Promise<TaiwanOfficialMonthResult> => {
     if (options.db) {
@@ -269,6 +271,8 @@ export async function fetchTaiwanOfficialMonth(symbol: string, month: string, op
         // D1 cache is optional; continue with the official source.
       }
     }
+    if (options.cacheOnly) return { symbol: normalizedSymbol, month, status: "unavailable", rows: [], sessionDates: [],
+      provider, checkedAt: now.toISOString(), reasonCode: "reference_not_published" } as TaiwanOfficialMonthResult;
     if (options.requestBudget && options.requestBudget.remaining <= 0) {
       return {
         symbol: normalizedSymbol,
@@ -306,8 +310,8 @@ export async function fetchTaiwanOfficialMonth(symbol: string, month: string, op
       }
     }
     return value;
-  })().finally(() => { officialMonthInflight.delete(key); });
-  officialMonthInflight.set(key, promise);
+  })().finally(() => { if (!options.cacheOnly) officialMonthInflight.delete(key); });
+  if (!options.cacheOnly) officialMonthInflight.set(key, promise);
   return promise;
 }
 
@@ -335,6 +339,8 @@ export async function auditTaiwanDailyContinuity(input: {
   now?: Date;
   fetchImpl?: typeof fetch;
   maxOfficialMonths?: number;
+  calendarWindow?: LocalCalendarWindow;
+  cacheOnly?: boolean;
 }): Promise<TaiwanContinuityAudit> {
   const now = input.now ?? new Date();
   const normalizedRows = [...input.rows].sort((left, right) => left.time - right.time);
@@ -347,10 +353,26 @@ export async function auditTaiwanDailyContinuity(input: {
     return { ...base, status: "unknown", reasonCode: "invalid_scope", repairRows: [], candidateMonths: [], officialRequests: 0 };
   }
   const existingDates = new Set(scopedRows.map(taiwanSessionDate).filter(validSessionDate));
-  const candidateDates = weekdayDates(checkedFrom, checkedThrough).filter((date) => !existingDates.has(date));
-  if (!candidateDates.length) {
-    return { ...base, status: "complete", verifiedThrough: checkedThrough, repairRows: [], candidateMonths: [], officialRequests: 0 };
+  const expected = weekdayDates(checkedFrom, checkedThrough);
+  const window = input.calendarWindow, closed: string[] = [];
+  if (window) {
+    if (checkedFrom < window.from || checkedThrough > window.through || Date.parse(window.validUntil) <= +now)
+      return { ...base, status: "unknown", reasonCode: "calendar_authority_unavailable", repairRows: [], candidateMonths: [], officialRequests: 0 };
+    const states = normalizedRows.length && input.symbol.endsWith('.TWO') ? window.OTC : window.TSE;
+    for (const date of expected) {
+      const index = (Date.parse(date+'T00:00:00Z') - Date.parse(window.from+'T00:00:00Z')) / 86400000;
+      if (!['S','C'].includes(states[index])) return { ...base, status: "unknown", reasonCode: "calendar_authority_unavailable", repairRows: [], candidateMonths: [], officialRequests: 0 };
+      if (states[index] === 'C') closed.push(date);
+    }
   }
+  const closedSet = new Set(closed);
+  const candidateDates = expected.filter((date) => !closedSet.has(date) && !existingDates.has(date));
+  if (!candidateDates.length) {
+    return { ...base, status: "complete", verifiedThrough: checkedThrough, excludedSessionDates: boundedDates(closed), repairRows: [], candidateMonths: [], officialRequests: 0 };
+  }
+  if (input.cacheOnly && !input.db) return { ...base, status: "unknown", missingSessionCount: candidateDates.length,
+    missingSessionDates: boundedDates(candidateDates), excludedSessionDates: boundedDates(closed), reasonCode: "reference_not_published",
+    repairRows: [], candidateMonths: [], officialRequests: 0 };
   const allMonths = [...new Set(candidateDates.map((date) => date.slice(0, 7)))].sort();
   const requestBudget = {
     remaining: Math.max(1, Math.min(TAIWAN_CONTINUITY_MAX_MONTHS_PER_REQUEST, Math.floor(Number(input.maxOfficialMonths) || TAIWAN_CONTINUITY_MAX_MONTHS_PER_REQUEST))),
@@ -363,6 +385,7 @@ export async function auditTaiwanDailyContinuity(input: {
       fetchImpl: input.fetchImpl,
       now,
       requestBudget,
+      cacheOnly: input.cacheOnly,
     })));
     official.push(...batch);
     if (batch.some((result) => result.reasonCode === "audit_request_budget")) break;

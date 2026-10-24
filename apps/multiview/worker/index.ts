@@ -13,6 +13,7 @@ import { handleLocalMaintenance } from "./local-maintenance";
 import { withLocalLauncherCors } from "./local-launcher-cors";
 import { handleStockScreener } from "./stock-screener-route";
 import { collectScreenerData } from "./stock-screener-collector";
+import { bindLocalScreenerCalendar } from "./stock-screener-session-readiness";
 
 export { RealtimeMarketHub } from "./realtime-hub";
 
@@ -30,7 +31,10 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     recordRuntimeInvocation("request");
-    env = { ...env, DB: meterD1Database(env.DB) };
+    env = { ...env, DB: meterD1Database(env.DB), LOCAL_MARKET_CALENDAR_PROOF: env.DEPLOYMENT_TARGET === 'local'
+      ? request.headers.get('x-multiview-local-calendar-proof') ?? '' : undefined };
+    if (env.DEPLOYMENT_TARGET === 'local' && env.DB) env = { ...env,
+      DB: await bindLocalScreenerCalendar(env.DB, env.LOCAL_MARKET_CALENDAR_PROOF, env.LOCAL_PIPELINE_SECRET) };
     const url = new URL(request.url);
     if (String(env.DEPLOYMENT_TARGET || "").toLowerCase() === "cloudflare") markDeployTimeMigrations(env.DB);
     const authenticationFailure = await prepareRequestPrincipal(request, env);
@@ -49,8 +53,8 @@ const worker = {
       async screener(currentEnv, scope) {
         return collectScreenerData((currentEnv as Env).DB!, scope);
       },
-      async continuity(currentEnv) {
-        return runLocalCandleContinuity(request, currentEnv as Env);
+      async continuity(currentEnv, options) {
+        return runLocalCandleContinuity(request, currentEnv as Env, options?.reuseExistingOnly === true);
       },
       async daily(currentEnv, scheduledTime) {
         const typedEnv = currentEnv as Env;

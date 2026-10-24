@@ -277,3 +277,27 @@ test("長區間每次最多六個官方網路請求，後續稽核利用月快�
   assert.equal(calls, 7);
   assert.equal(maximumActiveCalls, 2);
 });
+
+test('本機已簽署日曆排除休市；純重用不因假缺日消耗月來源請求', async () => {
+  const now=new Date('2026-08-06T08:00:00Z');let calls=0;
+  const window={from:'2026-08-03',through:'2026-08-05',TSE:'SCS',OTC:'SCS',validUntil:'2026-08-07T08:00:00Z',version:'fixture'};
+  const input={symbol:'3008.TW',rows:[historyRow('2026-08-03'),historyRow('2026-08-05')],requiredRows:2,
+    expectedThrough:'2026-08-05',now,cacheOnly:true,calendarWindow:window,fetchImpl:async()=>{calls++;throw Error('must_not_fetch')}};
+  const r=await auditTaiwanDailyContinuity(input);assert.equal(r.status,'complete');assert.equal(r.officialRequests,0);
+  assert.deepEqual(r.excludedSessionDates,['2026-08-04']);assert.equal(calls,0);
+  const gap=await auditTaiwanDailyContinuity({...input,calendarWindow:{...window,TSE:'SSS'}});
+  assert.equal(gap.status,'unknown');assert.equal(gap.missingSessionCount,1);assert.equal(calls,0);
+  for(const calendarWindow of [{...window,validUntil:now.toISOString()},{...window,TSE:'SUS'},{...window,from:'2026-08-04'}]) {
+    assert.equal((await auditTaiwanDailyContinuity({...input,calendarWindow})).status,'unknown');
+  }
+});
+
+test('純重用不接手其他 request 尚在下載的 single-flight', async () => {
+  clearTaiwanDailyContinuityRuntimeState();let release;
+  const barrier=new Promise(r=>{release=r;});
+  const normal=fetchTaiwanOfficialMonth('3008.TW','2026-08',{now:new Date('2026-08-28T08:00:00Z'),
+    fetchImpl:async()=>{await barrier;return Response.json(twseMonthPayload());}});
+  const cached=await fetchTaiwanOfficialMonth('3008.TW','2026-08',{cacheOnly:true,now:new Date('2026-08-28T08:00:00Z'),
+    fetchImpl:async()=>{throw Error('must_not_fetch');}});
+  assert.equal(cached.status,'unavailable');release();await normal;
+});

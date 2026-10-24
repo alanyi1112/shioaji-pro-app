@@ -42,24 +42,29 @@ export type WatchlistChipWarmTarget = {
 
 const realDate = (value: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 
-export function watchlistChipWarmWindow(now: Date | string = new Date()) {
+export function watchlistChipWarmWindow(now: Date | string = new Date(), completedSession?: string) {
   const endDate = now instanceof Date ? now : new Date(now);
   if (!Number.isFinite(endDate.getTime())) throw new Error("invalid_response");
-  const end = latestCompletedTaiwanSessionDate(endDate);
+  if (completedSession !== undefined && (!realDate(completedSession)
+    || new Date(`${completedSession}T00:00:00Z`).toISOString().slice(0, 10) !== completedSession
+    || completedSession > latestCompletedTaiwanSessionDate(endDate))) throw new Error("calendar_authority_unavailable");
+  const end = completedSession ?? latestCompletedTaiwanSessionDate(endDate);
   const startDate = new Date(`${end}T00:00:00Z`);
   startDate.setUTCDate(startDate.getUTCDate() - WATCHLIST_CHIP_PREWARM_CONTRACT.lookbackDays);
   return { start: startDate.toISOString().slice(0, 10), end };
 }
 
 function isFresh(state: WarmState | undefined, window: { start: string; end: string }, nowMs: number) {
+  const noActivity = state?.dataset === "securities-lending" && state.reason_code === "official_no_activity"
+    && realDate(state.source_date) && String(state.source_date) >= window.end;
   if (
     !state
     || state.status !== "available"
     || !realDate(state.coverage_start)
-    || !realDate(state.coverage_end)
+    || !noActivity && !realDate(state.coverage_end)
     || !realDate(state.source_date)
     || String(state.coverage_start) > window.start
-    || String(state.coverage_end) < window.end
+    || !noActivity && String(state.coverage_end) < window.end
     || String(state.source_date) < window.end
   ) return false;
   const lastSuccess = Date.parse(String(state.last_success_at || ""));
@@ -77,10 +82,10 @@ async function readTargetsAndStates(db: D1Database) {
   return { symbols, states };
 }
 
-export async function discoverWatchlistChipWarmTargets(input: { db: D1Database; limit?: number; now?: Date | string; attemptCooldownMs?: number }) {
+export async function discoverWatchlistChipWarmTargets(input: { db: D1Database; limit?: number; now?: Date | string; attemptCooldownMs?: number; completedSession?: string }) {
   const now = input.now instanceof Date ? input.now : input.now ? new Date(input.now) : new Date();
   if (!Number.isFinite(now.getTime())) throw new Error("invalid_response");
-  const window = watchlistChipWarmWindow(now);
+  const window = watchlistChipWarmWindow(now, input.completedSession);
   const limit = Math.max(1, Math.min(WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun, Math.trunc(Number(input.limit || WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun))));
   const { symbols, states } = await readTargetsAndStates(input.db);
   let pendingSymbols = 0;
@@ -96,14 +101,14 @@ export async function discoverWatchlistChipWarmTargets(input: { db: D1Database; 
       const retryAfter = Date.parse(String(state?.retry_after || ""));
       const lastSuccess = Date.parse(String(state?.last_success_at || ""));
       if (Number.isFinite(lastSuccess)) successTimes.push(lastSuccess);
+      const noActivity = dataset === "securities-lending" && state?.reason_code === "official_no_activity"
+        && realDate(state.source_date) && String(state.source_date) >= window.end;
       const coverageComplete = Boolean(
         state
         && state.status === "available"
-        && realDate(state.coverage_start)
-        && realDate(state.coverage_end)
+        && realDate(state.coverage_start) && String(state.coverage_start) <= window.start
+        && (noActivity || realDate(state.coverage_end) && String(state.coverage_end) >= window.end)
         && realDate(state.source_date)
-        && String(state.coverage_start) <= window.start
-        && String(state.coverage_end) >= window.end
         && String(state.source_date) >= window.end,
       );
       if (!coverageComplete) missing += 1;
@@ -130,11 +135,11 @@ export async function discoverWatchlistChipWarmTargets(input: { db: D1Database; 
   };
 }
 
-export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined, now: Date | string = new Date()) {
+export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined, now: Date | string = new Date(), completedSession?: string) {
   if (!db) return { configured: false, status: "unavailable", scheduler: WATCHLIST_CHIP_PREWARM_CONTRACT.scheduler, targetSymbols: 0, readySymbols: 0, pendingSymbols: 0, retryWaitingSymbols: 0, lastSuccessAt: null, lastErrorCode: "d1_unavailable" };
   try {
     const current = now instanceof Date ? now : new Date(now);
-    const window = watchlistChipWarmWindow(current);
+    const window = watchlistChipWarmWindow(current, completedSession);
     const { symbols, states } = await readTargetsAndStates(db);
     const schedulerRun = await db.prepare("SELECT heartbeat_at,status,last_reason_code FROM chip_backfill_orchestrator_runs WHERE scope IN ('daily','combined') ORDER BY updated_at DESC LIMIT 1").first<SchedulerRunRow>();
     const schedulerHeartbeat = Date.parse(String(schedulerRun?.heartbeat_at || ""));

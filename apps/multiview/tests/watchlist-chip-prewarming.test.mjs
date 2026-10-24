@@ -177,3 +177,36 @@ test("資格檢查前持久化嘗試使失敗商品冷卻，並保留最後可�
     assert.deepEqual({ ...retained }, { status: 'available', coverage_end: '2026-01-01', source_date: '2026-01-01' });
   } finally { database.close(); }
 });
+
+test("已驗證休市目標傳給 discovery 與 health，不追抓星期五休市日", async () => {
+  const now = "2026-10-23T16:30:00.000Z";
+  const states = WATCHLIST_CHIP_PREWARM_CONTRACT.datasets.map(dataset => state("2330.TW", dataset, {
+    coverage_start: "2025-10-22", coverage_end: "2026-10-22", source_date: "2026-10-22",
+    last_success_at: "2026-10-23T15:40:00.000Z", last_attempt_at: "2026-10-23T15:40:00.000Z",
+  }));
+  const store = db(["2330.TW"], states, { heartbeat_at: now, status: "completed" });
+  const result = await discoverWatchlistChipWarmTargets({ db: store, now, completedSession: "2026-10-22" });
+  assert.equal(result.end, "2026-10-22");
+  assert.equal(result.pendingSymbols, 0);
+  assert.equal(result.dueSymbols, 0);
+  const health = await readWatchlistChipPrewarmHealth(store, now, "2026-10-22");
+  assert.equal(health.readySymbols, 1);
+  assert.equal(health.window.end, "2026-10-22");
+  assert.throws(() => watchlistChipWarmWindow(now, "2026-10-26"), /calendar_authority_unavailable/);
+});
+
+test("官方無借券成交只補尾端證據，不將缺少歷史的資料冒充全年已齊", async () => {
+  const states = WATCHLIST_CHIP_PREWARM_CONTRACT.datasets.map(dataset => state("2330.TW", dataset));
+  const lending = states.find(s => s.dataset === "securities-lending");
+  Object.assign(lending, { reason_code: "official_no_activity", coverage_end: "2026-07-16", source_date: "2026-07-17" });
+  const now = "2026-07-17T15:00:00.000Z";
+  let result = await discoverWatchlistChipWarmTargets({ db: db(["2330.TW"], states), now });
+  assert.equal(result.pendingSymbols, 0);
+  lending.coverage_start = "2026-07-16";
+  result = await discoverWatchlistChipWarmTargets({ db: db(["2330.TW"], states), now });
+  assert.equal(result.pendingSymbols, 1);
+  assert.deepEqual(result.targets[0].datasets, ["securities-lending"]);
+  lending.source_date = "2026-07-16";
+  result = await discoverWatchlistChipWarmTargets({ db: db(["2330.TW"], states), now });
+  assert.equal(result.pendingSymbols, 1);
+});
