@@ -13,6 +13,21 @@ const MAX_BYTES = 2 * 1024 ** 2;
 const MAX_INT64 = 9223372036854775807n;
 const sha = text => createHash('sha256').update(text).digest('hex');
 const stamp = v => typeof v === 'string' && Number.isFinite(Date.parse(v));
+export const dailyQuotesRequestLimitKey = cacheKey => `screener-single-request-limit:${sha(cacheKey)}`;
+export async function readDailyQuotesRequestLimit(db, cacheKey, sessionDate, now = new Date()) {
+    if (!await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='screener_runs'").first()) return null;
+    const row = await db.prepare('SELECT scope,status,checkpoint FROM screener_runs WHERE id=?').bind(dailyQuotesRequestLimitKey(cacheKey)).first();
+    if (!row) return null;
+    let value; try { value = JSON.parse(row.checkpoint); } catch { throw new Error('invalid_source_authorization'); }
+    const { evidenceHash, ...body } = value;
+    if (row.scope !== 'screener-single-request-limit' || row.status !== 'verified' || sha(JSON.stringify(body)) !== evidenceHash
+        || body.version !== 1 || body.cacheKey !== cacheKey || body.sessionDate !== sessionDate || body.maximumSourceRequests !== 1
+        || !HASH.test(body.originalCacheHash ?? '') || !HASH.test(body.originalReviewHash ?? '')
+        || !stamp(body.authorizedAt) || Date.parse(body.authorizedAt) > now.getTime() || !stamp(body.expiresAt))
+        throw new Error('invalid_source_authorization');
+    if (Date.parse(body.expiresAt) <= now.getTime()) throw new Error('source_single_request_authorization_expired');
+    return body;
+}
 const knownError = e => /^(?:invalid_\w+|source_\w+|daily_quotes_\w+|simulation_\w+|broker_\w+)$/.test(e?.message ?? '')
     ? e.message : 'source_transport_failed';
 
@@ -196,6 +211,9 @@ export async function loadDailyQuotesBatch({ db, sessionDate, review, gate, fetc
             status: 200, fetchedAt: row.fetched_at, text: row.response_text }, sessionDate, review, now()) };
     };
     const hit = await cached(); if (hit) return hit;
+    const singleLimit = await readDailyQuotesRequestLimit(db, cacheKey, sessionDate, start);
+    if (singleLimit && (await get())?.attempts >= singleLimit.maximumSourceRequests)
+        return { state: 'pending', reason: 'source_single_request_exhausted', requested: 0 };
     const owner = randomUUID(), leaseUntil = new Date(start.getTime() + 60000).toISOString();
     await db.prepare(`INSERT INTO screener_daily_quotes_cache(cache_key,session_date,review_hash,status,attempts,lease_owner,lease_until,updated_at)
         VALUES(?,?,?,'pending',0,?,?,?) ON CONFLICT(cache_key) DO UPDATE SET lease_owner=excluded.lease_owner,
@@ -223,6 +241,8 @@ export async function loadDailyQuotesBatch({ db, sessionDate, review, gate, fetc
     try {
         if (typeof safety !== 'function' || typeof admission?.reserve !== 'function' || typeof admission?.settle !== 'function'
             || typeof fetchReport !== 'function') throw new Error('broker_admission_pending');
+        const currentLimit = await readDailyQuotesRequestLimit(db, cacheKey, sessionDate, now());
+        if (currentLimit && row.attempts >= currentLimit.maximumSourceRequests) throw new Error('source_single_request_exhausted');
         const safe = await safety();
         if (safe?.simulation !== true || safe.businessSessionEstablished !== true || !stamp(safe.observedAt)
             || now().getTime() - Date.parse(safe.observedAt) < 0 || now().getTime() - Date.parse(safe.observedAt) > 60000

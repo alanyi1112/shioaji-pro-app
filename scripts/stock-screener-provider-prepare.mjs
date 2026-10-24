@@ -7,10 +7,13 @@ import { technicalEvidenceHash } from '../src/lib/stock-screener-technical-patte
 import { createDailyQuotesFetcher, loadDailyQuotesBatch, validDailyQuotesReview, DAILY_QUOTES_MAPPING, DAILY_QUOTES_URL } from './stock-screener-shioaji-daily-quotes.mjs';
 import { createBollingerSourceFetcher } from './stock-screener-bollinger-source-fetch.mjs';
 import { SOURCE_POLICY_VERSION, sourceSelectionSchemaReady, readSourceReview, readSourceSelection, freezeSourceSelection, sourceWindowMapping } from './stock-screener-source-selection.mjs';
+import { readDailyQuotesRequestLimit } from './stock-screener-shioaji-daily-quotes.mjs';
+import { transitionPendingDailyQuotesReview } from './stock-screener-pending-review-transition.mjs';
 
 export async function prepareSelectedBollingerHistory(options) {
     const { db, calendar, through, criteria, profileRevision, universeRevision, universe, reviewIds = {}, safety, admission,
-        signal, trigger = 'watcher', now = () => new Date(), maxDurationMs = 15 * 60000 } = options;
+        signal, trigger = 'watcher', now = () => new Date(), maxDurationMs = 15 * 60000, reuseExistingOnly = false } = options;
+    if (typeof reuseExistingOnly !== 'boolean') throw new Error('invalid_source_budget');
     if (!Number.isSafeInteger(maxDurationMs) || maxDurationMs < 1 || maxDurationMs > 15 * 60000) throw new Error('invalid_source_budget');
     let plan;
     try { plan = planBollingerHistory(calendar, through, criteria, profileRevision, now()); }
@@ -48,6 +51,7 @@ export async function prepareSelectedBollingerHistory(options) {
         .bind(randomUUID(), runId, status, JSON.stringify({ sourcePolicyVersion: SOURCE_POLICY_VERSION, through, trigger, universeRevision,
             requested, bytes, ...payload }), now().toISOString()).run();
     const wrapped = (fetcher, bound) => async (...args) => {
+        if (reuseExistingOnly) throw new Error('source_download_not_authorized');
         await guard(); if (requested >= 2 || bytes + bound > 8 * 1024 ** 2) throw new Error('run_budget');
         requested++;
         try { const r = await fetcher(...args); const size = Buffer.byteLength(r.text ?? ''); bytes += size;
@@ -89,7 +93,7 @@ export async function prepareSelectedBollingerHistory(options) {
                 }
             }
             const officialValid = sourceReview?.provider === provider && validateBollingerSourceReview(sourceReview.review, target.market, now());
-            if (officialValid && (!batch?.report || batch.status !== 'complete') && requested < 2) {
+            if (!reuseExistingOnly && officialValid && (!batch?.report || batch.status !== 'complete') && requested < 2) {
                 await prepareBollingerHistory({ db, calendar, through, criteria, profileRevision, universeRevision, universe,
                     reviews: { [target.market]: sourceReview.review }, targetKeys: [target.key], trigger, now,
                     budget: { maxRequests: 1, maxBytes: 4 * 1024 ** 2, maxDurationMs: Math.max(1, deadline - now().getTime()) }, fetchReport: officialFetcher });
@@ -105,8 +109,38 @@ export async function prepareSelectedBollingerHistory(options) {
                     storedOfficialReport: saved, fetchReceiptId: fetched.id, now, signal: controller.signal });
                 if (frozen.state === 'complete') { processed++; continue; }
             }
+            // 母體 revision 改變時，先以原 review／收據重投影已完成的同日快取。
+            // 不能把今天新 review 的 hash 套到舊快取，也不能為此再次消耗券商額度。
+            const cached = await db.prepare(`SELECT review_hash FROM screener_daily_quotes_cache
+                WHERE session_date=? AND status='complete' ORDER BY updated_at DESC,cache_key DESC LIMIT 1`)
+                .bind(target.sessionDate).first();
+            if (cached && (!officialValid || reuseExistingOnly)) {
+                const original = await db.prepare(`SELECT id FROM screener_source_reviews
+                    WHERE provider='shioaji-daily-quotes' AND evidence_hash=? ORDER BY created_at,id LIMIT 1`)
+                    .bind(cached.review_hash).first();
+                if (!original) throw new Error('invalid_cached_report');
+                const originalReview = await readSourceReview(db, original.id, now());
+                const recovered = await freezeBroker(target.market, target.sessionDate, originalReview,
+                    'official_contract_pending', []);
+                if (recovered?.state === 'complete') { processed++; continue; }
+            }
+            if (reuseExistingOnly) { reason ??= 'source_cache_missing'; continue; }
             const backup = reviews['shioaji-daily-quotes'];
             if (!backup || !validDailyQuotesReview(backup.review, now())) { reason ??= 'source_contract_pending'; continue; }
+            // 換版不能重綁 pending/invalid 的舊帳；但不能因此阻斷其餘日期的純重用。
+            const priorCache = await db.prepare('SELECT review_hash,status,reason,next_attempt_at FROM screener_daily_quotes_cache WHERE cache_key=?')
+                .bind(`${backup.review.mappingVersion}|${target.sessionDate}`).first();
+            if (priorCache && priorCache.review_hash !== backup.review.evidenceHash) {
+                const cacheKey = `${backup.review.mappingVersion}|${target.sessionDate}`;
+                const authorized = await readDailyQuotesRequestLimit(db, cacheKey, target.sessionDate, now());
+                if (!authorized) { reason ??= 'source_review_transition_pending'; continue; }
+                const original = await db.prepare('SELECT * FROM screener_daily_quotes_cache WHERE cache_key=?').bind(cacheKey).first();
+                if (original?.attempts !== 0 || original?.status !== 'pending') { reason ??= 'source_single_request_exhausted'; continue; }
+                await transitionPendingDailyQuotesReview({ db, sessionDate: target.sessionDate, reviewId: backup.id, now,
+                    authorization: { approved: true, sessionDate: target.sessionDate, maximumSourceRequests: 1,
+                        expectedCacheHash: await technicalEvidenceHash(original) } });
+                await receipt('authorized_review_transition', { sessionDate: target.sessionDate, sourceRequests: 0 });
+            }
             const local = new Date(now().getTime() + 8 * 3600000).toISOString(), hhmm = local.slice(11,16);
             if (calendar.commonSessions.includes(local.slice(0,10)) && hhmm >= '08:30' && hhmm < '14:00') {
                 reason ??= 'broker_intraday_reserved'; continue;

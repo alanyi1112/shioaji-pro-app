@@ -103,13 +103,18 @@ async function verifiedProjection({ db, provider, market, sessionDate, reviewId,
         || marketFor(provider) && marketFor(provider) !== market) throw new Error('invalid_source_selection');
     const sourceReview = await readSourceReview(db, reviewId, now);
     if (sourceReview.provider !== provider || sourceReview.review.status !== 'verified') throw new Error('source_contract_pending');
-    reviewShape(provider, sourceReview.review, null, now);
     const review = sourceReview.review;
     let report, cacheKey = null, proof;
     if (provider === 'shioaji-daily-quotes') {
-        report = { ...parseDailyQuotes(response, sessionDate, review, now), market };
         cacheKey = `${review.mappingVersion}|${sessionDate}`;
         const cached = await db.prepare('SELECT * FROM screener_daily_quotes_cache WHERE cache_key=?').bind(cacheKey).first();
+        // 來源審查限制的是「取得批次當時」；重投影已凍結的不可變快取，不是新的來源下載。
+        // 新下載仍由 loadDailyQuotesBatch 在當下核對有效 review 與集中額度。
+        const acquiredAt = new Date(cached?.fetched_at ?? '');
+        if (cached?.status !== 'complete' || !Number.isFinite(acquiredAt.getTime())
+            || acquiredAt.getTime() > now.getTime()) throw new Error('invalid_cached_report');
+        reviewShape(provider, review, null, acquiredAt);
+        report = { ...parseDailyQuotes(response, sessionDate, review, acquiredAt), market };
         if (cached?.status !== 'complete' || cached.review_hash !== report.reviewHash || cached.payload_hash !== report.payloadHash
             || cached.fetched_at !== report.fetchedAt || cached.response_text !== response.text) throw new Error('invalid_cached_report');
         proof = await receiptProof(db, 'screener_daily_quotes_receipts', fetchReceiptId);
@@ -118,6 +123,7 @@ async function verifiedProjection({ db, provider, market, sessionDate, reviewId,
             || proof.body.payloadHash !== report.payloadHash || proof.body.rowCount !== report.points.length
             || proof.body.bytes !== report.bytes || proof.body.requested !== 1) throw new Error('invalid_source_receipt');
     } else {
+        reviewShape(provider, review, null, now);
         if (response) report = await parseBollingerOfficialReport(response, market, sessionDate, review, now);
         else {
             // 原官方準備器已存具 hash 的 parsed report；只重用 DB 的同一合法批次，不接受 caller 自造 report。
@@ -220,7 +226,8 @@ export async function freezeSourceSelection(options) {
     if (signal?.aborted) throw new Error('source_projection_aborted');
     gateReady(gate, sessionDate, now());
     const currentReview = await readSourceReview(db, reviewId, now());
-    reviewShape(provider, currentReview.review, null, now());
+    reviewShape(provider, currentReview.review, null,
+        provider === 'shioaji-daily-quotes' ? new Date(report.fetchedAt) : now());
     await db.prepare("UPDATE screener_source_selections SET status='complete' WHERE selection_key=? AND manifest_hash=? AND status='staging'")
         .bind(key, manifestHash).run();
     return { state: 'complete', ...await readSourceSelection(db, key) };

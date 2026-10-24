@@ -380,7 +380,7 @@ test('上櫃官方恢復也可核對；錯市場或未驗證收據不能追加�
         await assert.rejects(compareRestoredOfficialSource({ db: f.db, selectionKey: frozen.key, ...candidate, fetchReceiptId: 'missing' }), /source_receipt_missing/);
     } finally { f.db.close(); }
 });
-test('pending review不能凍結；已過期review仍可讀既有歷史、不能凍結新選擇', async () => {
+test('pending review不能凍結；過期review只可重投影取得當時合法的不可變快取', async () => {
     const f = await fixture();
     try {
         const pending = await saveSourceReview(f.db, { provider: 'shioaji-daily-quotes',
@@ -389,8 +389,15 @@ test('pending review不能凍結；已過期review仍可讀既有歷史、不能
         await assert.rejects(freezeSourceSelection({ ...f.options, reviewId: pending.id }), /source_contract_pending/);
         const frozen = await freezeSourceSelection(f.options);
         assert.equal((await readSourceReview(f.db, f.options.reviewId, new Date('2026-10-05T07:00:00Z'))).review.status, 'verified');
-        await assert.rejects(freezeSourceSelection({ ...f.options, market: 'TPEx', gate: { ...gate, validThrough: '2026-10-06T07:00:00Z' },
-            now: () => new Date('2026-10-05T07:00:00Z') }), /source_contract_pending/);
+        const later = { ...f.options, market: 'TPEx', universeRevision: 'later-universe',
+            gate: { ...gate, validThrough: '2026-10-06T07:00:00Z' }, now: () => new Date('2026-10-05T07:00:00Z') };
+        const reused = await freezeSourceSelection(later);
+        assert.equal(reused.manifest.reviewId, f.options.reviewId);
+        assert.equal(reused.manifest.fetchReceiptId, f.options.fetchReceiptId);
+        await assert.rejects(freezeSourceSelection({ ...later, sessionDate: '2026-10-03',
+            gate: { ...later.gate, commonSessions: [date, '2026-10-03'] } }), /invalid_cached_report/);
+        await assert.rejects(freezeSourceSelection({ ...later, universeRevision: 'tampered-universe',
+            response: { ...later.response, fetchedAt: '2026-10-05T07:00:00Z' } }), /invalid_source_provenance/);
         assert.equal((await readSourceSelection(f.db, frozen.key)).manifest.manifestHash, frozen.manifest.manifestHash);
     } finally { f.db.close(); }
 });

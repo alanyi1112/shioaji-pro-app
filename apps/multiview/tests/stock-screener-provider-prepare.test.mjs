@@ -132,6 +132,21 @@ test('完整date cache有界續跑全窗口；原來源選擇不再抓、不改m
         assert.equal((await readSourceSelection(f.db,key)).rows[0].bar.volumeShares,'1000000');
     } finally { f.db.close(); }
 });
+test('新母體可重投影審查有效時取得的160日快取；審查過期不觸發重抓', async () => {
+    const f = await fallbackFixture(); try {
+        assert.equal((await f.seed()).state, 'complete');
+        const calls = f.calls();
+        f.advance(Date.parse('2026-10-05T07:00:00Z') - f.now().getTime());
+        const r = await prepareSelectedBollingerHistory({ ...f.options,
+            universeRevision: 'fixture-u-next', reviewIds: {},
+            calendar: { ...f.options.calendar, validThrough: '2026-10-10T06:00:00Z' },
+            fetchDailyQuotes: async () => { throw new Error('must_not_refetch_cached_date'); } });
+        assert.equal(r.state, 'complete'); assert.equal(r.requested, 0); assert.equal(r.processed, 320);
+        assert.equal(f.calls(), calls);
+        const reviews = (await f.db.prepare("SELECT DISTINCT json_extract(manifest,'$.reviewHash') hash FROM screener_source_selections WHERE universe_revision='fixture-u-next'").all()).results;
+        assert.deepEqual(reviews.map(v => v.hash), [f.review.evidenceHash]);
+    } finally { f.db.close(); }
+});
 test('並行run租約只一個owner；預先中止不抓來源且保留run receipt', async () => {
     const f=await fallbackFixture(); try {
         const results=await Promise.all([prepareSelectedBollingerHistory(f.options),prepareSelectedBollingerHistory(f.options)]);
@@ -147,4 +162,43 @@ test('15分鐘run硬界線／lease失效，不能將中途投影變complete', as
         assert.equal((await f.db.prepare('SELECT COUNT(*) n FROM screener_source_selections').first()).n,0);
         await assert.rejects(sourceWindowMapping(f.db,{universeRevision:'fixture-u',universeHash:f.options.universeEvidence.hash,sessions:f.sessions}),/source_selection_pending/);
     }finally{f.db.close();}
+});
+
+test('review 換版的 pending 保留原列；零下載可越過缺日重用其他完整來源', async () => {
+    const f = await fallbackFixture(); try {
+        assert.equal((await f.seed()).state, 'complete');
+        const missing = f.sessions.at(-3), key = `${f.review.mappingVersion}|${missing}`;
+        await f.db.prepare("DELETE FROM screener_source_selected_rows WHERE selection_key IN (SELECT selection_key FROM screener_source_selections)").run();
+        await f.db.prepare('DELETE FROM screener_source_selections').run();
+        await f.db.prepare("UPDATE screener_daily_quotes_cache SET status='pending',attempts=0,reason='broker_rate_limited',response_text=NULL,payload_hash=NULL,fetched_at=NULL WHERE cache_key=?").bind(key).run();
+        const before = await f.db.prepare('SELECT * FROM screener_daily_quotes_cache WHERE cache_key=?').bind(key).first();
+        const { saveSourceReview } = await import('../../../scripts/stock-screener-source-selection.mjs');
+        const next = await saveSourceReview(f.db, { provider: 'shioaji-daily-quotes', review: { ...f.review, evidenceHash: 'e'.repeat(64) } }, f.now());
+        let requests = 0;
+        const r = await prepareSelectedBollingerHistory({ ...f.options, reuseExistingOnly: true,
+            reviewIds: { 'shioaji-daily-quotes': next.id },
+            fetchOfficial: async () => { requests++; throw new Error('must_not_fetch'); },
+            fetchDailyQuotes: async () => { requests++; throw new Error('must_not_fetch'); } });
+        assert.equal(r.requested, 0); assert.equal(requests, 0); assert.equal(r.processed, 318);
+        assert.equal(r.remaining, 2); assert.equal(r.state, 'pending'); assert.equal(r.reason, 'source_cache_missing');
+        assert.deepEqual(await f.db.prepare('SELECT * FROM screener_daily_quotes_cache WHERE cache_key=?').bind(key).first(), before);
+        const normal = await prepareSelectedBollingerHistory({ ...f.options, reviewIds: { 'shioaji-daily-quotes': next.id } });
+        assert.equal(normal.requested, 0); assert.equal(normal.processed, 318); assert.equal(normal.reason, 'source_review_transition_pending');
+        assert.deepEqual(await f.db.prepare('SELECT * FROM screener_daily_quotes_cache WHERE cache_key=?').bind(key).first(), before);
+    } finally { f.db.close(); }
+});
+
+test('零下載缺原 review 或收據必須阻擋，不能降級取新來源', async () => {
+    for (const missing of ['review','receipt']) {
+        const f = await fallbackFixture(); try {
+            await f.seed();
+            if (missing === 'review') await f.db.prepare('DELETE FROM screener_source_reviews').run();
+            else await f.db.prepare('DELETE FROM screener_daily_quotes_receipts').run();
+            let requests = 0;
+            const r = await prepareSelectedBollingerHistory({ ...f.options, universeRevision: 'missing-proof', reviewIds: {}, reuseExistingOnly: true,
+                fetchDailyQuotes: async () => { requests++; throw new Error('must_not_fetch'); } });
+            assert.equal(r.state, 'pending'); assert.equal(r.processed, 0); assert.equal(requests, 0); assert.equal(r.requested, 0);
+            assert.match(r.reason, /invalid_cached_report|source_receipt_missing/);
+        } finally { f.db.close(); }
+    }
 });

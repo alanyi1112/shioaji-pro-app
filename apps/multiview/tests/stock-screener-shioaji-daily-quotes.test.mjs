@@ -329,3 +329,32 @@ test('半份response被中止或使用者途中abort不能當完整成功', asyn
     await Promise.resolve(); controller.abort();
     await assert.rejects(abortRun, /source_aborted/);
 });
+
+test('單日明確授權額外收緊為一次來源請求，失敗後不吃原十八次重試額度',async()=>{
+ const {createHash}=await import('node:crypto');
+ const {dailyQuotesRequestLimitKey}=await import('../../../scripts/stock-screener-shioaji-daily-quotes.mjs');
+ const f=fixture();f.db.database.exec('CREATE TABLE screener_runs(id TEXT PRIMARY KEY,scope TEXT,status TEXT,checkpoint TEXT,updated_at TEXT)');
+ const cacheKey=DAILY_QUOTES_MAPPING+'|'+date;
+ const body={version:1,cacheKey,sessionDate:date,maximumSourceRequests:1,originalCacheHash:'b'.repeat(64),originalReviewHash:review.evidenceHash,authorizedAt:at,expiresAt:review.validThrough};
+ const evidenceHash=createHash('sha256').update(JSON.stringify(body)).digest('hex');
+ await f.db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES(?,'screener-single-request-limit','verified',?,?)").bind(dailyQuotesRequestLimitKey(cacheKey),JSON.stringify({...body,evidenceHash}),at).run();
+ let requests=0;
+ const options={...f.options,fetchReport:async()=>{requests++;throw Error('source_http_503')}};
+ assert.equal((await loadDailyQuotesBatch(options)).requested,1);
+ f.advance(21*60000);
+ const second=await loadDailyQuotesBatch(options);
+ assert.equal(second.requested,0);assert.equal(second.reason,'source_single_request_exhausted');assert.equal(requests,1);
+ const row=await f.db.prepare('SELECT attempts FROM screener_daily_quotes_cache WHERE cache_key=?').bind(cacheKey).first();assert.equal(row.attempts,1);
+ f.db.close();
+});
+
+test('單次授權 hash 損壞、擴張上限或過期，來源請求前拒絕',async()=>{
+ const {createHash}=await import('node:crypto');const {dailyQuotesRequestLimitKey}=await import('../../../scripts/stock-screener-shioaji-daily-quotes.mjs');
+ for(const kind of ['hash','maximum','expired']){const f=fixture();f.db.database.exec('CREATE TABLE screener_runs(id TEXT PRIMARY KEY,scope TEXT,status TEXT,checkpoint TEXT,updated_at TEXT)');
+  const cacheKey=DAILY_QUOTES_MAPPING+'|'+date;
+  const body={version:1,cacheKey,sessionDate:date,maximumSourceRequests:kind==='maximum'?2:1,originalCacheHash:'b'.repeat(64),originalReviewHash:review.evidenceHash,authorizedAt:at,expiresAt:kind==='expired'?at:review.validThrough};
+  const evidenceHash=kind==='hash'?'f'.repeat(64):createHash('sha256').update(JSON.stringify(body)).digest('hex');
+  await f.db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES(?,'screener-single-request-limit','verified',?,?)").bind(dailyQuotesRequestLimitKey(cacheKey),JSON.stringify({...body,evidenceHash}),at).run();
+  await assert.rejects(loadDailyQuotesBatch(f.options),/invalid_source_authorization|source_single_request_authorization_expired/);assert.equal(f.calls(),0);f.db.close();
+ }
+});
