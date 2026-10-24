@@ -100,7 +100,8 @@ export function createBrokerBandwidthAdmission({ db, readUsage, readPolicy, now 
             if (!validateBrokerBudgetPolicy(latest, now())) throw new Error('broker_policy_pending');
             if (policyFingerprint(latest) !== policyHash) throw new Error('broker_policy_changed');
         } catch (e) {
-            const reason = ['broker_usage_pending','broker_policy_pending','broker_policy_changed','broker_estimate_pending','broker_generation_changed'].includes(e.message)
+            const reason = ['broker_usage_pending','broker_policy_pending','broker_policy_changed','broker_estimate_pending','broker_generation_changed',
+                'broker_daily_usage_nonmonotonic','broker_daily_account_scope_changed','broker_daily_identity_pending'].includes(e.message)
                 ? e.message : 'broker_budget_pending';
             await receipt('denied', null, { reason }); return { allowed: false, reason };
         }

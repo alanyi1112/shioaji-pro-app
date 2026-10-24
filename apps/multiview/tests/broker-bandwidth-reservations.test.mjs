@@ -232,3 +232,14 @@ test('quota identity 破損或 dispatch 前換版，不能用新週期免除既�
         assert.equal(validateBrokerBudgetPolicy({ ...f.policy, quotaIdentity: { scope: 'bad' } }, f.now()), false);
     } finally { f.db.close(); }
 });
+
+test('每日額度計數回退／帳戶或身分未驗只揭露安全原因，保持零 admission', async () => {
+    const f=fixture();try{
+        for(const reason of ['broker_daily_usage_nonmonotonic','broker_daily_account_scope_changed','broker_daily_identity_pending']) {
+            const port=createBrokerBandwidthAdmission({...f.options,readUsage:async()=>{throw new Error(reason);}});
+            const r=await port.reserve({cacheKey:'one',generation:f.usage.generation});
+            assert.equal(r.allowed,false);assert.equal(r.reason,reason);
+        }
+        assert.equal((await f.db.prepare('SELECT COUNT(*) n FROM broker_bandwidth_reservations').first()).n,0);
+    }finally{f.db.close();}
+});
