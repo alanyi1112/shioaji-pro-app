@@ -139,6 +139,20 @@ export function safeTdccContinuousError(value: unknown): TdccContinuousError {
   return "invalid_response";
 }
 
+// 回傳穩定分類，不回傳原始訊息、stack、headers 或任意 exception 屬性。
+export function tdccFailureDiagnostic(value: unknown, stage = "control") {
+  const message = value instanceof Error ? value.message : "";
+  const category = /different request|I\/O.*behalf/i.test(message) ? "request_context_mismatch"
+    : /no such table|no such column/i.test(message) ? "schema_unavailable"
+      : /SQLITE_BUSY|database is locked/i.test(message) ? "storage_busy"
+        : /bind|unsupported type|D1_TYPE_ERROR/i.test(message) ? "binding_invalid"
+          : /constraint|SQLITE_CONSTRAINT/i.test(message) ? "storage_constraint"
+            : message === "invalid_response" ? "validation_rejected" : "unclassified_exception";
+  const detail = (value as { tdccDiagnostic?: { stage?: unknown; symbol?: unknown } } | null)?.tdccDiagnostic;
+  const symbol = typeof detail?.symbol === "string" && SYMBOL.test(detail.symbol) ? detail.symbol : null;
+  return { stage: detail?.stage === "target-sync" ? "target-sync" : /^[a-z-]{1,40}$/.test(stage) ? stage : "control", category, symbol };
+}
+
 export function validateContinuousTargets(input: TdccContinuousTarget[]) {
   if (!Array.isArray(input) || input.length > 5000) throw new Error("invalid_response");
   const deduped = new Map<string, TdccContinuousTarget>();
@@ -444,7 +458,14 @@ export async function syncTdccContinuousTargets(input: {
   const prior = await input.db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active=1 AND source IN ('setup','user')").all<{ symbol: string }>();
   if (!targets.length && prior.results.length) throw new Error("invalid_response");
   for (const target of targets) {
-    await saveTdccContinuousTarget({ db: input.db, target, catalogRevision: revision, now });
+    try { await saveTdccContinuousTarget({ db: input.db, target, catalogRevision: revision, now }); }
+    catch (cause) {
+      const failure = new Error(safeTdccContinuousError(cause), { cause });
+      Object.assign(failure, { tdccDiagnostic: { stage: "target-sync", symbol: target.symbol } });
+      // 分類仍檢查原始例外，但不向呼叫端洩漏內容。
+      Object.assign(failure, { tdccCategory: tdccFailureDiagnostic(cause).category });
+      throw failure;
+    }
   }
   const targetSymbols = new Set(targets.map((target) => target.symbol));
   for (const row of prior.results) {

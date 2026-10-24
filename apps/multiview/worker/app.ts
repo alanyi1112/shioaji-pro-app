@@ -67,6 +67,7 @@ import {
   recordTdccLatestSnapshot,
   releaseTdccContinuousSymbol,
   safeTdccContinuousError,
+  tdccFailureDiagnostic,
   startTdccContinuousRun,
   syncTdccContinuousTargets,
   upsertTdccContinuousTarget,
@@ -1581,7 +1582,10 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     let failure = {};
     if (runId && action.startsWith("orchestrator-")) try { failure = await finalizeChipBackfillOrchestratorFailure({ db: env.DB, runId, trigger: orchestratorTrigger, scope: orchestratorScope, reason }); } catch {}
     if (runId && action === "refresh-latest") try { await finishTdccContinuousRun({ db: env.DB, runId, reason }); } catch {}
-    return json({ ok: false, error: reason, ...failure }, ["provider_unavailable", "rate_limited", "timeout", "tick_limit_exceeded"].includes(reason) ? 503 : 400);
+    const diagnostic = tdccFailureDiagnostic(error, action);
+    const category = (error as { tdccCategory?: unknown })?.tdccCategory;
+    if (["request_context_mismatch", "schema_unavailable", "storage_busy", "binding_invalid", "storage_constraint", "validation_rejected", "unclassified_exception"].includes(String(category))) diagnostic.category = String(category);
+    return json({ ok: false, error: reason, diagnostic, ...failure }, ["provider_unavailable", "rate_limited", "timeout", "tick_limit_exceeded"].includes(reason) ? 503 : 400);
   }
 }
 

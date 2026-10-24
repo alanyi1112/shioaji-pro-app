@@ -123,11 +123,11 @@ test('v3 GET 固定 snapshot／criteria，回傳分型證據、unknown 與穩定
   } finally { db.close(); }
 });
 
-test('v3 尚未發布時，非技術 status 投影最新 v2；v2 cursor 不得重解釋', async () => {
+test('v3 尚未發布且未啟用週籌碼條件時，status 投影最新 v2；v2 cursor 不得重解釋', async () => {
   const db = setup();
   try {
     await seedPrepared(db);
-    const status = await handleStockScreener(new Request('http://127.0.0.1/api/stock-screener/status?version=3'), { DB: db, DEPLOYMENT_TARGET: 'local' });
+    const status = await handleStockScreener(new Request('http://127.0.0.1/api/stock-screener/status?version=3&holder=false'), { DB: db, DEPLOYMENT_TARGET: 'local' });
     const body = await status.json();
     assert.equal(body.state, 'partial');
     assert.equal(body.reason, 'none');

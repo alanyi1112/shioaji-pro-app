@@ -6,7 +6,7 @@ export const TDCC_LATEST_SOURCES = Object.freeze({
 });
 
 type SourceName = keyof typeof TDCC_LATEST_SOURCES;
-type Candidate = { source: SourceName; payload: Record<string, string>[]; rows: DistributionRow[]; dataDate: string };
+type Candidate = { source: SourceName; payload: Record<string, string>[]; rows: DistributionRow[]; dataDate: string; missingSymbols?: string[] };
 
 function taipeiDate(now: Date) {
   return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
@@ -48,7 +48,7 @@ export function parseTdccLatestCsv(text: string): Record<string, string>[] {
   });
 }
 
-function candidate(source: SourceName, payload: unknown, eligibleSymbols: ReadonlySet<string>, now: Date): Candidate {
+function candidate(source: SourceName, payload: unknown, eligibleSymbols: ReadonlySet<string>, now: Date, requireAllSymbols = true): Candidate {
   if (!Array.isArray(payload) || payload.length < 1000 || payload.length > 250000 || payload.length % 17 !== 0) throw new Error("invalid_response");
   const dates = new Set<string>();
   for (const item of payload) {
@@ -62,11 +62,14 @@ function candidate(source: SourceName, payload: unknown, eligibleSymbols: Readon
   const dataDate = [...dates][0];
   if (Number.isNaN(Date.parse(`${dataDate}T00:00:00Z`)) || dataDate > taipeiDate(now)) throw new Error("invalid_response");
   const rows = parseTdccSnapshot(payload, eligibleSymbols, now.toISOString());
-  if (rows.length !== eligibleSymbols.size || rows.some((row) => row.dataDate !== dataDate)) throw new Error("invalid_response");
-  return { source, payload: payload as Record<string, string>[], rows, dataDate };
+  if (requireAllSymbols && rows.length !== eligibleSymbols.size || rows.some((row) => row.dataDate !== dataDate)) throw new Error("invalid_response");
+  if (!requireAllSymbols && rows.length < Math.max(1, Math.ceil(eligibleSymbols.size * 0.95))) throw new Error("invalid_response");
+  const saved = new Set(rows.map(row => row.symbol));
+  return { source, payload: payload as Record<string, string>[], rows, dataDate,
+    ...(!requireAllSymbols ? { missingSymbols: [...eligibleSymbols].filter(s => !saved.has(s)).sort() } : {}) };
 }
 
-async function fetchCandidate(source: SourceName, eligibleSymbols: ReadonlySet<string>, fetchImpl: typeof fetch, now: Date, timeoutMs: number): Promise<Candidate> {
+async function fetchCandidate(source: SourceName, eligibleSymbols: ReadonlySet<string>, fetchImpl: typeof fetch, now: Date, timeoutMs: number, requireAllSymbols = true): Promise<Candidate> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -81,7 +84,7 @@ async function fetchCandidate(source: SourceName, eligibleSymbols: ReadonlySet<s
     if (declared > maxBytes) throw new Error("invalid_response");
     const raw = await response.text();
     if (new TextEncoder().encode(raw).byteLength > maxBytes) throw new Error("invalid_response");
-    return candidate(source, source === "csv" ? parseTdccLatestCsv(raw) : JSON.parse(raw), eligibleSymbols, now);
+    return candidate(source, source === "csv" ? parseTdccLatestCsv(raw) : JSON.parse(raw), eligibleSymbols, now, requireAllSymbols);
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") throw new Error("timeout");
     throw error;
@@ -91,6 +94,12 @@ async function fetchCandidate(source: SourceName, eligibleSymbols: ReadonlySet<s
 function material(rows: DistributionRow[]) {
   const values = (level: DistributionRow["total"]) => [level.level, level.holders, level.shares, level.ratioPercent];
   return JSON.stringify(rows.map((row) => [row.symbol, row.levels.map(values), values(row.adjustment), values(row.total)]));
+}
+
+/** 同一官方公開 CSV 的整批驗證；缺商品另列，17 級驗證不變，不重送已失敗的 OpenAPI。 */
+export function fetchTdccLatestCsv(input: { eligibleSymbols: ReadonlySet<string>; fetchImpl?: typeof fetch; now?: Date; timeoutMs?: number }) {
+  if (!input.eligibleSymbols.size) throw new Error("invalid_response");
+  return fetchCandidate("csv", input.eligibleSymbols, input.fetchImpl ?? fetch, input.now ?? new Date(), input.timeoutMs ?? 30_000, false);
 }
 
 export async function fetchTdccLatestOfficial(input: {

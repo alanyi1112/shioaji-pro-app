@@ -1,11 +1,14 @@
 /** 本機底稿收集；不發布結果、不寫個人清單／TDCC 長歷史佇列、不呼叫券商。 */
-import { isIsoDate, validateTdcc, type HolderPoint, type Provenance, type UniverseStock } from "../../../src/lib/stock-screener-domain.ts";
+import { isIsoDate, validateStock, validateTdcc, type HolderPoint, type Provenance, type UniverseStock } from "../../../src/lib/stock-screener-domain.ts";
+import { tdccFailureDiagnostic } from "./tdcc-continuous-backfill.ts";
+import { fetchTdccLatestCsv, TDCC_LATEST_SOURCES } from "./tdcc-latest-source.ts";
 import { SCREENER_POST_CLOSE_PROBE_MINUTES } from "../../../src/lib/stock-screener-session-readiness.ts";
 import type { ScreenerDatabase, ScreenerStatement } from "./stock-screener-repository.ts";
 import { fetchScreenerSource, mergeUniverses, parseDailyVolumes, parseHolderBatch, parseUniverse, SCREENER_SOURCES, ScreenerSourceError } from "./stock-screener-sources.ts";
 
 export type ScreenerScope = "screener-daily" | "screener-weekly";
-type Receipt = { hash: string; date: string; offset: number; total: number; invalid: number; complete: boolean; invalidSymbols?: Record<string, string> };
+type Receipt = { hash: string; date: string; offset: number; total: number; invalid: number; complete: boolean; invalidSymbols?: Record<string, string>;
+  fetchedAt?: string; sourceUrl?: string; sourcePayloadHash?: string; universeTarget?: number; missingSymbols?: string[] };
 type Checkpoint = { version: 1; day: string; attempts: number; nextAttemptAt: string; receipts: Record<string, Receipt>; reason: string };
 type Run = { status: string; checkpoint: string };
 const LEASE_ID = "screener-collector-lease";
@@ -30,8 +33,41 @@ const iso = (now: number) => new Date(now).toISOString();
 const digest = async (text: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))), b => b.toString(16).padStart(2, "0")).join("");
 const safeReason = (error: unknown) => {
   const message = error instanceof Error ? error.message : "";
-  return /^(source_(?:http_\d{3}|timeout|too_large|not_allowed)|invalid_\w+|mixed_source_dates|duplicate_security|market_transfer_unresolved|universe_date_mismatch|lease_lost|run_deadline|source_not_closed|source_future_date)$/.test(message) ? message : "collection_failed";
+  return /^(source_(?:http_\d{3}|timeout|too_large|not_allowed|conflict)|provider_unavailable|rate_limited|timeout|invalid_\w+|mixed_source_dates|duplicate_security|market_transfer_unresolved|universe_date_mismatch|lease_lost|run_deadline|source_not_closed|source_future_date)$/.test(message) ? message : "collection_failed";
 };
+
+/** 週資料不必重抓已驗證且仍新鮮的雙市場目錄；保留原來源、日期及 revision。 */
+export async function readVerifiedWeeklyCatalog(db: ScreenerDatabase, now = new Date()) {
+  const run = await db.prepare("SELECT checkpoint FROM screener_runs WHERE id IN ('screener-daily','screener-weekly') AND status='collected' ORDER BY updated_at DESC LIMIT 1")
+    .first<{ checkpoint: string }>();
+  if (!run) return null;
+  const receipt = JSON.parse(run.checkpoint).receipts?.catalog as Receipt | undefined;
+  if (!receipt?.complete || receipt.offset !== receipt.total || !isIsoDate(receipt.date)
+    || !/^[a-f0-9]{64}$/.test(receipt.hash) || receipt.total < 1 || receipt.total > 10000) return null;
+  const day = taipeiDate(+now);
+  if (receipt.date > day || Date.parse(day) - Date.parse(receipt.date) > 3 * 86400000) return null;
+  const rows = (await db.prepare("SELECT revision,symbol,market,data_date,payload FROM screener_universe WHERE revision=? ORDER BY symbol")
+    .bind(receipt.hash).all<{ revision: string; symbol: string; market: string; data_date: string; payload: string }>()).results ?? [];
+  if (rows.length !== receipt.total) throw new Error("invalid_cached_catalog");
+  const hashes = new Map<string, string>();
+  const stocks = rows.map(row => {
+    const e = JSON.parse(row.payload), stock = e.stock as UniverseStock, p = e.provenance;
+    if (e.review !== "verified" || e.revision !== receipt.hash || row.revision !== receipt.hash || row.data_date !== receipt.date
+      || !stock || !validateStock(stock) || stock.symbol !== row.symbol || stock.market !== row.market
+      || stock.classificationVersion !== "official-issuer-common-stock-FL033103-1131231-v1"
+      || !isIsoDate(e.sourceDate) || e.sourceDate > receipt.date || Date.parse(day) - Date.parse(e.sourceDate) > 3 * 86400000
+      || p?.source !== stock.market || p.sourceUrl !== SCREENER_SOURCES[stock.market].universe
+      || p.normalizationVersion !== NORMALIZATION || !/^[a-f0-9]{64}$/.test(p.payloadHash)
+      || !Number.isFinite(Date.parse(p.fetchedAt)) || Date.parse(p.fetchedAt) > +now
+      || +now - Date.parse(p.fetchedAt) > 3 * 86400000) throw new Error("invalid_cached_catalog");
+    if (hashes.has(stock.market) && hashes.get(stock.market) !== p.payloadHash) throw new Error("invalid_cached_catalog");
+    hashes.set(stock.market, p.payloadHash);
+    return stock;
+  });
+  if (new Set(stocks.map(s => s.symbol)).size !== stocks.length || hashes.size !== 2
+    || await digest([hashes.get("TWSE"), hashes.get("TPEx")].join("|")) !== receipt.hash) throw new Error("invalid_cached_catalog");
+  return { receipt, stocks };
+}
 
 /** Reuse only full, exact-number, official local rows; never invent missing bands. */
 export async function readLocalScreenerHolders(db: ScreenerDatabase, universe: UniverseStock[], dates: string[]) {
@@ -64,8 +100,9 @@ export async function readLocalScreenerHolders(db: ScreenerDatabase, universe: U
  * No new scheduler is installed here. Source/classification/calendar gates remain independent.
  */
 export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerScope,
-  options: { fetcher?: typeof fetch; clock?: () => number; previousWeek?: string; minimumUniverseRows?: { TWSE: number; TPEx: number } } = {}) {
+  options: { fetcher?: typeof fetch; clock?: () => number; previousWeek?: string; minimumUniverseRows?: { TWSE: number; TPEx: number }; reuseCatalogOnly?: boolean } = {}) {
   if (!["screener-daily", "screener-weekly"].includes(scope)) throw new Error("invalid_scope");
+  if (options.reuseCatalogOnly !== undefined && (typeof options.reuseCatalogOnly !== "boolean" || scope !== "screener-weekly")) throw new Error("invalid_scope");
   if (options.previousWeek !== undefined && !isIsoDate(options.previousWeek)) throw new Error("invalid_reuse_dates");
   const clock = options.clock ?? Date.now, fetcher = options.fetcher ?? fetch;
   const started = clock(), day = taipeiDate(started), owner = crypto.randomUUID();
@@ -124,6 +161,7 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
   };
   const holderStatement = (symbol: string, payload: string) => db.prepare(`INSERT INTO screener_tdcc_weekly (symbol,data_date,payload,validation) SELECT ?,json_extract(?,'$.date'),?,'full-17' WHERE ${guard} ON CONFLICT(data_date,symbol) DO UPDATE SET payload=excluded.payload,validation=excluded.validation WHERE json_extract(excluded.payload,'$.provenance.fetchedAt') >= json_extract(screener_tdcc_weekly.payload,'$.provenance.fetchedAt')`)
     .bind(symbol, payload, payload, ...guardArgs());
+  let stage = "checkpoint";
   try {
     const previous = await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE id = ?").bind(scope).first<Run>();
     if (previous) {
@@ -135,26 +173,42 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
     }
     checkpoint.attempts++;
     await checkpointBatch([]);
+    stage = "catalog-cache";
+    const reused = scope === "screener-weekly" ? await readVerifiedWeeklyCatalog(db, new Date(started)) : null;
+    if (options.reuseCatalogOnly && !reused) throw new Error("invalid_cached_catalog");
+    let universe: { stocks: UniverseStock[]; date: string; dates: Record<string, string> };
+    let revision: string;
+    if (reused) {
+      universe = { stocks: reused.stocks, date: reused.receipt.date, dates: {} };
+      revision = reused.receipt.hash;
+      checkpoint.receipts.catalog = reused.receipt;
+      await checkpointBatch([]);
+    } else {
+      stage = "catalog-fetch";
     const urls = [SCREENER_SOURCES.TWSE.universe, SCREENER_SOURCES.TPEx.universe];
     // Drain both transports even if one fails; releasing the lease early would exceed concurrency.
     const fetched = await Promise.allSettled(urls.map(getSource));
     if (fetched[0].status === "rejected") throw fetched[0].reason;
     if (fetched[1].status === "rejected") throw fetched[1].reason;
     const catalogs = [fetched[0].value, fetched[1].value];
-    const universe = mergeUniverses(parseUniverse(catalogs[0].payload, "TWSE"), parseUniverse(catalogs[1].payload, "TPEx"));
+    stage = "catalog-parse";
+    universe = mergeUniverses(parseUniverse(catalogs[0].payload, "TWSE"), parseUniverse(catalogs[1].payload, "TPEx"));
     // Real maintenance uses conservative market floors; smaller bounds are only
     // injected alongside small isolated fixtures, never from HTTP or environment.
     const minimum = options.minimumUniverseRows ?? { TWSE: 800, TPEx: 500 };
     for (const market of ["TWSE", "TPEx"] as const) if (universe.stocks.filter(stock => stock.market === market).length < minimum[market]) throw new Error("invalid_universe_coverage");
     checkDate(universe.date);
-    const revision = await digest(catalogs.map(catalog => catalog.payloadHash).join("|"));
+    revision = await digest(catalogs.map(catalog => catalog.payloadHash).join("|"));
     // Classification is strict and versioned; publication additionally needs period evidence.
+    stage = "catalog-write";
     await writeRows("catalog", revision, universe.date, universe.stocks.map(stock => [stock.symbol, { stock, review: "verified", revision, sourceDate: universe.dates[stock.market],
       provenance: provenance(stock.market, urls[stock.market === "TWSE" ? 0 : 1], catalogs[stock.market === "TWSE" ? 0 : 1]) }]), 0,
     (symbol, payload) => db.prepare(`INSERT INTO screener_universe (revision,symbol,market,data_date,payload,issued_common_shares,issued_shares_source_date,issued_shares_source_url,issued_shares_payload_hash,issued_shares_normalization_version)
       SELECT ?,?,json_extract(?,'$.stock.market'),?,?,json_extract(?,'$.stock.issuedCommonShares'),json_extract(?,'$.stock.issuedSharesSourceDate'),json_extract(?,'$.stock.issuedSharesSourceUrl'),json_extract(?,'$.provenance.payloadHash'),json_extract(?,'$.stock.issuedSharesNormalizationVersion') WHERE ${guard}
       ON CONFLICT(revision,symbol) DO NOTHING`).bind(revision, symbol, payload, universe.date, payload, payload, payload, payload,
         payload, payload, ...guardArgs()));
+
+    }
 
     if (scope === "screener-daily") {
       for (const market of ["TWSE", "TPEx"] as const) {
@@ -167,10 +221,29 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
             .bind(symbol, parsed.date, payload, ...guardArgs()), Object.fromEntries([...parsed.invalid].filter(([symbol]) => symbols.has(symbol))));
       }
     } else {
-      const result = await getSource(SCREENER_SOURCES.tdcc);
-      const parsed = parseHolderBatch(result.payload, universe.stocks, provenance("TDCC", SCREENER_SOURCES.tdcc, result));
+      stage = "tdcc-fetch";
+      let result: Awaited<ReturnType<typeof source>>;
+      let tdccUrl: string = SCREENER_SOURCES.tdcc;
+      try { result = await getSource(SCREENER_SOURCES.tdcc); }
+      catch (error) {
+        // 429 遵守原冷卻；其他失敗只試既有官方 CSV，一樣驗證全市場、日期與完整 17 級。
+        if (error instanceof ScreenerSourceError && error.message === "source_http_429") throw error;
+        stage = "tdcc-csv-fetch";
+        await assertLive();
+        const fallback = await fetchTdccLatestCsv({ eligibleSymbols: new Set(universe.stocks.map(s => s.symbol)), fetchImpl: fetcher, now: new Date(clock()) });
+        await assertLive();
+        tdccUrl = TDCC_LATEST_SOURCES.csv;
+        result = { payload: fallback.payload, payloadHash: await digest(JSON.stringify(fallback.payload)), fetchedAt: iso(clock()) };
+      }
+      stage = "tdcc-parse";
+      const parsed = parseHolderBatch(result.payload, universe.stocks, provenance("TDCC", tdccUrl, result));
       checkDate(parsed.date);
+      stage = "tdcc-write";
       await writeRows("TDCC", `${result.payloadHash}:${revision}`, parsed.date, [...parsed.points], parsed.invalid.size, holderStatement, Object.fromEntries(parsed.invalid));
+      checkpoint.receipts.TDCC = { ...checkpoint.receipts.TDCC, fetchedAt: result.fetchedAt, sourceUrl: tdccUrl,
+        sourcePayloadHash: result.payloadHash, universeTarget: universe.stocks.length,
+        missingSymbols: universe.stocks.filter(stock => !parsed.points.has(stock.symbol) && !parsed.invalid.has(stock.symbol)).map(stock => stock.symbol).sort() };
+      await checkpointBatch([]);
       // Previous date may only come from independently verified official periods, not date arithmetic.
       if (options.previousWeek) {
         if (options.previousWeek >= parsed.date) throw new Error("invalid_reuse_dates");
@@ -196,7 +269,8 @@ export async function collectScreenerData(db: ScreenerDatabase, scope: ScreenerS
       error instanceof ScreenerSourceError ? error.retryAfterMs : 0));
     // Fenced save: a timed-out owner cannot overwrite its successor's progress.
     await db.batch([save("retry_pending")]);
-    return { state: "pending", reason: checkpoint.reason, nextAttemptAt: checkpoint.nextAttemptAt };
+    return { state: "pending", reason: checkpoint.reason, nextAttemptAt: checkpoint.nextAttemptAt,
+      diagnostic: tdccFailureDiagnostic(error, stage) };
   } finally {
     await db.prepare("UPDATE screener_runs SET status='idle',lease_until=NULL WHERE id=? AND checkpoint=?").bind(LEASE_ID, owner).run();
   }

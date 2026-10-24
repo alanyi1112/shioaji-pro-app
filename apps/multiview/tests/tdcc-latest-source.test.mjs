@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchTdccLatestOfficial, parseTdccLatestCsv } from "../worker/tdcc-latest-source.ts";
+import { fetchTdccLatestOfficial, fetchTdccLatestCsv, parseTdccLatestCsv } from "../worker/tdcc-latest-source.ts";
 
 const header = "資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%";
 const codes = ["2449", ...Array.from({ length: 59 }, (_, index) => String(1000 + index))];
@@ -67,4 +67,13 @@ test("兩來源限流不可退回舊快取並冒充更新", async () => {
 test("CSV 欄位漂移與不合法引號會被拒絕", () => {
   assert.throws(() => parseTdccLatestCsv("資料日期,證券代號\n20261002,2449"), /invalid_response/);
   assert.throws(() => parseTdccLatestCsv(`${header}\n20261002,\"2449,1,1,1,1`), /invalid_response/);
+});
+
+test('整批 CSV 缺商品須明列，嚴格清單模式與壞級距仍拒絕',async()=>{
+ const data=rows('20261022'),eligible=new Set([...codes.map(c=>c+'.TW'),'9999.TW']),now=new Date('2026-10-24T00:00:00Z');
+ const result=await fetchTdccLatestCsv({eligibleSymbols:eligible,now,fetchImpl:async()=>new Response(csv(data))});
+ assert.deepEqual(result.missingSymbols,['9999.TW']);assert.equal(result.rows.length,60);
+ await assert.rejects(fetchTdccLatestOfficial({eligibleSymbols:eligible,now,fetchImpl:async url=>url.includes('getOD.ashx')?new Response(csv(data)):Response.json(data)}),/invalid_response/);
+ data[0]['股數']='2';
+ await assert.rejects(fetchTdccLatestCsv({eligibleSymbols:eligible,now,fetchImpl:async()=>new Response(csv(data))}),/invalid_response/);
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { SqliteD1, applyDrizzleSql } from "./helpers/sqlite-d1.mjs";
-import { collectScreenerData, readLocalScreenerHolders } from "../worker/stock-screener-collector.ts";
+import { collectScreenerData, readLocalScreenerHolders, readVerifiedWeeklyCatalog } from "../worker/stock-screener-collector.ts";
 import { SCREENER_SOURCES } from "../worker/stock-screener-sources.ts";
 import { handleLocalMaintenance } from "../worker/local-maintenance.ts";
 import { handleStockScreener } from "../worker/stock-screener-route.ts";
@@ -51,12 +51,13 @@ test("獨立 daily／weekly 收集與 checkpoint；名冊未審核不發布、GE
     assert.equal(daily.receipts.TWSE.offset, 53);
     assert.equal(daily.receipts.TPEx.offset, 1);
     assert.equal(await count(db, "screener_daily_volume"), 54);
+    await db.prepare("UPDATE screener_universe SET payload=json_set(payload, '$.provenance.fetchedAt', ?)").bind(new Date(start).toISOString()).run();
     const weekly = await collectScreenerData(db, "screener-weekly", options);
     assert.equal(weekly.receipts.TDCC.offset, 54);
     assert.equal(await count(db, "screener_tdcc_weekly"), 54);
     assert.equal(await count(db, "screener_snapshots"), 0);
     assert.equal(JSON.parse((await db.prepare("SELECT payload FROM screener_universe LIMIT 1").first()).payload).review, "verified");
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 5);
     assert.equal((await collectScreenerData(db, "screener-daily", options)).reason, "backoff");
     const reads = calls.length;
     for (let i = 0; i < 3; i++) {
@@ -195,4 +196,66 @@ test("maintenance 新 scope 仍須本機、授權，不呼叫原 daily 或允許
   assert.deepEqual(calls, ["screener-daily", "screener-weekly"]);
   assert.equal((await handleLocalMaintenance(request({ action: "screener-daily" }), { ...env, DEPLOYMENT_TARGET: "cloudflare" }, ctx, actions)).status, 403);
   for (const body of [null, [], { action: "screener-weekly", previousWeek: "2026-08-21" }, { action: "screener-daily", url: "http://evil" }]) assert.equal((await handleLocalMaintenance(request(body), env, ctx, actions)).status, 400);
+});
+
+test("週資料重用原目錄 hash 與收據，損壞或過期不得冒充新目錄", async () => {
+  const {db,options,calls}=setup();
+  await collectScreenerData(db,"screener-daily",options);
+  await db.prepare("UPDATE screener_universe SET payload=json_set(payload, '$.provenance.fetchedAt', ?)").bind(new Date(start).toISOString()).run();
+  const original=await readVerifiedWeeklyCatalog(db,new Date(start));
+  assert.equal(original.stocks.length,54);
+  assert.equal(await readVerifiedWeeklyCatalog(db,new Date(start+4*86400000)),null);
+  calls.length=0;
+  const weekly=await collectScreenerData(db,"screener-weekly",options);
+  assert.equal(weekly.state,'collected');
+  assert.deepEqual(calls,[SCREENER_SOURCES.tdcc]);
+  assert.equal(weekly.receipts.catalog.hash,original.receipt.hash);
+  await db.prepare("UPDATE screener_universe SET payload=json_set(payload, '$.provenance.payloadHash', ?) WHERE symbol='4768.TWO'").bind('a'.repeat(64)).run();
+  await assert.rejects(readVerifiedWeeklyCatalog(db,new Date(start)),/invalid_cached_catalog/);
+  db.close();
+});
+
+test("TDCC OpenAPI 非 JSON 時只接既有官方 CSV，仍驗證完整級距；429 不轉抓",async()=>{
+ for(const limited of [false,true]){
+  const f=setup();await collectScreenerData(f.db,'screener-daily',f.options);
+  await f.db.prepare("UPDATE screener_universe SET payload=json_set(payload, '$.provenance.fetchedAt', ?)").bind(new Date(start).toISOString()).run();
+  const requested=[];
+  const rows=[...codes,'4768',...Array.from({length:6},(_,i)=>String(2000+i))].flatMap(holderRows);
+  const csv='資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%\n'+rows.map(r=>[r['資料日期'],r['證券代號'],r['持股分級'],r['人數'],r['股數'],r['占集保庫存數比例%']].join(',')).join('\n');
+  const result=await collectScreenerData(f.db,'screener-weekly',{...f.options,fetcher:async url=>{
+   requested.push(url);
+   if(url===SCREENER_SOURCES.tdcc)return new Response(limited?'limited':'<html>source not json</html>',{status:limited?429:200,headers:{'retry-after':'3600'}});
+   assert(String(url).includes('getOD.ashx'));return new Response(csv);
+  }});
+  assert.equal(requested.length,limited?1:2);
+  if(limited){assert.equal(result.state,'pending');assert.equal(result.reason,'source_http_429');}
+  else{assert.equal(result.state,'collected');assert.equal(result.receipts.TDCC.total,54);assert.equal(result.receipts.TDCC.date,'2026-08-28');
+    const point=JSON.parse((await f.db.prepare("SELECT payload FROM screener_tdcc_weekly LIMIT 1").first()).payload);
+    assert(point.provenance.sourceUrl.includes('getOD.ashx'));}
+  f.db.close();
+ }
+});
+
+test("已取得的雙官方收據可零下載恢復，保留三次失敗與無關 blocked；破損收據拒絕",async()=>{
+ const {recoverScreenerWeeklyReceipts}=await import('../../../scripts/stock-screener-weekly-receipt-recovery.mjs');
+ const {hashText}=await import('../../../scripts/stock-screener-periods.mjs');
+ const {TDCC_LATEST_SOURCES}=await import('../worker/tdcc-latest-source.ts');
+ const f=setup();await collectScreenerData(f.db,'screener-daily',f.options);
+ await f.db.prepare("UPDATE screener_universe SET payload=json_set(payload, '$.provenance.fetchedAt', ?)").bind(new Date(start).toISOString()).run();
+ const catalog=await readVerifiedWeeklyCatalog(f.db,new Date(start));
+ const rows=[...codes,'4768',...Array.from({length:6},(_,i)=>String(2000+i))].flatMap(holderRows);
+ const csv='資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%\n'+rows.map(r=>[r['資料日期'],r['證券代號'],r['持股分級'],r['人數'],r['股數'],r['占集保庫存數比例%']].join(',')).join('\n');
+ const receipts=Object.entries({csv,openapi:JSON.stringify(rows)}).map(([key,text])=>({sourceUrl:TDCC_LATEST_SOURCES[key],status:200,text,payloadHash:hashText(text),fetchedAt:new Date(start).toISOString()}));
+ const original={version:1,day:'2026-08-31',attempts:3,nextAttemptAt:new Date(start-1).toISOString(),receipts:{},reason:'collection_failed'};
+ await f.db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES('screener-weekly','screener-weekly','retry_pending',?,?)").bind(JSON.stringify(original),new Date(start).toISOString()).run();
+ await f.db.prepare("INSERT INTO screener_runs(id,scope,status,checkpoint,updated_at) VALUES('screener-operator-policy','screener-operator-policy','blocked','original-blocked',?)").bind(new Date(start).toISOString()).run();
+ const input={db:f.db,receipts,now:new Date(start),clock:()=>start,authorization:{approved:true,maximumSourceRequests:0,dataDate:'2026-08-28',catalogRevision:catalog.receipt.hash}};
+ await assert.rejects(recoverScreenerWeeklyReceipts({...input,receipts:[{...receipts[0],payloadHash:'a'.repeat(64)},receipts[1]]}),/invalid_weekly_source_receipt/);
+ assert.equal(await count(f.db,'screener_tdcc_weekly'),0);
+ const result=await recoverScreenerWeeklyReceipts(input);assert.equal(result.sourceRequests,0);assert.equal(result.rows,54);
+ const proof=JSON.parse((await f.db.prepare('SELECT checkpoint FROM screener_runs WHERE id=?').bind(result.receiptId).first()).checkpoint);
+ assert.deepEqual(JSON.parse(proof.original.checkpoint),original);
+ assert.equal((await f.db.prepare("SELECT checkpoint FROM screener_runs WHERE id='screener-operator-policy'").first()).checkpoint,'original-blocked');
+ assert.equal((await recoverScreenerWeeklyReceipts(input)).state,'reused');
+ f.db.close();
 });

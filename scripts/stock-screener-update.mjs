@@ -13,6 +13,7 @@ import { prepareScreenerOhlcv, prepareScreenerOhlcvV4, pruneScreenerOhlcv, prune
 import { publishPreparedScreenerV3 } from '../apps/multiview/worker/stock-screener-v3-publisher.ts';
 import { publishPreparedScreenerV4 } from '../apps/multiview/worker/stock-screener-v4-publisher.ts';
 import { updateScreenerChip } from './stock-screener-chip-update.mjs';
+import { recoverScreenerWeekly } from './stock-screener-weekly-recovery.mjs';
 import { screenerIdleGate } from './screener-idle-gate.mjs';
 import { updateBollingerScheduled } from './stock-screener-bollinger-schedule.ts';
 import { updateCandlestickScheduled } from './stock-screener-candlestick-schedule.ts';
@@ -238,7 +239,7 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
     const started = Date.now(), deadline = started + 15 * 60000, owner = crypto.randomUUID();
     const day = new Date(started + 8 * 3600000).toISOString().slice(0, 10);
     const taipei = new Date(started + 8 * 3600000);
-    if (taipei.getUTCHours() * 60 + taipei.getUTCMinutes() < SCREENER_POST_CLOSE_PROBE_MINUTES) return { state: 'pending', reason: 'source_not_closed' };
+    const postClose = taipei.getUTCHours() * 60 + taipei.getUTCMinutes() >= SCREENER_POST_CLOSE_PROBE_MINUTES;
     const lease = 'screener-operator-lease';
     await db.prepare("INSERT INTO screener_runs (id,scope,status,checkpoint,lease_until,updated_at) VALUES (?,'screener-operator','running',?,?,?) ON CONFLICT(id) DO UPDATE SET status='running',checkpoint=excluded.checkpoint,lease_until=excluded.lease_until,updated_at=excluded.updated_at WHERE screener_runs.lease_until IS NULL OR screener_runs.lease_until <= ?")
         .bind(lease, owner, new Date(deadline).toISOString(), stamp(), stamp()).run();
@@ -251,11 +252,18 @@ export async function updateScreener(db, { bootstrapWeek = false, bootstrapArchi
     try {
         // Chip reports have independent windows/backoff; the shared operator lease
         // still serializes this work, but general screener cooldown must not block it.
-        if (scheduled) {
+        if (scheduled && postClose) {
             try { log({ event: 'screener-chip-independent', ...await updateScreenerChip(db, { limit: 1, fetcher }) }); }
             catch (error) { log({ event: 'screener-chip-independent', state: 'pending', reason: safeError(error) }); }
             await guard();
         }
+        if (scheduled) {
+            // 全市場 TDCC bulk 與舊日表單分流；保留原 blocked、冷卻與共用 lease。
+            try { log({ event: 'screener-weekly-independent', ...await recoverScreenerWeekly(db, { fetcher }) }); }
+            catch (error) { log({ event: 'screener-weekly-independent', state: 'pending', reason: safeError(error) }); }
+            await guard();
+        }
+        if (!postClose) return { state: 'pending', reason: 'source_not_closed' };
         const prior = await db.prepare("SELECT status,checkpoint FROM screener_runs WHERE id='screener-operator-policy'").first();
         if (prior) {
             const policy = JSON.parse(prior.checkpoint);

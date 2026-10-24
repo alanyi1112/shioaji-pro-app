@@ -272,8 +272,22 @@ async function continuousRequest(siteUrl, body = null) {
     signal: AbortSignal.timeout(CONTROL_PLANE_TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.ok === false) throw new Error(payload.error || `control_plane_${response.status}`);
+  if (!response.ok || payload.ok === false) {
+    const error = new Error(payload.error || `control_plane_${response.status}`);
+    error.diagnostic = safeControlDiagnostic(payload.diagnostic, response.status);
+    throw error;
+  }
   return payload;
+}
+
+export function safeControlDiagnostic(value, status) {
+  const stages = ['control','target-sync','start-run','refresh-latest','claim','plan','heartbeat','ingest-week','finish-run'];
+  const categories = ['request_context_mismatch','schema_unavailable','storage_busy','binding_invalid',
+    'storage_constraint','validation_rejected','unclassified_exception'];
+  return { stage: stages.includes(value?.stage) ? value.stage : 'control',
+    category: categories.includes(value?.category) ? value.category : 'unclassified_exception',
+    symbol: typeof value?.symbol === 'string' && SYMBOL_PATTERN.test(value.symbol) ? value.symbol : null,
+    status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null };
 }
 
 function sitesBypassHeaders(siteUrl) {
@@ -569,7 +583,9 @@ export async function runContinuousBackfill(options) {
       try { await continuousRequest(options.siteUrl, { action: "fail", runId: options.runId, owner: options.runId, symbol: activeSymbol, reason, retryable: /rate_limited|provider_unavailable|timeout/.test(reason) }); } catch {}
     }
     try { await continuousRequest(options.siteUrl, { action: "finish-run", runId: options.runId, reason }); } catch {}
-    throw new Error(reason);
+    const failure = new Error(reason);
+    if (error?.diagnostic) failure.diagnostic = safeControlDiagnostic(error.diagnostic, error.diagnostic.status);
+    throw failure;
   }
 }
 
@@ -581,7 +597,8 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch((error) => {
-    process.stderr.write(`${JSON.stringify({ event: "failed", error: error instanceof Error ? error.message : "failed" })}\n`);
+    process.stderr.write(`${JSON.stringify({ event: "failed", error: safeContinuousRunnerError(error),
+      ...(error?.diagnostic ? { diagnostic: safeControlDiagnostic(error.diagnostic, error.diagnostic.status) } : {}) })}\n`);
     process.exitCode = 1;
   });
 }
