@@ -18,6 +18,8 @@ import {
     type SupportResistanceReference,
 } from './support-resistance';
 import type { SupportResistanceFormulaStyle } from './support-resistance-indicator-state';
+import { groupDailyLevels, type DailyLevel } from './daily-indicator-levels';
+import { layoutPriceLabels } from './price-label-layout';
 
 type RenderTarget = Parameters<IPrimitivePaneRenderer['draw']>[0];
 const FORMULA_META: Record<
@@ -65,12 +67,12 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                 projections,
                 projectionStartTime,
             } = this.owner;
-        if (!chart || !priceSeries || !reference || projections.length === 0) return;
+        if (!chart || !priceSeries || (!reference && this.owner.dailyLevels.length === 0)) return;
         target.useBitmapCoordinateSpace((scope) => {
             const anchor = chart
                 .timeScale()
                 .timeToCoordinate(
-                    (projectionStartTime ?? reference.firstTime) as UTCTimestamp,
+                    (projectionStartTime ?? reference?.firstTime ?? 0) as UTCTimestamp,
                 );
             const context = scope.context;
             const xRatio = scope.horizontalPixelRatio;
@@ -80,7 +82,14 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                 Math.round(Number(anchor ?? 0) * xRatio),
             );
             const endX = scope.bitmapSize.width;
-            const rightEdge = Math.max(startX, endX - 82 * xRatio);
+            // Cull before label layout too: far daily levels must not affect the existing viewport or labels.
+            const dailyGroups = groupDailyLevels(this.owner.dailyLevels).flatMap(g => {
+                const coordinate = priceSeries.priceToCoordinate(g.price);
+                return coordinate === null || !Number.isFinite(coordinate) || coordinate < 0 || coordinate * yRatio > scope.bitmapSize.height
+                    ? [] : [{ ...g, coordinate }];
+            });
+            const labelWidth = dailyGroups.length ? Math.min(210, Math.max(108, ...dailyGroups.map(g => (g.label.length + 9) * 7))) : 82;
+            const rightEdge = Math.max(startX, endX - labelWidth * xRatio);
             const labelX = rightEdge + 4 * xRatio;
             context.save();
             context.font = `${Math.max(10, Math.round(10 * yRatio))}px monospace`;
@@ -108,31 +117,27 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                           item,
                           y: Math.round(Number(coordinate) * yRatio),
                           labelY: 0,
+                          daily: null as (typeof dailyGroups)[number] | null,
                       }];
-            }).sort((left, right) => left.y - right.y || left.item.order - right.item.order);
-            const labelGap = 12 * yRatio;
-            levels.forEach((level, index) => {
-                level.labelY = Math.max(6 * yRatio, level.y);
-                if (index > 0) {
-                    level.labelY = Math.max(
-                        level.labelY,
-                        levels[index - 1]!.labelY + labelGap,
-                    );
-                }
             });
-            for (let index = levels.length - 2; index >= 0; index -= 1) {
-                levels[index]!.labelY = Math.min(
-                    levels[index]!.labelY,
-                    levels[index + 1]!.labelY - labelGap,
-                );
-            }
-            for (const { formulaId, item, y, labelY } of levels) {
+            dailyGroups.forEach((g, i) => {
+                const coordinate = g.coordinate;
+                levels.push({ formulaId: 'pivot-point', item: { id: g.keys.join('/'), label: g.label, price: g.price, role: 'pivot', order: 100 + i }, y: Math.round(coordinate * yRatio), labelY: 0, daily: g });
+            });
+            levels.sort((left, right) => left.y - right.y || left.item.order - right.item.order);
+            const positions = layoutPriceLabels(levels.map(l => l.y), scope.bitmapSize.height, 12 * yRatio, 6 * yRatio);
+            for (const [index, { formulaId, item, y, daily }] of levels.entries()) {
+                const position = positions[index]!;
+                const labelY = position.y;
+                const columnWidth = Math.max(1, (endX - labelX) / position.columns);
+                const textX = labelX + position.column * columnWidth;
                 const meta = FORMULA_META[formulaId];
                 const configured = this.owner.formulaStyles[formulaId];
-                const color = configured?.color ?? meta[item.role];
+                const color = daily?.style.color ?? configured?.color ?? meta[item.role];
+                context.globalAlpha = daily ? daily.style.opacity / 100 * (daily.stale ? 0.65 : 1) : 1;
                 context.beginPath();
                 context.setLineDash(
-                    (configured
+                    (daily ? configuredDash(daily.stale ? 'dotted' : daily.style.lineStyle) : configured
                         ? configuredDash(configured.lineStyle)
                         : levelDash(formulaId, item.id)
                     ).map(
@@ -140,10 +145,10 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                     ),
                 );
                 context.lineWidth =
-                    (configured?.width ?? (item.role === 'pivot' ? 1.5 : 1)) *
+                    (daily?.style.width ?? configured?.width ?? (item.role === 'pivot' ? 1.5 : 1)) *
                     yRatio;
                 context.strokeStyle = color;
-                context.moveTo(startX, y);
+                context.moveTo(daily ? 0 : startX, y);
                 context.lineTo(rightEdge, y);
                 context.stroke();
                 if (Math.abs(labelY - y) > yRatio) {
@@ -151,14 +156,15 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                     context.setLineDash([]);
                     context.lineWidth = yRatio;
                     context.moveTo(rightEdge - 10 * xRatio, y);
-                    context.lineTo(rightEdge - 2 * xRatio, labelY);
+                    context.lineTo(textX - 2 * xRatio, labelY);
                     context.stroke();
                 }
                 context.fillStyle = color;
                 context.fillText(
-                    `${meta.prefix} ${item.label} ${this.owner.priceFormatter(item.price)}`,
-                    labelX,
+                    `${daily ? item.label : `${meta.prefix} ${item.label}`} ${(daily ? this.owner.dailyPriceFormatter : this.owner.priceFormatter)(item.price)}`,
+                    textX,
                     labelY,
+                    Math.max(1, columnWidth - 4 * xRatio),
                 );
             }
             context.restore();
@@ -183,6 +189,11 @@ class PivotPaneView implements IPanePrimitivePaneView {
 }
 
 export class PivotPrimitive implements IPanePrimitive<Time> {
+    dailyLevels: readonly DailyLevel[] = [];
+    dailyPriceFormatter: (value: number) => string = String;
+    setDailyLevels(levels: readonly DailyLevel[], formatter: (value: number) => string = String) {
+        this.dailyLevels = levels; this.dailyPriceFormatter = formatter; this.requestUpdate?.();
+    }
     chart: IChartApi | null = null;
     reference: SupportResistanceReference | null = null;
     projections: readonly SupportResistanceProjection[] = [];

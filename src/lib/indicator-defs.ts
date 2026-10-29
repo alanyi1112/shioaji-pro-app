@@ -29,6 +29,7 @@ import {
     type IndicatorPoint,
 } from './indicators';
 import type { Candle } from './types/market';
+import { DAILY_LEVEL_TYPE } from './daily-indicator-levels';
 
 export type OutputKind = 'line' | 'dashed' | 'histogram' | 'points';
 
@@ -105,6 +106,7 @@ export interface PrimitiveIndicatorDef extends IndicatorDefBase {
         | 'fair-value-gap'
         | 'fixed-volume-profile'
         | 'traditional-pivot'
+        | 'daily-indicator-levels'
         | 'support-resistance';
     iconText: string;
     singleton: true;
@@ -567,6 +569,16 @@ export const KBAR_READOUT_DEF: ReadoutIndicatorDef = {
 
 export const BUILTIN_PRIMITIVE_DEFS: PrimitiveIndicatorDef[] = [
     {
+        kind: 'primitive', type: DAILY_LEVEL_TYPE, label: '日線關鍵價位', short: '日線價位',
+        desc: '將日5／10／20／60／120MA與布林上中下軌投影至分鐘圖，包含今日未收盤日K',
+        aliases: ['日線', '日均線', 'daily', 'daily ma', 'boll', '布林', '關鍵價位', '水平線'],
+        category: 'overlay', primitive: 'daily-indicator-levels', singleton: true, iconText: 'D',
+        params: [
+            { key: 'period', label: '日線布林期數', def: 20, min: 2, max: 200 },
+            { key: 'mult', label: '標準差倍數', def: 2, min: 0.5, max: 5, step: 0.5 },
+        ],
+    },
+    {
         kind: 'primitive',
         type: 'fair-value-gap',
         label: 'FVG 公允價值缺口',
@@ -749,6 +761,7 @@ export function colorWithOpacity(hex: string, opacity: number): string {
 export function instanceLabel(inst: IndicatorInstance): string {
     const def = DEF_BY_TYPE.get(inst.type);
     if (!def) return inst.type;
+    if (inst.type === DAILY_LEVEL_TYPE) return `日線價位 BOLL(${inst.params.period ?? 20},${inst.params.mult ?? 2})`;
     if (def.kind === 'readout') return def.short;
     const args = def.params.map((p) => inst.params[p.key] ?? p.def);
     return args.length > 0 ? `${def.short}(${args.join(',')})` : def.short;
@@ -1018,6 +1031,7 @@ function normalizeParamsForType(
         normalized[param.key] =
             validParamValue(candidates[param.key], param) ?? param.def;
     }
+    if (type === DAILY_LEVEL_TYPE && normalized.mult! * 2 % 1 !== 0) return defaults;
     if (
         def.kind === 'series' &&
         def.validateParams &&

@@ -36,6 +36,8 @@ import {
     type PlotKind,
 } from '../lib/indicator-defs';
 import { CustomIndicatorEditor } from './custom-indicator-editor';
+import { DailyLevelSettings } from './daily-level-settings';
+import { DAILY_LEVEL_TYPE } from '../lib/daily-indicator-levels';
 import * as styles from './indicator-dialog.css';
 
 const WIDTHS: (1 | 2 | 3 | 4)[] = [1, 2, 3, 4];
@@ -461,7 +463,11 @@ function ColorPanel({
     );
 }
 
-export function IndicatorSettingsModal({
+export function IndicatorSettingsModal(props: Parameters<typeof StandardIndicatorSettingsModal>[0]) {
+    return props.inst.type === DAILY_LEVEL_TYPE ? <DailyLevelSettings {...props} /> : <StandardIndicatorSettingsModal {...props} />;
+}
+
+function StandardIndicatorSettingsModal({
     inst,
     timeframes,
     errorMessage,

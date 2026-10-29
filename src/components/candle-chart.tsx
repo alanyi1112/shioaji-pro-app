@@ -133,6 +133,9 @@ import {
     pivotSupportReason,
 } from '../lib/traditional-pivot';
 import { PivotPrimitive } from '../lib/pivot-primitive';
+import { DAILY_LEVEL_TYPE, computeDailyLevels, dailyLevelDemand } from '../lib/daily-indicator-levels';
+import { dailyIndicatorAuthority, dailyProductKey, emptyDailySnapshot } from '../lib/daily-indicator-authority';
+import { DailyLevelReadout } from './daily-level-readout';
 import {
     buildSupportResistanceProjection,
     resolveAutomaticSupportResistanceReference,
@@ -493,6 +496,17 @@ export function CandleChart({
         getIndicatorPersistenceStatus,
         getIndicatorPersistenceStatus,
     );
+    const dailyInstance = instances.find(inst => inst.type === DAILY_LEVEL_TYPE);
+    const dailyKey = dailyProductKey(contract);
+    const dailyNeed = dailyLevelDemand(dailyInstance);
+    const [dailySnapshot, setDailySnapshot] = useState(() => emptyDailySnapshot(dailyKey));
+    const dailySource = dailySnapshot.key === dailyKey ? dailySnapshot : emptyDailySnapshot(dailyKey);
+    const dailyLevels = useMemo(() => dailyInstance ? computeDailyLevels(dailySource, dailyInstance, dailyKey) : [], [dailyInstance, dailySource, dailyKey]);
+    useEffect(() => {
+        if (!dailyNeed) return;
+        return dailyIndicatorAuthority.subscribe(contract, dailyNeed, setDailySnapshot);
+        // Product identity, not the minute timeframe, owns the shared demand.
+    }, [dailyKey, dailyNeed]);
     const supportResistanceStateVersion = useSyncExternalStore(
         subscribeSupportResistanceProductStates,
         getSupportResistanceProductStateVersion,
@@ -2056,12 +2070,14 @@ export function CandleChart({
                 });
         };
 
-        fetchKbars(
+        const initialHistory = fetchKbars(
             contract,
             dateStrOffset(tf.days),
             dateStrOffset(0),
             loadController.signal,
-        )
+        );
+        dailyIndicatorAuthority.track(contract, initialHistory);
+        initialHistory
             .then((k) => {
                 if (!isCurrent() || !candleSeriesRef.current) return;
                 const raw = canonicalKbarsForContract(contract, k);
@@ -2079,6 +2095,7 @@ export function CandleChart({
                 historicalReferenceRef.current = buildPreviousSessionCloseIndex(raw);
                 updateCandleIntegrityDiagnostics();
                 rememberChartKbars(cacheKey, raw);
+                dailyIndicatorAuthority.publish(contract, raw, dateStrOffset(0), dateStrOffset(tf.days));
                 if (usesTaiwanStockCommonLots(contract)) {
                     const latestRaw = raw[raw.length - 1]!;
                     const sessionDate = wallClockDateKey(latestRaw.time);
@@ -2172,14 +2189,17 @@ export function CandleChart({
             loadState: 'loading',
             sourceAvailable: false,
         };
-        fetchKbars(
+        const authorityHistory = fetchKbars(
             contract,
             dateStrOffset(45),
             dateStrOffset(0),
             loadController.signal,
-        )
+        );
+        dailyIndicatorAuthority.track(contract, authorityHistory);
+        authorityHistory
             .then((kbars) => {
                 if (cancelled) return;
+                dailyIndicatorAuthority.publish(contract, canonicalKbarsForContract(contract, kbars), dateStrOffset(0), dateStrOffset(45));
                 supportResistanceAuthorityRef.current = {
                     key,
                     rows: canonicalKbarsForContract(contract, kbars),
@@ -2348,6 +2368,7 @@ export function CandleChart({
             );
         }
         lastBarRef.current = bar;
+        dailyIndicatorAuthority.trade(contract, tickTime, price, quote?.flashSeq ?? 0, volumeDelta);
         markFormingBar(bar.time);
         if (addedBar) setCanonicalReadoutBars(barsRef.current);
         else scheduleKbarReadoutRef.current();
@@ -3005,6 +3026,12 @@ export function CandleChart({
         supportResistanceStateVersion,
     ]);
 
+    useLayoutEffect(() => {
+        const visible = dailyNeed > 0 && [1, 5, 15, 60].includes(tf.minutes);
+        pivotPrimitiveRef.current?.setDailyLevels(visible ? dailyLevels : [], fmtPrice);
+        candleSeriesRef.current?.applyOptions({});
+    }, [dailyLevels, dailyNeed, tf.minutes, dataVersion]);
+
     const closeSettings = () => {
         setSettingsFor(null);
         setSettingsDraft(null);
@@ -3422,6 +3449,11 @@ export function CandleChart({
                     >
                         {instanceLabel(inst)}
                     </button>
+                    {inst.type === DAILY_LEVEL_TYPE && !dimmed && <DailyLevelReadout snapshot={dailySource} levels={dailyLevels} loading={dailySource.state === 'loading'} diagnostics={dailyIndicatorAuthority.diagnostics(contract)} outside={value => {
+                        const y = candleSeriesRef.current?.priceToCoordinate(value);
+                        const height = chartRef.current?.panes()[0]?.getHTMLElement()?.clientHeight ?? 0;
+                        return y === null || y === undefined || y < 0 || y > height;
+                    }} />}
                     {offTf && (
                         <span className={styles.legendNote}>此時框停用</span>
                     )}
