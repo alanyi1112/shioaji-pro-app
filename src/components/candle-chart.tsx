@@ -133,6 +133,7 @@ import {
     pivotSupportReason,
 } from '../lib/traditional-pivot';
 import { PivotPrimitive } from '../lib/pivot-primitive';
+import { resolveLastDailyChartClose, resolveSupportReferenceClose, type KeyPricePercentContext } from '../lib/key-price-previous-close';
 import { DAILY_LEVEL_TYPE, computeDailyLevels, dailyLevelDemand } from '../lib/daily-indicator-levels';
 import { dailyIndicatorAuthority, dailyProductKey, emptyDailySnapshot } from '../lib/daily-indicator-authority';
 import { DailyLevelReadout } from './daily-level-readout';
@@ -501,6 +502,15 @@ export function CandleChart({
     const dailyNeed = dailyLevelDemand(dailyInstance);
     const [dailySnapshot, setDailySnapshot] = useState(() => emptyDailySnapshot(dailyKey));
     const dailySource = dailySnapshot.key === dailyKey ? dailySnapshot : emptyDailySnapshot(dailyKey);
+    const supportPercentVisible = [1, 5, 15, 60, 1440].includes(tf.minutes) &&
+        enabledSupportResistanceFormulas(instances).length > 0;
+    const fibonacciPercentVisible = tf.minutes === 1440 && (fibonacciSnapshot.completed.length > 0 || fibonacciSnapshot.pending !== null);
+    const keyPriceVisible = supportPercentVisible || fibonacciPercentVisible;
+    useEffect(() => dailyIndicatorAuthority.observe(contract, setDailySnapshot), [dailyKey]);
+    const referenceProductKey = supportResistanceProductKey(contract);
+    const supportBaseline = resolveSupportReferenceClose(referenceProductKey, getSupportResistanceProductState(referenceProductKey));
+    const supportPercentContext: KeyPricePercentContext = { baseline: supportBaseline, up: colors.up, down: colors.down, neutral: colors.text, prefix:'' };
+    const supportPercentStyleKey = `${themeKey}|${supportPercentContext.prefix}`;
     const dailyLevels = useMemo(() => dailyInstance ? computeDailyLevels(dailySource, dailyInstance, dailyKey) : [], [dailyInstance, dailySource, dailyKey]);
     useEffect(() => {
         if (!dailyNeed) return;
@@ -620,6 +630,7 @@ export function CandleChart({
         node.dataset.chartCandleCount = String(barsRef.current.length);
         node.dataset.chartRawCount = String(rawRef.current.length);
         node.dataset.chartTailTime = String(tail?.time ?? '');
+        node.dataset.chartTailClose = String(tail?.close ?? '');
         node.dataset.chartTailVolume = String(tail?.volume ?? '');
         node.dataset.chartTailTurnover = String(tail?.turnoverTwd ?? 'unknown');
         node.dataset.chartRawTailTime = String(rawTail?.time ?? '');
@@ -638,6 +649,9 @@ export function CandleChart({
         new Map(),
     );
     const rawIdentityRef = useRef('');
+    const fibonacciBaseline = resolveLastDailyChartClose({key:dailyKey,identity:rawIdentityRef.current,
+        expectedIdentity:`${contract.code}|1440`,minutes:tf.minutes,bars:barsRef.current,available:!loading&&!candleDataError});
+    const fibonacciPercentContext:KeyPricePercentContext={baseline:fibonacciBaseline,up:colors.up,down:colors.down,neutral:colors.text,prefix:''};
     const loadMoreRef = useRef<(() => void) | null>(null);
 
     const clearDailyGestureTimer = (cancel = false) => {
@@ -1247,6 +1261,9 @@ export function CandleChart({
         chart.panes()[0]?.attachPrimitive(marketOverlay);
         marketOverlayPrimitiveRef.current = marketOverlay;
         const pivotPrimitive = new PivotPrimitive(candles);
+        pivotPrimitive.onLabelsDrawn = labels => {
+            if (diagnosticRef.current) diagnosticRef.current.dataset.keyPriceLabels = JSON.stringify(labels);
+        };
         chart.panes()[0]?.attachPrimitive(pivotPrimitive);
         pivotPrimitiveRef.current = pivotPrimitive;
         reconcileDayPrimitivesRef.current();
@@ -2076,7 +2093,7 @@ export function CandleChart({
             dateStrOffset(0),
             loadController.signal,
         );
-        dailyIndicatorAuthority.track(contract, initialHistory);
+        dailyIndicatorAuthority.track(contract, initialHistory, loadController.signal);
         initialHistory
             .then((k) => {
                 if (!isCurrent() || !candleSeriesRef.current) return;
@@ -2195,7 +2212,7 @@ export function CandleChart({
             dateStrOffset(0),
             loadController.signal,
         );
-        dailyIndicatorAuthority.track(contract, authorityHistory);
+        dailyIndicatorAuthority.track(contract, authorityHistory, loadController.signal);
         authorityHistory
             .then((kbars) => {
                 if (cancelled) return;
@@ -2580,6 +2597,7 @@ export function CandleChart({
                       tf.minutes,
                   )
                 : null,
+            productKey,
         );
     };
     pivotRefreshRef.current = refreshPivot;
@@ -3029,8 +3047,14 @@ export function CandleChart({
     useLayoutEffect(() => {
         const visible = dailyNeed > 0 && [1, 5, 15, 60].includes(tf.minutes);
         pivotPrimitiveRef.current?.setDailyLevels(visible ? dailyLevels : [], fmtPrice);
-        candleSeriesRef.current?.applyOptions({});
+        // Passive benchmark updates alone must never touch price-series options.
+        if (dailyInstance) candleSeriesRef.current?.applyOptions({});
     }, [dailyLevels, dailyNeed, tf.minutes, dataVersion]);
+
+    useLayoutEffect(() => {
+        pivotPrimitiveRef.current?.setPercentContext(supportPercentVisible ? supportPercentContext : undefined);
+        // Labels only: no price-series/scale/time-range changes.
+    }, [referenceProductKey, supportResistanceStateVersion, tf.minutes, supportPercentStyleKey, dataVersion, supportPercentVisible]);
 
     const closeSettings = () => {
         setSettingsFor(null);
@@ -4143,6 +4167,7 @@ export function CandleChart({
                                     ) ?? null,
                             }}
                             formatPrice={fmtPrice}
+                            percentContext={tf.minutes === 1440 ? fibonacciPercentContext : undefined}
                         />
                     )}
                 {loading && (
@@ -4213,12 +4238,24 @@ export function CandleChart({
                 )}
                 {(workingOrders.length > 0 ||
                     triggers.length > 0 ||
-                    instances.length > 0) && (
+                    instances.length > 0 || keyPriceVisible) && (
                     <div className={styles.triggerList}>
                         {kbarReadoutInst &&
                             renderKbarReadoutRow(kbarReadoutInst)}
                         {supportResistanceFormulas.length > 0 &&
                             renderSupportResistanceReadout()}
+                        {supportPercentVisible && <div className={styles.legendItem.normal}
+                            data-key-price-benchmark={JSON.stringify(supportBaseline)}>
+                            <span className={styles.legendLabel}>壓撐比較基準</span>
+                            <span className={styles.legendVal}>{supportBaseline.referenceDate ?? '—'} {supportBaseline.close === null ? '—' : fmtPrice(supportBaseline.close)}</span>
+                            <span className={styles.legendNote}>參考K棒收盤價{supportBaseline.reason ? ` · ${supportBaseline.reason}` : ''}</span>
+                        </div>}
+                        {fibonacciPercentVisible && <div className={styles.legendItem.normal}
+                            data-fibonacci-benchmark={JSON.stringify(fibonacciBaseline)}>
+                            <span className={styles.legendLabel}>費波比較基準</span>
+                            <span className={styles.legendVal}>{fibonacciBaseline.date ?? '—'} {fibonacciBaseline.close === null ? '—' : fmtPrice(fibonacciBaseline.close)}</span>
+                            <span className={styles.legendNote}>最後一根日K收盤{fibonacciBaseline.reason ? ` · ${fibonacciBaseline.reason}` : ''}</span>
+                        </div>}
                         {mainLegendInsts.map((inst) =>
                             renderLegendRow(inst),
                         )}

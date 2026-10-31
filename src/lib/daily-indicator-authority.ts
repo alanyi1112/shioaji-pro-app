@@ -15,6 +15,7 @@ export function emptyDailySnapshot(key: string): DailyLevelSnapshot {
 type Entry = {
     snapshot: DailyLevelSnapshot;
     consumers: Map<symbol, { need: number; notify: (s: DailyLevelSnapshot) => void }>;
+    observers: Map<symbol, (s: DailyLevelSnapshot) => void>;
     controller?: AbortController;
     pending?: Promise<void>;
     external: Set<Promise<unknown>>;
@@ -41,8 +42,8 @@ export class DailyIndicatorAuthority {
         let e = this.entries.get(key);
         if (!e) {
             // Active consumers are never evicted. Inactive entries have bounded retained history.
-            for (const [k, v] of this.entries) if (this.entries.size >= 12 && !v.consumers.size && !v.pending) this.entries.delete(k);
-            e = { snapshot: emptyDailySnapshot(key), consumers: new Map(), external: new Set(), rawTail: null, historyReceived: null, requests: 0, canonicalBytes: 0, loadDurationMs: 0 };
+            for (const [k, v] of this.entries) if (this.entries.size >= 12 && !v.consumers.size && !v.observers.size && !v.pending) this.entries.delete(k);
+            e = { snapshot: emptyDailySnapshot(key), consumers: new Map(), observers: new Map(), external: new Set(), rawTail: null, historyReceived: null, requests: 0, canonicalBytes: 0, loadDurationMs: 0 };
             this.entries.set(key, e);
         }
         return e;
@@ -76,6 +77,13 @@ export class DailyIndicatorAuthority {
         e.snapshot = { ...e.snapshot, ...patch, generation: e.snapshot.generation + 1 };
         e.snapshot = { ...e.snapshot, phase: this.phase(c, e) };
         for (const x of e.consumers.values()) x.notify(e.snapshot);
+        for (const notify of e.observers.values()) notify(e.snapshot);
+    }
+    /** Passive reuse: no demand, ensure, fetch, cancellation or source mutation. */
+    observe(c: ContractInfo, notify: (s: DailyLevelSnapshot) => void) {
+        const e = this.entry(c), token = Symbol();
+        e.observers.set(token, notify); notify(e.snapshot);
+        return () => { e.observers.delete(token); };
     }
     /** Seed from successful existing chart history, not from the visual stale-while-revalidate cache. */
     publish(c: ContractInfo, raw: readonly Candle[], endDate?: string, startDate?: string): boolean {
@@ -104,9 +112,12 @@ export class DailyIndicatorAuthority {
             asOf: Math.max(e.snapshot.asOf ?? -Infinity, raw.at(-1)!.time), receivedAt: advances ? this.now() : e.snapshot.receivedAt, state: e.pending ? 'loading' : 'ready', reason: undefined, knownGap: false });
         return true;
     }
-    track(c: ContractInfo, work: Promise<unknown>) {
+    track(c: ContractInfo, work: Promise<unknown>, signal?: AbortSignal) {
         const e = this.entry(c), generation = e.snapshot.generation; e.external.add(work);
         void work.catch(() => {
+            // A chart switch cancels its own read; it is not a failed observation of
+            // the already accepted daily history. Genuine refresh failures still stale it.
+            if (signal?.aborted) return;
             if (e.snapshot.generation === generation && e.snapshot.bars.length)
                 this.emit(c, e, { state: 'stale', reason: 'daily_history_refresh_failed' });
         });

@@ -20,6 +20,7 @@ import {
 import type { SupportResistanceFormulaStyle } from './support-resistance-indicator-state';
 import { groupDailyLevels, type DailyLevel } from './daily-indicator-levels';
 import { layoutPriceLabels } from './price-label-layout';
+import { keyPricePercent, resolveSupportReferenceClose, type KeyPricePercentContext } from './key-price-previous-close';
 
 type RenderTarget = Parameters<IPrimitivePaneRenderer['draw']>[0];
 const FORMULA_META: Record<
@@ -88,9 +89,7 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                 return coordinate === null || !Number.isFinite(coordinate) || coordinate < 0 || coordinate * yRatio > scope.bitmapSize.height
                     ? [] : [{ ...g, coordinate }];
             });
-            const labelWidth = dailyGroups.length ? Math.min(210, Math.max(108, ...dailyGroups.map(g => (g.label.length + 9) * 7))) : 82;
-            const rightEdge = Math.max(startX, endX - labelWidth * xRatio);
-            const labelX = rightEdge + 4 * xRatio;
+            let labelWidth = dailyGroups.length ? Math.min(210, Math.max(108, ...dailyGroups.map(g => (g.label.length + 9) * 7))) : 82;
             context.save();
             context.font = `${Math.max(10, Math.round(10 * yRatio))}px monospace`;
             context.textBaseline = 'middle';
@@ -125,7 +124,25 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                 levels.push({ formulaId: 'pivot-point', item: { id: g.keys.join('/'), label: g.label, price: g.price, role: 'pivot', order: 100 + i }, y: Math.round(coordinate * yRatio), labelY: 0, daily: g });
             });
             levels.sort((left, right) => left.y - right.y || left.item.order - right.item.order);
-            const positions = layoutPriceLabels(levels.map(l => l.y), scope.bitmapSize.height, 12 * yRatio, 6 * yRatio);
+            const supplied = this.owner.percentContext;
+            const percentContext = supplied?.baseline.source === 'support-resistance-reference-close-v1'
+                ? { ...supplied, baseline: resolveSupportReferenceClose(supplied.baseline.key,
+                    reference && this.owner.referenceProductKey ? { key: this.owner.referenceProductKey, reference, pinned: reference.mode === 'pinned' } : null) }
+                : supplied;
+            const labels = levels.map(({ formulaId, item, daily }) => {
+                const text = `${daily ? item.label : `${FORMULA_META[formulaId].prefix} ${item.label}`} ${(daily ? this.owner.dailyPriceFormatter : this.owner.priceFormatter)(item.price)}`;
+                const percent = !daily && percentContext ? keyPricePercent(item.price, percentContext) : null;
+                return { text, percent, width: this.owner.percentContext ? context.measureText(text + (percent ? `  ${percent.text}` : '')).width : 0 };
+            });
+            const enhanced = !!this.owner.percentContext;
+            const wrap = enhanced && labels.some(l => l.width + 12 * xRatio > endX);
+            if (enhanced) labelWidth = Math.min(endX / xRatio, Math.max(...labels.map(l => wrap
+                ? Math.max(context.measureText(l.text).width, context.measureText(l.percent?.text ?? '').width) / xRatio + 12
+                : l.width / xRatio + 12), 82));
+            const rightEdge = enhanced ? Math.max(0, endX - labelWidth * xRatio) : Math.max(startX, endX - labelWidth * xRatio);
+            const labelX = rightEdge + 4 * xRatio;
+            const positions = layoutPriceLabels(levels.map(l => l.y), scope.bitmapSize.height, (wrap ? 27 : enhanced ? 13 : 12) * yRatio, (wrap ? 16 : enhanced ? 7 : 6) * yRatio);
+            const evidence: PivotLabelEvidence[] = [];
             for (const [index, { formulaId, item, y, daily }] of levels.entries()) {
                 const position = positions[index]!;
                 const labelY = position.y;
@@ -160,13 +177,24 @@ class PivotRenderer implements IPrimitivePaneRenderer {
                     context.stroke();
                 }
                 context.fillStyle = color;
-                context.fillText(
-                    `${daily ? item.label : `${meta.prefix} ${item.label}`} ${(daily ? this.owner.dailyPriceFormatter : this.owner.priceFormatter)(item.price)}`,
-                    textX,
-                    labelY,
-                    Math.max(1, columnWidth - 4 * xRatio),
-                );
+                const label = labels[index]!;
+                if (enhanced) {
+                    context.fillText(label.text, textX, labelY - (wrap && label.percent ? 6 * yRatio : 0));
+                    if (label.percent) {
+                        context.fillStyle = label.percent.color;
+                        context.fillText(label.percent.text, wrap ? textX : textX + context.measureText(label.text + '  ').width,
+                            labelY + (wrap ? 7 * yRatio : 0));
+                        evidence.push({ formulaId, level: item.label, price: item.price, text: label.text,
+                            percent: label.percent.text, percentValue: label.percent.value, color: label.percent.color,
+                            baselineClose: percentContext!.baseline.close,
+                            baselineDate: percentContext!.baseline.source === 'support-resistance-reference-close-v1'
+                                ? percentContext!.baseline.referenceDate : percentContext!.baseline.source === 'last-daily-chart-close-v1'
+                                    ? percentContext!.baseline.date : percentContext!.baseline.previousDate,
+                            x: textX / xRatio, y: labelY / yRatio, priceY: y / yRatio });
+                    }
+                } else context.fillText(label.text, textX, labelY, Math.max(1, columnWidth - 4 * xRatio));
             }
+            this.owner.onLabelsDrawn?.(evidence);
             context.restore();
         });
     }
@@ -188,7 +216,13 @@ class PivotPaneView implements IPanePrimitivePaneView {
     }
 }
 
+export type PivotLabelEvidence = { formulaId: string; level: string; price: number; text: string; percent: string;
+    percentValue: number | null; color: string; baselineClose: number | null; baselineDate: string | null; x: number; y: number; priceY: number };
 export class PivotPrimitive implements IPanePrimitive<Time> {
+    /** Bounded passive DOM diagnostics, mirroring labels actually drawn. */
+    onLabelsDrawn?: (labels: readonly PivotLabelEvidence[]) => void;
+    percentContext: KeyPricePercentContext | undefined;
+    setPercentContext(context: KeyPricePercentContext | undefined) { this.percentContext = context; this.onLabelsDrawn?.([]); this.requestUpdate?.(); }
     dailyLevels: readonly DailyLevel[] = [];
     dailyPriceFormatter: (value: number) => string = String;
     setDailyLevels(levels: readonly DailyLevel[], formatter: (value: number) => string = String) {
@@ -196,6 +230,7 @@ export class PivotPrimitive implements IPanePrimitive<Time> {
     }
     chart: IChartApi | null = null;
     reference: SupportResistanceReference | null = null;
+    referenceProductKey: string | null = null;
     projections: readonly SupportResistanceProjection[] = [];
     pivotColor = '#e0a43c';
     levelColor = '#8b94a7';
@@ -234,6 +269,7 @@ export class PivotPrimitive implements IPanePrimitive<Time> {
         this.reference = reference
             ? pivotReferenceToSupportResistance(reference, 'automatic')
             : null;
+        this.referenceProductKey = null;
         this.projections = this.reference
             ? [buildSupportResistanceProjection('pivot-point', this.reference)]
             : [];
@@ -253,8 +289,11 @@ export class PivotPrimitive implements IPanePrimitive<Time> {
             Record<SupportResistanceFormulaId, SupportResistanceFormulaStyle>
         > = {},
         projectionStartTime: number | null = reference?.firstTime ?? null,
+        productKey?: string,
     ): void {
         this.reference = reference;
+        this.referenceProductKey = reference ? productKey ?? null : null;
+        if (!reference) this.onLabelsDrawn?.([]);
         this.projections = reference
             ? projections.filter(
                   (projection) =>

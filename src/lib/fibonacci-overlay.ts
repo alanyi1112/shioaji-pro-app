@@ -10,6 +10,8 @@ import {
     type FibonacciPoint,
     type FibonacciSnapshot,
 } from './fibonacci-annotations';
+import { keyPricePercent, type KeyPricePercentContext } from './key-price-previous-close';
+import { layoutPriceLabels } from './price-label-layout';
 
 export interface FibonacciCoordinateApi {
     timeToCoordinate(time: number): number | null;
@@ -25,7 +27,7 @@ export interface FibonacciOverlayLine {
     color: string;
     opacity: number;
     dash?: string;
-    kind: 'level' | 'wave-guide' | 'pending-price-guide' | 'pending-price-halo';
+    kind: 'level' | 'wave-guide' | 'pending-price-guide' | 'pending-price-halo' | 'label-connector';
 }
 
 export interface FibonacciOverlayBand {
@@ -46,6 +48,12 @@ export interface FibonacciOverlayLabel {
     color: string;
     anchor: 'start' | 'end';
     pendingGuide?: boolean;
+    percent?: { text: string; color: string; value: number | null };
+    percentX?: number;
+    percentY?: number;
+    lineStartX?: number;
+    levelY?: number;
+    levelPrice?: number;
 }
 
 export interface FibonacciOverlayAnchor {
@@ -76,6 +84,8 @@ interface BuildOptions {
     rightEdge: number;
     coordinates: FibonacciCoordinateApi;
     formatPrice: (price: number) => string;
+    percentContext?: KeyPricePercentContext;
+    measureText?: (text: string) => number;
 }
 
 function finiteCoordinate(value: number | null): value is number {
@@ -181,6 +191,7 @@ function addLevels(
         pending: boolean;
         role: FibonacciDrawing['role'] | 'secondary';
         keyPrefix: string;
+        percentContext?: KeyPricePercentContext;
     },
 ) {
     if (drawingLevels.length === 0) return;
@@ -243,6 +254,10 @@ function addLevels(
             text,
             color,
             anchor: hasLeftSpace ? 'end' : 'start',
+            percent: options.percentContext ? keyPricePercent(entry.price, {...options.percentContext,prefix:''}) : undefined,
+            lineStartX,
+            levelY:entry.y,
+            levelPrice:entry.price,
         });
     });
 }
@@ -353,6 +368,24 @@ export function buildFibonacciOverlayModel(
     );
     if (snapshot.pending) {
         addPendingDrawing(model, snapshot.pending, snapshot.completed, options);
+    }
+    if (options.percentContext) {
+        const labels = model.labels.filter(l => !l.pendingGuide).sort((a, b) => a.y - b.y);
+        const measure = options.measureText ?? (text => text.length * 7);
+        const wrap = labels.some(l => measure(`${l.text}  ${l.percent!.text}`) + 16 > options.rightEdge);
+        const positions = layoutPriceLabels(labels.map(l => l.y), options.height, wrap ? 30 : 16, wrap ? 20 : 12);
+        labels.forEach((l, i) => {
+            const originalY = l.levelY ?? l.y - 4, p = positions[i]!;
+            const width = wrap ? Math.max(measure(l.text), measure(l.percent!.text)) : measure(`${l.text}  ${l.percent!.text}`);
+            const start=l.lineStartX??0;
+            // Prefer outside the segment's left endpoint. With no left margin,
+            // keep the label at the pane's left edge without changing the chart view.
+            l.x = Math.max(6,start-width-8); l.anchor = 'start';
+            l.y = p.y - (wrap ? 7 : 0); l.percentX = wrap ? l.x : l.x + measure(l.text + '  ');
+            l.percentY = l.y + (wrap ? 14 : 0);
+            if (Math.abs(originalY - l.y) > 2 || l.x+width>start) model.lines.push({ key: l.key + '-connector',
+                x1: start, x2: l.x+width<start?l.x+width+3:l.x-3, y1: originalY, y2: l.y, color: l.color, opacity: 0.8, kind: 'label-connector' });
+        });
     }
     return model;
 }

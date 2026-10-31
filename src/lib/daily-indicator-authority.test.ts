@@ -6,6 +6,22 @@ const c = { code: '2330', security_type: 'STK', region: 'TW', exchange: 'TSE', t
 const NOW = Date.parse('2026-10-29T13:31:00Z') / 1000;
 const raw = (date: string, close = 100): Candle => ({ time: Date.parse(date + 'T13:30:00Z') / 1000, open: close, high: close, low: close, close, volume: 1, turnoverTwd: null });
 describe('商品共用日線authority', () => {
+    it('切換取消的外部讀取不撤銷既有日K；未取消的真失敗仍標stale', async () => {
+        const load = vi.fn(), a = new DailyIndicatorAuthority(load, () => NOW);
+        a.publish(c, [raw('2026-10-28'), raw('2026-10-29')], '2026-10-29');
+        const accepted = a.snapshot(c), controller = new AbortController();
+        let reject!: (error: Error) => void;
+        const cancelled = new Promise<void>((_resolve, no) => { reject = no; });
+        a.track(c, cancelled, controller.signal);
+        controller.abort(); reject(Object.assign(new Error('fixture_cancelled'), { name: 'AbortError' }));
+        await Promise.resolve(); await Promise.resolve();
+        expect(a.snapshot(c)).toBe(accepted); expect(load).not.toHaveBeenCalled();
+        const realFailure = Promise.reject(Object.assign(new Error('fixture_failure_not_cancelled'), { name: 'AbortError' }));
+        a.track(c, realFailure, new AbortController().signal);
+        await Promise.resolve(); await Promise.resolve();
+        expect(a.snapshot(c).state).toBe('stale'); expect(a.snapshot(c).asOf).toBe(accepted.asOf);
+        expect(a.snapshot(c).receivedAt).toBe(accepted.receivedAt);
+    });
     it('充分快取跨時框／雙consumer沒有新增請求', async () => {
         const load = vi.fn(), a = new DailyIndicatorAuthority(load, () => NOW);
         const bars = Array.from({ length: 130 }, (_, i) => ({ ...raw('2026-10-29'), time: (Math.floor(NOW / 86400) - 129 + i) * 86400 + 9 * 3600 }));

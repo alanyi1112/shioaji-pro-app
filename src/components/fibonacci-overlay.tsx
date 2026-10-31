@@ -4,6 +4,15 @@ import {
     type FibonacciCoordinateApi,
 } from '../lib/fibonacci-overlay';
 import * as styles from './candle-chart.css';
+import type { KeyPricePercentContext } from '../lib/key-price-previous-close';
+
+let measureContext: CanvasRenderingContext2D | null = null;
+function measureLabel(text: string) {
+    measureContext ??= document.createElement('canvas').getContext('2d');
+    if (!measureContext) return text.length * 7;
+    measureContext.font = '700 11.5px monospace';
+    return measureContext.measureText(text).width;
+}
 
 export function FibonacciOverlay({
     snapshot,
@@ -12,6 +21,7 @@ export function FibonacciOverlay({
     rightEdge,
     coordinates,
     formatPrice,
+    percentContext,
 }: {
     snapshot: FibonacciSnapshot;
     width: number;
@@ -19,6 +29,7 @@ export function FibonacciOverlay({
     rightEdge: number;
     coordinates: FibonacciCoordinateApi;
     formatPrice: (price: number) => string;
+    percentContext?: KeyPricePercentContext;
 }) {
     const model = buildFibonacciOverlayModel(snapshot, {
         width,
@@ -26,6 +37,8 @@ export function FibonacciOverlay({
         rightEdge,
         coordinates,
         formatPrice,
+        percentContext,
+        measureText: measureLabel,
     });
     if (
         model.lines.length === 0 &&
@@ -151,11 +164,16 @@ export function FibonacciOverlay({
                         strokeWidth='3'
                         paintOrder='stroke'
                         fontSize='11.5'
+                        fontFamily={percentContext ? 'monospace' : undefined}
                         fontWeight='700'
                         textAnchor={label.anchor}
                         data-fibonacci-label='true'
+                        data-fibonacci-level-price={label.levelPrice}
+                        data-fibonacci-percent={label.percent?.value ?? undefined}
+                        data-fibonacci-line-start={label.lineStartX}
                     >
                         {label.text}
+                        {label.percent && <tspan x={label.percentX} y={label.percentY} fill={label.percent.color}>{label.percent.text}</tspan>}
                     </text>
                 ),
             )}
