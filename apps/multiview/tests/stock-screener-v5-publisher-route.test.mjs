@@ -23,6 +23,23 @@ const setup = () => { const db = new SqliteD1(); migrations.forEach((migration) 
 const sessions = Array.from({ length: 130 }, (_, index) => new Date(Date.UTC(2026, 3, 26) + index * 86400000).toISOString().slice(0, 10));
 const fixture = async (name) => JSON.parse(await readFile(new URL(`./fixtures/screener-chip-v5/${name}`, import.meta.url), 'utf8'));
 
+test('自然collector同一官方回應保存完整圖表欄位，不增加請求或重抓完成來源',async()=>{
+ const db=setup();try{
+  applyDrizzleSql(db,await readFile(new URL('../drizzle/0041_shared_verified_chip_rows.sql',import.meta.url),'utf8'));
+  db.exec("CREATE TABLE tdcc_continuous_symbols(symbol TEXT,active INTEGER);CREATE TABLE user_instruments(symbol TEXT,enabled INTEGER);CREATE TABLE user_system_tab_instruments(symbol TEXT,enabled INTEGER);INSERT INTO user_system_tab_instruments VALUES('2330.TW',1),('2330.TWO',1)");
+  for(const market of['TWSE','TPEx']){const stock={code:'2330',symbol:market==='TWSE'?'2330.TW':'2330.TWO',name:'測試',market,kind:'ordinary',listingDate:'1994-09-05'};await db.prepare("INSERT INTO screener_universe(revision,symbol,market,data_date,payload) VALUES('r-canonical',?,?,?,?)").bind(stock.symbol,market,'2026-09-11',JSON.stringify({stock})).run();}
+  const payloads={'TWSE:institutional-flow':await fixture('twse-t86.json'),'TWSE:margin-short':await fixture('twse-mi-margn.json'),'TPEx:institutional-flow':await fixture('tpex-institutional.json'),'TPEx:margin-short':await fixture('tpex-margin.json')};
+  let requests=0;const options={now:new Date('2026-09-11T14:00:00Z'),payloads,fetcher:async()=>{requests++;throw Error('unexpected_request')}};
+  assert.equal((await collectScreenerChipSession(db,'2026-09-11',options)).state,'complete');
+  const saved=(await db.prepare('SELECT dataset,payload_json FROM screener_chip_canonical_rows').all()).results;
+  assert.equal(saved.length,4);
+  for(const row of saved){const p=JSON.parse(row.payload_json);if(row.dataset==='institutional-flow'){assert.equal(p.institutionalFlow.dealerTotalNetShares,0);assert.equal(p.institutionalFlow.sourceTotalVerified,true);}else assert.notEqual(p.marginShort.marginBuyLots,null);}
+  assert.equal((await collectScreenerChipSession(db,'2026-09-11',options)).state,'complete');
+  assert.equal((await db.prepare('SELECT count(*) n FROM screener_chip_canonical_rows').first()).n,4);
+  assert.equal(requests,0);
+ }finally{db.close();}
+});
+
 test('分類窗口使用台北時間，歷史可補，六次後隔日續跑', () => {
   const before = new Date('2026-09-11T12:59:59Z');
   assert.equal(chipDownloadDecision('2026-09-11', 'margin-short', before).allowed, false);

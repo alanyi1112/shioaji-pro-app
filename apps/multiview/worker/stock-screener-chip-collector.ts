@@ -4,6 +4,7 @@ import { SCREENER_V5_RESOURCE_LIMITS } from "./stock-screener-v5-repository.ts";
 import { chipDownloadDecision, chipRetryAfter, type ChipRetry } from "./stock-screener-chip-policy.ts";
 import { SCREENER_INSTITUTIONAL_MAPPING_VERSION } from "../../../src/lib/stock-screener-v6.ts";
 import { chipPayloadHash, parseOfficialChipBatch, screenerChipSourceUrl, type ScreenerChipDataset } from "./stock-screener-chip-sources.ts";
+import { fullCanonicalDataset, persistCanonicalChipRows } from "./shared-chip-canonical.ts";
 
 const MAX_BYTES = 25_000_000;
 const BATCH = 50;
@@ -184,6 +185,12 @@ export async function collectScreenerChipSession(db: ScreenerDatabase, sessionDa
         db.prepare("UPDATE screener_chip_receipts SET status='verified',verified_at=? WHERE id=? AND status='staging'").bind(fetchedAt, receiptId),
         db.prepare("UPDATE screener_chip_runs SET processed=processed+1,updated_at=? WHERE id=? AND status='running'").bind(fetchedAt, runId),
       ]);
+      // Reuse the SAME verified response for current chart targets; never add a source request.
+      const canonicalStore = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='screener_chip_canonical_rows'").first<{name:string}>();
+      if (canonicalStore && (target.dataset !== "institutional-flow" || mappingComplete)) {
+        const chartTargets = (await db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active=1 UNION SELECT UPPER(symbol) AS symbol FROM user_instruments WHERE enabled=1 UNION SELECT UPPER(symbol) AS symbol FROM user_system_tab_instruments WHERE enabled=1").all<{symbol:string}>()).results || [];
+        await persistCanonicalChipRows(db as unknown as D1Database,receiptId,parsed.chipRows.filter(row=>fullCanonicalDataset(row,target.dataset)),new Set(chartTargets.map(row=>row.symbol)),{sourceHash:hash,observedAt:fetchedAt});
+      }
     }
     if (outcomes.length) {
       await db.prepare("UPDATE screener_chip_runs SET status='pending',checkpoint=?,completed_at=?,updated_at=? WHERE id=?")

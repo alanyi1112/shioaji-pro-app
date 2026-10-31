@@ -59,7 +59,7 @@ const worker = {
       async daily(currentEnv, scheduledTime) {
         const typedEnv = currentEnv as Env;
         await cleanupExpiredCandleCache(typedEnv.DB, new Date(scheduledTime));
-        await runChipBackfillScheduled(typedEnv, scheduledTime);
+        return runChipBackfillScheduled(typedEnv, scheduledTime);
       },
     });
     if (localMaintenanceResponse) return localMaintenanceResponse;

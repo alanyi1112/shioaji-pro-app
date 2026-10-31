@@ -150,7 +150,8 @@ export function tdccFailureDiagnostic(value: unknown, stage = "control") {
             : message === "invalid_response" ? "validation_rejected" : "unclassified_exception";
   const detail = (value as { tdccDiagnostic?: { stage?: unknown; symbol?: unknown } } | null)?.tdccDiagnostic;
   const symbol = typeof detail?.symbol === "string" && SYMBOL.test(detail.symbol) ? detail.symbol : null;
-  return { stage: detail?.stage === "target-sync" ? "target-sync" : /^[a-z-]{1,40}$/.test(stage) ? stage : "control", category, symbol };
+  const stages = ["target-sync", "target-validation", "catalog-validation", "target-empty", "target-setup-read", "target-catalog-read", "target-watchlist-read", "target-catalog-build", "run-start", "target-discovery", "run-advance"];
+  return { stage: stages.includes(String(detail?.stage)) ? String(detail!.stage) : /^[a-z-]{1,40}$/.test(stage) ? stage : "control", category, symbol };
 }
 
 export function validateContinuousTargets(input: TdccContinuousTarget[]) {
@@ -429,8 +430,13 @@ export async function syncTdccContinuousTargets(input: {
   now?: Date | string;
 }) {
   const now = iso(input.now);
-  const targets = validateContinuousTargets(input.targets);
-  const observed = [...new Set((input.observedCatalogSymbols || []).map(normalizedSymbol))].sort();
+  const tagged = (cause: unknown, stage: string) => Object.assign(new Error(safeTdccContinuousError(cause), {cause}), {tdccDiagnostic:{stage},tdccCategory:tdccFailureDiagnostic(cause).category});
+  let targets: TdccContinuousTarget[];
+  let observed: string[];
+  try { targets = validateContinuousTargets(input.targets); }
+  catch (cause) { throw tagged(cause, "target-validation"); }
+  try { observed = [...new Set((input.observedCatalogSymbols || []).map(normalizedSymbol))].sort(); }
+  catch (cause) { throw tagged(cause, "catalog-validation"); }
   const revision = String(input.catalogRevision || "");
   const count = await input.db.prepare("SELECT COUNT(*) AS rows FROM tdcc_continuous_symbols WHERE official_baseline=1 OR source='official-new-listing'").first<TdccCountRow>();
   const initializing = Number(count?.rows || 0) === 0;
@@ -456,7 +462,7 @@ export async function syncTdccContinuousTargets(input: {
   }
 
   const prior = await input.db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active=1 AND source IN ('setup','user')").all<{ symbol: string }>();
-  if (!targets.length && prior.results.length) throw new Error("invalid_response");
+  if (!targets.length && prior.results.length) throw tagged(new Error("invalid_response"), "target-empty");
   for (const target of targets) {
     try { await saveTdccContinuousTarget({ db: input.db, target, catalogRevision: revision, now }); }
     catch (cause) {

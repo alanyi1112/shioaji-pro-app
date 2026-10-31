@@ -81,12 +81,19 @@ function normalizeTpexHistorical(payload: unknown, stock: UniverseStock, dataset
   if (!source) return [];
   const row = emptyDaily(stock.symbol, requestedDate);
   if (dataset === "institutional-flow") {
+    const net = (at: number) => {
+      const buy = numeric(source[at]), sell = numeric(source[at + 1]), value = numeric(source[at + 2]);
+      return buy !== null && sell !== null && value !== null && buy >= 0 && sell >= 0 && buy - sell === value ? value : null;
+    };
+    const self = net(14), hedging = net(17), dealer = net(20), foreign = net(8), trust = net(11), total = numeric(source[23]);
+    const dealerVerified = self !== null && hedging !== null && dealer !== null && self + hedging === dealer;
+    const totalVerified = dealerVerified && foreign !== null && trust !== null && total !== null && foreign + trust + dealer! === total;
     row.institutionalFlow = {
       // TPEx 歷史表第 8–10 欄（zero-based）是「外資及陸資合計」群組；11–13 才是投信。
       foreignBuyShares: numeric(source[8]), foreignSellShares: numeric(source[9]), foreignNetShares: numeric(source[10]),
       investmentTrustBuyShares: numeric(source[11]), investmentTrustSellShares: numeric(source[12]), investmentTrustNetShares: numeric(source[13]),
-      dealerSelfNetShares: null, dealerHedgingNetShares: null, dealerTotalNetShares: null,
-      institutionalTotalNetShares: null, sourceTotalNetShares: numeric(source[23]), sourceTotalVerified: null,
+      dealerSelfNetShares: dealerVerified ? self : null, dealerHedgingNetShares: dealerVerified ? hedging : null, dealerTotalNetShares: dealerVerified ? dealer : null,
+      institutionalTotalNetShares: totalVerified ? total : null, sourceTotalNetShares: total, sourceTotalVerified: total === null ? null : totalVerified,
     };
   } else {
     const marginYesterday = numeric(source[2]), marginToday = numeric(source[6]);
@@ -122,7 +129,7 @@ export function parseOfficialChipBatch(payload: unknown, market: ScreenerMarket,
   if (!Array.isArray(payload) && (!payload || typeof payload !== "object")) throw new Error("invalid_report_schema");
   const eligible = universe.filter((stock) => stock.market === market && (!stock.listingDate || stock.listingDate <= requestedDate));
   if (!eligible.length || eligible.length > 5000) throw new Error("invalid_report_universe");
-  const rows: CanonicalScreenerChipRow[] = [], missing: string[] = [], invalid: Record<string, string> = {};
+  const rows: CanonicalScreenerChipRow[] = [], chipRows: ChipDailyRow[] = [], missing: string[] = [], invalid: Record<string, string> = {};
   for (const stock of eligible) {
     const candidates = normalize(payload, stock, dataset, requestedDate, fetchedAt);
     if (candidates.length > 1) throw new Error("duplicate_security");
@@ -162,9 +169,10 @@ export function parseOfficialChipBatch(payload: unknown, market: ScreenerMarket,
       }
     }
     rows.push(row);
+    chipRows.push(candidate);
   }
   if (!rows.length) throw new Error("empty_report");
-  return { market, dataset, requestedDate, sourceDate: requestedDate, rows, target: eligible.length, missing, invalid,
+  return { market, dataset, requestedDate, sourceDate: requestedDate, rows, chipRows, target: eligible.length, missing, invalid,
     normalizationVersion: SCREENER_CHIP_NORMALIZATION_VERSION,
     institutionalMappingVersion: dataset === "institutional-flow" ? SCREENER_INSTITUTIONAL_MAPPING_VERSION : null };
 }

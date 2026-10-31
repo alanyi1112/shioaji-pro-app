@@ -11,6 +11,7 @@ export const TDCC_HISTORY_URL = "https://www.tdcc.com.tw/portal/zh/smWeb/qryStoc
 export const TDCC_LATEST_OPEN_DATA_URL = "https://openapi.tdcc.com.tw/v1/opendata/1-5";
 export const CONTROL_PLANE_TIMEOUT_MS = 90000;
 export const TDCC_LISTING_METADATA = Object.freeze({
+  "00406A.TW": { listingDate: "2026-06-11", sourceUrl: "https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69e6379f4019eabb5dc8801c2.pdf" },
   "009816.TW": { listingDate: "2026-02-03", sourceUrl: "https://www.twse.com.tw/zh/ETFortune/etfInfo/009816" },
   "009819.TW": { listingDate: "2026-04-23", sourceUrl: "https://www.twse.com.tw/staticFiles/news/news/tsecnews/8a8216d69d2e8217019daf567620022f.pdf" },
 });

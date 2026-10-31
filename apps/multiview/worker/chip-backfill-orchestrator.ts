@@ -81,6 +81,13 @@ export function latestCompletedTaiwanSessionDate(now: Date | string = new Date()
   return taipei.date;
 }
 
+/** Upper bound only; actual trading-day authority remains the signed local calendar. */
+export function verifiedCompletedSessionCeiling(now: Date) {
+  const parts = taipeiParts(now);
+  if (parts.hour >= 15) return parts.date;
+  return new Date(Date.parse(`${parts.date}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+}
+
 function processedSymbols(row: RunRow) {
   try {
     const parsed = JSON.parse(String(row.processed_symbols_json || "[]"));
@@ -141,7 +148,10 @@ export async function startChipBackfillOrchestratorRun(input: {
   if (!RUN_ID.test(input.runId) || !["schedule", "workflow_dispatch", "scheduled"].includes(input.trigger) || !CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.scopes.includes(scope)) throw new Error("invalid_response");
   const now = iso(input.now);
   const expected = input.completedSession ?? latestCompletedTaiwanSessionDate(now);
-  if (!validDate(expected) || expected > latestCompletedTaiwanSessionDate(now)) throw new Error("invalid_response");
+  // An explicit completedSession is supplied only after the local signed calendar gate.
+  // The legacy 22:00 publication heuristic must not overrule its verified 15:00 session.
+  const ceiling = input.completedSession ? verifiedCompletedSessionCeiling(new Date(now)) : latestCompletedTaiwanSessionDate(now);
+  if (!validDate(expected) || expected > ceiling) throw new Error("invalid_response");
   const phase: ChipBackfillPhase = scope === "daily" ? "daily" : "latest";
   await input.db.prepare(`INSERT INTO chip_backfill_orchestrator_runs
     (run_id,scope,trigger,status,phase,expected_session_date,heartbeat_at,started_at)

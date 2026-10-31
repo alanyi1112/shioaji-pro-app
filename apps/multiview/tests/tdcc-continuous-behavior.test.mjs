@@ -112,7 +112,12 @@ test("新週發布後 61 期 ledger 只以最近 60 期投影，不使整批 tar
     };
     return statement;
   };
-  await assert.rejects(syncTdccContinuousTargets({ db, targets: [{ symbol: "2330.TW", source: "user" }, { symbol: "9999.TW", source: "user" }], now: "2026-10-03T01:00:00Z" }), /test_target_failure/);
+  await assert.rejects(syncTdccContinuousTargets({ db, targets: [{ symbol: "2330.TW", source: "user" }, { symbol: "9999.TW", source: "user" }], now: "2026-10-03T01:00:00Z" }), error => {
+    assert.equal(error.message, 'invalid_response');
+    assert.equal(error.cause.message, 'test_target_failure');
+    assert.deepEqual(error.tdccDiagnostic, {stage:'target-sync',symbol:'9999.TW'});
+    return true;
+  });
   assert.equal((await prepare("SELECT active FROM tdcc_continuous_symbols WHERE symbol='2330.TW'").first()).active, 1);
   assert.equal((await prepare("SELECT active FROM tdcc_continuous_symbols WHERE symbol='9999.TW'").first()).active, 1);
 });

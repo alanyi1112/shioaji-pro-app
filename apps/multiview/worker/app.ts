@@ -40,6 +40,8 @@ import {
   type InstrumentCandidate,
 } from "./instrument-catalog";
 import { isEligibleTaiwanEquity, isEligibleWatchlistTaiwanEquity } from "./taiwan-stock-chip";
+import { readChipWatchlistRows } from "./chip-watchlist";
+import { admitChipCalendar } from "./chip-calendar-admission.ts";
 import { handleTaiwanStockChipRequest, ingestTdccDistributionSnapshot, prewarmTaiwanStockChipSymbol } from "./taiwan-stock-chip-service";
 import { fetchTdccLatestOfficial } from "./tdcc-latest-source";
 import {
@@ -1232,23 +1234,33 @@ async function instrumentCatalogStatus(env: Env) {
 }
 
 async function tdccContinuousTargetContext(request: Request, env: Env) {
+  let stage = "target-setup-read";
+  try {
   const base = parseSetup(await setupText(request, env));
+  stage = "target-catalog-read";
   const catalog = await readInstrumentCatalog(env.DB);
   const catalogBySymbol = new Map(catalog.map((item) => [item.symbol, item]));
   const targets: TdccContinuousTarget[] = base
     .filter((item) => item.enabled && isEligibleWatchlistTaiwanInstrument(item, catalogBySymbol.get(item.symbol)))
     .map((item) => ({ symbol: item.symbol, source: "setup" as const }));
   if (env.DB) {
-    const userRows = await env.DB.prepare("SELECT * FROM user_instruments WHERE enabled = 1").all<UserInstrumentRow>();
-    for (const row of userRows.results || []) {
+    stage = "target-watchlist-read";
+    const userRows = await readChipWatchlistRows<UserInstrumentRow>(env.DB);
+    for (const row of userRows) {
       const item: Instrument = { symbol: normalizeSymbol(row.symbol), name: String(row.name || row.symbol), provider: String(row.provider || "yfinance"), tabId: String(row.tab_id || ""), tab: String(row.tab_label || "其他"), group: String(row.group_name || "自訂"), market: String(row.market || "台灣股市"), enabled: true, defaultOrder: row.sort_order == null ? null : Number(row.sort_order) };
       if (isEligibleWatchlistTaiwanInstrument(item, catalogBySymbol.get(item.symbol))) targets.push({ symbol: item.symbol, source: "user" });
     }
   }
+  stage = "target-catalog-build";
   const officialCatalog = catalog.filter((item) => item.active !== false && ["twse-official", "tpex-official", "taiwan-catalog"].some((source) => String(item.source).includes(source)) && isEligibleTaiwanEquity(item));
   const catalogRevision = officialCatalog.map((item) => String(item.sourceUpdatedAt || "")).sort().at(-1) || "";
   for (const target of targets) target.catalogRevision = catalogRevision;
   return { targets, observedCatalogSymbols: officialCatalog.map((item) => item.symbol), catalogRevision };
+  } catch (cause) {
+    const failure = new Error(safeTdccContinuousError(cause), { cause });
+    Object.assign(failure, {tdccDiagnostic:{stage},tdccCategory:tdccFailureDiagnostic(cause).category});
+    throw failure;
+  }
 }
 
 async function refreshTdccContinuousTargets(request: Request, env: Env) {
@@ -1373,7 +1385,7 @@ async function finalizeChipBackfillOrchestratorFailure(input: {
   };
 }
 
-async function tdccContinuousBackfill(request: Request, env: Env) {
+async function tdccContinuousBackfill(request: Request, env: Env, admittedSession?: () => string) {
   if (!env.DB || !env.TDCC_CONTINUOUS_BACKFILL_SECRET) return json({ ok: false, error: "TDCC 背景持續回補尚未設定。" }, 503);
   if (!authorizedTdccContinuous(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   await ensureDb(env.DB);
@@ -1387,14 +1399,20 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
   const owner = String(body?.owner || runId || "");
   const orchestratorTrigger: ChipBackfillTrigger = body?.trigger === "schedule" ? "schedule" : body?.trigger === "scheduled" ? "scheduled" : "workflow_dispatch";
   const orchestratorScope = String(body?.scope || "combined") as ChipBackfillScope;
+  const completedSession = () => admittedSession ? Promise.resolve(admittedSession()) : localChipCompletedSession(env);
+  let controlStage = action;
   try {
     if (!["combined", "daily", "tdcc-weekly"].includes(orchestratorScope)) throw new Error("invalid_response");
     if (action === "orchestrator-start") {
       const trigger = orchestratorTrigger;
-      let orchestrator = await startChipBackfillOrchestratorRun({ db: env.DB, runId, trigger, scope: orchestratorScope, completedSession: await localChipCompletedSession(env) });
+      controlStage = "target-sync";
+      await refreshTdccContinuousTargets(request, env);
+      controlStage = "run-start";
+      let orchestrator = await startChipBackfillOrchestratorRun({ db: env.DB, runId, trigger, scope: orchestratorScope, completedSession: await completedSession() });
       if (orchestrator?.status === "completed") return json({ ok: true, ...chipBackfillWorkflowResult(orchestrator, true) });
       if (orchestrator?.scope === "daily") {
-        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
+        controlStage = "target-discovery";
+        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await completedSession() });
         const done = targets.dueSymbols === 0;
         orchestrator = await advanceChipBackfillOrchestratorRun({
           db: env.DB,
@@ -1422,7 +1440,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
           await finishTdccContinuousRun({ db: env.DB, runId });
           return json({ ok: true, ...chipBackfillWorkflowResult(orchestrator, true) });
         }
-        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
+        const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await completedSession() });
         const done = targets.dueSymbols === 0;
         orchestrator = await advanceChipBackfillOrchestratorRun({
           db: env.DB,
@@ -1444,7 +1462,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
       if (!current) throw new Error("invalid_response");
       if (current.status === "completed") return json({ ok: true, ...chipBackfillWorkflowResult(current, true) });
       if (current.phase !== "daily" || !["daily", "combined"].includes(current.scope)) throw new Error("invalid_response");
-      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
+      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await completedSession() });
       const processed: string[] = [];
       let reason: string | null = null;
       for (const target of targets.targets) {
@@ -1456,7 +1474,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
             reason = reason || "provider_unavailable";
             continue;
           }
-          const result = await prewarmTaiwanStockChipSymbol({ env, eligibility, datasets: target.datasets });
+          const result = await prewarmTaiwanStockChipSymbol({ env, eligibility, datasets: target.datasets, admittedSession });
           const reasons = Object.values(result.availability || {}).map(String);
           if (reasons.includes("rate_limited")) reason = "rate_limited";
           else if (reasons.some((value) => ["not_published", "partial_data"].includes(value))) reason = "source_not_published";
@@ -1465,7 +1483,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
           reason = reason || "provider_unavailable";
         }
       }
-      const remaining = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await localChipCompletedSession(env) });
+      const remaining = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: CHIP_BACKFILL_ORCHESTRATOR_CONTRACT.batchSize, attemptCooldownMs: WATCHLIST_CHIP_ATTEMPT_COOLDOWN_MS, completedSession: await completedSession() });
       const done = remaining.dueSymbols === 0;
       if (done && !reason && remaining.pendingSymbols) reason = "source_not_published";
       const orchestrator = await advanceChipBackfillOrchestratorRun({
@@ -1515,7 +1533,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     }
     if (action === "chip-targets") {
       await refreshTdccContinuousTargets(request, env);
-      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: Number(body?.limit || WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun), completedSession: await localChipCompletedSession(env) });
+      const targets = await discoverWatchlistChipWarmTargets({ db: env.DB, limit: Number(body?.limit || WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun), completedSession: await completedSession() });
       await heartbeatTdccContinuousRun({ db: env.DB, runId });
       return json({ ok: true, ...targets, contract: WATCHLIST_CHIP_PREWARM_CONTRACT });
     }
@@ -1582,7 +1600,7 @@ async function tdccContinuousBackfill(request: Request, env: Env) {
     let failure = {};
     if (runId && action.startsWith("orchestrator-")) try { failure = await finalizeChipBackfillOrchestratorFailure({ db: env.DB, runId, trigger: orchestratorTrigger, scope: orchestratorScope, reason }); } catch {}
     if (runId && action === "refresh-latest") try { await finishTdccContinuousRun({ db: env.DB, runId, reason }); } catch {}
-    const diagnostic = tdccFailureDiagnostic(error, action);
+    const diagnostic = tdccFailureDiagnostic(error, controlStage);
     const category = (error as { tdccCategory?: unknown })?.tdccCategory;
     if (["request_context_mismatch", "schema_unavailable", "storage_busy", "binding_invalid", "storage_constraint", "validation_rejected", "unclassified_exception"].includes(String(category))) diagnostic.category = String(category);
     return json({ ok: false, error: reason, diagnostic, ...failure }, ["provider_unavailable", "rate_limited", "timeout", "tick_limit_exceeded"].includes(reason) ? 503 : 400);
@@ -2814,13 +2832,10 @@ async function taiwanChipEligibility(request: Request, env: Env, symbol: string)
   const catalog = await readInstrumentCatalog(env.DB);
   const uid = identifiedUserId(request);
   const schedulerAuthorized = authorizedTdccContinuous(request, env);
-  const savedRow = canonical && env.DB
-    ? uid
-      ? await env.DB.prepare("SELECT * FROM user_instruments WHERE user_id = ? AND symbol = ? AND enabled = 1 LIMIT 1").bind(uid, canonical).first<UserInstrumentRow>()
-      : schedulerAuthorized
-        ? await env.DB.prepare("SELECT * FROM user_instruments WHERE symbol = ? AND enabled = 1 ORDER BY updated_at DESC LIMIT 1").bind(canonical).first<UserInstrumentRow>()
-        : null
-    : null;
+  const savedRows = canonical && env.DB
+    ? await readChipWatchlistRows<UserInstrumentRow>(env.DB, schedulerAuthorized ? undefined : uid || null)
+    : [];
+  const savedRow = savedRows.filter((row) => normalizeSymbol(row.symbol) === canonical).at(-1);
   const savedEntry = savedRow ? localCatalogEntry({
     symbol: normalizeSymbol(savedRow.symbol),
     name: String(savedRow.name || savedRow.symbol),
@@ -2882,16 +2897,26 @@ async function taiwanStockChipHealth(env: Env) {
 
 export async function runChipBackfillScheduled(env: Env, scheduledTime: number) {
   if (!env.DB || !env.TDCC_CONTINUOUS_BACKFILL_SECRET) throw new Error("d1_unavailable");
+  const admittedSession = env.DEPLOYMENT_TARGET === "local" ? await admitChipCalendar(env) : undefined;
   const runId = `sites-scheduled-${Math.trunc(scheduledTime)}`;
   const headers = { authorization: `Bearer ${env.TDCC_CONTINUOUS_BACKFILL_SECRET}`, "content-type": "application/json" };
+  const controlUrl = env.DEPLOYMENT_TARGET === "local"
+    ? "http://127.0.0.1:5174/api/internal/tdcc-continuous-backfill"
+    : "https://internal/api/internal/tdcc-continuous-backfill";
   const invoke = async (action: string) => {
-    const response = await tdccContinuousBackfill(new Request("https://internal/api/internal/tdcc-continuous-backfill", {
+    const response = await tdccContinuousBackfill(new Request(controlUrl, {
       method: "POST",
       headers,
       body: JSON.stringify({ action, runId, trigger: "scheduled", scope: "daily" }),
-    }), env);
-    if (!response.ok) throw new Error("provider_unavailable");
-    return jsonObject(await response.json());
+    }), env, admittedSession);
+    const payload = jsonObject(await response.json());
+    if (!response.ok) {
+      const safeReasons = ["provider_unavailable", "rate_limited", "timeout", "invalid_response", "tick_limit_exceeded"];
+      const error = new Error(safeReasons.includes(String(payload.error)) ? String(payload.error) : "provider_unavailable");
+      Object.assign(error, { tdccCategory: jsonObject(payload.diagnostic).category, tdccDiagnostic: jsonObject(payload.diagnostic) });
+      throw error;
+    }
+    return payload;
   };
   let result = await invoke("orchestrator-start");
   let processed = Number(jsonObject(result.summary).processedSymbols || 0);
@@ -2901,6 +2926,7 @@ export async function runChipBackfillScheduled(env: Env, scheduledTime: number) 
     if (result.done !== true && nextProcessed <= processed) break;
     processed = nextProcessed;
   }
+  return { done: result.done === true, summary: result.summary };
 }
 
 async function batchCandleResponse(request: Request, env: Env) {

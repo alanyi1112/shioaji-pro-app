@@ -15,6 +15,7 @@ const workerAppSource = await readFile(new URL("../worker/app.ts", import.meta.u
 
 class Query {
   constructor(db, sql) { this.db = db; this.sql = sql; }
+  bind(...args) { this.args=args; return this; }
   async all() {
     if (this.sql.includes("FROM tdcc_continuous_symbols")) return { results: this.db.symbols.map((symbol) => ({ symbol })) };
     if (this.sql.includes("FROM taiwan_stock_chip_fetch_state")) return { results: this.db.states };
@@ -165,6 +166,7 @@ test("資格檢查前持久化嘗試使失敗商品冷卻，並保留最後可�
   try {
     database.exec(`CREATE TABLE tdcc_continuous_symbols(symbol TEXT PRIMARY KEY,active INTEGER);
       CREATE TABLE user_instruments(symbol TEXT,enabled INTEGER);
+      CREATE TABLE user_system_tab_instruments(symbol TEXT,enabled INTEGER);
       CREATE TABLE taiwan_stock_chip_fetch_state(symbol TEXT,dataset TEXT,coverage_start TEXT,coverage_end TEXT,source_date TEXT,status TEXT,reason_code TEXT,last_success_at TEXT,last_attempt_at TEXT,retry_after TEXT,PRIMARY KEY(symbol,dataset));
       INSERT INTO tdcc_continuous_symbols VALUES ('2330.TW',1);
       INSERT INTO user_instruments VALUES ('3037.TW',1),('9999.TW',0);

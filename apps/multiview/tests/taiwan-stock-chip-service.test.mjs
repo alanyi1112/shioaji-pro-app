@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { changedChipDailyPatch, decorateDistributionRows, expectedTdccSnapshotMinimumDate, stateCovers, taiwanStockChipPayload } from "../worker/taiwan-stock-chip-service.ts";
-import { parseTdccSnapshot } from "../worker/taiwan-stock-chip.ts";
+import { emptyDaily, parseTdccSnapshot } from "../worker/taiwan-stock-chip.ts";
 import { holdingFixture, institutionalFixture, marginFixture, tdccEtfFixture, tdccFixture } from "./fixtures/taiwan-stock-chip.mjs";
 
 const eligible = { eligible: true, symbol: "2330.TW", exchange: "TWSE", eligibleSymbols: new Set(["2330.TW"]) };
@@ -84,6 +85,23 @@ class ChipFakeD1 {
   prepare(sql) { this.queries.push(sql); return new ChipStatement(this, sql); }
   async batch(statements) { return Promise.all(statements.map((statement) => statement.run())); }
 }
+
+test('完整共用資料已到目標日，舊fetch state缺件時圖表仍零下載、零原件寫入',async()=>{
+ const db=new ChipFakeD1(),day='2026-10-30',at='2026-10-31T09:00:00Z',sourceHash='a'.repeat(64);
+ const row=emptyDaily('2330.TW',day);
+ row.institutionalFlow={foreignBuyShares:10,foreignSellShares:5,foreignNetShares:5,investmentTrustBuyShares:3,investmentTrustSellShares:1,investmentTrustNetShares:2,dealerSelfNetShares:1,dealerHedgingNetShares:2,dealerTotalNetShares:3,institutionalTotalNetShares:10,sourceTotalNetShares:10,sourceTotalVerified:true};
+ row.provenance['institutional-flow']={provider:'twse',dataset:'institutional-flow',frequency:'daily',sourceDate:day,sourceDateVerified:true,fetchedAt:at,receiptId:'canonical',payloadHash:sourceHash,sharedStore:'screener_chip_canonical_rows'};
+ const text=JSON.stringify(row),prepare=db.prepare.bind(db);
+ db.prepare=sql=>{
+  if(sql.includes('FROM screener_chip_canonical_rows')){const s={bind(){return s},async all(){return{results:[{receipt_id:'canonical',session_date:day,dataset:'institutional-flow',payload_json:text,payload_sha256:createHash('sha256').update(text).digest('hex'),source_observed_at:at}]}}};return s;}
+  if(sql.includes('FROM screener_chip_receipts r')){const s={bind(){return s},async first(){return{id:'canonical',status:'verified',market:'TWSE',dataset:'institutional-flow',requested_date:day,source_date:day,payload_hash:sourceHash,normalization_version:'official-market-chip-v1',fetched_at:at,mapping_status:'verified',mapping_hash:sourceHash}}};return s;}
+  return prepare(sql);
+ };
+ let calls=0;const result=await taiwanStockChipPayload({url:new URL('http://local/api/taiwan-stock-chip?symbol=2330.TW&start=2026-10-01&end=2026-10-30&datasets=institutional-flow'),env:{DB:db},eligibility:eligible,fetchImpl:async()=>{calls++;throw Error('unexpected_request')},now:at});
+ assert.equal(calls,0);assert.equal(db.dailyWrites,0);assert.equal(db.states.size,0);
+ assert.equal(result.body.cache.mode,'d1_hit');assert.equal(result.body.rows.at(-1).institutionalFlow.dealerTotalNetShares,3);
+ assert.equal(result.body.rows.at(-1).provenance['institutional-flow'].sharedStore,'screener_chip_canonical_rows');
+});
 
 test("margin-short response 回傳估算成本與固定 60% 估算維持率", async () => {
   const db = new ChipFakeD1();

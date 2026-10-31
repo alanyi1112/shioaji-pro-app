@@ -1,4 +1,5 @@
-import { CHIP_BACKFILL_ORCHESTRATOR_CONTRACT, latestCompletedTaiwanSessionDate } from "./chip-backfill-orchestrator.ts";
+import { CHIP_BACKFILL_ORCHESTRATOR_CONTRACT, latestCompletedTaiwanSessionDate, verifiedCompletedSessionCeiling } from "./chip-backfill-orchestrator.ts";
+import { readCanonicalChipRows } from "./shared-chip-canonical.ts";
 
 export const WATCHLIST_CHIP_PREWARM_CONTRACT = Object.freeze({
   scheduler: "sites-worker-orchestrator",
@@ -47,7 +48,7 @@ export function watchlistChipWarmWindow(now: Date | string = new Date(), complet
   if (!Number.isFinite(endDate.getTime())) throw new Error("invalid_response");
   if (completedSession !== undefined && (!realDate(completedSession)
     || new Date(`${completedSession}T00:00:00Z`).toISOString().slice(0, 10) !== completedSession
-    || completedSession > latestCompletedTaiwanSessionDate(endDate))) throw new Error("calendar_authority_unavailable");
+    || completedSession > verifiedCompletedSessionCeiling(endDate))) throw new Error("calendar_authority_unavailable");
   const end = completedSession ?? latestCompletedTaiwanSessionDate(endDate);
   const startDate = new Date(`${end}T00:00:00Z`);
   startDate.setUTCDate(startDate.getUTCDate() - WATCHLIST_CHIP_PREWARM_CONTRACT.lookbackDays);
@@ -71,14 +72,35 @@ function isFresh(state: WarmState | undefined, window: { start: string; end: str
   return Number.isFinite(lastSuccess) && nowMs - lastSuccess < WATCHLIST_CHIP_PREWARM_CONTRACT.freshnessMs;
 }
 
-async function readTargetsAndStates(db: D1Database) {
+async function readTargetsAndStates(db: D1Database, window?: {start:string;end:string}) {
   const [targetRows, stateRows] = await Promise.all([
-    db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active = 1 UNION SELECT UPPER(symbol) AS symbol FROM user_instruments WHERE enabled = 1 AND (UPPER(symbol) LIKE '%.TW' OR UPPER(symbol) LIKE '%.TWO') ORDER BY symbol").all<WarmTargetRow>(),
+    db.prepare("SELECT symbol FROM tdcc_continuous_symbols WHERE active = 1 UNION SELECT UPPER(symbol) AS symbol FROM user_instruments WHERE enabled = 1 AND (UPPER(symbol) LIKE '%.TW' OR UPPER(symbol) LIKE '%.TWO') UNION SELECT UPPER(symbol) AS symbol FROM user_system_tab_instruments WHERE enabled = 1 AND (UPPER(symbol) LIKE '%.TW' OR UPPER(symbol) LIKE '%.TWO') ORDER BY symbol").all<WarmTargetRow>(),
     db.prepare("SELECT symbol,dataset,coverage_start,coverage_end,source_date,status,reason_code,last_success_at,last_attempt_at,retry_after FROM taiwan_stock_chip_fetch_state WHERE dataset IN ('institutional-flow','foreign-holding','margin-short','securities-lending')").all<WarmState>(),
   ]);
   const symbols = [...new Set((targetRows.results || []).map((row) => String(row.symbol || "").trim().toUpperCase()).filter((symbol) => /^[0-9A-Z]{4,8}\.(TW|TWO)$/.test(symbol)))];
   const states = new Map<string, WarmState>();
   for (const row of stateRows.results || []) states.set(`${String(row.symbol)}|${String(row.dataset)}`, row as WarmState);
+  if (window) for (const symbol of symbols) {
+    const lagging = ["institutional-flow","margin-short"].filter(dataset => {
+      const state=states.get(`${symbol}|${dataset}`);
+      return !state?.source_date || state.source_date<window.end;
+    });
+    if (!lagging.length) continue;
+    const rows=await readCanonicalChipRows(db,symbol,window.start,window.end);
+    for(const dataset of lagging){
+      const accepted=rows.filter(row=>Boolean(row.provenance[dataset as "institutional-flow"|"margin-short"]));
+      const latest=accepted.at(-1);if(!latest)continue;
+      const before=states.get(`${symbol}|${dataset}`);
+      const provenance=latest.provenance[dataset as "institutional-flow"|"margin-short"]!;
+      const sourceDate=latest.sessionDate;
+      if(before?.source_date && sourceDate<=before.source_date)continue;
+      // Read-only projection: retain the original fetch state/receipt and the unchanged 365-day/freshness gates.
+      states.set(`${symbol}|${dataset}`,{...before,symbol,dataset,status:"available",
+        coverage_start:before?.coverage_start && before.coverage_start<accepted[0].sessionDate ? before.coverage_start : accepted[0].sessionDate,
+        coverage_end:sourceDate,source_date:sourceDate,last_success_at:provenance.fetchedAt,
+        reason_code:sourceDate>=window.end?"available":"partial_data"});
+    }
+  }
   return { symbols, states };
 }
 
@@ -87,7 +109,7 @@ export async function discoverWatchlistChipWarmTargets(input: { db: D1Database; 
   if (!Number.isFinite(now.getTime())) throw new Error("invalid_response");
   const window = watchlistChipWarmWindow(now, input.completedSession);
   const limit = Math.max(1, Math.min(WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun, Math.trunc(Number(input.limit || WATCHLIST_CHIP_PREWARM_CONTRACT.maxTargetsPerRun))));
-  const { symbols, states } = await readTargetsAndStates(input.db);
+  const { symbols, states } = await readTargetsAndStates(input.db,window);
   let pendingSymbols = 0;
   let deferredSymbols = 0;
   const cooldownMs = Math.max(0, Number(input.attemptCooldownMs ?? 0));
@@ -140,7 +162,7 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
   try {
     const current = now instanceof Date ? now : new Date(now);
     const window = watchlistChipWarmWindow(current, completedSession);
-    const { symbols, states } = await readTargetsAndStates(db);
+    const { symbols, states } = await readTargetsAndStates(db,window);
     const schedulerRun = await db.prepare("SELECT heartbeat_at,status,last_reason_code FROM chip_backfill_orchestrator_runs WHERE scope IN ('daily','combined') ORDER BY updated_at DESC LIMIT 1").first<SchedulerRunRow>();
     const schedulerHeartbeat = Date.parse(String(schedulerRun?.heartbeat_at || ""));
     const schedulerStale = !Number.isFinite(schedulerHeartbeat) || current.getTime() - schedulerHeartbeat > 36 * 3600000;
@@ -148,6 +170,7 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
     let retryWaitingSymbols = 0;
     const successes: string[] = [];
     const reasons: string[] = [];
+    const pendingDatasets: {symbol:string;dataset:string;reason:string;coverageStart:string|null;coverageEnd:string|null;sourceDate:string|null}[] = [];
     for (const symbol of symbols) {
       let ready = true;
       let waiting = false;
@@ -155,7 +178,17 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
         const state = states.get(`${symbol}|${dataset}`);
         if (state?.last_success_at) successes.push(String(state.last_success_at));
         if (state?.reason_code && !["available", "partial_data", "not_published"].includes(String(state.reason_code))) reasons.push(String(state.reason_code));
-        if (!isFresh(state, window, current.getTime())) ready = false;
+        if (!isFresh(state, window, current.getTime())) {
+          ready = false;
+          const reason = !state ? "missing_fetch_state"
+            : !realDate(state.source_date) || String(state.source_date) < window.end ? "latest_source_unverified"
+            : !realDate(state.coverage_start) || String(state.coverage_start) > window.start ? "coverage_window_incomplete"
+            : state.status !== "available" ? "source_state_unavailable"
+            : !realDate(state.coverage_end) || String(state.coverage_end) < window.end
+              ? dataset === "securities-lending" && state.reason_code === "official_no_activity" ? "evidence_stale" : "coverage_window_incomplete"
+              : "evidence_stale";
+          pendingDatasets.push({symbol,dataset,reason,coverageStart:state?.coverage_start || null,coverageEnd:state?.coverage_end || null,sourceDate:state?.source_date || null});
+        }
         const retryAfter = Date.parse(String(state?.retry_after || ""));
         if (Number.isFinite(retryAfter) && retryAfter > current.getTime()) waiting = true;
       }
@@ -173,8 +206,11 @@ export async function readWatchlistChipPrewarmHealth(db: D1Database | undefined,
       readySymbols,
       pendingSymbols,
       retryWaitingSymbols,
+      pendingDatasets,
       lastSuccessAt: successes.sort().at(-1) || null,
-      lastErrorCode: schedulerStale ? "scheduler_stale" : reasons.includes("rate_limited") ? "rate_limited" : schedulerRun?.last_reason_code || reasons.at(-1) || null,
+      // A previous scheduler failure is retained separately; it cannot establish that an official report is unpublished now.
+      schedulerLastErrorCode: schedulerRun?.last_reason_code || null,
+      lastErrorCode: schedulerStale ? "scheduler_stale" : reasons.includes("rate_limited") ? "rate_limited" : schedulerRun?.status === "failed" ? schedulerRun.last_reason_code || "scheduler_failed" : pendingDatasets[0]?.reason || reasons.at(-1) || null,
     };
   } catch {
     return { configured: false, status: "unavailable", scheduler: WATCHLIST_CHIP_PREWARM_CONTRACT.scheduler, targetSymbols: 0, readySymbols: 0, pendingSymbols: 0, retryWaitingSymbols: 0, lastSuccessAt: null, lastErrorCode: "d1_unavailable" };

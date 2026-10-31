@@ -154,7 +154,7 @@ test("D1 migration、Worker scheduled handler 與 health 均包含 orchestrator"
   assert.match(appSource, /finalizeChipBackfillOrchestratorFailure/);
   assert.match(appSource, /tick < WATCHLIST_CHIP_PREWARM_CONTRACT\.maxTargetsPerRun/);
   assert.match(appSource, /nextProcessed <= processed/);
-  assert.match(appSource, /SELECT \* FROM user_instruments WHERE symbol = \?/);
+  assert.match(appSource, /readChipWatchlistRows<UserInstrumentRow>\(env.DB, schedulerAuthorized \? undefined : uid \|\| null\)/);
   assert.match(prewarmSource, /FROM chip_backfill_orchestrator_runs WHERE scope IN \('daily','combined'\)/);
   assert.doesNotMatch(prewarmSource, /FROM tdcc_continuous_runs ORDER BY updated_at DESC LIMIT 1/);
 });

@@ -35,6 +35,9 @@ export type ChipProvenance = {
   sourceDate: string | null;
   sourceDateVerified?: boolean;
   fetchedAt: string;
+  receiptId?: string;
+  payloadHash?: string;
+  sharedStore?: "screener_chip_daily" | "screener_chip_canonical_rows" | "screener_tdcc_weekly";
 };
 
 export type ChipCoverage = {

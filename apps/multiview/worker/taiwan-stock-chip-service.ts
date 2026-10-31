@@ -33,6 +33,7 @@ import { runD1Batch } from "./d1-batch.ts";
 import { tdccArchiveStatus, tdccDistributionMaterialHash, tdccStoredDistributionMaterialHash } from "./tdcc-archive-bootstrap.ts";
 import { fetchTdccLatestOfficial, TDCC_LATEST_SOURCES } from "./tdcc-latest-source.ts";
 import { resolveLocalCompletedSession } from "./local-completed-session.ts";
+import { readVerifiedSharedChip, readVerifiedSharedDistribution } from "./shared-chip-data.ts";
 
 type ChipEnv = { DB?: D1Database; FINMIND_API_TOKEN?: string; GITHUB_WORKFLOW_DISPATCH_TOKEN?: string;
   DEPLOYMENT_TARGET?: string; LOCAL_MARKET_CALENDAR_PROOF?: string; LOCAL_PIPELINE_SECRET?: string };
@@ -113,9 +114,10 @@ export async function prewarmTaiwanStockChipSymbol(input: {
   datasets?: string[];
   now?: Date | string;
   fetchImpl?: typeof fetch;
+  admittedSession?: () => string;
 }) {
   if (!input.eligibility.eligible) return { symbol: input.eligibility.symbol, eligible: false, warmedDatasets: [], status: "not_eligible" };
-  const completed = input.env.DEPLOYMENT_TARGET === "local"
+  const completed = input.admittedSession ? { expectedSession: input.admittedSession(), reasonCode: null } : input.env.DEPLOYMENT_TARGET === "local"
     ? await resolveLocalCompletedSession(input.env.LOCAL_MARKET_CALENDAR_PROOF, input.env.LOCAL_PIPELINE_SECRET,
       input.now ? new Date(input.now) : new Date()) : null;
   if (completed && !completed.expectedSession) throw new Error(completed.reasonCode || "calendar_authority_unavailable");
@@ -217,7 +219,7 @@ function dbRowToDistribution(row: DistributionDbRow): DistributionRow {
 async function readDaily(db: D1Database | undefined, symbol: string, start: string, end: string) {
   if (!db) return [];
   const result = await db.prepare("SELECT * FROM taiwan_stock_chip_daily WHERE symbol = ? AND session_date >= ? AND session_date <= ? ORDER BY session_date").bind(symbol, start, end).all<ChipDailyDbRow>();
-  return result.results.map(dbRowToDaily);
+  return mergeChipRows(await readVerifiedSharedChip(db, symbol, start, end), result.results.map(dbRowToDaily));
 }
 
 async function readDailyCloses(db: D1Database | undefined, symbol: string, start: string, end: string) {
@@ -320,7 +322,9 @@ function decorateEstimatedMarginRows(rows: ChipDailyRow[], closes: Map<string, n
 async function readDistribution(db: D1Database | undefined, symbol: string, start: string, end: string) {
   if (!db) return [];
   const result = await db.prepare("SELECT * FROM taiwan_stock_shareholder_distribution WHERE symbol = ? AND data_date >= ? AND data_date <= ? ORDER BY data_date").bind(symbol, start, end).all<DistributionDbRow>();
-  return result.results.map(dbRowToDistribution);
+  const rows = new Map((await readVerifiedSharedDistribution(db, symbol, start, end)).map(row => [row.dataDate, row]));
+  for (const row of result.results.map(dbRowToDistribution)) rows.set(row.dataDate, row);
+  return [...rows.values()].sort((a, b) => a.dataDate.localeCompare(b.dataDate));
 }
 
 async function readDistributionProvenanceSummary(db: D1Database | undefined, symbol: string, start: string, end: string) {
@@ -654,6 +658,14 @@ export async function taiwanStockChipPayload(input: { url: URL; env: ChipEnv; el
       ? distribution.length > 0 || Boolean(distributionOutsideRequestedRange)
       : Boolean(officialNoActivity || sourcePending || (cachedDatasetDates.at(-1) && cachedDatasetDates.at(-1)! >= datasetEnd));
     const databaseOnlyDistributionHit = dataset === "shareholder-distribution" && distribution.length > 1;
+    const sharedDates = dataset === "shareholder-distribution" ? [] : cachedDailyBefore
+      .filter(row => ["screener_chip_daily", "screener_chip_canonical_rows"].includes(row.provenance[dataset]?.sharedStore || "")).map(row => row.sessionDate);
+    if (sharedDates.at(-1) === datasetEnd) {
+      refreshOutcomes[dataset] = "cache";
+      availability[dataset] = { status: "partial", reason: "partial_data", rowCount: cachedDatasetDates.length };
+      warnings.push(`${datasetName(dataset)}：沿用選股已驗證來源，最新 ${datasetEnd}；較早歷史或部分欄位仍可能不足。`);
+      return;
+    }
     if (databaseOnlyDistributionHit || (cachedStateCovers && cachedDatasetCovers)) {
       refreshOutcomes[dataset] = "cache";
       const count = cachedDatasetDates.length;

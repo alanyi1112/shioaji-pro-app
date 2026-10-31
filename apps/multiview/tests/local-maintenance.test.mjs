@@ -7,6 +7,21 @@ const secret = "a".repeat(64);
 const context = { waitUntil() {} };
 const actions = { async daily() {} };
 
+test('日籌碼 maintenance 回傳有界未完成結果，錯誤只留下 allowlist 診斷',async()=>{
+  const make=()=>new Request(endpoint,{method:'POST',headers:{'x-multiview-local-authorization':`Bearer ${secret}`},body:JSON.stringify({action:'daily'})});
+  const env={DB:{},LOCAL_PIPELINE_SECRET:secret,DEPLOYMENT_TARGET:'local'};
+  const partial=await handleLocalMaintenance(make(),env,context,{async daily(){return {done:false,summary:{processedSymbols:40,remainingSymbols:31}};}});
+  assert.equal((await partial.json()).result.done,false);
+  const failed=await handleLocalMaintenance(make(),env,context,{async daily(){throw Error('SQLITE_BUSY database is locked hidden-detail');}});
+  assert.equal(failed.status,503);
+  const payload=await failed.json();
+  assert.equal(payload.diagnostic.category,'storage_busy');
+  assert.equal(payload.diagnostic.stage,'daily-maintenance');
+  assert.equal(JSON.stringify(payload).includes('hidden-detail'),false);
+  const calendar=await handleLocalMaintenance(make(),env,context,{async daily(){throw Error('calendar_projection_stale');}});
+  assert.equal((await calendar.json()).reasonCode,'calendar_projection_stale');
+});
+
 test("本機 maintenance 只接受 loopback、精確 secret 與最小 schema", async () => {
   const remote = await handleLocalMaintenance(new Request(endpoint.replace("127.0.0.1", "example.com"), { method: "POST" }), { LOCAL_PIPELINE_SECRET: secret }, context, actions);
   assert.equal(remote.status, 403);
