@@ -41,7 +41,7 @@ import {
     useState,
     useSyncExternalStore,
 } from 'react';
-import { useQuote } from '../hooks/use-stream';
+import { useQuote, useStreamStatus } from '../hooks/use-stream';
 import {
     IndicatorDialog,
     IndicatorSettingsModal,
@@ -181,7 +181,7 @@ import {
     useTriggers,
 } from '../lib/trigger-engine';
 import type { ContractInfo } from '../lib/types/contract';
-import type { Candle } from '../lib/types/market';
+import type { Candle, KBars } from '../lib/types/market';
 import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
 import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
 import { addKbarTurnoverTwd } from '../lib/kbar-turnover';
@@ -398,6 +398,18 @@ export function CandleChart({
     const [drilldownNotice, setDrilldownNotice] =
         useState<MainChartDrilldownNotice | null>(null);
     const [historyReloadVersion, setHistoryReloadVersion] = useState(0);
+    const streamStatus = useStreamStatus();
+    const chartConnectionWasDownRef = useRef(false);
+    useEffect(() => {
+        if (streamStatus === 'down') {
+            chartConnectionWasDownRef.current = true;
+        } else if (streamStatus === 'live' && chartConnectionWasDownRef.current) {
+            // One refresh per observed outage, including an in-flight request
+            // that has not reached its deadline yet. Live heartbeats do not retry.
+            chartConnectionWasDownRef.current = false;
+            setHistoryReloadVersion(version => version + 1);
+        }
+    }, [streamStatus]);
     const targetDateGenerationRef = useRef(0);
     const targetDateObservationRef =
         useRef<MainChartTargetDateObservation | null>(null);
@@ -1896,6 +1908,13 @@ export function CandleChart({
         const isCurrent = () =>
             !cancelled &&
             isLatestGeneration(chartLoadGenerationRef, generation);
+        const markHistoryLoadState = (state: 'pending' | 'complete' | 'partial' | 'failed') => {
+            if (diagnosticRef.current && isCurrent()) {
+                diagnosticRef.current.dataset.chartHistoryLoadState = state;
+                diagnosticRef.current.dataset.chartHistoryLoadGeneration = String(generation);
+            }
+        };
+        markHistoryLoadState('pending');
         const loadKey = `${contract.code}|${tf.minutes}`;
         const cacheKey = [
             contract.security_type,
@@ -1997,6 +2016,7 @@ export function CandleChart({
             loadMoreRef.current = null;
             setEmpty(false);
             setLoading(false);
+            markHistoryLoadState('complete');
             candleSeriesRef.current
                 ?.priceScale()
                 .applyOptions({ autoScale: true });
@@ -2087,70 +2107,66 @@ export function CandleChart({
                 });
         };
 
-        const initialHistory = fetchKbars(
-            contract,
-            dateStrOffset(tf.days),
-            dateStrOffset(0),
-            loadController.signal,
-        );
-        dailyIndicatorAuthority.track(contract, initialHistory, loadController.signal);
-        initialHistory
-            .then((k) => {
-                if (!isCurrent() || !candleSeriesRef.current) return;
-                const raw = canonicalKbarsForContract(contract, k);
-                requireCandleTimeline(raw);
-                const bars = aggregate(raw, tf.minutes);
-                if (bars.length === 0) {
-                    clearSeries();
-                    setEmpty(true);
-                    loadMoreRef.current = loadMore; // history may still exist
-                    return;
-                }
-                if (!applyBars(bars)) return;
-                rawRef.current = raw;
-                rawIdentityRef.current = loadKey;
-                historicalReferenceRef.current = buildPreviousSessionCloseIndex(raw);
-                updateCandleIntegrityDiagnostics();
-                rememberChartKbars(cacheKey, raw);
-                dailyIndicatorAuthority.publish(contract, raw, dateStrOffset(0), dateStrOffset(tf.days));
-                if (usesTaiwanStockCommonLots(contract)) {
-                    const latestRaw = raw[raw.length - 1]!;
-                    const sessionDate = wallClockDateKey(latestRaw.time);
-                    const totalVolume = raw.reduce(
-                        (total, bar) =>
-                            wallClockDateKey(bar.time) === sessionDate
-                                ? total + bar.volume
-                                : total,
-                        0,
-                    );
-                    const sessionTurnovers = raw
-                        .filter(
-                            (bar) =>
-                                wallClockDateKey(bar.time) === sessionDate,
-                        )
-                        .map((bar) => bar.turnoverTwd);
-                    const totalTurnoverTwd = sessionTurnovers.reduce<
-                        number | null
-                    >(
-                        (total, value) =>
-                            addKbarTurnoverTwd(total, value),
-                        0,
-                    );
-                    liveVolumeCursorRef.current.reset({
-                        identity: liveVolumeIdentity,
-                        sessionDate,
-                        sourceTime: latestRaw.time,
-                        sequence: 0,
-                        totalVolume,
-                        totalTurnoverTwd,
-                    });
-                }
-                lastBarRef.current = bars[bars.length - 1] ?? null;
-                if (lastBarRef.current) {
-                    markFormingBar(lastBarRef.current.time);
-                }
-                loadedKeyRef.current = loadKey;
-                loadMoreRef.current = loadMore;
+        let historyRendered = false;
+        const renderHistory = (k: KBars) => {
+            if (!isCurrent() || !candleSeriesRef.current) return;
+            const sourceRaw = canonicalKbarsForContract(contract, k);
+            // Older chunks must not rewind ticks already accepted while the
+            // recent history was visible. Seed the volume cursor only once.
+            const raw = historyRendered
+                ? reattachLiveCandleTail(sourceRaw, rawRef.current)
+                : sourceRaw;
+            requireCandleTimeline(raw);
+            const bars = historyRendered
+                ? reattachLiveCandleTail(aggregate(raw, tf.minutes), barsRef.current)
+                : aggregate(raw, tf.minutes);
+            if (bars.length === 0) return;
+            if (!applyBars(bars)) return;
+            rawRef.current = raw;
+            rawIdentityRef.current = loadKey;
+            historicalReferenceRef.current = buildPreviousSessionCloseIndex(raw);
+            updateCandleIntegrityDiagnostics();
+            rememberChartKbars(cacheKey, raw);
+            if (!historyRendered && usesTaiwanStockCommonLots(contract)) {
+                const latestRaw = raw[raw.length - 1]!;
+                const sessionDate = wallClockDateKey(latestRaw.time);
+                const totalVolume = raw.reduce(
+                    (total, bar) =>
+                        wallClockDateKey(bar.time) === sessionDate
+                            ? total + bar.volume
+                            : total,
+                    0,
+                );
+                const sessionTurnovers = raw
+                    .filter(
+                        (bar) =>
+                            wallClockDateKey(bar.time) === sessionDate,
+                    )
+                    .map((bar) => bar.turnoverTwd);
+                const totalTurnoverTwd = sessionTurnovers.reduce<
+                    number | null
+                >(
+                    (total, value) =>
+                        addKbarTurnoverTwd(total, value),
+                    0,
+                );
+                liveVolumeCursorRef.current.reset({
+                    identity: liveVolumeIdentity,
+                    sessionDate,
+                    sourceTime: latestRaw.time,
+                    sequence: 0,
+                    totalVolume,
+                    totalTurnoverTwd,
+                });
+            }
+            lastBarRef.current = bars[bars.length - 1] ?? null;
+            if (lastBarRef.current) {
+                markFormingBar(lastBarRef.current.time);
+            }
+            loadedKeyRef.current = loadKey;
+            setEmpty(false);
+            setLoading(false);
+            if (!historyRendered) {
                 chartRef.current?.timeScale().scrollToRealTime();
                 // a manual price-axis drag disables autoScale and pins the
                 // range; without re-enabling it the prior symbol's price band
@@ -2159,14 +2175,35 @@ export function CandleChart({
                 candleSeriesRef.current
                     .priceScale()
                     .applyOptions({ autoScale: true });
+            }
+            historyRendered = true;
+        };
+        const initialHistory = fetchKbars(
+            contract,
+            dateStrOffset(tf.days),
+            dateStrOffset(0),
+            loadController.signal,
+            { latestFirst: true, onProgress: renderHistory },
+        );
+        dailyIndicatorAuthority.track(contract, initialHistory, loadController.signal);
+        initialHistory
+            .then((k) => {
+                if (!isCurrent() || !candleSeriesRef.current) return;
+                // Also supports alternate transports without progress callbacks.
+                if (!historyRendered) renderHistory(k);
+                if (!historyRendered) { clearSeries(); setEmpty(true); }
+                loadMoreRef.current = loadMore;
+                dailyIndicatorAuthority.publish(contract, rawRef.current, dateStrOffset(0), dateStrOffset(tf.days));
+                markHistoryLoadState('complete');
             })
             .catch((error) => {
                 if (!isCurrent()) return;
                 console.warn('K 線載入失敗', error);
                 reportCandleDataError(error);
-                if (!cacheRendered) {
+                if (!cacheRendered && !historyRendered) {
                     clearSeries(false);
                 }
+                markHistoryLoadState(cacheRendered || historyRendered ? 'partial' : 'failed');
             })
             .finally(() => {
                 if (isCurrent()) setLoading(false);
@@ -2248,6 +2285,7 @@ export function CandleChart({
         contract.region,
         contract.exchange,
         contract.target_code,
+        historyReloadVersion,
     ]);
 
     // Live trade/index quote -> update the current bar. Index products use
@@ -4179,7 +4217,8 @@ export function CandleChart({
                 )}
                 {candleDataError && !loading && (
                     <div role="alert" className={styles.modeHint}>
-                        K 線資料更新失敗；已保留可用資料，請切換週期重試。
+                        K 線資料更新失敗；已保留可用資料，較早歷史可能尚未完整載入。
+                        <button type="button" onClick={() => setHistoryReloadVersion(v => v + 1)}>重新載入 K 線</button>
                         <span title={candleDataError}>（{candleDataError}）</span>
                     </div>
                 )}

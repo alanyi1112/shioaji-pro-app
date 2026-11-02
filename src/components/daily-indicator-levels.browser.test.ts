@@ -36,10 +36,12 @@ const contract = { code: '2330', name: '隔離合成來源', security_type: 'STK
 function data(start: string, end: string): KBars {
     const bars: KBars = { datetime: [], Open: [], High: [], Low: [], Close: [], Volume: [] };
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Taipei' });
+    // 早盤執行也不能把今天13:30的未來資料當成合法來源。
+    const currentTime = new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Taipei', hour12: false });
     for (let i = 0; i < fixture.historyDays; i++) {
         const date = new Date(Date.parse(today + 'T00:00:00Z') - (fixture.historyDays - 1 - i) * 86400000).toISOString().slice(0, 10);
         if (date < start || date > end) continue;
-        const close = 100 + i / 10; bars.datetime.push(date + 'T13:30:00');
+        const close = 100 + i / 10; bars.datetime.push(date + 'T' + (date === today ? currentTime : '13:30:00'));
         bars.Open.push(close); bars.High.push(close); bars.Low.push(close); bars.Close.push(close); bars.Volume.push(1);
     }
     return bars;

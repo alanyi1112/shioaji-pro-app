@@ -47,6 +47,7 @@ import {
 } from './stream';
 import type { HistoryTicks } from './types/tick';
 import { todayStr } from './utils/date';
+import { mergeKbarChunks, splitKbarDateRange } from './kbar-date-ranges';
 import {
     submitManualStockBrokerWrite,
     type SmartOrderStockWriteRouteId,
@@ -346,9 +347,12 @@ type PendingKbarRequest = {
     keepAlive: boolean;
     settled: boolean;
     promise: Promise<KBars>;
+    progress: Set<(data: KBars) => void>;
+    latest?: KBars;
 };
 
 const pendingKbarRequests = new Map<string, PendingKbarRequest>();
+const pendingKbarChunks = new Map<string, PendingKbarRequest>();
 
 function abortedKbarRequest(): Error {
     const error = new Error('K 線請求已取消');
@@ -356,21 +360,45 @@ function abortedKbarRequest(): Error {
     return error;
 }
 
-export function fetchKbars(
-    contract: ContractBase,
-    start: string,
-    end: string,
+// A source timeout must release single-flight even when fetch ignores abort.
+// No automatic retries: only a new user demand may issue another request.
+async function boundedKbarChunk(body: unknown, signal: AbortSignal): Promise<KBars> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: () => void = () => {};
+    const deadline = new Promise<never>((_, reject) => {
+        onAbort = () => { reject(abortedKbarRequest()); controller.abort(); };
+        signal.addEventListener('abort', onAbort, { once: true });
+        timer = setTimeout(() => {
+            const error = new Error('K 線來源查詢逾時（20 秒），請重試');
+            error.name = 'TimeoutError';
+            reject(error);
+            controller.abort();
+        }, 20_000);
+        if (signal.aborted) onAbort();
+    });
+    try {
+        return await Promise.race([
+            apiPost<KBars>('/api/v1/data/kbars', body, { signal: controller.signal }),
+            deadline,
+        ]);
+    } finally {
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+    }
+}
+
+function sharedKbarRequest(
+    requests: Map<string, PendingKbarRequest>,
+    key: string,
+    load: (signal: AbortSignal, publish: (data: KBars) => void) => Promise<KBars>,
     signal?: AbortSignal,
-) {
-    const body = {
-        contract: contractKey(contract),
-        start,
-        end,
-    };
-    const key = JSON.stringify(body);
-    let pending = pendingKbarRequests.get(key);
+    onProgress?: (data: KBars) => void,
+): Promise<KBars> {
+    if (signal?.aborted) return Promise.reject(abortedKbarRequest());
+    let pending = requests.get(key);
     if (pending?.controller.signal.aborted) {
-        pendingKbarRequests.delete(key);
+        requests.delete(key);
         pending = undefined;
     }
     if (!pending) {
@@ -381,17 +409,30 @@ export function fetchKbars(
             keepAlive: false,
             settled: false,
             promise: Promise.resolve({} as KBars),
+            progress: new Set(),
         };
         const entry = pending;
-        entry.promise = apiPost<KBars>('/api/v1/data/kbars', body, {
-            signal: controller.signal,
+        entry.promise = load(controller.signal, (data) => {
+            entry.latest = data;
+            for (const listener of entry.progress) listener(data);
         }).finally(() => {
             entry.settled = true;
-            if (pendingKbarRequests.get(key) === entry) {
-                pendingKbarRequests.delete(key);
+            entry.progress.clear();
+            if (requests.get(key) === entry) {
+                requests.delete(key);
             }
         });
-        pendingKbarRequests.set(key, entry);
+        requests.set(key, entry);
+    }
+
+    // Each chart consumer owns its callback; cancellation cannot leave an old
+    // product/timeframe listening to another consumer's shared request.
+    const listener = onProgress ? (data: KBars) => {
+        if (!signal?.aborted) onProgress(data);
+    } : undefined;
+    if (listener) {
+        pending.progress.add(listener);
+        if (pending.latest) listener(pending.latest);
     }
 
     if (!signal) {
@@ -403,6 +444,7 @@ export function fetchKbars(
     pending.consumers.add(consumer);
     const release = () => {
         pending!.consumers.delete(consumer);
+        if (listener) pending!.progress.delete(listener);
         if (
             !pending!.settled &&
             !pending!.keepAlive &&
@@ -427,6 +469,45 @@ export function fetchKbars(
             release();
         });
     });
+}
+
+export function fetchKbars(
+    contract: ContractBase,
+    start: string,
+    end: string,
+    signal?: AbortSignal,
+    options: { latestFirst?: boolean; onProgress?: (data: KBars) => void } = {},
+): Promise<KBars> {
+    if (signal?.aborted) return Promise.reject(abortedKbarRequest());
+    const identity = contractKey(contract);
+    const key = JSON.stringify({ contract: identity, start, end, latestFirst: !!options.latestFirst });
+    // Callers without progressive history retain the single-request contract.
+    if (!options.latestFirst) {
+        const body = { contract: identity, start, end };
+        return sharedKbarRequest(pendingKbarRequests, key,
+            requestSignal => boundedKbarChunk(body, requestSignal), signal);
+    }
+    let ranges: ReturnType<typeof splitKbarDateRange>;
+    try { ranges = splitKbarDateRange(start, end); }
+    catch (error) { return Promise.reject(error); }
+    const enforceCalendarRange = identity.security_type === 'STK' && identity.region === 'TW';
+    return sharedKbarRequest(pendingKbarRequests, key,
+        async (rangeSignal, publish) => {
+            const parts: { range: (typeof ranges)[number]; data: KBars }[] = [];
+            for (const range of [...ranges].reverse()) {
+                if (rangeSignal.aborted) throw abortedKbarRequest();
+                const body = { contract: identity, ...range };
+                const data = await sharedKbarRequest(pendingKbarChunks, JSON.stringify(body),
+                    chunkSignal => boundedKbarChunk(body, chunkSignal), rangeSignal);
+                if (rangeSignal.aborted) throw abortedKbarRequest();
+                parts.unshift({ range, data });
+                // Validate chronological boundaries before exposing partial
+                // history. Never sort/repair source bars or fill gaps.
+                publish(mergeKbarChunks(parts, enforceCalendarRange));
+            }
+            if (rangeSignal.aborted) throw abortedKbarRequest();
+            return mergeKbarChunks(parts, enforceCalendarRange);
+        }, signal, options.onProgress);
 }
 
 export function fetchHistoryTicks(contract: ContractBase, date: string) {
