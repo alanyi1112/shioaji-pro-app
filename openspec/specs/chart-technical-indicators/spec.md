@@ -71,11 +71,11 @@ MACD MUST 使用 SMA seed 的 EMA fast／slow，並以來源 repo 的零值時�
 - **AND** 第一個 ATR MUST 是前十四個 TR 的 SMA，後續值 MUST 使用 Wilder 遞迴
 
 ### Requirement: 主圖組合指標必須保留 RealTimeStock 既有能力
-系統 MUST 提供參考均線組、BOLL、Volume MA、FVG、K 線固定區間 Volume Profile 及 Traditional Pivot Point。這些指標 MUST 使用目前圖表依 time 排序的 Shioaji candles 計算，不得另外呼叫來源 repo、Cloudflare、D1 或未授權市場資料服務。既有額外指標與自訂指標 MUST 保持可選且不得被移除或改名。
+系統 MUST 提供參考均線組、BOLL、Volume MA、FVG、K 線固定區間 Volume Profile 及 Traditional Pivot Point。這些指標 MUST 使用目前圖表依 time 排序的 candles 計算；近期資料沿用 Shioaji，1D 可依 `main-chart-daily-history-display` 合併通過時間、單位與重疊價格驗真的展示專用本機日線前綴。系統 MUST NOT 另外呼叫來源 repo、Cloudflare、D1 或未授權市場資料服務，也不得將展示前綴當成分鐘／盤中量比／盤後基準。既有額外指標與自訂指標 MUST 保持可選且不得被移除或改名。
 
 #### Scenario: 顯示參考均線組
 - **WHEN** 使用者新增「參考均線組」
-- **THEN** 主圖 MUST 同時顯示使用 close 計算的 SMA5、SMA10、SMA20、SMA60、SMA120
+- **THEN** 主圖 MUST 同時顯示使用 close 計算的 SMA5、SMA10、SMA20、SMA60、SMA120、SMA240（年線）
 - **AND** 每條線 MUST 在累積對應期數前維持 whitespace
 - **AND** 使用者仍可另外新增既有單線 SMA、EMA 或 WMA
 
@@ -89,6 +89,10 @@ MACD MUST 使用 SMA seed 的 EMA fast／slow，並以來源 repo 的零值時�
 - **THEN** 系統 MUST 透過 definition render metadata 在相同 `vol` price scale 顯示 Volume SMA5、SMA10 與 SMA20
 - **AND** 合法的零成交量 MUST 納入期數與平均
 - **AND** 期數不足時 MUST 維持 whitespace，不得把缺值當零
+
+#### Scenario: 既有均線組補上年線設定
+- **WHEN** 使用者開啟先前保存的參考均線組設定
+- **THEN** 系統 MUST 顯示可調整的 SMA240 年線 output，保留其他均線及原樣式設定
 
 ### Requirement: FVG 必須具有明確且可測試的 zone 生命週期
 系統 MUST 以三根 candle 偵測 FVG。bullish FVG 範圍 MUST 為第一根 high 至第三根 low；bearish FVG 範圍 MUST 為第三根 high 至第一根 low，偵測 time 使用第三根 candle。zone 自偵測 candle 向右延伸，部分穿越不得縮小原始邊界。

@@ -139,18 +139,18 @@ STK／IND／WRT 的自動 reference resolver MUST 以 `Asia/Taipei` 現在時間
 - **THEN** renderer MUST 依固定順序調整 label Y 位置並為位移標籤顯示短 connector
 - **AND** connector MUST 指向原始真實價格而非位移後價格
 
-### Requirement: 左上角只保留共用 reference 狀態
-壓撐 readout MUST 在左上角顯示共用 reference 的自動／固定歷史、reference 日期及完成／unavailable 狀態，但 MUST NOT 重複列出 PivotPoint、三關價或 CDP 的 level 名稱與價位。各 level 的 formula prefix、名稱及格式化價位 MUST 只由右側線標籤呈現；固定歷史時左上角 MUST 保留「回到最新」控制。
+### Requirement: 圖表必須隱藏 reference 與比較基準資訊列
+系統 MUST 將原共用 reference 狀態及壓撐／費波比較基準三行自圖表左上角隱藏，不重複呈現日期、完成狀態或比較分母資訊。此顯示取捨 MUST NOT 移除 reference 計算、固定歷史狀態、右側 formula／level／價位及百分比標籤；固定歷史的「回到最新」MUST 保留於壓撐選單。
 
 #### Scenario: 三套公式同時啟用
 - **WHEN** PivotPoint、三關價與 CDP 同時具有合法 projection
-- **THEN** 左上角 MUST 只顯示一組共用 reference 狀態，不得列出十五個 level 值
-- **AND** 右側線標籤 MUST 繼續顯示各公式、level 名稱及格式化價位
+- **THEN** 左上角 MUST 不顯示 reference 狀態及兩種比較基準列，也不得列出十五個 level 值
+- **AND** 右側線標籤 MUST 繼續顯示各公式、level 名稱、格式化價位與原本有效的百分比
 
 #### Scenario: 固定歷史 reference
-- **WHEN** 使用者在 1D 直接點選已完成歷史 K 棒
-- **THEN** 左上角 MUST 顯示固定歷史、reference 日期、已完成及「回到最新」
-- **AND** 移除 level 值不得移除或停用「回到最新」控制
+- **WHEN** 使用者在 1D 選取已完成歷史 reference
+- **THEN** 系統 MUST 保持固定歷史計算與投影，圖表左上角不恢復已隱藏的資訊列
+- **AND** 使用者 MUST 能從壓撐選單執行「回到最新」，不得因隱藏資訊列停用該操作
 
 ### Requirement: 個別取消與 lifecycle cleanup 必須原子且隔離
 取消單一 checkbox MUST 只移除該 formula 的線、右側標籤與 autoscale contribution，並在其他 formula 仍啟用時保留共用 reference readout。最後一個 formula 取消時 MUST 清除該商品的 pinned reference、共用 reference readout 與整組 primitive data；切換商品／時框、快速更新、較新 generation、unmount 或非法資料時 MUST 清理舊投影，不得污染其他圖表。
