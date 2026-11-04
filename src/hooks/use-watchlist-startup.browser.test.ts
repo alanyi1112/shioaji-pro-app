@@ -89,11 +89,11 @@ function deferred<T>() {
 
 let latestState: ReturnType<typeof useWatchlist> | null = null;
 
-function Harness({ metadataOnly }: { metadataOnly: boolean }) {
-    const state = useWatchlist(metadataOnly ? {
+function Harness({ metadataOnly, initialListId }: { metadataOnly: boolean; initialListId?: string }) {
+    const state = useWatchlist({ initialListId, ...(metadataOnly ? {
         hydrateActiveList: false,
         subscribeActiveListQuotes: false,
-    } : undefined);
+    } : {}) });
     latestState = state;
     return createElement('output', {
         'data-testid': 'watchlist-state',
@@ -136,12 +136,12 @@ describe('專用選股 workspace 的 watchlist 啟動模式', () => {
         document.body.replaceChildren();
     });
 
-    async function renderHarness(metadataOnly: boolean) {
+    async function renderHarness(metadataOnly: boolean, initialListId?: string) {
         const host = document.createElement('div');
         document.body.append(host);
         root = createRoot(host);
         await act(async () => {
-            root?.render(createElement(Harness, { metadataOnly }));
+            root?.render(createElement(Harness, { metadataOnly, initialListId }));
         });
         await vi.waitFor(() => {
             expect(host.querySelector('output')?.getAttribute(
@@ -160,6 +160,25 @@ describe('專用選股 workspace 的 watchlist 啟動模式', () => {
         expect(mocks.resolveContract).not.toHaveBeenCalled();
         expect(mocks.subscribeContractQuotes).not.toHaveBeenCalled();
         expect(mocks.fetchSnapshots).not.toHaveBeenCalled();
+    });
+
+    it('新分頁明確清單優先，且不覆寫其他分頁的預設清單', async () => {
+        mocks.fetchWatchlists.mockResolvedValue([
+            { id: 'watch-1', name: '原清單', contracts: [] },
+            { id: 'watch-2', name: '新分頁清單', contracts: [] },
+        ]);
+        localStorage.setItem('sj-pro-active-watchlist', 'watch-1');
+        const output = await renderHarness(true, 'watch-2');
+        expect(output.getAttribute('data-active-list-id')).toBe('watch-2');
+        expect(localStorage.getItem('sj-pro-active-watchlist')).toBe('watch-1');
+        await act(async () => { await latestState!.retryService(); });
+        expect(output.getAttribute('data-active-list-id')).toBe('watch-2');
+    });
+
+    it('新分頁指定的清單不存在時，安全退回既有清單', async () => {
+        localStorage.setItem('sj-pro-active-watchlist', 'watch-1');
+        const output = await renderHarness(true, 'missing-list');
+        expect(output.getAttribute('data-active-list-id')).toBe('watch-1');
     });
 
     it('預設模式仍解析並訂閱作用中清單商品', async () => {

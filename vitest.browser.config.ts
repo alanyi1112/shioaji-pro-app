@@ -10,12 +10,14 @@ export default defineConfig({
             'react',
             'react-dom',
             'react-dom/client',
+            'react-grid-layout',
             'lucide-react',
             '@tauri-apps/api/window',
         ],
     },
     resolve: {
         alias: {
+            '@modules': path.resolve(import.meta.dirname, './src/modules-stub/index.ts'),
             './smart-order-browser-gateway-mode': path.resolve(
                 import.meta.dirname,
                 './src/lib/smart-order-browser-gateway-mode.vite.ts',

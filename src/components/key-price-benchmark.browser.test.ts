@@ -53,6 +53,35 @@ describe('主圖昨收接線：隔離合成來源，真React/Chromium',()=>{
     afterEach(async()=>{if(root)await act(async()=>root.unmount());vi.restoreAllMocks();dailyIndicatorAuthority.resetForTests();document.body.replaceChildren();});
     const settle=()=>act(async()=>{await new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve())));});
     const baseline=()=>JSON.parse(host.querySelector('[data-key-price-benchmark]')?.getAttribute('data-key-price-benchmark')??'null');
+    it('日線自動暖機400根供年線使用；不增加券商請求、不污染分鐘原始資料，保留手動視窗',async()=>{
+        let finish!: (value: Response) => void;
+        const daily = new Promise<Response>(resolve=>{ finish=resolve; });
+        const previousFetch = globalThis.fetch;
+        vi.spyOn(globalThis,'fetch').mockImplementation((input,options)=> String(input).startsWith('/api/chart-daily-history/v1?') ? daily : previousFetch(input,options));
+        updateInstances(items=>[...items,newInstance('reference-ma-pack')]);
+        await act(async()=>root.render(createElement(CandleChart,{contract,initialDaily:true})));
+        await act(async()=>{await expect.poll(()=>baseline()?.close).toBe(103);});await settle();
+        const chart=fixture.chart!, candles=fixture.candles!;
+        chart.timeScale().setVisibleLogicalRange({from:12,to:35});
+        chart.priceScale('right').setVisibleRange({from:90,to:115});await settle();
+        const beforeCount=candles.data().length;
+        const beforeRange=chart.timeScale().getVisibleLogicalRange()!;
+        const beforePrice=chart.priceScale('right').getVisibleRange();
+        const beforeSpacing=chart.timeScale().options().barSpacing;
+        const beforeCalls=fixture.fetchKbars.mock.calls.length;
+        const rows=Array.from({length:400},(_,i)=>({time:Date.parse(date(i-399)+'T01:00:00Z')/1000,open:100,high:105,low:97,close:i===399?103:100,volume:20}));
+        await act(async()=>finish(new Response(JSON.stringify({ok:true,symbol:'2330.TW',interval:'1d',brokerRequests:0,volumeContract:{canonicalVolumeUnit:'common_lot'},candles:rows}))));
+        await act(async()=>{await expect.poll(()=>host.querySelector('[data-chart-daily-history-state]')?.getAttribute('data-chart-daily-history-state')).toBe('ready');});await settle();
+        expect(candles.data()).toHaveLength(400);
+        expect(host.textContent).toContain('240MA 100.0');
+        expect(fixture.fetchKbars.mock.calls).toHaveLength(beforeCalls);
+        expect(Number(host.querySelector('[data-chart-raw-count]')?.getAttribute('data-chart-raw-count'))).toBeLessThan(100);
+        expect(chart.priceScale('right').getVisibleRange()).toEqual(beforePrice);
+        expect(chart.timeScale().options().barSpacing).toBeCloseTo(beforeSpacing,8);
+        const after=chart.timeScale().getVisibleLogicalRange()!;
+        expect(after.from).toBeCloseTo(beforeRange.from+400-beforeCount,8);
+        expect(after.to).toBeCloseTo(beforeRange.to+400-beforeCount,8);
+    });
     it('日K費波沿圖中最後close103／104，歷史視窗與日線authority不換分母，隱藏文字前綴',async()=>{
         const controller=createFibonacciController({getIdentity:()=>fibonacciIdentity({securityType:'STK',exchange:'TSE',canonicalCode:contract.code,timeframeMinutes:1440})});
         controller.restore();controller.arm('retracement');controller.addPoint({time:Date.parse(date(-20))/1000,price:110});controller.addPoint({time:Date.parse(date(-10))/1000,price:90});
@@ -68,7 +97,8 @@ describe('主圖昨收接線：隔離合成來源，真React/Chromium',()=>{
         const check=(close:number)=>{
             const labels=[...host.querySelectorAll<SVGTextElement>('[data-fibonacci-label]')];expect(labels.length).toBeGreaterThan(0);
             for(const l of labels){expect(l.textContent).not.toContain('較昨收');expect(Number(l.dataset.fibonacciPercent)).toBeCloseTo((Number(l.dataset.fibonacciLevelPrice)/close-1)*100,10);}
-            expect(host.querySelector('[data-fibonacci-benchmark]')?.textContent).toContain('最後一根日K收盤');
+            expect(host.textContent).not.toContain('最後一根日K收盤');
+            expect(host.textContent).not.toContain('費波比較基準');
         };check(103);
         fixture.fetchKbars.mockImplementation(async(_c,start,end)=>{const k=data(start,end);k.Close=k.Close.map((p,i)=>k.datetime[i]!.startsWith(today())?104:p);return k;});
         for(const tf of ['1m','1D']){await act(async()=>{[...host.querySelectorAll('button')].find(b=>b.textContent===tf)!.click();});await settle();}
@@ -133,7 +163,8 @@ describe('主圖昨收接線：隔離合成來源，真React/Chromium',()=>{
         await act(async()=>root.render(createElement(CandleChart,{contract})));
         await act(async()=>{await expect.poll(()=>baseline()?.close).toBe(103);});await settle();
         expect(baseline()).toMatchObject({referenceDate:today(),source:'support-resistance-reference-close-v1',reason:null});
-        expect(host.textContent).toContain('壓撐比較基準');
+        expect(host.textContent).not.toContain('壓撐比較基準');
+        expect(host.querySelector('[data-support-resistance-readout]')).toBeNull();
         expect(dailyIndicatorAuthority.diagnostics(contract).historyRequests).toBe(0);
         for(const tf of ['1m','5m','15m','60m']) {
             await act(async()=>{[...host.querySelectorAll('button')].find(b=>b.textContent===tf)!.click();});await settle();

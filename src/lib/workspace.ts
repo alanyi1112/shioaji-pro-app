@@ -749,7 +749,16 @@ export function loadWorkspace(): Workspace {
     return structuredClone(DEFAULT_WORKSPACE);
 }
 
-export function loadWorkspaceForLayout(layoutId: string | null): Workspace {
+export const SAVED_PROFILE_LAYOUT_ID = 'saved-profile';
+
+export function loadWorkspaceForLayout(
+    layoutId: string | null,
+    profileName: string | null = null,
+): Workspace {
+    if (layoutId === SAVED_PROFILE_LAYOUT_ID && profileName) {
+        const profile = loadProfiles().find((item) => item.name === profileName);
+        if (profile) return structuredClone(profile.workspace);
+    }
     if (layoutId === STOCK_SCREENER_LAYOUT_ID) {
         return structuredClone(STOCK_SCREENER_WORKSPACE);
     }
@@ -761,7 +770,8 @@ export function loadWorkspaceForLayout(layoutId: string | null): Workspace {
 
 export function shouldPersistWorkspaceForLayout(layoutId: string | null) {
     return layoutId !== STOCK_SCREENER_LAYOUT_ID &&
-        layoutId !== INTRADAY_STOCK_SELECTION_LAYOUT_ID;
+        layoutId !== INTRADAY_STOCK_SELECTION_LAYOUT_ID &&
+        layoutId !== SAVED_PROFILE_LAYOUT_ID;
 }
 
 export function saveWorkspace(w: Workspace) {

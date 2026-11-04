@@ -154,7 +154,13 @@ describe('MultiChart 固定參考公式', () => {
             'ma20',
             'ma60',
             'ma120',
+            'ma240',
         ]);
+        const yearBars = Array.from({ length: 241 }, (_, index): Candle => ({ ...referenceBars[0]!, time: 1000 + index * 86400, close: index + 1 }));
+        const year = maPack.compute(yearBars, {}).ma240!;
+        expect(year.slice(0, 239).every(point => point.value === undefined)).toBe(true);
+        expect(year[239]?.value).toBe(120.5);
+        expect(year[240]?.value).toBe(121.5);
         const result = volumeMa.compute(referenceBars, {});
         expect(result.ma5?.[4]).toEqual({ time: 1240, value: 82 });
         expect(result.ma10?.[9]).toEqual({ time: 1540, value: 83.8 });

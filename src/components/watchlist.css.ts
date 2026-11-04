@@ -143,6 +143,11 @@ export const listPicker = style({
 });
 
 export const listSelect = style({
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+    cursor: 'pointer',
     flex: 1,
     minWidth: 0,
     fontFamily: vars.font.body,
@@ -156,6 +161,16 @@ export const listSelect = style({
     outline: 'none',
     ':focus': { borderColor: vars.color.accent },
 });
+
+export const listPickerName = style({ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+export const listPickerMenu = style({ position: 'fixed', zIndex: 1100, boxSizing: 'border-box',
+    overflowY: 'auto', padding: 4, border: `1px solid ${vars.color.borderBright}`, borderRadius: vars.radius.sm,
+    background: vars.color.panelRaised, color: vars.color.foreground, boxShadow: '0 8px 24px rgba(0,0,0,.35)' });
+export const listPickerOption = style({ display: 'block', width: '100%', textAlign: 'left',
+    border: 0, borderRadius: 3, padding: '6px 8px', fontFamily: vars.font.body, fontSize: '.75rem',
+    cursor: 'pointer', color: 'inherit', background: 'transparent',
+    ':hover': { background: vars.color.muted }, ':focus-visible': { outline: `1px solid ${vars.color.accent}` },
+    selectors: { '&[aria-selected="true"]': { color: vars.color.accent, background: vars.color.accentDim } } });
 
 export const listBtn = style({
     fontFamily: vars.font.mono,

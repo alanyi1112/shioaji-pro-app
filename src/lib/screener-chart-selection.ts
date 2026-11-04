@@ -19,8 +19,9 @@ export function createScreenerChartSelection(
     resolve: (code: string) => Promise<ContractInfo>,
     snapshot: (contract: ContractInfo) => Promise<Snapshot | undefined>,
     commit: (id: string, selection: ScreenerChartSelectionState) => void,
+    initialGeneration = 0,
 ) {
-    let generation = 0;
+    let generation = Number.isSafeInteger(initialGeneration) && initialGeneration >= 0 ? initialGeneration : 0;
     const cancel = () => { generation++; };
     const available = (id: string) => getTargets().some((target) => target.id === id && target.type === 'chart' && target.pin === null);
     return {

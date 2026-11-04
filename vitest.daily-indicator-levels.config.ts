@@ -18,6 +18,8 @@ export default defineConfig({
             'src/lib/support-resistance-state.test.ts',
             'src/lib/chart-volume-parity.integration.test.ts',
             'src/lib/main-chart-daily-drilldown.test.ts',
+            'src/lib/chart-daily-history.test.ts',
+            'src/lib/stock-screener-gateway.test.ts',
         ],
     },
 });

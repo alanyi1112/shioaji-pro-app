@@ -2,6 +2,7 @@
 
 import { getApiBase, isTauri } from './runtime';
 import { assertRuntimeAllowsRequest } from './runtime-mode';
+import { kbarRequestBase } from './kbar-request-base';
 
 // resolved per request — the server port can move at runtime (e.g. the boot
 // flow discovers the default port occupied and starts on a fallback), and a
@@ -56,7 +57,12 @@ export async function apiPost<T>(
     options: { signal?: AbortSignal } = {},
 ): Promise<T> {
     assertRuntimeAllowsRequest(path, 'POST');
-    const res = await doFetch(base() + path, {
+    const apiBase = base();
+    const requestBase = path === '/api/v1/data/kbars'
+        ? kbarRequestBase(apiBase, typeof location === 'undefined' ? '' : location.origin,
+            import.meta.env.DEV, isTauri)
+        : apiBase;
+    const res = await doFetch(requestBase + path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

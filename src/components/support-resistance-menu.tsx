@@ -19,6 +19,7 @@ export function SupportResistanceMenu({
     persistenceError,
     onToggle,
     onConfigure,
+    onReturnToLatest,
 }: {
     enabled: ReadonlySet<SupportResistanceFormulaId>;
     readOnly: boolean;
@@ -26,6 +27,7 @@ export function SupportResistanceMenu({
     persistenceError?: string;
     onToggle: (formulaId: SupportResistanceFormulaId, enabled: boolean) => void;
     onConfigure: (formulaId: SupportResistanceFormulaId) => void;
+    onReturnToLatest?: () => void;
 }) {
     const [open, setOpen] = useState(false);
     const buttonRef = useRef<HTMLButtonElement>(null);
@@ -122,6 +124,11 @@ export function SupportResistanceMenu({
                                 ? '由 1D 管理；此時間級別僅顯示同一組投影。'
                                 : '三套公式共用 1D 的同一根 reference K 棒。')}
                     </div>
+                    {onReturnToLatest && !readOnly && (
+                        <button type='button' className={styles.legendCtrlBtn} onClick={() => { setOpen(false); onReturnToLatest(); }}>
+                            回到最新
+                        </button>
+                    )}
                     {persistenceError && (
                         <div
                             className={styles.supportResistanceHelp}

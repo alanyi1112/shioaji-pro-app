@@ -35,6 +35,7 @@ import {
     fmtPct,
 } from '../lib/utils/format';
 import { Sparkline } from './sparkline';
+import { WatchlistPicker } from './watchlist-picker';
 import * as panel from './panel.css';
 import * as styles from './watchlist.css';
 
@@ -520,20 +521,14 @@ export function Watchlist({
                     />
                 ) : (
                     <>
-                        <select
-                            className={styles.listSelect}
-                            value={activeListId}
-                            onChange={(e) => {
+                        <WatchlistPicker
+                            lists={serverLists}
+                            activeId={activeListId}
+                            onSelect={(id) => {
                                 setConfirmDelete(false);
-                                onSelectList(e.target.value);
+                                onSelectList(id);
                             }}
-                        >
-                            {serverLists.map((l) => (
-                                <option key={l.id} value={l.id}>
-                                    {l.name}（{l.contracts.length}）
-                                </option>
-                            ))}
-                        </select>
+                        />
                         <button
                             className={styles.listBtn}
                             title='重新命名清單'

@@ -260,7 +260,7 @@ export function IndicatorDialog({
                 if (e.target === e.currentTarget) onClose();
             }}
         >
-            <div className={styles.dialog}>
+            <div className={styles.dialog} role='dialog' aria-modal='true' aria-label='技術指標'>
                 <div className={styles.header}>
                     技術指標
                     <button className={styles.closeBtn} onClick={onClose}>
@@ -550,7 +550,7 @@ function StandardIndicatorSettingsModal({
                 if (e.target === e.currentTarget) onCancel();
             }}
         >
-            <div className={styles.settingsDialog}>
+            <div className={styles.settingsDialog} role='dialog' aria-modal='true' aria-label={def.label}>
                 <div className={styles.header}>
                     {def.label}
                     <button className={styles.closeBtn} onClick={onCancel}>

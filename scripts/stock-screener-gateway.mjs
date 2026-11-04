@@ -1,3 +1,4 @@
+import { createChartDailyHistoryMiddleware } from './chart-daily-history-gateway.mjs';
 const PREFIX = '/api/stock-screener';
 const TARGET = 'http://127.0.0.1:5174';
 export const STOCK_SCREENER_MULTIVIEW_LIST_PATH = '/local-multiview/api/v1/stock-screener-list/items';
@@ -174,6 +175,7 @@ export function stockScreenerGateway(fetcher = fetch, timeoutMs) {
     return {
         name: 'realtimestock-local-stock-screener',
         configureServer(server) {
+            server.middlewares.use(createChartDailyHistoryMiddleware({ fetchImpl: fetcher }));
             server.middlewares.use(async (req, res, next) => {
                 const multiviewChecked = validateStockScreenerMultiViewListRequest(req);
                 if (multiviewChecked) {

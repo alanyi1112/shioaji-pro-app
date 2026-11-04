@@ -10,6 +10,7 @@ import GridLayout, {
 import 'react-grid-layout/css/styles.css';
 import * as styles from './App.css';
 import * as grid from './grid.css';
+import { hmrViewStore } from './lib/hmr-view-runtime';
 import { BottomDock } from './components/bottom-dock';
 import { CandleChart } from './components/candle-chart';
 import { CommandPalette } from './components/command-palette';
@@ -60,9 +61,11 @@ import * as panel from './components/panel.css';
 import { useHotkeys } from './hooks/use-hotkeys';
 import { usePoll } from './hooks/use-poll';
 import { useWatchlist } from './hooks/use-watchlist';
+import { useHmrTradingView } from './hooks/use-hmr-view';
+import { useSelectedContractRefresh } from './hooks/use-selected-contract-refresh';
 import { trackActivity } from './lib/activity';
 import { agentModule, backtestModule } from './lib/features';
-import { ensureContract, useContract } from './lib/contracts-cache';
+import { ensureContract, primeContract, useContract } from './lib/contracts-cache';
 import { reportDailyPnl } from './lib/risk';
 import {
     isLatestGeneration,
@@ -75,6 +78,7 @@ import {
     fetchPositions,
     fetchSnapshots,
     fetchTrades,
+    resolveContract,
 } from './lib/shioaji';
 import { ensureStream, onOrderEvent } from './lib/stream';
 import { notify } from './lib/trade';
@@ -127,6 +131,7 @@ const POPOUT_TYPES: ReadonlySet<string> = new Set([
 const popoutQuery = new URLSearchParams(window.location.search);
 const POPOUT_TYPE = popoutQuery.get('popout');
 const WORKSPACE_LAYOUT_ID = popoutQuery.get('layout');
+const WORKSPACE_PROFILE_NAME = popoutQuery.get('profile');
 const IS_MULTIVIEW_TICKET_BRIDGE =
     POPOUT_TYPE === 'ticket' && popoutQuery.get('bridge') === 'multiview';
 const ORDER_TICKET_BRIDGE = parseOrderTicketBridge(popoutQuery);
@@ -209,6 +214,7 @@ function BlockBody({
                     <QuoteBoard contract={contract} snapshot={snapshot} snapshotUnavailableReason={snapshotUnavailableReason} />
                     <CandleChart
                         contract={contract}
+                        continuityKey={block.id}
                         initialDaily={chartInitiallyDaily}
                         dailySelectionGeneration={chartDailySelectionGeneration}
                         trades={dockProps.trades}
@@ -582,6 +588,7 @@ function PopoutView({
 function TradingApp() {
     useEffect(() => startPassiveChartEvidenceCollection(), []);
     const startupPolicy = workspaceStartupPolicy(WORKSPACE_LAYOUT_ID);
+    const [initialWatchlistId] = useState(() => hmrViewStore?.read()?.activeListId ?? popoutQuery.get('watchlist'));
     const {
         items,
         loading,
@@ -599,35 +606,48 @@ function TradingApp() {
         renameCurrentList,
         deleteCurrentList,
     } = useWatchlist({
+        initialListId: initialWatchlistId,
         hydrateActiveList: startupPolicy.hydrateActiveList,
         subscribeActiveListQuotes: startupPolicy.subscribeActiveListQuotes,
     });
-    const [selected, setSelected] = useState<ContractInfo | null>(null);
+    const {
+        selected, setSelected, workspace, setWorkspace, chartSelections,
+        setChartSelections, dailyChartIds, setDailyChartIds, restoreStatus,
+        restoreError, resumeGeneration, allowInitialFallback,
+    } = useHmrTradingView(() => loadWorkspaceForLayout(WORKSPACE_LAYOUT_ID, WORKSPACE_PROFILE_NAME), {
+        activeListId,
+        resolve: identity => resolveContract(identity.code, identity.security_type ?? undefined),
+        activate: contract => {
+            primeContract(contract);
+            return ensureContract(contract.code, contract.security_type ?? undefined);
+        },
+    });
     const [externalSnapshot, setExternalSnapshot] = useState<{
         code: string;
         snapshot: Snapshot;
     } | null>(null);
     const selectionGenerationRef = useRef(0);
     const cachedSelected = useContract(selected?.code ?? null);
-    const [workspace, setWorkspace] = useState<Workspace>(() =>
-        loadWorkspaceForLayout(WORKSPACE_LAYOUT_ID),
-    );
     const [screenerSourceWindowId] = useState(createSourceWindowId);
     const workspaceRef = useRef(workspace);
     workspaceRef.current = workspace;
-    const [chartSelections, setChartSelections] = useState<Record<string, ScreenerChartSelectionState>>({});
-    const [dailyChartIds, setDailyChartIds] = useState<Set<string>>(() => new Set());
     const [screenerSelection] = useState(() => createScreenerChartSelection(
         () => workspaceRef.current.blocks,
         ensureContract,
         async (contract) => (await fetchSnapshots([contract]))[0],
         (id, selection) => setChartSelections((old) => ({ ...old, [id]: selection })),
+        resumeGeneration,
     ));
     const clearChartSelections = useCallback(() => {
         screenerSelection.cancel();
         setChartSelections({});
     }, [screenerSelection]);
-    useEffect(() => { clearChartSelections(); }, [selected?.code, clearChartSelections]);
+    const previousSelectedCode = useRef(selected?.code);
+    useEffect(() => {
+        if (previousSelectedCode.current !== selected?.code && restoreStatus !== 'restored')
+            clearChartSelections();
+        previousSelectedCode.current = selected?.code;
+    }, [selected?.code, clearChartSelections, restoreStatus]);
     const [profiles, setProfiles] = useState<Profile[]>(loadProfiles);
     const { width, containerRef, mounted } = useContainerWidth();
 
@@ -660,31 +680,10 @@ function TradingApp() {
         };
     }, [containerRef, mounted]);
 
-    // first loaded watchlist item becomes the active symbol
-    useEffect(() => {
-        const first = items[0];
-        if (!selected && first) {
-            setSelected(first.contract);
-            return;
-        }
-        if (selected) {
-            const refreshed = items.find(
-                (item) => item.contract.code === selected.code,
-            );
-            if (refreshed && refreshed.contract !== selected) {
-                setSelected(refreshed.contract);
-            }
-        }
-    }, [items, selected]);
-
-    // Contract V2 info is refreshed after daily maintenance/update events.
-    // Keep selections opened outside the active watchlist on the refreshed
-    // cache object as well, so limits/reference never remain on yesterday.
-    useEffect(() => {
-        if (cachedSelected && cachedSelected !== selected) {
-            setSelected(cachedSelected);
-        }
-    }, [cachedSelected, selected]);
+    // Refresh metadata through one authority; watchlist/cache must not compete
+    // to replace the same symbol with different object references.
+    useSelectedContractRefresh(selected, setSelected, items, cachedSelected,
+        allowInitialFallback, restoreStatus);
 
     // portfolio polling (stock + futures merged)
     const positionsPoll = usePoll<Position[]>(
@@ -1106,7 +1105,14 @@ function TradingApp() {
         onReorder: reorderSymbol,
         serverLists,
         activeListId,
-        onSelectList: setActiveList,
+        onSelectList: (id: string) => {
+            setActiveList(id);
+            const url = new URL(window.location.href);
+            if (url.searchParams.has('watchlist')) {
+                url.searchParams.set('watchlist', id);
+                window.history.replaceState(window.history.state, '', url);
+            }
+        },
         onCreateList: createList,
         onRenameList: renameCurrentList,
         onDeleteList: deleteCurrentList,
@@ -1187,6 +1193,8 @@ function TradingApp() {
                 </div>
             )}
             <EventToasts onEvent={refreshTrading} />
+            {restoreStatus === 'pending' && <div role='status'>HMR 原商品恢復中；尚未切換其他商品</div>}
+            {restoreError && <div role='alert'>HMR 原商品恢復失敗：{restoreError}；未自動改選</div>}
             <CommandPalette
                 open={paletteOpen}
                 onClose={() => setPaletteOpen(false)}

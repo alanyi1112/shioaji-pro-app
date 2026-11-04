@@ -68,6 +68,18 @@ describe('K 棒價量 picker 與設定', () => {
         expect(html).not.toContain('小數位數');
     });
 
+    it('既有參考均線組設定自動包含可調整的SMA240年線', () => {
+        const inst = newInstance('reference-ma-pack');
+        inst.styles = { ma5: { visible: false }, ma120: { color: '#123456' } };
+        const html = renderToStaticMarkup(<IndicatorSettingsModal inst={inst}
+            timeframes={[{ label: '1D', minutes: 1440 }]}
+            onPatch={vi.fn()} onRemove={vi.fn()} onCommit={vi.fn()} onCancel={vi.fn()} />);
+        expect(html).toContain('SMA240（年線）');
+        expect(html).toContain('#f06292');
+        expect(html).toContain('#123456');
+        expect((html.match(/title="顏色 \/ 透明度 \/ 粗細"/g) ?? []).length).toBe(6);
+    });
+
     it('RSI 跨欄位錯誤可讀且阻止確認', () => {
         const inst = newInstance('rsi');
         inst.params = { shortPeriod: 20, longPeriod: 10 };

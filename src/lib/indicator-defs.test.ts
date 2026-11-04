@@ -80,6 +80,7 @@ describe('indicator definition union', () => {
             { key: 'ma20', label: 'SMA20', text: '937.5', color: '#333333' },
             { key: 'ma60', label: 'SMA60', text: '939.8', color: '#444444' },
             { key: 'ma120', label: 'SMA120', text: '911.2', color: '#555555' },
+            { key: 'ma240', label: 'SMA240（年線）', text: '850.5', color: '#f06292' },
         ];
         const ma = buildIndicatorReadoutDisplay(
             { id: 'ma-pack', type: 'reference-ma-pack', params: {}, colors: {} },
@@ -92,6 +93,7 @@ describe('indicator definition union', () => {
             ['20MA', '937.5'],
             ['60MA', '939.8'],
             ['120MA', '911.2'],
+            ['240MA', '850.5'],
         ]);
 
         const volume = buildIndicatorReadoutDisplay(

@@ -1,5 +1,9 @@
 // src/components/candle-chart.tsx — K-bar candlestick + volume chart
 // (lightweight-charts v5), live-updated from the SSE tick stream.
+import { hmrViewStore } from '../lib/hmr-view-runtime';
+import { registerUpdateCheckpoint } from '../lib/app-update-checkpoints';
+import { captureChartViewport, restoreChartViewport } from '../lib/chart-update-viewport';
+import { useHmrChartPeriod } from '../hooks/use-hmr-view';
 
 import {
     AreaSeries,
@@ -186,6 +190,7 @@ import { ACTIVE_ORDER_STATUSES, type Trade } from '../lib/types/order';
 import { fmtContractPrice, fmtPrice } from '../lib/utils/format';
 import { addKbarTurnoverTwd } from '../lib/kbar-turnover';
 import { commitCandleSeries, requireCandleTimeline } from '../lib/candle-series-integrity';
+import { chartDailyHistorySymbol, fetchChartDailyHistory, prependChartDailyHistory } from '../lib/chart-daily-history';
 import {
     recallChartKbars,
     rememberChartKbars,
@@ -293,6 +298,7 @@ export function CandleChart({
     onOrdersChanged,
     initialDaily = false,
     dailySelectionGeneration,
+    continuityKey,
 }: {
     contract: ContractInfo;
     trades?: Trade[];
@@ -300,6 +306,7 @@ export function CandleChart({
     initialDaily?: boolean;
     /** A new screener selection switches only this target chart to daily once. */
     dailySelectionGeneration?: number;
+    continuityKey?: string;
 }) {
     const diagnosticRef = useRef<HTMLDivElement>(null);
     const hostRef = useRef<HTMLDivElement>(null);
@@ -307,13 +314,7 @@ export function CandleChart({
     const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
     const volSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
     const lastBarRef = useRef<Candle | null>(null);
-    const [tfIdx, setTfIdx] = useState(initialDaily ? 4 : 1); // Existing charts keep 5m; explicit screener charts start daily.
-    const appliedDailySelectionRef = useRef<number | undefined>(undefined);
-    useEffect(() => {
-        if (dailySelectionGeneration === undefined || appliedDailySelectionRef.current === dailySelectionGeneration) return;
-        appliedDailySelectionRef.current = dailySelectionGeneration;
-        setTfIdx(4);
-    }, [dailySelectionGeneration]);
+    const [tfIdx, setTfIdx] = useHmrChartPeriod(continuityKey, initialDaily, dailySelectionGeneration);
     const [empty, setEmpty] = useState(false);
     const [loading, setLoading] = useState(false);
     const [candleDataError, setCandleDataError] = useState<string | null>(null);
@@ -381,6 +382,29 @@ export function CandleChart({
         canonicalCode: contract.code,
         timeframeMinutes: tf.minutes,
     });
+    const viewportIdentityRef = useRef(fibonacciIdentityValue);
+    viewportIdentityRef.current = fibonacciIdentityValue;
+    const restoredViewportRef = useRef<string | null>(null);
+    useEffect(() => {
+        if (!continuityKey || !hmrViewStore) return;
+        return registerUpdateCheckpoint('chart:' + continuityKey, () => {
+            const chart = chartRef.current, series = candleSeriesRef.current;
+            if (chart && series) {
+                const view = captureChartViewport(viewportIdentityRef.current, chart, series, committedBarsRef.current);
+                if (view) hmrViewStore?.setViewport(continuityKey, view);
+            }
+            return getIndicatorPersistenceStatus().state !== 'error' &&
+                fibonacciControllerRef.current?.getSnapshot().persistence.state !== 'error';
+        });
+    }, [continuityKey]);
+    const restoreUpdateViewport = () => {
+        if (!continuityKey || restoredViewportRef.current === fibonacciIdentityValue) return;
+        const saved = hmrViewStore?.viewport(continuityKey);
+        const chart = chartRef.current, series = candleSeriesRef.current;
+        if (saved && chart && series && restoreChartViewport(saved, fibonacciIdentityValue, chart, series, committedBarsRef.current)) {
+            if (chart.panes().length >= saved.paneHeights.length) restoredViewportRef.current = fibonacciIdentityValue;
+        }
+    };
     const themeSettings = useThemeSettings();
     const colors = getChartColors(themeSettings);
     const themeKey = `${themeSettings.mode}-${themeSettings.convention}`;
@@ -1724,6 +1748,11 @@ export function CandleChart({
             indSeriesByKeyRef.current.clear();
             fibonacciFrameSchedulerRef.current?.invalidate();
             fibonacciAutoScaleSignatureRef.current = '';
+            if (continuityKey && chartRef.current && candleSeriesRef.current) {
+                const saved = captureChartViewport(viewportIdentityRef.current, chart, candleSeriesRef.current, committedBarsRef.current);
+                if (saved) hmrViewStore?.setViewport(continuityKey, saved);
+            }
+            restoredViewportRef.current = null;
             chart.remove();
             chartRef.current = null;
             candleSeriesRef.current = null;
@@ -2055,12 +2084,24 @@ export function CandleChart({
             clearSeries(false);
         }
 
+        // Daily warm-up is a display-only prefix from the separate daily source.
+        // Never store these daily candles in rawRef/the minute cache or publish
+        // them as minute authority for monitoring, VWAP, or postclose baselines.
+        const dailyHistorySymbol = tf.minutes === 1440 ? chartDailyHistorySymbol(contract) : null;
+        let localDailyHistory: Candle[] = [];
+        let enrichingDaily = dailyHistorySymbol !== null;
+        const displayBars = (raw: Candle[]) => prependChartDailyHistory(localDailyHistory, aggregate(raw, tf.minutes));
+        const dailyHistoryState = (state: string) => {
+            if (isCurrent() && diagnosticRef.current) diagnosticRef.current.dataset.chartDailyHistoryState = state;
+        };
+        dailyHistoryState(dailyHistorySymbol ? 'pending' : 'not_required');
+
         // ---- older-history paging (TradingView-style infinite scroll) ----
         let oldestDay: number = tf.days; // days-ago covered so far
         let fetching = false;
         let dryPages = 0; // consecutive empty pages → assume exhausted
         const loadMore = () => {
-            if (fetching || !isCurrent()) return;
+            if (fetching || enrichingDaily || !isCurrent()) return;
             if (loadedKeyRef.current !== loadKey) return;
             if (dryPages >= 3 || oldestDay >= MAX_HISTORY_DAYS) return;
             fetching = true;
@@ -2087,7 +2128,7 @@ export function CandleChart({
                     const candidateRaw = [...older, ...rawRef.current];
                     requireCandleTimeline(candidateRaw);
                     const bars = reattachLiveCandleTail(
-                        aggregate(candidateRaw, tf.minutes),
+                        displayBars(candidateRaw),
                         barsRef.current,
                     );
                     if (!applyBars(bars)) return;
@@ -2118,8 +2159,8 @@ export function CandleChart({
                 : sourceRaw;
             requireCandleTimeline(raw);
             const bars = historyRendered
-                ? reattachLiveCandleTail(aggregate(raw, tf.minutes), barsRef.current)
-                : aggregate(raw, tf.minutes);
+                ? reattachLiveCandleTail(displayBars(raw), barsRef.current)
+                : displayBars(raw);
             if (bars.length === 0) return;
             if (!applyBars(bars)) return;
             rawRef.current = raw;
@@ -2176,6 +2217,7 @@ export function CandleChart({
                     .priceScale()
                     .applyOptions({ autoScale: true });
             }
+            restoreUpdateViewport();
             historyRendered = true;
         };
         const initialHistory = fetchKbars(
@@ -2195,6 +2237,26 @@ export function CandleChart({
                 loadMoreRef.current = loadMore;
                 dailyIndicatorAuthority.publish(contract, rawRef.current, dateStrOffset(0), dateStrOffset(tf.days));
                 markHistoryLoadState('complete');
+                if (dailyHistorySymbol && historyRendered) {
+                    void fetchChartDailyHistory(dailyHistorySymbol, loadController.signal)
+                        .then((history) => {
+                            if (!isCurrent() || loadedKeyRef.current !== loadKey) return;
+                            const bars = prependChartDailyHistory(history, barsRef.current);
+                            const previousCount = barsRef.current.length;
+                            const range = chartRef.current?.timeScale().getVisibleLogicalRange();
+                            if (!applyBars(bars)) return;
+                            localDailyHistory = history;
+                            lastBarRef.current = bars.at(-1) ?? null;
+                            // A passive prepend keeps the existing candles at the
+                            // same screen positions, including a user's pan/zoom.
+                            const added = bars.length - previousCount;
+                            if (range && added > 0) chartRef.current?.timeScale().setVisibleLogicalRange({ from: range.from + added, to: range.to + added });
+                            restoreUpdateViewport();
+                            dailyHistoryState(bars.length >= 240 ? 'ready' : 'insufficient_history');
+                        })
+                        .catch((error) => { if (isCurrent()) dailyHistoryState(error instanceof Error && error.message === 'daily_history_price_basis_mismatch' ? 'price_basis_mismatch' : 'unavailable'); })
+                        .finally(() => { enrichingDaily = false; });
+                } else enrichingDaily = false;
             })
             .catch((error) => {
                 if (!isCurrent()) return;
@@ -2204,6 +2266,8 @@ export function CandleChart({
                     clearSeries(false);
                 }
                 markHistoryLoadState(cacheRendered || historyRendered ? 'partial' : 'failed');
+                enrichingDaily = false;
+                dailyHistoryState(dailyHistorySymbol ? 'unavailable' : 'not_required');
             })
             .finally(() => {
                 if (isCurrent()) setLoading(false);
@@ -3241,6 +3305,7 @@ export function CandleChart({
         }
         closeSettings();
     };
+    useEffect(() => { restoreUpdateViewport(); }, [dataVersion, instances, tf.minutes]);
     const settingsInst = settingsDraft;
     const retryIndicator = (id: string) => {
         indicatorCheckpointRef.current.clear();
@@ -3805,7 +3870,6 @@ export function CandleChart({
     const supportResistanceState = getSupportResistanceProductState(
         supportResistanceKey,
     );
-    const supportResistanceReference = supportResistanceState?.reference ?? null;
     const toggleSupportResistance = (
         formulaId: SupportResistanceFormulaId,
         enabled: boolean,
@@ -3844,40 +3908,6 @@ export function CandleChart({
         }
         setOverlayRuntimeVersion((version) => version + 1);
     };
-    const renderSupportResistanceReadout = () => (
-        <div className={styles.legendItem.normal} data-support-resistance-readout='true'>
-            <span className={styles.legendLabel}>壓撐</span>
-            {supportResistanceReference ? (
-                <span className={styles.legendVals}>
-                    <span className={styles.legendVal}>
-                        {supportResistanceReference.mode === 'pinned'
-                            ? '固定歷史'
-                            : '自動'}{' '}
-                        {supportResistanceReference.date} 已完成
-                    </span>
-                </span>
-            ) : (
-                <span className={styles.legendNote}>reference unavailable</span>
-            )}
-            {tf.minutes === 1440 ? (
-                <span className={styles.legendCtrls}>
-                    <span className={styles.legendNote}>
-                        點選已完成日 K 即重新計算
-                    </span>
-                    {supportResistanceState?.pinned && (
-                        <button
-                            className={styles.legendCtrlBtn}
-                            onClick={returnSupportResistanceToLatest}
-                        >
-                            回到最新
-                        </button>
-                    )}
-                </span>
-            ) : (
-                <span className={styles.legendNote}>由 1D 管理</span>
-            )}
-        </div>
-    );
     const renderKbarReadoutRow = (inst: IndicatorInstance) => {
         const offTf =
             !!inst.visibleTf && !inst.visibleTf.includes(tf.minutes);
@@ -3981,6 +4011,8 @@ export function CandleChart({
             ref={diagnosticRef}
             data-chart-diagnostic-schema='candle-chart-passive-freshness/1'
             data-chart-code={contract.code}
+            data-key-price-benchmark={supportPercentVisible ? JSON.stringify(supportBaseline) : undefined}
+            data-fibonacci-benchmark={fibonacciPercentVisible ? JSON.stringify(fibonacciBaseline) : undefined}
             data-chart-timeframe-minutes={tf.minutes}
             data-chart-observation-mode='passive-dom'
             data-chart-provider-physical-usage='unknown'
@@ -4126,6 +4158,7 @@ export function CandleChart({
                     }
                     onToggle={toggleSupportResistance}
                     onConfigure={setSupportStyleFor}
+                    onReturnToLatest={tf.minutes === 1440 && supportResistanceState?.pinned ? returnSupportResistanceToLatest : undefined}
                 />
                 {supportStyleFor && (
                     <SupportResistanceStyleDialog
@@ -4281,20 +4314,6 @@ export function CandleChart({
                     <div className={styles.triggerList}>
                         {kbarReadoutInst &&
                             renderKbarReadoutRow(kbarReadoutInst)}
-                        {supportResistanceFormulas.length > 0 &&
-                            renderSupportResistanceReadout()}
-                        {supportPercentVisible && <div className={styles.legendItem.normal}
-                            data-key-price-benchmark={JSON.stringify(supportBaseline)}>
-                            <span className={styles.legendLabel}>壓撐比較基準</span>
-                            <span className={styles.legendVal}>{supportBaseline.referenceDate ?? '—'} {supportBaseline.close === null ? '—' : fmtPrice(supportBaseline.close)}</span>
-                            <span className={styles.legendNote}>參考K棒收盤價{supportBaseline.reason ? ` · ${supportBaseline.reason}` : ''}</span>
-                        </div>}
-                        {fibonacciPercentVisible && <div className={styles.legendItem.normal}
-                            data-fibonacci-benchmark={JSON.stringify(fibonacciBaseline)}>
-                            <span className={styles.legendLabel}>費波比較基準</span>
-                            <span className={styles.legendVal}>{fibonacciBaseline.date ?? '—'} {fibonacciBaseline.close === null ? '—' : fmtPrice(fibonacciBaseline.close)}</span>
-                            <span className={styles.legendNote}>最後一根日K收盤{fibonacciBaseline.reason ? ` · ${fibonacciBaseline.reason}` : ''}</span>
-                        </div>}
                         {mainLegendInsts.map((inst) =>
                             renderLegendRow(inst),
                         )}

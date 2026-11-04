@@ -52,6 +52,7 @@ export interface WatchlistServiceIssue {
 export interface UseWatchlistOptions {
     hydrateActiveList?: boolean;
     subscribeActiveListQuotes?: boolean;
+    initialListId?: string | null;
 }
 
 const DEFAULT_LIST_NAME = '我的自選';
@@ -156,6 +157,7 @@ async function resolveContract(
 export function useWatchlist({
     hydrateActiveList = true,
     subscribeActiveListQuotes = true,
+    initialListId = null,
 }: UseWatchlistOptions = {}) {
     const businessSession = useSyncExternalStore(
         subscribeBusinessSession,
@@ -550,12 +552,14 @@ export function useWatchlist({
             }
             const saved = localStorage.getItem(ACTIVE_KEY);
             const target =
+                lists.find((list) => list.id === activeIdRef.current) ??
+                lists.find((list) => list.id === initialListId) ??
                 lists.find((list) => list.id === saved) ??
                 lists.find((list) => list.name === DEFAULT_LIST_NAME) ??
                 lists[0];
             if (target) {
                 setActiveListId(target.id);
-                localStorage.setItem(ACTIVE_KEY, target.id);
+                if (!initialListId) localStorage.setItem(ACTIVE_KEY, target.id);
                 if (hydrateActiveList) {
                     await loadList(target, {
                         subscribeQuotes: subscribeActiveListQuotes,
@@ -570,6 +574,7 @@ export function useWatchlist({
         },
         [
             hydrateActiveList,
+            initialListId,
             loadList,
             refreshLists,
             subscribeActiveListQuotes,

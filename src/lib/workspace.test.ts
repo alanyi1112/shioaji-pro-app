@@ -9,6 +9,7 @@ import {
     LAYOUT_PRESETS,
     STOCK_SCREENER_LAYOUT_ID,
     STOCK_SCREENER_WORKSPACE,
+    SAVED_PROFILE_LAYOUT_ID,
     loadProfiles,
     loadWorkspace,
     loadWorkspaceForLayout,
@@ -255,6 +256,15 @@ describe('workspace storage compatibility', () => {
             expect(stored.has('sj-pro-profiles-v1')).toBe(true);
             expect(loadWorkspace()).toEqual(workspace);
             expect(loadProfiles()).toEqual(profiles);
+            const realtimeWorkspace = structuredClone(LAYOUT_PRESETS[1]!.workspace);
+            saveProfiles([
+                ...profiles,
+                { name: '即時看盤', workspace: realtimeWorkspace },
+            ]);
+            expect(loadWorkspaceForLayout(SAVED_PROFILE_LAYOUT_ID, '即時看盤'))
+                .toEqual(realtimeWorkspace);
+            expect(shouldPersistWorkspaceForLayout(SAVED_PROFILE_LAYOUT_ID)).toBe(false);
+            expect(loadWorkspace()).toEqual(workspace);
         } finally {
             if (previousLocalStorage === undefined) {
                 Reflect.deleteProperty(globalThis, 'localStorage');

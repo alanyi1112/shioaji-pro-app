@@ -5,6 +5,7 @@
 import './lib/polyfills';
 import { createRoot } from 'react-dom/client';
 import './index.css';
+import './lib/app-update-runtime';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

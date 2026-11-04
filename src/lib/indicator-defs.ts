@@ -151,7 +151,7 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
         type: 'reference-ma-pack',
         label: '參考均線組',
         short: 'MA組',
-        desc: '固定顯示 SMA5／10／20／60／120 五條參考均線',
+        desc: '固定顯示 SMA5／10／20／60／120／240 六條參考均線，日 K 的 SMA240 為年線',
         aliases: ['ma pack', 'reference ma', '均線組', '多均線'],
         category: 'overlay',
         params: [],
@@ -163,6 +163,7 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
                 { key: 'ma20', prefix: '20MA' },
                 { key: 'ma60', prefix: '60MA' },
                 { key: 'ma120', prefix: '120MA' },
+                { key: 'ma240', prefix: '240MA' },
             ],
         },
         outputs: [
@@ -171,6 +172,7 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
             { key: 'ma20', label: 'SMA20', kind: 'line', color: '#3d8bff' },
             { key: 'ma60', label: 'SMA60', kind: 'line', color: '#19b6c9' },
             { key: 'ma120', label: 'SMA120', kind: 'line', color: '#8b94a7' },
+            { key: 'ma240', label: 'SMA240（年線）', kind: 'line', color: '#f06292' },
         ],
         compute: (bars) => ({
             ma5: referenceSma(bars, 5),
@@ -178,6 +180,7 @@ const SERIES_INDICATOR_DEFS: SeriesIndicatorConfig[] = [
             ma20: referenceSma(bars, 20),
             ma60: referenceSma(bars, 60),
             ma120: referenceSma(bars, 120),
+            ma240: referenceSma(bars, 240),
         }),
     },
     {
